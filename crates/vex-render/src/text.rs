@@ -15,6 +15,20 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use vex_theme::{Family, Style};
 
+/// The bundled faces.
+///
+/// Embedded in the binary rather than fetched or installed, for the reason the design gives: the
+/// first frame must never wait on a font, and the editor has to look like itself on a machine where
+/// nothing is installed. Both families are SIL OFL; the licence texts sit beside them.
+mod bundled {
+    pub const SERIF_REGULAR: &[u8] = include_bytes!("../fonts/InstrumentSerif-Regular.ttf");
+    pub const SERIF_ITALIC: &[u8] = include_bytes!("../fonts/InstrumentSerif-Italic.ttf");
+    pub const MONO_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
+    pub const SANS_MEDIUM: &[u8] = include_bytes!("../fonts/IBMPlexSans-Medium.ttf");
+
+    pub const ALL: [&[u8]; 4] = [SERIF_REGULAR, SERIF_ITALIC, MONO_REGULAR, SANS_MEDIUM];
+}
+
 /// Frames a shaped buffer may go unused before it is dropped. Generous: re-shaping a line the
 /// user scrolled past and came back to is worse than holding a few hundred KB.
 const CACHE_TTL_FRAMES: u64 = 600;
@@ -70,7 +84,7 @@ pub struct TextStack {
 
 impl TextStack {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let mut font_system = FontSystem::new();
+        let mut font_system = load_fonts();
         let families = ResolvedFamilies {
             serif: resolve(&mut font_system, Family::Serif, "serif"),
             mono: resolve(&mut font_system, Family::Mono, "monospace"),
@@ -240,6 +254,55 @@ impl TextStack {
     pub fn trim_atlas(&mut self) {
         self.atlas.trim();
     }
+}
+
+/// Builds the font system: bundled faces first, then the system's.
+///
+/// Order matters for startup. The bundled faces parse from memory in well under a millisecond, so the
+/// editor can draw its own design immediately. The system scan follows because it is the only source
+/// of fallback coverage — CJK, emoji, anything the bundled families do not contain — and a missing
+/// glyph should degrade to a substitute rather than to a blank box.
+fn load_fonts() -> FontSystem {
+    let started = std::time::Instant::now();
+
+    let mut db = fontdb::Database::new();
+    for face in bundled::ALL {
+        db.load_font_data(face.to_vec());
+    }
+    let bundled_count = db.len();
+    let bundled_time = started.elapsed();
+
+    // The system scan costs ~150ms and buys fallback coverage the four bundled faces cannot provide.
+    // Correctness wins by default, but a user who only ever edits Latin text can have the startup
+    // back — the cost is real and this is the one place it is paid.
+    let skip_system = std::env::var_os("VEX_NO_SYSTEM_FONTS").is_some();
+    let system_started = std::time::Instant::now();
+    if !skip_system {
+        db.load_system_fonts();
+    }
+    let system_time = system_started.elapsed();
+
+    // Generic names resolve to the bundled faces, so anything asking for "serif" gets the design's
+    // serif rather than whatever the system considers one.
+    db.set_serif_family("Instrument Serif");
+    db.set_monospace_family("IBM Plex Mono");
+    db.set_sans_serif_family("IBM Plex Sans");
+
+    if std::env::var_os("VEX_FONT_TRACE").is_some() {
+        eprintln!(
+            "vex: fonts — {bundled_count} bundled in {:.2}ms, {} system in {:.0}ms",
+            bundled_time.as_secs_f32() * 1000.0,
+            db.len() - bundled_count,
+            system_time.as_secs_f32() * 1000.0
+        );
+    }
+
+    let locale = std::env::var("LANG")
+        .ok()
+        .and_then(|lang| lang.split('.').next().map(str::to_string))
+        .unwrap_or_else(|| "en-US".to_string());
+
+    FontSystem::new_with_locale_and_db(locale, db)
 }
 
 /// Picks the first installed family from the design's preference list, falling back to a

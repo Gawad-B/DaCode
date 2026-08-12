@@ -224,9 +224,15 @@ what prevents a half-working engine with ten half-working features on top.
 > just copies the previous line's whitespace; the column advance is derived from the type scale
 > rather than measured from the shaper; and Lua config is decided but unwired.
 >
-> Fonts: Instrument Serif and IBM Plex are **not installed** on this machine, so serif and sans
-> currently fall back to generics. The resolver reports what it actually chose at startup rather
-> than substituting silently. Bundling the real faces with the binary is a pending task.
+> **Fonts are bundled.** Instrument Serif (Regular + Italic), IBM Plex Mono Regular and IBM Plex Sans
+> Medium are embedded in the binary with `include_bytes!` — 480KB, both families SIL OFL with licence
+> texts committed beside them. The editor now renders its own design on a machine with nothing
+> installed, which is what the handoff asked for.
+>
+> Loading them costs **0.20ms**. The system font scan that follows costs **~156ms** and buys the
+> fallback coverage four Latin faces cannot provide — CJK, emoji, anything else. Correctness wins by
+> default; `VEX_NO_SYSTEM_FONTS=1` takes the startup back (0.27s → 0.19s to first frame) for anyone
+> who only edits Latin text.
 >
 > **Verifying the look.** `vex --screenshot out.png [--mode insert|visual|replace] [--light]
 > [file]` renders one frame offscreen and exits — no window server needed, so the design can be

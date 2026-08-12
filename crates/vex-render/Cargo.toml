@@ -11,6 +11,9 @@ vex-theme = { path = "../vex-theme" }
 
 wgpu.workspace = true
 glyphon.workspace = true
+# The font database is built here rather than letting cosmic-text scan for us, so the bundled faces
+# load first and the design renders on the first frame.
+fontdb = "0.23"
 winit.workspace = true
 bytemuck.workspace = true
 anyhow.workspace = true
