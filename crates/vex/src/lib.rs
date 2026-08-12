@@ -7,6 +7,7 @@
 pub mod chrome;
 pub mod completion;
 pub mod config;
+pub mod edits;
 pub mod execute;
 pub mod icon;
 pub mod import_cli;

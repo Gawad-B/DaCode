@@ -144,7 +144,16 @@ pub fn execute(
         // Requests go out through the caller, which owns the client; the executor records what was
         // asked for. Splitting it this way keeps `execute` free of process handling and testable
         // without a language server.
-        Action::Hover | Action::GotoDefinition => state.pending_request = Some(action.clone()),
+        Action::Hover | Action::GotoDefinition | Action::Format => {
+            state.pending_request = Some(action.clone())
+        }
+        Action::Rename => {
+            // Pre-filled with the symbol under the cursor, because a rename is nearly always an edit
+            // of the existing name rather than a fresh one.
+            let mut prompt = Prompt::new(PromptKind::Rename, state.cursor());
+            prompt.input = word_under_cursor(state);
+            state.prompt = Some(prompt);
+        }
         Action::RequestCompletion => {
             // The session opens immediately, marked pending, so the popup can say it is waiting
             // rather than appearing out of nowhere when the reply lands.

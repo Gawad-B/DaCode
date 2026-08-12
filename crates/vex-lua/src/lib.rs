@@ -33,6 +33,7 @@ pub struct Config {
     pub font_size: Option<f32>,
     pub tab_width: Option<usize>,
     pub soft_wrap: Option<bool>,
+    pub format_on_save: Option<bool>,
     pub appearance: Option<Appearance>,
     /// A named theme file to load, resolved by the caller — this crate does no file I/O beyond
     /// reading the config itself.
@@ -56,6 +57,7 @@ impl Config {
         self.font_size.is_none()
             && self.tab_width.is_none()
             && self.soft_wrap.is_none()
+            && self.format_on_save.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
             && self.colors.is_empty()
@@ -121,6 +123,9 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(wrap) = boolean(&options, "soft_wrap") {
                 config.soft_wrap = Some(wrap);
+            }
+            if let Some(format) = boolean(&options, "format_on_save") {
+                config.format_on_save = Some(format);
             }
             if let Some(appearance) = string(&options, "appearance") {
                 match appearance.as_str() {
@@ -229,7 +234,7 @@ pub fn action_names() -> Vec<&'static str> {
 
 /// The names this crate advertises. Filtered through `Action::from_name`, so a name deleted from the
 /// vocabulary disappears from `vex.actions` instead of being advertised and then rejected.
-const CANDIDATE_ACTIONS: [&str; 58] = [
+const CANDIDATE_ACTIONS: [&str; 60] = [
     "move_left",
     "move_right",
     "move_up",
@@ -288,6 +293,8 @@ const CANDIDATE_ACTIONS: [&str; 58] = [
     "previous_diagnostic",
     "dismiss_info",
     "completion",
+    "rename",
+    "format",
 ];
 
 /// The closest name in `candidates`, if one is close enough to be worth suggesting.

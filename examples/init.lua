@@ -12,6 +12,11 @@ vex.set {
   tab_width = 4,
   soft_wrap = true,
 
+  -- Reformat through the language server after every save. Off by default: a formatter reflowing a
+  -- file you did not ask it to is worse than no formatter. The save itself always lands first — the
+  -- reformat is a round trip, and it writes again when it comes back.
+  format_on_save = false,
+
   -- "dark" or "light". Ignored if `theme` names a file.
   appearance = "dark",
 
@@ -41,6 +46,8 @@ vex.map("normal", "<leader>f", "search_project")
 vex.map("normal", "<leader>d", "goto_definition")
 vex.map("normal", "<leader>k", "hover")
 vex.map("normal", "<leader>z", "toggle_soft_wrap")
+vex.map("normal", "<leader>n", "rename")
+vex.map("normal", "<leader>=", "format")
 
 -- In insert mode only modified and named keys can be bound: a letter binding would have to hold
 -- the letter back to see what came next, and typing would stutter.

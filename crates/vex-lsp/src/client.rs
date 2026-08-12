@@ -11,7 +11,7 @@
 use crate::position;
 use crate::transport::{read_message, write_message};
 use anyhow::{Context, Result};
-use lsp_types::{Diagnostic, Position};
+use lsp_types::{Diagnostic, Position, TextEdit, WorkspaceEdit};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -33,12 +33,18 @@ pub enum State {
 }
 
 /// A request the editor is waiting on.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pending {
     Initialize,
     Hover,
     Definition,
     Completion,
+    /// A rename, with the name asked for — the reply carries edits but not what they were for, and
+    /// the editor wants to say "renamed to `total`" rather than "renamed".
+    Rename {
+        new_name: String,
+    },
+    Formatting,
     Shutdown,
 }
 
@@ -66,11 +72,44 @@ pub enum ServerEvent {
     Completion {
         items: Vec<String>,
     },
+    /// Edits for a rename, possibly across several files.
+    Rename {
+        new_name: String,
+        edit: WorkspaceEdit,
+    },
+    /// Edits that reformat the open document.
+    Formatting {
+        edits: Vec<TextEdit>,
+    },
     /// The server reported a problem, or logged one.
     Message {
         text: String,
     },
+    /// A request came back as an error.
+    ///
+    /// Separate from `Message`, which carries the server's log chatter: a failed request is something
+    /// the user asked for and did not get, so it belongs on screen. `retry` marks the errors the
+    /// protocol defines as transient — `ContentModified` and `ServerCancelled` mean "ask again",
+    /// which is worth saying rather than leaving the user to guess.
+    RequestFailed {
+        what: String,
+        reason: String,
+        retry: bool,
+    },
     Stopped,
+}
+
+/// What a request was, in the user's terms rather than the protocol's.
+fn describe_request(kind: &Pending) -> String {
+    match kind {
+        Pending::Initialize => "starting the language server".into(),
+        Pending::Hover => "hover".into(),
+        Pending::Definition => "go to definition".into(),
+        Pending::Completion => "completion".into(),
+        Pending::Rename { new_name } => format!("rename to `{new_name}`"),
+        Pending::Formatting => "formatting".into(),
+        Pending::Shutdown => "shutdown".into(),
+    }
 }
 
 /// A running language server.
@@ -245,9 +284,17 @@ impl LspClient {
                     "completion": {
                         "completionItem": { "snippetSupport": false },
                         "dynamicRegistration": false
-                    }
+                    },
+                    "rename": { "dynamicRegistration": false, "prepareSupport": false },
+                    "formatting": { "dynamicRegistration": false }
                 },
-                "workspace": { "workspaceFolders": true }
+                "workspace": {
+                    "workspaceFolders": true,
+                    // `documentChanges: false` is deliberate: it asks servers for the simpler
+                    // `changes` map. vex applies text edits and refuses file creation and deletion,
+                    // so promising to understand resource operations would be a lie.
+                    "workspaceEdit": { "documentChanges": false, "failureHandling": "abort" }
+                }
             },
             "clientInfo": { "name": "vex", "version": env!("CARGO_PKG_VERSION") },
         });
@@ -337,6 +384,39 @@ impl LspClient {
             "textDocument/completion",
             document_position(path, position),
             Pending::Completion,
+        )
+    }
+
+    /// Asks for a symbol to be renamed everywhere.
+    pub fn rename(&self, path: &Path, position: Position, new_name: &str) -> Result<i64> {
+        let mut params = document_position(path, position);
+        params["newName"] = serde_json::json!(new_name);
+        self.request(
+            "textDocument/rename",
+            params,
+            Pending::Rename {
+                new_name: new_name.to_string(),
+            },
+        )
+    }
+
+    /// Asks for the whole document to be reformatted.
+    ///
+    /// Whole-document only. Range formatting exists in the protocol, but a formatter run on part of a
+    /// file gives results that depend on where you stopped selecting, which is not a feature.
+    pub fn formatting(&self, path: &Path, tab_width: usize) -> Result<i64> {
+        self.request(
+            "textDocument/formatting",
+            serde_json::json!({
+                "textDocument": { "uri": position::path_to_uri(path) },
+                "options": {
+                    "tabSize": tab_width,
+                    "insertSpaces": true,
+                    "trimTrailingWhitespace": true,
+                    "insertFinalNewline": true,
+                },
+            }),
+            Pending::Formatting,
         )
     }
 
@@ -466,12 +546,18 @@ fn interpret(
     let kind = pending.lock().unwrap().remove(&id)?;
 
     if let Some(error) = message.get("error") {
-        let text = error
+        let reason = error
             .get("message")
             .and_then(|m| m.as_str())
-            .unwrap_or("unknown error");
-        return Some(ServerEvent::Message {
-            text: format!("{kind:?} failed: {text}"),
+            .unwrap_or("unknown error")
+            .to_string();
+        // -32801 ContentModified, -32802 ServerCancelled: both mean the request raced with something
+        // the server was doing, and both are worth retrying.
+        let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+        return Some(ServerEvent::RequestFailed {
+            what: describe_request(&kind),
+            reason,
+            retry: matches!(code, -32801 | -32802),
         });
     }
 
@@ -515,6 +601,27 @@ fn interpret(
                 },
             })
         }
+        Pending::Rename { new_name } => {
+            // Deserialized rather than walked by hand: a workspace edit has two interchangeable
+            // shapes and an optional annotation wrapper, and hand-parsing that is how an editor ends
+            // up silently dropping half a rename.
+            //
+            // A reply that will not parse is *reported*. Returning `None` here would make a failed
+            // rename indistinguishable from a key that does nothing, which is the hardest class of
+            // bug to find from the outside.
+            match serde_json::from_value::<WorkspaceEdit>(result.clone()) {
+                Ok(edit) => Some(ServerEvent::Rename { new_name, edit }),
+                Err(error) => Some(ServerEvent::Message {
+                    text: format!("rename to `{new_name}` was refused: {error}"),
+                }),
+            }
+        }
+        Pending::Formatting => match serde_json::from_value::<Vec<TextEdit>>(result.clone()) {
+            Ok(edits) => Some(ServerEvent::Formatting { edits }),
+            Err(error) => Some(ServerEvent::Message {
+                text: format!("formatting was refused: {error}"),
+            }),
+        },
         Pending::Completion => {
             // Either a CompletionList or a bare array.
             let items = result

@@ -14,6 +14,12 @@ pub enum PromptKind {
     Search { forward: bool },
     /// `:`
     Command,
+    /// A rename, pre-filled with the symbol under the cursor.
+    ///
+    /// A prompt rather than a modal dialog, and pre-filled rather than empty, because a rename is
+    /// almost always an edit of the existing name — retyping it from scratch is how you rename
+    /// `value` to `vlaue`.
+    Rename,
 }
 
 impl PromptKind {
@@ -23,6 +29,7 @@ impl PromptKind {
             PromptKind::Search { forward: true } => "/",
             PromptKind::Search { forward: false } => "?",
             PromptKind::Command => ":",
+            PromptKind::Rename => "rename to ",
         }
     }
 }
@@ -60,7 +67,7 @@ impl Prompt {
     pub fn forward(&self) -> bool {
         match self.kind {
             PromptKind::Search { forward } => forward,
-            PromptKind::Command => true,
+            PromptKind::Command | PromptKind::Rename => true,
         }
     }
 
@@ -95,6 +102,12 @@ pub enum Command {
     Grep {
         pattern: String,
     },
+    /// `:format` — ask the language server to reformat the buffer.
+    Format,
+    /// `:rename [name]` — rename the symbol under the cursor. Without a name, opens the prompt.
+    Rename {
+        new_name: Option<String>,
+    },
     SetOption {
         name: String,
         value: bool,
@@ -127,6 +140,10 @@ pub fn parse_command(input: &str) -> Command {
         },
         "grep" | "search" => Command::Grep {
             pattern: rest.to_string(),
+        },
+        "fmt" | "format" => Command::Format,
+        "rename" => Command::Rename {
+            new_name: (!rest.is_empty()).then(|| rest.to_string()),
         },
         "set" => {
             // `:set wrap` / `:set nowrap`, the Vim spelling.

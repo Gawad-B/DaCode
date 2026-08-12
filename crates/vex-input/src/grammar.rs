@@ -639,6 +639,11 @@ impl Grammar {
                 self.resolve_motion(Motion::LineEnd, extend)
             }
             'd' => self.emit(Action::GotoDefinition),
+            // `gr`, as Neovim 0.11 binds it. `gq` would be the Vim spelling for formatting, but that
+            // is reflow-a-paragraph in Vim and this is reformat-the-file; a different key avoids
+            // teaching the wrong reflex.
+            'r' => self.emit(Action::Rename),
+            'f' => self.emit(Action::Format),
             't' => self.emit(Action::ToggleTheme),
             'a' => self.emit(Action::SelectAll),
             'A' => self.emit(Action::AddCaretAbove),

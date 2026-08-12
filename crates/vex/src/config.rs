@@ -102,6 +102,8 @@ pub struct Settings {
     pub theme: Theme,
     pub tab_width: usize,
     pub soft_wrap: bool,
+    /// Reformat through the language server after every save.
+    pub format_on_save: bool,
     /// Which theme file was loaded, for reporting.
     pub theme_source: Option<String>,
     /// User key bindings from `init.lua`.
@@ -119,6 +121,9 @@ impl Default for Settings {
             theme: Theme::dark(),
             tab_width: 4,
             soft_wrap: true,
+            // Off by default: a formatter reflowing a file you did not ask it to is worse than no
+            // formatter, and it is the kind of default that loses trust the first time it fires.
+            format_on_save: false,
             theme_source: None,
             keymap: Keymap::new(),
             problems: Vec::new(),
@@ -169,6 +174,9 @@ pub fn load_from(dir: &Path) -> Settings {
         if let Some(wrap) = config.bool("editor.soft_wrap") {
             settings.soft_wrap = wrap;
         }
+        if let Some(format) = config.bool("editor.format_on_save") {
+            settings.format_on_save = format;
+        }
 
         // A named theme is looked up as a file; `appearance` alone flips the built-in theme.
         if let Some(name) = config.string("theme.name") {
@@ -208,6 +216,9 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     }
     if let Some(wrap) = config.soft_wrap {
         settings.soft_wrap = wrap;
+    }
+    if let Some(format) = config.format_on_save {
+        settings.format_on_save = format;
     }
 
     // A named theme replaces the whole theme; `appearance` alone flips the built-in one. Either way

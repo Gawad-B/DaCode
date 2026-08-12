@@ -25,6 +25,8 @@ pub struct EditorState {
     pub document: Document,
     /// Bracket pairing and indentation rules for the active buffer's language.
     pub pairs: vex_buffer::PairConfig,
+    /// Reformat through the language server after each save.
+    pub format_on_save: bool,
     pub display: DisplayMap,
     pub scroll: ScrollAnchor,
     pub path: Vec<String>,

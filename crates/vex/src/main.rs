@@ -85,6 +85,8 @@ fn main() -> Result<()> {
         lsp: None,
         sent_version: None,
         recovery: Recovery::new(),
+        edit_version: None,
+        save_after_format: false,
         wakes: 0,
         index: FileIndex::new(root.clone()),
         walk: Some(FileWalk::start(root.clone())),
@@ -142,6 +144,7 @@ fn new_state(
         typography: settings.typography,
         document: Document::from_text(text),
         pairs: pair_config(file_path.as_deref(), settings.tab_width),
+        format_on_save: settings.format_on_save,
         display,
         scroll: ScrollAnchor::default(),
         path,
@@ -544,6 +547,16 @@ struct App {
     lsp: Option<vex_lsp::LspClient>,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
+    /// Set when a save asked for formatting: the reply's edits are applied and the file written
+    /// again. The first write already happened — a save must land on disk when asked, not when a
+    /// language server gets around to answering.
+    save_after_format: bool,
+    /// The version an outstanding edit request was computed against.
+    ///
+    /// Rename and formatting replies carry positions into a specific version of the document. If the
+    /// user typed while the server was thinking, applying them would corrupt the file, so the reply
+    /// is refused — see `edits::apply_to_document`.
+    edit_version: Option<vex_text::Version>,
     /// Persists dirty buffers so a crash loses seconds, not work.
     recovery: Recovery,
     /// Counts event-loop wake-ups, for tracing only.
@@ -1031,10 +1044,17 @@ impl App {
                 if let Some(path) = self.state.file_path.clone() {
                     let path = std::path::PathBuf::from(path);
                     let position = vex_lsp::to_lsp(self.state.document.text(), self.state.cursor());
-                    let sent = match request {
+                    let sent = match &request {
                         Action::Hover => client.hover(&path, position),
                         Action::GotoDefinition => client.definition(&path, position),
                         Action::RequestCompletion => client.completion(&path, position),
+                        Action::Format => {
+                            // The version the reply will be checked against: edits computed for a
+                            // document the user has since typed into are refused, not merged.
+                            self.edit_version = Some(self.state.document.version());
+                            client.formatting(&path, self.state.display.tab_width)
+                        }
+                        Action::Rename => Ok(0),
                         _ => Ok(0),
                     };
                     if let Err(error) = sent {
@@ -1116,6 +1136,49 @@ impl App {
                 }
                 vex_lsp::ServerEvent::Definition { path, position } => {
                     self.jump_to(path, position);
+                }
+                vex_lsp::ServerEvent::Rename { new_name, edit } => {
+                    self.apply_server_edit(
+                        &format!("renamed to `{new_name}`"),
+                        |state, version| {
+                            let path = state
+                                .file_path
+                                .clone()
+                                .map(std::path::PathBuf::from);
+                            vex::edits::apply_workspace_edit(
+                                &mut state.document,
+                                path.as_deref(),
+                                &edit,
+                                version,
+                            )
+                        },
+                    );
+                }
+                vex_lsp::ServerEvent::Formatting { edits } => {
+                    self.apply_server_edit("formatted", |state, version| {
+                        vex::edits::apply_to_document(&mut state.document, &edits, version).map(
+                            |count| vex::edits::Applied {
+                                in_buffer: count,
+                                files: Vec::new(),
+                            },
+                        )
+                    });
+                }
+                vex_lsp::ServerEvent::RequestFailed { what, reason, retry } => {
+                    // On screen, not just on stderr: this is something the user asked for and did not
+                    // get. Retryable failures say so — a language server that is still indexing will
+                    // answer the same question happily a second later, and "try again" is the whole
+                    // fix. Not retried automatically: a request that fires itself again without being
+                    // asked is how an editor ends up hammering a busy server.
+                    let message = if retry {
+                        format!("{what}: the server is busy — try again")
+                    } else {
+                        format!("{what} failed: {reason}")
+                    };
+                    eprintln!("vex: {message}");
+                    self.state.hover = Some(message);
+                    self.edit_version = None;
+                    self.save_after_format = false;
                 }
                 vex_lsp::ServerEvent::Message { text } => eprintln!("vex: {text}"),
                 vex_lsp::ServerEvent::Stopped => {
@@ -1401,6 +1464,14 @@ impl App {
                         self.state.search_matches = prompt.matches;
                     }
                     PromptKind::Command => return self.run_command(&prompt.input),
+                    PromptKind::Rename => {
+                        let name = prompt.input.trim().to_string();
+                        if name.is_empty() {
+                            self.warn("rename cancelled: no name given");
+                        } else {
+                            self.request_rename(&name);
+                        }
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -1495,6 +1566,15 @@ impl App {
                     ));
                 }
             }
+            Command::Format => self.state.pending_request = Some(Action::Format),
+            Command::Rename { new_name } => match new_name {
+                Some(name) => self.request_rename(&name),
+                // Without a name, open the prompt — pre-filled, exactly as `gr` does. Routed through
+                // the executor so there is one definition of what a rename prompt looks like.
+                None => {
+                    execute(&mut self.state, &mut self.registers, &Action::Rename, 1);
+                }
+            },
             Command::SetOption { name, value } => match name.as_str() {
                 "wrap" => {
                     self.state.display.mode = if value {
@@ -1508,6 +1588,73 @@ impl App {
             Command::Unknown(name) => self.warn(&format!("not a command: {name}")),
         }
         false
+    }
+
+    /// Sends a rename request for the symbol under the cursor.
+    fn request_rename(&mut self, new_name: &str) {
+        let Some(path) = self.state.file_path.clone() else {
+            self.warn("rename needs a saved file");
+            return;
+        };
+        let Some(client) = &self.lsp else {
+            self.warn("rename needs a language server");
+            return;
+        };
+        if client.state() != vex_lsp::State::Ready {
+            self.warn(&format!("{} is still starting", self.state.server_status));
+            return;
+        }
+
+        let position = vex_lsp::to_lsp(self.state.document.text(), self.state.cursor());
+        self.edit_version = Some(self.state.document.version());
+        if let Err(error) = client.rename(std::path::Path::new(&path), position, new_name) {
+            self.warn(&format!("rename failed: {error:#}"));
+        }
+    }
+
+    /// Applies edits a server sent, and says what happened either way.
+    ///
+    /// The version check lives here rather than in each caller so that no reply path can forget it.
+    fn apply_server_edit(
+        &mut self,
+        what: &str,
+        apply: impl FnOnce(
+            &mut EditorState,
+            Option<vex_text::Version>,
+        ) -> Result<vex::edits::Applied, vex::edits::EditError>,
+    ) {
+        let version = self.edit_version.take();
+        match apply(&mut self.state, version) {
+            Ok(applied) if applied.total() == 0 => {
+                // Already formatted: the file on disk is correct, so there is nothing to write.
+                self.save_after_format = false;
+                self.state.hover = Some(format!("{what}: nothing to change"));
+            }
+            Ok(applied) => {
+                // Files changed outside the buffer are already on disk; the syntax tree and the
+                // server's copy of this buffer both need the new text.
+                self.state.document.mark_dirty();
+                self.sync_syntax();
+                self.state.hover = Some(applied.summary(what));
+                if std::mem::take(&mut self.save_after_format) {
+                    self.save_active();
+                }
+                if !applied.files.is_empty() {
+                    let names: Vec<String> = applied
+                        .files
+                        .iter()
+                        .map(|(path, count)| format!("{} ({count})", path.display()))
+                        .collect();
+                    eprintln!("vex: {what} — also wrote {}", names.join(", "));
+                }
+                self.reveal_cursor();
+            }
+            Err(error) => {
+                self.save_after_format = false;
+                eprintln!("vex: {what} failed: {error}");
+                self.state.hover = Some(format!("{what} failed: {error}"));
+            }
+        }
     }
 
     /// Shows a message on the prompt line rather than silently doing nothing.
@@ -1572,6 +1719,19 @@ impl App {
                 // would be offered again on the next open.
                 self.recovery.discard(std::path::Path::new(&path));
                 eprintln!("vex: wrote {path}");
+
+                // Formatting is a round trip, so it cannot come *before* the write without either
+                // blocking the UI thread or risking a save that never happens. The file is saved as
+                // asked, then reformatted and saved again when the reply arrives.
+                if self.state.format_on_save
+                    && self
+                        .lsp
+                        .as_ref()
+                        .is_some_and(|client| client.state() == vex_lsp::State::Ready)
+                {
+                    self.save_after_format = true;
+                    self.state.pending_request = Some(Action::Format);
+                }
             }
             Err(error) => self.warn(&format!("could not write {path}: {error}")),
         }

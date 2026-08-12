@@ -185,7 +185,7 @@ Each milestone has a demo and an acceptance bar. Do not advance until the bar is
 what prevents a half-working engine with ten half-working features on top.
 
 > **Status.** M0–M6 done (M5 partially — see below), plus the VSCode importer, a measured
-> optimization pass, Lua configuration, and much of M7. 351 tests, zero clippy warnings.
+> optimization pass, Lua configuration, the logo, and much of M7. 371 tests, zero clippy warnings.
 > Crates:
 > `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
 > `vex-theme` (OKLCH color, mode accents, type roles, theme tokens — 15 tests),
@@ -196,9 +196,9 @@ what prevents a half-working engine with ten half-working features on top.
 > `vex-render` (wgpu quad pipeline + glyphon text, paint layers, frame timer, offscreen capture — 10 tests),
 > `vex-import` (VSCode settings/keys/themes/snippets, `.vsix` reading — 19 tests),
 > `vex-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search — 20 tests),
-> `vex-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics — 16 tests),
-> `vex-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 13 tests),
-> `vex` (window, chrome, action executor, config, palette, `vex import` — 88 tests).
+> `vex-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics, rename, formatting — 17 tests),
+> `vex-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 14 tests),
+> `vex` (window, chrome, action executor, config, palette, edit application, `vex import` — 106 tests).
 >
 > **Everything is an `Action`.** Keys resolve to Actions, the executor consumes them, dot-repeat
 > replays them, and the end-to-end tests drive them — so `3dw` and `ci"` are verified as behavior,
@@ -339,6 +339,28 @@ rename, code actions, format-on-save.
 where the async architecture is truly tested — expect this milestone to expose latent design
 mistakes, and budget for that rather than being surprised by it.
 
+> **M6: rename and formatting.** Both go through one place — `crates/vex/src/edits.rs` — because the
+> hard parts are shared and worth getting right once. A rename touching nine sites is **one** undo
+> press, which falls out of the document's single mutation funnel: every edit enters as one
+> `Transaction` tagged `Discrete`. A reply computed against a version the buffer has moved past is
+> **refused whole** rather than merged, and the open buffer is checked *before* any other file is
+> written, so a stale reply cannot half-rename a source tree. Edits that overlap are rejected as a set
+> — applying the valid half would leave a file mangled in a way no undo entry describes. Files that
+> are not open are written atomically and are **not** undoable, which is a real limitation, so the
+> editor reports how many files it touched rather than implying otherwise.
+>
+> Two findings from testing against a live rust-analyzer, which is the only honest test of this:
+> a rename reply that would not parse was being dropped with `.ok()?`, making a failed rename
+> indistinguishable from a dead key; and the first request reliably came back `ContentModified`
+> because the server was still indexing. The protocol marks that error retryable, so it is now its own
+> event with a `retry` flag and the editor says "the server is busy — try again" instead of nothing.
+> It does not retry by itself: a request that re-fires unasked is how an editor hammers a busy server.
+>
+> Format-on-save writes first and reformats second. The alternative — hold the save until the
+> formatter answers — either blocks the UI thread or risks a save that never lands, and a save must
+> land on disk when asked. Off by default, because a formatter reflowing a file you did not ask it to
+> is worse than no formatter.
+>
 > **M7 so far.**
 >
 > - **`/` search and `:` commands.** A Vim-style prompt line that takes over the statusline, with

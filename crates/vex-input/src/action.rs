@@ -222,6 +222,10 @@ pub enum Action {
     DismissInfo,
     /// `ctrl-space` — ask the language server what could go here.
     RequestCompletion,
+    /// `gr` — rename the symbol under the cursor, everywhere.
+    Rename,
+    /// Reformat the buffer through the language server.
+    Format,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +341,8 @@ impl Action {
             "previous_diagnostic" => Action::NextDiagnostic { forward: false },
             "dismiss_info" => Action::DismissInfo,
             "completion" => Action::RequestCompletion,
+            "rename" => Action::Rename,
+            "format" => Action::Format,
 
             _ => return None,
         })

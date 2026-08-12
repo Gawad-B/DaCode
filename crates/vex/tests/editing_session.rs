@@ -29,6 +29,7 @@ impl Session {
                 typography: Typography::default(),
                 document: Document::from_str(contents),
                 pairs: vex_buffer::PairConfig::default(),
+                format_on_save: false,
                 display: DisplayMap::default(),
                 scroll: ScrollAnchor::default(),
                 path: vec!["test".into()],
@@ -561,4 +562,65 @@ fn the_message_under_the_cursor_is_found() {
         vex::chrome::diagnostic_at_cursor(&s.state).expect("the cursor is on the diagnostic");
     assert_eq!(message, "problem on line 1");
     assert!(is_error);
+}
+
+/// `gr` opens a rename prompt pre-filled with the symbol under the cursor.
+///
+/// The prompt content is the part worth pinning: an empty rename prompt means retyping the name,
+/// which is how `value` becomes `vlaue`.
+#[test]
+fn rename_prompts_with_the_symbol_under_the_cursor() {
+    let mut session = Session::new("let value = value + 1;\n");
+    session.keys("w"); // onto `value`
+
+    session.keys("gr");
+
+    let prompt = session.state.prompt.as_ref().expect("a prompt opened");
+    assert_eq!(prompt.kind, vex::prompt::PromptKind::Rename);
+    assert_eq!(prompt.input, "value", "pre-filled with the symbol");
+    assert_eq!(prompt.display(), "rename to value");
+}
+
+/// Server edits arrive as one undoable change and move the selection with the text.
+#[test]
+fn applied_server_edits_are_a_single_undo_step_in_a_session() {
+    use vex_lsp::lsp_types::{Position, Range, TextEdit};
+
+    let mut session = Session::new("let value = value + value;\n");
+    session.keys("w");
+    let version = session.state.document.version();
+
+    let rename = |from: u32, to: u32| TextEdit {
+        range: Range {
+            start: Position {
+                line: 0,
+                character: from,
+            },
+            end: Position {
+                line: 0,
+                character: to,
+            },
+        },
+        new_text: "total".into(),
+    };
+
+    let count = vex::edits::apply_to_document(
+        &mut session.state.document,
+        &[rename(4, 9), rename(12, 17), rename(20, 25)],
+        Some(version),
+    )
+    .expect("applies");
+
+    assert_eq!(count, 3);
+    assert_eq!(
+        session.state.document.text().to_string(),
+        "let total = total + total;\n"
+    );
+
+    // Undo is one press, and typing afterwards does not merge into the same group.
+    session.keys("u");
+    assert_eq!(
+        session.state.document.text().to_string(),
+        "let value = value + value;\n"
+    );
 }

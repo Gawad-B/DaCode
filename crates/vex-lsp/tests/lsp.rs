@@ -325,3 +325,118 @@ fn a_real_server_completes_the_handshake_and_reports_diagnostics() {
         eprintln!("note: handshake succeeded but no diagnostics arrived in time");
     }
 }
+
+/// A real rename, end to end: ask rust-analyzer to rename a binding and check the edits it sends.
+///
+/// The value of this test over a mocked one is that the *shape* of a workspace edit is the part most
+/// likely to be wrong — `changes` versus `documentChanges`, annotated edits, URI spelling — and only
+/// a real server exercises the shape it actually chooses to send.
+#[test]
+fn a_real_server_renames_a_symbol() {
+    if !vex_lsp::is_installed("rust-analyzer") {
+        eprintln!("skipping: rust-analyzer is not installed");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("vex-lsp-rename-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let source_path = root.join("src/main.rs");
+    // `value` used three times, so a correct rename produces three edits.
+    let source = "fn main() {\n    let value = 1;\n    let doubled = value + value;\n    println!(\"{doubled}\");\n}\n";
+    std::fs::write(&source_path, source).unwrap();
+
+    let mut client =
+        vex_lsp::LspClient::start("rust-analyzer", &[], &root).expect("rust-analyzer starts");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut asked = false;
+    let mut renamed: Option<(String, vex_lsp::lsp_types::WorkspaceEdit)> = None;
+
+    // `value`, on line 1 (0-based), character 8.
+    fn ask(client: &vex_lsp::LspClient, path: &std::path::Path) {
+        client
+            .rename(
+                path,
+                vex_lsp::lsp_types::Position {
+                    line: 1,
+                    character: 8,
+                },
+                "total",
+            )
+            .expect("the rename request is sent");
+    }
+
+    while std::time::Instant::now() < deadline && renamed.is_none() {
+        for event in client.poll() {
+            match event {
+                vex_lsp::ServerEvent::Ready { .. } => {
+                    client
+                        .did_open(&source_path, "rust", 1, source)
+                        .expect("didOpen is accepted");
+                }
+                // Diagnostics mean the crate is analyzed enough to ask. Before that a rename comes
+                // back as `ContentModified`, which is the server saying "not yet", not a failure.
+                vex_lsp::ServerEvent::Diagnostics { path, .. } if !asked => {
+                    if path.ends_with("src/main.rs") {
+                        asked = true;
+                        ask(&client, &source_path);
+                    }
+                }
+                vex_lsp::ServerEvent::Rename { new_name, edit } => {
+                    renamed = Some((new_name, edit));
+                }
+                // The protocol defines these as retryable, so retrying is what a correct client does.
+                vex_lsp::ServerEvent::RequestFailed { reason, retry, .. } if retry => {
+                    eprintln!("server: not ready ({reason}) — asking again");
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    ask(&client, &source_path);
+                }
+                vex_lsp::ServerEvent::RequestFailed { what, reason, .. } => {
+                    panic!("{what} failed and is not retryable: {reason}")
+                }
+                _ => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    client.stop();
+    std::fs::remove_dir_all(&root).ok();
+
+    let Some((new_name, edit)) = renamed else {
+        // Analysis of even a one-file crate can exceed the budget on a loaded machine. Reported
+        // rather than failed, for the same reason as the diagnostics above.
+        eprintln!("note: rust-analyzer did not answer the rename in time");
+        return;
+    };
+
+    assert_eq!(new_name, "total", "the reply carries what was asked for");
+
+    let edits: Vec<_> = match (&edit.changes, &edit.document_changes) {
+        (Some(changes), _) => changes.values().flatten().cloned().collect(),
+        (None, Some(vex_lsp::lsp_types::DocumentChanges::Edits(edits))) => edits
+            .iter()
+            .flat_map(|e| e.edits.iter())
+            .map(|e| match e {
+                vex_lsp::lsp_types::OneOf::Left(edit) => edit.clone(),
+                vex_lsp::lsp_types::OneOf::Right(annotated) => annotated.text_edit.clone(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    assert_eq!(
+        edits.len(),
+        3,
+        "`value` appears three times, so three places change: {edits:?}"
+    );
+    assert!(
+        edits.iter().all(|edit| edit.new_text == "total"),
+        "every edit inserts the new name: {edits:?}"
+    );
+}
