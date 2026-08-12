@@ -288,8 +288,8 @@ highlight queries; theme file; tree-sitter-driven indent.
 > now wins, so the palette indexes the project rather than one crate; and the file walk was
 > collected *after* key handling, so the first `ctrl-p` would have opened onto an empty list.
 >
-> **Still to do in M5:** splits and panes, a file tree, and a UI for project search — the engine and
-> its tests exist, but nothing surfaces the results yet.
+> **Still to do in M5:** splits and panes, a file tree, file watching, and project-wide *replace* —
+> search has an engine and a results panel, but nothing edits across the matches yet.
 
 ### M5 — Project layer (2 weeks)
 Multiple buffers, splits/panes, file tree, fuzzy file palette, command palette, project-wide
@@ -329,8 +329,9 @@ search and replace, file watching.
 > `K` displaced the old add-caret-above binding, which moved to `gA`: `K` for hover is what every
 > Neovim LSP configuration binds, and matching that is the point of "Neovim's keybindings".
 >
-> **Still to do in M6:** completion and rename are plumbed but unconsumed; no code actions; no
-> format-on-save; no diagnostics list in the sidebar; one server at a time.
+> **Still to do in M6:** no code actions, no find-references, no diagnostics list in the sidebar, no
+> inlay hints, and one server at a time — a project mixing Rust and TypeScript gets a language server
+> for whichever file was opened first.
 
 ### M6 — LSP (3–4 weeks)
 Client + lifecycle, diagnostics, hover, goto-definition/references, completion,
