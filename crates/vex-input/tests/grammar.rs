@@ -2,13 +2,24 @@
 
 use proptest::prelude::*;
 use vex_input::{
-    Action, Grammar, InsertPosition, Key, Motion, Operator, Resolution, Target, TextObject,
+    Action, Grammar, InsertPosition, Key, Keymap, Motion, Operator, Resolution, Target, TextObject,
 };
 use vex_theme::Mode;
 
 /// Feeds a key sequence and returns every Action it produced.
 fn actions(mode: Mode, keys: &str) -> Vec<Action> {
     let mut grammar = Grammar::new();
+    Key::parse_sequence(keys)
+        .into_iter()
+        .filter_map(|key| match grammar.feed(mode, key) {
+            Resolution::Action(action) => Some(action),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Feeds a sequence into an existing grammar, so a test can check that state carried over.
+fn feed(grammar: &mut Grammar, mode: Mode, keys: &str) -> Vec<Action> {
     Key::parse_sequence(keys)
         .into_iter()
         .filter_map(|key| match grammar.feed(mode, key) {
@@ -588,4 +599,105 @@ fn lsp_requests_are_not_repeatable_changes() {
     assert!(!Action::Hover.is_change());
     assert!(!Action::GotoDefinition.is_change());
     assert!(!Action::NextDiagnostic { forward: true }.is_change());
+}
+
+#[test]
+fn a_user_binding_takes_precedence_over_the_builtin_key() {
+    let mut grammar = Grammar::new();
+    let mut keymap = Keymap::new();
+    keymap.bind("normal", "<leader>w", "save").unwrap();
+    keymap.bind("normal", "U", "redo").unwrap();
+    grammar.set_keymap(keymap);
+
+    // A single-key binding fires immediately.
+    assert_eq!(feed(&mut grammar, Mode::Normal, "U"), vec![Action::Redo]);
+
+    // A sequence shows its progress in the pending display, then resolves.
+    let mut grammar = grammar.clone();
+    assert!(matches!(
+        grammar.feed(Mode::Normal, Key::char(' ')),
+        Resolution::Pending(_)
+    ));
+    assert_eq!(grammar.pending(), "<space>");
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::char('w')),
+        Resolution::Action(Action::Save)
+    );
+    assert!(grammar.is_idle(), "the binding resolved and reset");
+}
+
+#[test]
+fn a_failed_binding_prefix_replays_through_the_builtins() {
+    // `gx` is bound; `gd` is not. Typing `gd` must still reach the built-in goto-definition
+    // rather than being swallowed by the half-matched binding.
+    let mut grammar = Grammar::new();
+    let mut keymap = Keymap::new();
+    keymap.bind("normal", "gx", "search_project").unwrap();
+    grammar.set_keymap(keymap);
+
+    assert!(matches!(
+        grammar.feed(Mode::Normal, Key::char('g')),
+        Resolution::Pending(_)
+    ));
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::char('d')),
+        Resolution::Action(Action::GotoDefinition),
+        "the buffered `g` was replayed, not lost"
+    );
+}
+
+#[test]
+fn a_binding_cannot_fire_while_an_operator_is_pending() {
+    // The invariant that makes user bindings safe: `d` then the leader key must be the grammar's
+    // business, not the keymap's, or the operator would be left dangling.
+    let mut grammar = Grammar::new();
+    let mut keymap = Keymap::new();
+    keymap.bind("normal", "<space>w", "save").unwrap();
+    grammar.set_keymap(keymap);
+
+    assert!(matches!(
+        grammar.feed(Mode::Normal, Key::char('d')),
+        Resolution::Pending(_)
+    ));
+    // Not Save: the keymap is out of the picture until the operator resolves.
+    assert_ne!(
+        grammar.feed(Mode::Normal, Key::char(' ')),
+        Resolution::Action(Action::Save)
+    );
+}
+
+#[test]
+fn insert_mode_bindings_apply_only_to_keys_that_are_not_text() {
+    let mut grammar = Grammar::new();
+    let mut keymap = Keymap::new();
+    keymap.bind("insert", "<c-s>", "save").unwrap();
+    // A letter binding in insert mode is accepted by the keymap but must never shadow typing.
+    keymap.bind("insert", "x", "quit").unwrap();
+    grammar.set_keymap(keymap);
+
+    assert_eq!(
+        grammar.feed(Mode::Insert, Key::ctrl('s')),
+        Resolution::Action(Action::Save)
+    );
+    assert_eq!(
+        grammar.feed(Mode::Insert, Key::char('x')),
+        Resolution::Action(Action::InsertText("x".into())),
+        "typing a letter inserts it, whatever the config says"
+    );
+}
+
+#[test]
+fn resolving_a_command_does_not_discard_the_keymap() {
+    // `clear` used to reset the whole grammar, which unbound the user's config after one keystroke.
+    let mut grammar = Grammar::new();
+    let mut keymap = Keymap::new();
+    keymap.bind("normal", "U", "redo").unwrap();
+    grammar.set_keymap(keymap);
+
+    assert_eq!(feed(&mut grammar, Mode::Normal, "U"), vec![Action::Redo]);
+    assert_eq!(
+        feed(&mut grammar, Mode::Normal, "U"),
+        vec![Action::Redo],
+        "still bound after the first command resolved"
+    );
 }

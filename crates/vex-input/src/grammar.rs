@@ -16,6 +16,7 @@
 
 use crate::action::{Action, InsertPosition, Motion, Operator, Target, TextObject};
 use crate::key::{Key, KeyCode};
+use crate::keymap::{Keymap, Match};
 use vex_theme::Mode;
 
 /// What the machine did with a key.
@@ -54,6 +55,10 @@ enum Stage {
 
 #[derive(Debug, Clone)]
 pub struct Grammar {
+    /// User bindings, consulted before the built-ins while idle. Empty unless config sets any.
+    keymap: Keymap,
+    /// Keys collected while a user binding is still only a prefix.
+    user_keys: Vec<Key>,
     stage: Stage,
     count: Option<usize>,
     /// A count typed *after* the operator — `d3w`. Multiplies with the first.
@@ -73,6 +78,8 @@ impl Default for Grammar {
 impl Grammar {
     pub fn new() -> Self {
         Self {
+            keymap: Keymap::new(),
+            user_keys: Vec::new(),
             stage: Stage::Start,
             count: None,
             operator_count: None,
@@ -80,6 +87,16 @@ impl Grammar {
             operator: None,
             display: String::new(),
         }
+    }
+
+    /// Installs user bindings. Replaces any previously set, so a config reload cannot leave a
+    /// binding behind that the file no longer contains.
+    pub fn set_keymap(&mut self, keymap: Keymap) {
+        self.keymap = keymap;
+    }
+
+    pub fn keymap(&self) -> &Keymap {
+        &self.keymap
     }
 
     /// What the statusline shows: the partially-typed command.
@@ -92,7 +109,15 @@ impl Grammar {
     }
 
     pub fn clear(&mut self) {
-        *self = Self::new();
+        // Not `*self = Self::new()`: that would discard the user's keymap on every resolved
+        // command, silently unbinding their config after the first keystroke.
+        self.stage = Stage::Start;
+        self.count = None;
+        self.operator_count = None;
+        self.register = None;
+        self.operator = None;
+        self.display.clear();
+        self.user_keys.clear();
     }
 
     /// The effective count: `2d3w` deletes 6 words, as in Vim.
@@ -132,6 +157,16 @@ impl Grammar {
 
     /// Insert and replace mode: text goes in, with no grammar to parse.
     fn feed_insert(&mut self, mode: Mode, key: Key) -> Resolution {
+        // Bindings apply here too, but only to keys that could not be text: a multi-key binding on
+        // a letter would have to hold that letter back to see what follows, which means typing
+        // stutters. Modified and named keys have no such cost.
+        let bindable = key.ctrl || key.alt || !matches!(key.code, KeyCode::Char(_));
+        if bindable && !self.keymap.is_empty() {
+            if let Match::Exact(action) = self.keymap.lookup(mode, &[key]) {
+                return Resolution::Action(action);
+            }
+        }
+
         if let Some(action) = self.editing_key(key) {
             return Resolution::Action(action);
         }
@@ -180,6 +215,50 @@ impl Grammar {
     }
 
     fn feed_normal(&mut self, mode: Mode, key: Key) -> Resolution {
+        if let Some(resolution) = self.feed_user_binding(mode, key) {
+            return resolution;
+        }
+        self.feed_builtin(mode, key)
+    }
+
+    /// Tries the user's bindings, and only while the grammar is idle — a binding that fired with an
+    /// operator or count pending could leave the grammar mid-command.
+    ///
+    /// Returns `None` to mean "not mine, use the built-ins".
+    fn feed_user_binding(&mut self, mode: Mode, key: Key) -> Option<Resolution> {
+        if self.keymap.is_empty() || (self.user_keys.is_empty() && !self.is_idle()) {
+            return None;
+        }
+
+        self.user_keys.push(key);
+        match self.keymap.lookup(mode, &self.user_keys) {
+            Match::Exact(action) => Some(self.emit(action)),
+            Match::Prefix => {
+                self.push_display(&key);
+                Some(Resolution::Pending(self.display.clone()))
+            }
+            // The sequence died. Replay it through the built-ins, so a partial match of a user
+            // binding does not swallow keys that mean something on their own.
+            Match::None => {
+                let replay = std::mem::take(&mut self.user_keys);
+                self.display.clear();
+
+                let mut last = Resolution::Unhandled;
+                for key in replay {
+                    last = self.feed_builtin(mode, key);
+                    // A resolved action mid-replay is returned as-is; anything after it belongs to
+                    // the next command and would need queueing the caller cannot express. Bindings
+                    // whose prefix is itself a complete command are the user's own ambiguity.
+                    if matches!(last, Resolution::Action(_)) {
+                        break;
+                    }
+                }
+                Some(last)
+            }
+        }
+    }
+
+    fn feed_builtin(&mut self, mode: Mode, key: Key) -> Resolution {
         let extend = mode == Mode::Visual;
 
         // Arrow keys and Ctrl bindings bypass the grammar, but must respect visual mode.

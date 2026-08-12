@@ -123,6 +123,29 @@ impl Oklch {
         }
     }
 
+    /// Parses either notation a config file may use: `oklch(L C H)` or `#rrggbb`.
+    ///
+    /// Both, because they serve different people. `oklch()` is the form the importer writes and the
+    /// form a theme stays *adjustable* in — nudging lightness without shifting hue is a subtraction
+    /// in OKLCH and guesswork in hex. Hex is what everyone already has pasted in their notes.
+    pub fn parse(input: &str) -> Option<Self> {
+        let input = input.trim();
+        if let Some(inner) = input
+            .strip_prefix("oklch(")
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            let mut parts = inner.split_whitespace();
+            let l = parts.next()?.parse().ok()?;
+            let c = parts.next()?.parse().ok()?;
+            let h = parts.next()?.parse().ok()?;
+            if parts.next().is_some() {
+                return None;
+            }
+            return Some(Self::new(l, c, h));
+        }
+        Self::from_hex(input)
+    }
+
     /// Parses `#rrggbb`, `#rrggbbaa` or `#rgb`, as themes are written.
     pub fn from_hex(hex: &str) -> Option<Self> {
         let hex = hex.trim().trim_start_matches('#');

@@ -241,6 +241,107 @@ pub enum InsertPosition {
 }
 
 impl Action {
+    /// Resolves a configuration name to an action.
+    ///
+    /// This is the vocabulary config can reach: the actions that make sense as the whole meaning of
+    /// a key. Operators and text objects are deliberately absent — `d` is not an action, it is half
+    /// of one, and a binding that produced a dangling operator would leave the grammar mid-command.
+    /// Motions are reachable through `move_*`, which collapses to a caret the way a plain motion
+    /// does.
+    ///
+    /// Returns `None` for an unknown name rather than a default, so a typo in `init.lua` can be
+    /// reported to the user instead of silently binding a key to nothing.
+    pub fn from_name(name: &str) -> Option<Action> {
+        use InsertPosition as At;
+        use Motion as M;
+
+        let motion = |motion: Motion| Action::Move { motion, count: 1 };
+
+        Some(match name {
+            // Motions.
+            "move_left" => motion(M::Left),
+            "move_right" => motion(M::Right),
+            "move_up" => motion(M::Up),
+            "move_down" => motion(M::Down),
+            "move_word_forward" => motion(M::WordForward),
+            "move_word_backward" => motion(M::WordBackward),
+            "move_word_end" => motion(M::WordEnd),
+            "move_line_start" => motion(M::LineStart),
+            "move_line_end" => motion(M::LineEnd),
+            "move_first_non_blank" => motion(M::FirstNonBlank),
+            "move_file_start" => motion(M::FileStart),
+            "move_file_end" => motion(M::FileEnd),
+            "move_matching_bracket" => motion(M::MatchingBracket),
+            "move_paragraph_forward" => motion(M::ParagraphForward),
+            "move_paragraph_backward" => motion(M::ParagraphBackward),
+
+            // Modes.
+            "normal_mode" => Action::EnterMode(Mode::Normal),
+            "insert_mode" => Action::EnterMode(Mode::Insert),
+            "visual_mode" => Action::EnterMode(Mode::Visual),
+            "replace_mode" => Action::EnterMode(Mode::Replace),
+            "insert_before" => Action::InsertAt(At::BeforeCursor),
+            "insert_after" => Action::InsertAt(At::AfterCursor),
+            "insert_line_start" => Action::InsertAt(At::LineStart),
+            "insert_line_end" => Action::InsertAt(At::LineEnd),
+            "open_below" => Action::InsertAt(At::LineBelow),
+            "open_above" => Action::InsertAt(At::LineAbove),
+
+            // Editing.
+            "newline" => Action::Newline,
+            "delete_backward" => Action::DeleteBackward,
+            "delete_forward" => Action::DeleteForward,
+            "paste" => Action::Paste {
+                register: None,
+                before: false,
+                count: 1,
+            },
+            "paste_before" => Action::Paste {
+                register: None,
+                before: true,
+                count: 1,
+            },
+            "undo" => Action::Undo,
+            "redo" => Action::Redo,
+            "repeat_change" => Action::RepeatChange,
+
+            // Selections.
+            "add_caret_above" => Action::AddCaretAbove,
+            "add_caret_below" => Action::AddCaretBelow,
+            "split_selection_into_lines" => Action::SplitSelectionIntoLines,
+            "keep_primary_selection" => Action::KeepPrimarySelection,
+            "collapse_selections" => Action::CollapseSelections,
+            "select_line" => Action::SelectLine { count: 1 },
+            "select_all" => Action::SelectAll,
+
+            // Appearance.
+            "toggle_soft_wrap" => Action::ToggleSoftWrap,
+            "toggle_theme" => Action::ToggleTheme,
+            "increase_font_size" => Action::IncreaseFontSize,
+            "decrease_font_size" => Action::DecreaseFontSize,
+
+            // Files and search.
+            "save" => Action::Save,
+            "quit" => Action::Quit,
+            "search" => Action::StartSearch { forward: true },
+            "search_backward" => Action::StartSearch { forward: false },
+            "search_next" => Action::RepeatSearch { forward: true },
+            "search_previous" => Action::RepeatSearch { forward: false },
+            "command" => Action::StartCommand,
+            "search_project" => Action::SearchProject,
+
+            // Language server.
+            "hover" => Action::Hover,
+            "goto_definition" => Action::GotoDefinition,
+            "next_diagnostic" => Action::NextDiagnostic { forward: true },
+            "previous_diagnostic" => Action::NextDiagnostic { forward: false },
+            "dismiss_info" => Action::DismissInfo,
+            "completion" => Action::RequestCompletion,
+
+            _ => return None,
+        })
+    }
+
     /// Whether replaying this action is what `.` should do.
     ///
     /// Only *changes* are repeatable: repeating a motion or a mode switch would make `.`

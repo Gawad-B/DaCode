@@ -11,7 +11,7 @@
 | Soft wrap | **In v1**, designed into the display layer at M2 | `DisplayPoint` is wrap-aware from the start; viewport math is row-based, not line-based |
 | Selection model | **Always a set** (Zed/Helix data model); a cursor is a 1-wide selection with one primary | Every operator maps over the set; multi-cursor is never a special case |
 | Command grammar | **Vim grammar** (`dw` — operator then motion) **plus Helix-style extras** where strictly better (structural tree-sitter selection, split-selection, multi-cursor ops) | Operators must resolve a motion into a per-cursor selection; two entry paths into one operator implementation |
-| Config | **Lua from the start** (`mlua`) | The `Action` enum is a public scripting API from day one — naming and stability matter earlier than they otherwise would. Accepted cost: this is a soft plugin system, which partially re-opens the scope deferred in §0. |
+| Config | **Lua from the start** (`mlua`) | **Done** (`crates/vex-lua`). The `Action` enum is a public scripting API from day one — naming and stability matter earlier than they otherwise would. Two things kept the accepted cost in check: the interpreter is *transient* (it runs once at startup, returns a plain value and is dropped, so no Lua ever runs on the UI thread), and bindings resolve to `Action` names rather than Lua callbacks, so a config cannot inject work into the keystroke path. What that forgoes for now is autocommands and user-defined commands; those need a callback budget and get one when they are built. |
 | Languages | Rust, TypeScript/JS/HTML/CSS, Python, C/C++, Dart | tree-sitter grammars + LSP: rust-analyzer, tsserver + vscode-langservers, pyright/ruff, clangd, `dart language-server` |
 | Milestone order | **M5 (project layer) before M6 (LSP)** | Navigation friction blocks daily use before missing completion does |
 | Toolchain | rustup stable (1.97.1), edition 2024 | — |
@@ -101,7 +101,7 @@ never touch UI state; they emit messages the Workspace applies.
 | LSP | `lsp-types` + own client | The protocol plumbing is a weekend; the semantics are the work. |
 | Search | `grep-searcher` + `grep-regex` + `ignore` | The ripgrep crates. Do not write project-wide search by hand. |
 | Fuzzy matching | `nucleo` | Helix's matcher; fast and good ranking for the command/file palette. |
-| Config | `toml` + `serde` | Text-file config, hot-reloaded. No settings UI in v1. |
+| Config | Lua (`mlua`) for the user's own config; a hand-rolled TOML subset for what the VSCode importer writes | Superseded the original `toml` + `serde` choice on both sides. Lua because config *is* code — bindings map keys to the `Action` vocabulary, and the useful ones are generated or conditional. The importer's output stays key/value because it is machine-written and machine-read, and a TOML crate plus derive macros for a hundred lines of that is compile time and binary size an editor premised on staying light should not spend. `init.lua` is read last and wins. |
 | Error handling | `anyhow` at boundaries, `thiserror` in libraries | Conventional. |
 
 **GUI framework, deliberately rejected:** `egui` / `iced` are immediate-mode or
@@ -184,19 +184,20 @@ Each milestone has a demo and an acceptance bar. Do not advance until the bar is
 what prevents a half-working engine with ten half-working features on top.
 
 > **Status.** M0–M6 done (M5 partially — see below), plus the VSCode importer, a measured
-> optimization pass, and much of M7. 306 tests, zero clippy warnings.
+> optimization pass, Lua configuration, and much of M7. 351 tests, zero clippy warnings.
 > Crates:
 > `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
-> `vex-theme` (OKLCH color, mode accents, type roles — 9 tests),
+> `vex-theme` (OKLCH color, mode accents, type roles, theme tokens — 15 tests),
 > `vex-buffer` (document, versioning, undo grouping, multi-cursor editing — 19 tests),
 > `vex-display` (soft wrap, anchored viewport, display-aware motion — 20 tests),
-> `vex-input` (Action vocabulary, modal grammar, motions, text objects — 52 tests),
+> `vex-input` (Action vocabulary, modal grammar, motions, text objects, user keymap — 70 tests),
 > `vex-syntax` (tree-sitter parsing, incremental reparse, version-tagged worker — 18 tests),
-> `vex-render` (wgpu quad pipeline + glyphon text, frame timer, offscreen capture — 9 tests),
+> `vex-render` (wgpu quad pipeline + glyphon text, paint layers, frame timer, offscreen capture — 10 tests),
 > `vex-import` (VSCode settings/keys/themes/snippets, `.vsix` reading — 19 tests),
 > `vex-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search — 20 tests),
 > `vex-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics — 16 tests),
-> `vex` (window, chrome, action executor, config, palette, `vex import` — 45 tests).
+> `vex-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 13 tests),
+> `vex` (window, chrome, action executor, config, palette, `vex import` — 88 tests).
 >
 > **Everything is an `Action`.** Keys resolve to Actions, the executor consumes them, dot-repeat
 > replays them, and the end-to-end tests drive them — so `3dw` and `ci"` are verified as behavior,
@@ -521,6 +522,13 @@ anyway — they remove an allocation that scales with file size — but neither 
 ~4.7 ms (vs ~73 ms cold, so incrementality works; the residual scales with top-level item count).
 That runs on the syntax worker and is version-tagged, so the UI never waits for it. Tree edits
 themselves are ~1.9 µs.
+
+**What Lua costs.** The locked decision to configure in Lua was worth checking rather than assuming,
+since "lightweight" is a requirement: the vendored Lua 5.4 static library is **738KB** before linking
+(the linker keeps far less), and running the shipped example `init.lua` — six bindings, a loop, a
+theme table — makes **no measurable difference to startup**: 0.17s either way over three runs each.
+That is the payoff of the interpreter being *transient*. It runs once, hands back a plain value and
+is dropped before the first frame, so there is no Lua on the UI thread to budget for at all.
 
 A caution learned here: `criterion`'s `iter_batched` includes *dropping* the input in its
 measurement. Dropping a `Highlighter` frees a syntax tree and a compiled query, which made a 1.9 µs

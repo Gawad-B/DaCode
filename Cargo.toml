@@ -18,6 +18,7 @@ vex-syntax = { path = "crates/vex-syntax" }
 vex-import = { path = "crates/vex-import" }
 vex-project = { path = "crates/vex-project" }
 vex-lsp = { path = "crates/vex-lsp" }
+vex-lua = { path = "crates/vex-lua" }
 
 # Rendering. glyphon pins the wgpu and cosmic-text versions, so it is the crate that decides
 # this trio: glyphon 0.12 -> wgpu 30, cosmic-text 0.19.
@@ -60,6 +61,12 @@ nucleo-matcher = "0.3"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
+
+# Config. Lua rather than a data format, because config *is* code here: bindings map keys to the
+# same Action vocabulary the grammar emits, and a keymap is a list of statements, not a table of
+# strings. `vendored` builds Lua 5.4 from source (~250KB) so there is no system dependency;
+# `send` is not enabled — the interpreter runs once at startup, on the main thread, and is dropped.
+mlua = { version = "0.12", features = ["lua54", "vendored"] }
 
 ropey = "1.6"
 unicode-segmentation = "1"

@@ -68,12 +68,16 @@ fn main() -> Result<()> {
     // spin the GPU and the fan for a screen that is not changing.
     event_loop.set_control_flow(ControlFlow::Wait);
 
+    let (state, keymap) = new_state(text, crumbs, file_path, Mode::Normal, None, root.clone());
+    let mut grammar = Grammar::new();
+    grammar.set_keymap(keymap);
+
     let mut app = App {
         window: None,
         renderer: None,
         frame: Frame::default(),
         modifiers: ModifiersState::empty(),
-        grammar: Grammar::new(),
+        grammar,
         registers: Registers::new(),
         last_change: None,
         syntax: None,
@@ -85,7 +89,7 @@ fn main() -> Result<()> {
         index: FileIndex::new(root.clone()),
         walk: Some(FileWalk::start(root.clone())),
         buffers: Vec::new(),
-        state: new_state(text, crumbs, file_path, Mode::Normal, None, root.clone()),
+        state,
     };
 
     event_loop.run_app(&mut app).context("running the app")?;
@@ -99,7 +103,7 @@ fn new_state(
     mode: Mode,
     theme_override: Option<Theme>,
     project_root: std::path::PathBuf,
-) -> EditorState {
+) -> (EditorState, vex_input::Keymap) {
     // Config decides the theme and metrics unless the caller overrode them (the screenshot path
     // does, to render a specific appearance on demand).
     let settings = config::load();
@@ -117,7 +121,22 @@ fn new_state(
         ..Default::default()
     };
 
-    EditorState {
+    // Configuration problems are shown in the info box, which is dismissible with escape like any
+    // other. Printing them to stderr only would mean a mistyped binding just quietly does nothing —
+    // and the editor is usually not started from a terminal anyone is watching.
+    let notice = (!settings.problems.is_empty()).then(|| {
+        for problem in &settings.problems {
+            eprintln!("vex: config: {problem}");
+        }
+        let count = settings.problems.len();
+        let noun = if count == 1 { "problem" } else { "problems" };
+        std::iter::once(format!("config: {count} {noun}"))
+            .chain(settings.problems.iter().cloned())
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+
+    let state = EditorState {
         mode,
         theme: theme_override.unwrap_or(settings.theme),
         typography: settings.typography,
@@ -143,13 +162,15 @@ fn new_state(
         prompt: None,
         results: None,
         search_matches: Vec::new(),
-        hover: None,
+        hover: notice,
         completion: None,
         pending_request: None,
         project_root,
         buffer_count: 1,
         active_buffer: 0,
-    }
+    };
+
+    (state, settings.keymap)
 }
 
 /// Pairing and indentation rules for a file.
@@ -278,7 +299,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
 
     let (width, height) = (1600u32, 1000u32);
     let root = find_root(&std::path::PathBuf::from("."));
-    let mut state = new_state(text, crumbs, file_path, mode, theme, root);
+    let (mut state, _keymap) = new_state(text, crumbs, file_path, mode, theme, root);
 
     // Land somewhere with content so the cursor line, the coordinate panel and the cursor shape
     // are all exercised rather than sitting at 0:0.

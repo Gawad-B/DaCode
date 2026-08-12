@@ -5,11 +5,13 @@
 //! reading would add compile time and binary size to an editor whose whole premise is staying
 //! light. If config grows to need arrays-of-tables and nested inline structures, swap it then.
 //!
-//! Lua config (from the locked decisions) supersedes this and can read the same values; this is
-//! what makes an imported theme usable *today*.
+//! **Lua is the real config** (see `vex-lua`): `init.lua` is read after these files and wins where
+//! both set something. This layer remains because it is what the VSCode importer *writes* — an
+//! imported theme has to work without the user having hand-authored anything.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use vex_input::Keymap;
 use vex_theme::{Appearance, Oklch, Theme, Typography};
 
 /// A parsed config file: `section.key` → value.
@@ -85,16 +87,11 @@ impl Config {
         }
     }
 
-    /// Reads an `oklch(L C H)` value — the form the importer writes, so a theme stays inspectable
-    /// and hand-adjustable rather than being an opaque hex blob.
+    /// Reads a color. `oklch(L C H)` is what the importer writes — a theme stays inspectable and
+    /// hand-adjustable rather than being an opaque hex blob — but hex is accepted too, since the
+    /// same parser serves hand-written files.
     pub fn color(&self, key: &str) -> Option<Oklch> {
-        let raw = self.string(key)?;
-        let inner = raw.trim().strip_prefix("oklch(")?.strip_suffix(')')?;
-        let mut parts = inner.split_whitespace();
-        let l = parts.next()?.parse().ok()?;
-        let c = parts.next()?.parse().ok()?;
-        let h = parts.next()?.parse().ok()?;
-        Some(Oklch::new(l, c, h))
+        Oklch::parse(self.string(key)?)
     }
 }
 
@@ -107,6 +104,12 @@ pub struct Settings {
     pub soft_wrap: bool,
     /// Which theme file was loaded, for reporting.
     pub theme_source: Option<String>,
+    /// User key bindings from `init.lua`.
+    pub keymap: Keymap,
+    /// Everything wrong with the configuration, in the user's terms. Surfaced at startup rather
+    /// than logged, because a binding that silently did not load is indistinguishable from a bug
+    /// in the editor.
+    pub problems: Vec<String>,
 }
 
 impl Default for Settings {
@@ -117,6 +120,8 @@ impl Default for Settings {
             tab_width: 4,
             soft_wrap: true,
             theme_source: None,
+            keymap: Keymap::new(),
+            problems: Vec::new(),
         }
     }
 }
@@ -137,7 +142,15 @@ pub fn config_dir() -> PathBuf {
 /// Missing config is not an error: the built-in defaults are the product's real defaults, and the
 /// editor must start with no configuration at all.
 pub fn load() -> Settings {
-    let dir = config_dir();
+    load_from(&config_dir())
+}
+
+/// Loads from a specific directory.
+///
+/// The directory is a parameter rather than read from the environment inside, so tests can each use
+/// their own — `VEX_CONFIG_DIR` is process-wide, and tests that set it clobber each other when
+/// cargo runs them in parallel. That lesson came from the recovery tests.
+pub fn load_from(dir: &Path) -> Settings {
     let mut settings = Settings::default();
 
     // `imported-settings.toml` is what the importer writes; `config.toml` is the hand-written one,
@@ -159,19 +172,7 @@ pub fn load() -> Settings {
 
         // A named theme is looked up as a file; `appearance` alone flips the built-in theme.
         if let Some(name) = config.string("theme.name") {
-            let slug: String = name
-                .chars()
-                .map(|c| {
-                    if c.is_alphanumeric() {
-                        c.to_ascii_lowercase()
-                    } else {
-                        '-'
-                    }
-                })
-                .collect();
-            let path = dir
-                .join("themes")
-                .join(format!("{}.toml", slug.trim_matches('-')));
+            let path = theme_path(dir, name);
             if let Some(theme) = load_theme(&path) {
                 settings.theme = theme;
                 settings.theme_source = Some(path.display().to_string());
@@ -184,7 +185,69 @@ pub fn load() -> Settings {
         }
     }
 
+    apply_lua(dir, &mut settings);
     settings
+}
+
+/// Runs `init.lua` over whatever the TOML files set.
+///
+/// Lua last, and therefore Lua wins: the hand-written config is the user's intent, while the
+/// imported files are a starting point they did not type.
+fn apply_lua(dir: &Path, settings: &mut Settings) {
+    let path = dir.join("init.lua");
+    let config = vex_lua::load(&path);
+    if config.is_default() && config.problems.is_empty() {
+        return;
+    }
+
+    if let Some(size) = config.font_size {
+        settings.typography = Typography::with_code_size(size);
+    }
+    if let Some(width) = config.tab_width {
+        settings.tab_width = width.clamp(1, 16);
+    }
+    if let Some(wrap) = config.soft_wrap {
+        settings.soft_wrap = wrap;
+    }
+
+    // A named theme replaces the whole theme; `appearance` alone flips the built-in one. Either way
+    // this happens before `paint`, so individual token overrides land on top of the right base.
+    if let Some(name) = &config.theme_name {
+        let path = theme_path(dir, name);
+        match load_theme(&path) {
+            Some(theme) => {
+                settings.theme = theme;
+                settings.theme_source = Some(path.display().to_string());
+            }
+            None => settings
+                .problems
+                .push(format!("theme `{name}` not found at {}", path.display())),
+        }
+    } else if let Some(appearance) = config.appearance {
+        settings.theme = Theme::for_appearance(appearance);
+        settings.theme_source = None;
+    }
+
+    config.paint(&mut settings.theme);
+    settings.keymap = config.keymap;
+    settings.problems.extend(config.problems);
+}
+
+/// Where a named theme lives. A name is slugified rather than used verbatim, so `theme = "One Dark
+/// Pro"` finds the file the importer wrote as `one-dark-pro.toml`.
+fn theme_path(dir: &Path, name: &str) -> PathBuf {
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    dir.join("themes")
+        .join(format!("{}.toml", slug.trim_matches('-')))
 }
 
 /// Loads a theme file, keeping built-in values for anything it does not set.
@@ -197,29 +260,25 @@ pub fn load_theme(path: &Path) -> Option<Theme> {
     };
     let mut theme = Theme::for_appearance(appearance);
 
-    let set = |key: &str, target: &mut Oklch| {
-        if let Some(color) = config.color(key) {
-            *target = color;
+    // The token names come from `Theme::set_token`, so this reader, the Lua config and the importer
+    // cannot drift apart on what a theme may set.
+    for token in Theme::TOKENS {
+        // Both spellings are accepted: `[theme.syntax] keyword = …` flattens to one and the
+        // importer's grouped surfaces to the other.
+        for key in [
+            format!("theme.{token}"),
+            format!("theme.syntax.{token}"),
+            format!("theme.surfaces.{token}"),
+            format!("theme.lines.{token}"),
+            format!("theme.text.{token}"),
+            format!("theme.overlays.{token}"),
+        ] {
+            if let Some(color) = config.color(&key) {
+                theme.set_token(token, color);
+                break;
+            }
         }
-    };
-
-    set("theme.surfaces.bg", &mut theme.bg);
-    set("theme.surfaces.bg_alt", &mut theme.bg_alt);
-    set("theme.surfaces.bg_panel", &mut theme.bg_panel);
-    set("theme.surfaces.row_active", &mut theme.row_active);
-    set("theme.lines.rule", &mut theme.rule);
-    set("theme.lines.rule_soft", &mut theme.rule_soft);
-    set("theme.text.ink", &mut theme.ink);
-    set("theme.text.ink_dim", &mut theme.ink_dim);
-    set("theme.text.ink_faint", &mut theme.ink_faint);
-    set("theme.syntax.keyword", &mut theme.syntax.keyword);
-    set("theme.syntax.type", &mut theme.syntax.type_);
-    set("theme.syntax.function", &mut theme.syntax.function);
-    set("theme.syntax.attribute", &mut theme.syntax.attribute);
-    set("theme.syntax.comment", &mut theme.syntax.comment);
-    set("theme.syntax.string", &mut theme.syntax.string);
-    set("theme.syntax.number", &mut theme.syntax.number);
-    set("theme.syntax.constant", &mut theme.syntax.constant);
+    }
 
     Some(theme)
 }
@@ -284,6 +343,124 @@ mod tests {
             theme.syntax.keyword.to_hex(),
             Theme::dark().syntax.keyword.to_hex(),
             "unset colors keep the built-in value"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A config directory that only this test uses, so no two tests can interfere.
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vex-cfg-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn lua_config_reaches_settings() {
+        let dir = scratch("lua");
+        std::fs::write(
+            dir.join("init.lua"),
+            "vex.set { font_size = 16, tab_width = 2, soft_wrap = false }\n\
+             vex.theme { bg = \"#101418\" }\n\
+             vex.map(\"normal\", \"<leader>w\", \"save\")\n",
+        )
+        .unwrap();
+
+        let settings = load_from(&dir);
+        assert!(settings.problems.is_empty(), "{:?}", settings.problems);
+        assert_eq!(settings.tab_width, 2);
+        assert!(!settings.soft_wrap);
+        assert_eq!(settings.theme.bg.to_hex(), "#101418");
+        assert_eq!(settings.keymap.len(), 1);
+        assert!((settings.typography.code_size - 16.0).abs() < 0.01);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lua_wins_over_the_imported_toml() {
+        // The TOML is what the VSCode importer wrote; init.lua is what the user typed. When they
+        // disagree, the thing the user typed is the answer.
+        let dir = scratch("precedence");
+        std::fs::write(
+            dir.join("imported-settings.toml"),
+            "[editor]\ntab_width = 8\nsoft_wrap = true\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("init.lua"), "vex.set { tab_width = 3 }\n").unwrap();
+
+        let settings = load_from(&dir);
+        assert_eq!(settings.tab_width, 3, "Lua wins");
+        assert!(
+            settings.soft_wrap,
+            "what Lua did not set still comes from the imported file"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_broken_lua_config_still_starts_the_editor() {
+        let dir = scratch("broken");
+        std::fs::write(
+            dir.join("init.lua"),
+            "vex.set { tab_width = 2 }\nvex.map(\"normal\", \"x\", \"nonsense\")\n",
+        )
+        .unwrap();
+
+        let settings = load_from(&dir);
+        assert_eq!(settings.tab_width, 2, "the good half applied");
+        assert_eq!(settings.problems.len(), 1);
+        assert!(settings.keymap.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn no_config_directory_at_all_yields_defaults() {
+        let settings = load_from(Path::new("/nonexistent/vex-config"));
+        assert!(settings.problems.is_empty());
+        assert_eq!(settings.tab_width, 4);
+        assert!(settings.soft_wrap);
+        assert!(settings.keymap.is_empty());
+    }
+
+    #[test]
+    fn a_lua_theme_name_loads_the_file_the_importer_wrote() {
+        let dir = scratch("named-theme");
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        std::fs::write(
+            dir.join("themes/one-dark-pro.toml"),
+            "[theme]\nappearance = \"dark\"\n\n[theme.syntax]\nkeyword = \"oklch(0.7 0.16 318)\"\n",
+        )
+        .unwrap();
+        // Written with spaces and capitals, as a VSCode theme is actually named.
+        std::fs::write(
+            dir.join("init.lua"),
+            "vex.set { theme = \"One Dark Pro\" }\n",
+        )
+        .unwrap();
+
+        let settings = load_from(&dir);
+        assert!(settings.problems.is_empty(), "{:?}", settings.problems);
+        assert!(settings.theme_source.is_some(), "the file was found");
+        assert!((settings.theme.syntax.keyword.h - 318.0).abs() < 0.5);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_named_theme_is_reported_rather_than_silently_ignored() {
+        let dir = scratch("missing-theme");
+        std::fs::write(dir.join("init.lua"), "vex.set { theme = \"nope\" }\n").unwrap();
+
+        let settings = load_from(&dir);
+        assert_eq!(settings.problems.len(), 1);
+        assert!(
+            settings.problems[0].contains("nope"),
+            "{:?}",
+            settings.problems
         );
 
         std::fs::remove_dir_all(&dir).ok();

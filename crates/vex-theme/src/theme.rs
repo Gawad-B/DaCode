@@ -136,6 +136,65 @@ impl Theme {
         }
     }
 
+    /// Sets one theme token by name, returning false for an unknown name.
+    ///
+    /// The single place a token name maps to a field, shared by the Lua config, the TOML reader and
+    /// the VSCode importer. Three copies of this table would drift, and a token that silently does
+    /// nothing in one of the three is indistinguishable to the user from a broken theme.
+    ///
+    /// Syntax roles are reachable bare (`keyword`) or qualified (`syntax.keyword`); nothing else is
+    /// ambiguous between the two.
+    pub fn set_token(&mut self, name: &str, color: Oklch) -> bool {
+        let target = match name.trim().trim_start_matches("theme.") {
+            "bg" | "surfaces.bg" => &mut self.bg,
+            "bg_alt" | "surfaces.bg_alt" => &mut self.bg_alt,
+            "bg_panel" | "surfaces.bg_panel" => &mut self.bg_panel,
+            "row_active" | "surfaces.row_active" => &mut self.row_active,
+            "rule" | "lines.rule" => &mut self.rule,
+            "rule_soft" | "lines.rule_soft" => &mut self.rule_soft,
+            "ink" | "text.ink" => &mut self.ink,
+            "ink_dim" | "text.ink_dim" => &mut self.ink_dim,
+            "ink_faint" | "text.ink_faint" => &mut self.ink_faint,
+            "scrim" | "overlays.scrim" => &mut self.scrim,
+            "shadow" | "overlays.shadow" => &mut self.shadow,
+            "keyword" | "syntax.keyword" => &mut self.syntax.keyword,
+            // `type` is a Rust keyword, so the field is `type_`; the token name is not.
+            "type" | "syntax.type" => &mut self.syntax.type_,
+            "function" | "syntax.function" => &mut self.syntax.function,
+            "attribute" | "syntax.attribute" => &mut self.syntax.attribute,
+            "comment" | "syntax.comment" => &mut self.syntax.comment,
+            "string" | "syntax.string" => &mut self.syntax.string,
+            "number" | "syntax.number" => &mut self.syntax.number,
+            "constant" | "syntax.constant" => &mut self.syntax.constant,
+            _ => return false,
+        };
+        *target = color;
+        true
+    }
+
+    /// Every name [`Theme::set_token`] accepts, for error messages and documentation.
+    pub const TOKENS: [&'static str; 19] = [
+        "bg",
+        "bg_alt",
+        "bg_panel",
+        "row_active",
+        "rule",
+        "rule_soft",
+        "ink",
+        "ink_dim",
+        "ink_faint",
+        "scrim",
+        "shadow",
+        "keyword",
+        "type",
+        "function",
+        "attribute",
+        "comment",
+        "string",
+        "number",
+        "constant",
+    ];
+
     // ---- mode-derived colors -----------------------------------------------------------
     //
     // Everything mode-colored on screen comes from `accent`. Nothing downstream is allowed to

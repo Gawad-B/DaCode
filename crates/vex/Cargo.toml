@@ -25,6 +25,7 @@ vex-syntax.workspace = true
 vex-import.workspace = true
 vex-project.workspace = true
 vex-lsp.workspace = true
+vex-lua.workspace = true
 serde_json.workspace = true
 
 winit.workspace = true

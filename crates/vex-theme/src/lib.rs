@@ -221,4 +221,76 @@ mod tests {
     fn everything_is_square() {
         assert_eq!(frame::RADIUS, 0.0);
     }
+
+    #[test]
+    fn every_token_name_sets_a_distinct_field() {
+        // A token that silently does nothing looks to the user exactly like a broken theme, so the
+        // table is checked rather than trusted: each name must accept a color, and the 19 names must
+        // reach 19 different fields.
+        let marker = Oklch::new(0.5, 0.2, 123.0);
+        let mut seen = std::collections::HashSet::new();
+
+        for name in Theme::TOKENS {
+            let mut theme = Theme::dark();
+            assert!(theme.set_token(name, marker), "`{name}` was rejected");
+
+            let changed: Vec<String> = Theme::TOKENS
+                .iter()
+                .filter(|other| {
+                    let mut probe = Theme::dark();
+                    probe.set_token(other, marker);
+                    // Compare the whole theme: if setting `name` moved the same field as `other`,
+                    // the two probes are identical.
+                    format!("{:?}", probe) == format!("{:?}", theme)
+                })
+                .map(|s| s.to_string())
+                .collect();
+
+            assert_eq!(changed, vec![name.to_string()], "`{name}` is not distinct");
+            assert!(seen.insert(name), "`{name}` appears twice");
+        }
+
+        assert!(!Theme::dark().set_token("bakcground", marker));
+    }
+
+    #[test]
+    fn syntax_tokens_are_reachable_bare_and_qualified() {
+        let color = Oklch::new(0.7, 0.16, 318.0);
+        let mut bare = Theme::dark();
+        let mut qualified = Theme::dark();
+
+        assert!(bare.set_token("keyword", color));
+        assert!(qualified.set_token("syntax.keyword", color));
+        assert_eq!(
+            bare.syntax.keyword.to_hex(),
+            qualified.syntax.keyword.to_hex()
+        );
+
+        // `theme.` prefixed names come from the TOML reader's flattened keys.
+        let mut prefixed = Theme::dark();
+        assert!(prefixed.set_token("theme.surfaces.bg", color));
+        assert_eq!(prefixed.bg.to_hex(), color.to_hex());
+    }
+
+    #[test]
+    fn colors_parse_from_both_notations() {
+        let from_oklch = Oklch::parse("oklch(0.694 0.164 318.2)").expect("oklch parses");
+        assert!((from_oklch.l - 0.694).abs() < 0.001);
+        assert!((from_oklch.h - 318.2).abs() < 0.1);
+
+        let from_hex = Oklch::parse("#c678dd").expect("hex parses");
+        assert_eq!(from_hex.to_hex(), "#c678dd");
+
+        // Round-tripping hex through OKLCH must not shift the color, or an imported theme drifts
+        // every time it is saved.
+        assert_eq!(Oklch::parse("#ffffff").unwrap().to_hex(), "#ffffff");
+        assert_eq!(Oklch::parse("#000000").unwrap().to_hex(), "#000000");
+
+        assert!(Oklch::parse("rgb(1,2,3)").is_none());
+        assert!(
+            Oklch::parse("oklch(0.5 0.1)").is_none(),
+            "three parts required"
+        );
+        assert!(Oklch::parse("oklch(0.5 0.1 20 30)").is_none());
+    }
 }
