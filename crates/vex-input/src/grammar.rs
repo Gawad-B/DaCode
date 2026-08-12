@@ -157,6 +157,8 @@ impl Grammar {
     fn editing_key(&mut self, key: Key) -> Option<Action> {
         if key.ctrl {
             return match key.code {
+                // Works in insert mode too, which is where it is actually used.
+                KeyCode::Char(' ') => Some(Action::RequestCompletion),
                 KeyCode::Char('r') => Some(Action::Redo),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),

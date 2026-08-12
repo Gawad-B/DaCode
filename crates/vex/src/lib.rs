@@ -5,6 +5,7 @@
 //! the same path the keyboard drives is the path the tests drive.
 
 pub mod chrome;
+pub mod completion;
 pub mod config;
 pub mod execute;
 pub mod import_cli;

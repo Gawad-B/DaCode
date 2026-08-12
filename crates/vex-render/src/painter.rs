@@ -4,7 +4,7 @@
 //! editor's appearance verifiable: the same code path that draws the window can render into a
 //! texture and be compared against a reference image, with no compositor involved.
 
-use crate::frame::Frame;
+use crate::frame::{Frame, Layer};
 use crate::quad::QuadPipeline;
 use crate::text::TextStack;
 use anyhow::Result;
@@ -71,9 +71,12 @@ impl Painter {
             multiview_mask: None,
         });
 
-        // Rectangles first, then glyphs on top.
-        self.quads.render(&mut pass);
-        self.text.render(&mut pass)?;
+        // Layer by layer: each layer's rectangles, then its glyphs. Drawing all rectangles first
+        // would leave every overlay transparent, because the text beneath would be painted over it.
+        for layer in Layer::ALL {
+            self.quads.render(&mut pass, layer);
+            self.text.render(&mut pass, layer)?;
+        }
         Ok(())
     }
 

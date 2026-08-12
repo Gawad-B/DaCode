@@ -15,7 +15,7 @@ mod quad;
 mod text;
 mod timer;
 
-pub use frame::{Align, Frame, Quad, Rect, TextRun};
+pub use frame::{Align, Frame, Layer, Quad, Rect, TextRun};
 pub use headless::Headless;
 pub use timer::FrameTimer;
 

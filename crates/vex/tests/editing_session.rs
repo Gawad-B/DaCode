@@ -48,6 +48,7 @@ impl Session {
                 results: None,
                 search_matches: Vec::new(),
                 hover: None,
+                completion: None,
                 pending_request: None,
                 project_root: std::path::PathBuf::from("."),
                 buffer_count: 1,

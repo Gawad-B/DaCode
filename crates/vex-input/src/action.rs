@@ -220,6 +220,8 @@ pub enum Action {
     },
     /// Dismiss a hover box or diagnostic message.
     DismissInfo,
+    /// `ctrl-space` — ask the language server what could go here.
+    RequestCompletion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

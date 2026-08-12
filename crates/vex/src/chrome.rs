@@ -12,7 +12,7 @@ use crate::prompt::Prompt;
 use crate::results::Results;
 use vex_buffer::Document;
 use vex_display::{DisplayMap, ScrollAnchor, WrapMode};
-use vex_render::{Align, Frame, Rect, TextRun};
+use vex_render::{Align, Frame, Layer, Rect, TextRun};
 use vex_syntax::{Highlight, HighlightSpan};
 use vex_text::{CharOffset, Point, Text, Version};
 use vex_theme::{CursorShape, Mode, Oklch, Role, Theme, Typography, frame as border, space};
@@ -56,6 +56,8 @@ pub struct EditorState {
     pub search_matches: Vec<std::ops::Range<CharOffset>>,
     /// A hover reply from the language server, shown near the cursor until dismissed.
     pub hover: Option<String>,
+    /// The open completion session, if any.
+    pub completion: Option<crate::completion::Completion>,
     /// A request the executor wants sent, picked up by the caller that owns the LSP client.
     pub pending_request: Option<vex_input::Action>,
     /// The project root, for showing paths relatively.
@@ -128,12 +130,151 @@ pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
     }
     draw_statusline(frame, state, status, scale);
 
-    // Info boxes sit above the code but below the palette: a hover is contextual, a palette is modal.
+    // Info boxes sit above the code but below the palette: a hover is contextual, a palette is
+    // modal. The layer is what makes them opaque — within one layer, later text still shows through
+    // an earlier panel, because all of a layer's rectangles are drawn before any of its glyphs.
+    frame.set_layer(Layer::Panel);
     draw_info(frame, state, code, row_height, scale);
+    draw_completion(frame, state, code, row_height, scale);
 
     // Last, so it covers everything: the palette is a modal overlay.
+    frame.set_layer(Layer::Modal);
     if let Some(palette) = &state.palette {
         draw_palette(frame, state, palette, bounds, scale);
+    }
+    frame.set_layer(Layer::Base);
+}
+
+/// The completion popup, anchored under the word being completed.
+fn draw_completion(
+    frame: &mut Frame,
+    state: &EditorState,
+    code: Rect,
+    row_height: f32,
+    scale: f32,
+) {
+    let Some(completion) = &state.completion else {
+        return;
+    };
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let advance = column_advance(state, scale);
+
+    let (visible, cursor) = completion.visible();
+    let row = 20.0 * scale;
+    let height = if completion.pending || visible.is_empty() {
+        row
+    } else {
+        visible.len() as f32 * row
+    };
+
+    // Anchored at the word, not at the cursor: the list lines up with what it is completing.
+    let anchor_point =
+        state
+            .display
+            .display_point(state.document.text(), state.scroll, 512, completion.anchor);
+    let Some(point) = anchor_point else { return };
+
+    let widest = visible
+        .iter()
+        .map(|item| item.label.chars().count())
+        .max()
+        .unwrap_or(12)
+        .max(12);
+    let width = ((widest as f32 + 2.0) * advance).min(code.width * 0.6);
+
+    let x = (code.x + space::SM * scale + point.column as f32 * advance)
+        .min(code.right() - width - space::SM * scale);
+    let cursor_y = code.y + point.row as f32 * row_height;
+    // Below the line normally, above it when there is no room — the same rule as the hover box.
+    let below = cursor_y + row_height;
+    let y = if below + height <= code.bottom() {
+        below
+    } else {
+        (cursor_y - height).max(code.y)
+    };
+
+    let popup = Rect::new(x, y, width, height);
+    frame.fill(popup, theme.bg_panel);
+    frame.rule_top(popup, theme.rule, border::BORDER);
+    frame.rule_bottom(popup, theme.rule, border::BORDER);
+    frame.fill(
+        Rect::new(popup.x, popup.y, border::BORDER, popup.height),
+        theme.rule,
+    );
+
+    if completion.pending {
+        frame.text(run(
+            state,
+            Role::Value,
+            "…",
+            Rect::new(popup.x + space::XS * scale, popup.y, popup.width, row),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+        return;
+    }
+
+    if visible.is_empty() {
+        frame.text(run(
+            state,
+            Role::Value,
+            "no suggestions",
+            Rect::new(popup.x + space::XS * scale, popup.y, popup.width, row),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+        return;
+    }
+
+    for (index, item) in visible.iter().enumerate() {
+        let item_y = popup.y + index as f32 * row;
+        let selected = index == cursor;
+        if selected {
+            frame.fill(
+                Rect::new(popup.x, item_y, popup.width, row),
+                theme.row_active,
+            );
+            frame.fill(
+                Rect::new(popup.x, item_y, border::ACCENT_BORDER * scale, row),
+                accent,
+            );
+        }
+
+        let text_x = popup.x + space::XS * scale;
+        frame.text(run(
+            state,
+            Role::Value,
+            item.label.clone(),
+            Rect::new(text_x, item_y, popup.width - space::XS * 2.0 * scale, row),
+            if selected { theme.ink } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+
+        // The typed prefix, in the mode color, over the label's own glyphs.
+        let prefix_advance = advance_for(state.typography.spec(Role::Value).size_px * scale);
+        for position in &item.highlights {
+            let Some(c) = item.label.chars().nth(*position as usize) else {
+                continue;
+            };
+            frame.text(run(
+                state,
+                Role::Value,
+                c.to_string(),
+                Rect::new(
+                    text_x + *position as f32 * prefix_advance,
+                    item_y,
+                    prefix_advance * 2.0,
+                    row,
+                ),
+                accent,
+                Align::Left,
+                scale,
+            ));
+        }
     }
 }
 
@@ -434,6 +575,7 @@ fn draw_palette(
         align: Align::Left,
         center_vertically: true,
         wrap: false,
+        layer: Layer::default(),
     });
 
     // Caret after the query. Its width is an estimate of the serif advance — the palette is not on
@@ -593,6 +735,7 @@ fn run(
         align,
         center_vertically: true,
         wrap: false,
+        layer: Layer::default(),
     }
 }
 
@@ -1353,6 +1496,7 @@ fn draw_sidebar(
         align: Align::Left,
         center_vertically: false,
         wrap: true,
+        layer: Layer::default(),
     });
     frame.fill(
         Rect::new(

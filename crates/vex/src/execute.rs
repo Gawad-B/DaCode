@@ -145,6 +145,16 @@ pub fn execute(
         // asked for. Splitting it this way keeps `execute` free of process handling and testable
         // without a language server.
         Action::Hover | Action::GotoDefinition => state.pending_request = Some(action.clone()),
+        Action::RequestCompletion => {
+            // The session opens immediately, marked pending, so the popup can say it is waiting
+            // rather than appearing out of nowhere when the reply lands.
+            state.completion = Some(crate::completion::Completion::new(
+                state.document.text(),
+                state.cursor(),
+                state.document.version(),
+            ));
+            state.pending_request = Some(action.clone());
+        }
         Action::NextDiagnostic { forward } => next_diagnostic(state, *forward),
         Action::DismissInfo => state.hover = None,
 

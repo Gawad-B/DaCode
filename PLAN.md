@@ -96,7 +96,8 @@ never touch UI state; they emit messages the Workspace applies.
 | GPU | `wgpu` | Portable, mature, what Zed-class renderers are built on. |
 | Text shaping/raster | `cosmic-text` + `glyphon` | Real shaping (ligatures, complex scripts, fallback) + a glyph atlas on wgpu. Writing shaping by hand is a multi-month detour with no payoff. |
 | Syntax | `tree-sitter` | Incremental, error-tolerant, gives structure (not just colors) for text objects and indent. Regex-based highlighting is a dead end. |
-| Async runtime | `tokio` | LSP subprocesses, file I/O, timers. |
+| Async runtime | **None** — `std` threads + channels | Superseded the original `tokio` choice. The background work is a handful of long-lived workers (syntax, LSP, file walk, project search), each a thread that owns a blocking loop and reports over a channel. An async runtime buys nothing for four threads and costs a large dependency tree and a colored-function boundary through the whole editor. |
+| Paint order | Three layers: base, panel, modal | The renderer draws all rectangles and then all glyphs, so within one layer a panel cannot cover text drawn before it — every overlay was transparent. Each layer is now drawn completely (its quads, then its glyphs) before the next. Alternative — one draw call per panel — costs a pipeline switch per overlay for no gain at three layers. |
 | LSP | `lsp-types` + own client | The protocol plumbing is a weekend; the semantics are the work. |
 | Search | `grep-searcher` + `grep-regex` + `ignore` | The ripgrep crates. Do not write project-wide search by hand. |
 | Fuzzy matching | `nucleo` | Helix's matcher; fast and good ranking for the command/file palette. |
@@ -485,6 +486,10 @@ Encoded in `crates/vex-theme`:
   serif and must share the code's row height exactly.
 - **Square corners, 1px rules**, one shadow (the palette), no images or icon fonts — every
   graphic element is a rectangle.
+- **Overlays occlude.** A hover, completion popup or palette is opaque over the code, which is a
+  renderer property rather than a color one: see the paint-layer row in §1.3. Verified by rendering
+  each overlay offscreen and looking at it, which is how the transparency was found in the first
+  place.
 - **Instrumentation is live, not decorative**: frame time against a 16.6ms budget, and an async
   ledger showing each background producer's document version as fresh or stale. That ledger is
   §1.1's contract made visible, and is how the contract gets debugged.

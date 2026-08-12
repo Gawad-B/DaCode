@@ -81,11 +81,32 @@ impl Rect {
     }
 }
 
+/// Paint order.
+///
+/// The renderer draws all rectangles and then all glyphs, which means a panel added later cannot
+/// cover text added earlier — an overlay would be transparent. Layers fix that: each is drawn
+/// completely (its quads, then its glyphs) before the next begins.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Layer {
+    /// The editor itself: chrome, gutter, code.
+    #[default]
+    Base,
+    /// Contextual panels that sit over the code — hover, completion, search results.
+    Panel,
+    /// Modal overlays that cover everything, like the command palette.
+    Modal,
+}
+
+impl Layer {
+    pub const ALL: [Layer; 3] = [Layer::Base, Layer::Panel, Layer::Modal];
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Quad {
     pub rect: Rect,
     /// Linear RGBA, already converted out of OKLCH.
     pub color: [f32; 4],
+    pub layer: Layer,
 }
 
 /// Horizontal placement of a text run within its rect.
@@ -108,6 +129,7 @@ pub struct TextRun {
     /// Wrap to `rect.width`. Prose in panels wraps; code never does — the editor computes soft
     /// wrap itself in display coordinates.
     pub wrap: bool,
+    pub layer: Layer,
 }
 
 /// A complete description of one frame. Cleared and rebuilt each time.
@@ -115,12 +137,32 @@ pub struct TextRun {
 pub struct Frame {
     pub quads: Vec<Quad>,
     pub texts: Vec<TextRun>,
+    /// The layer subsequent drawing lands on.
+    layer: Layer,
 }
 
 impl Frame {
     pub fn clear(&mut self) {
         self.quads.clear();
         self.texts.clear();
+        self.layer = Layer::Base;
+    }
+
+    /// Sets the layer for everything drawn until it is set again.
+    pub fn set_layer(&mut self, layer: Layer) {
+        self.layer = layer;
+    }
+
+    pub fn layer(&self) -> Layer {
+        self.layer
+    }
+
+    pub fn quads_on(&self, layer: Layer) -> impl Iterator<Item = &Quad> {
+        self.quads.iter().filter(move |quad| quad.layer == layer)
+    }
+
+    pub fn texts_on(&self, layer: Layer) -> impl Iterator<Item = &TextRun> {
+        self.texts.iter().filter(move |run| run.layer == layer)
     }
 
     pub fn fill(&mut self, rect: Rect, color: Oklch) {
@@ -131,7 +173,11 @@ impl Frame {
     /// against the canvas before they reach here.
     pub fn fill_linear(&mut self, rect: Rect, color: [f32; 4]) {
         if rect.is_visible() {
-            self.quads.push(Quad { rect, color });
+            self.quads.push(Quad {
+                rect,
+                color,
+                layer: self.layer,
+            });
         }
     }
 
@@ -189,6 +235,7 @@ impl Frame {
     }
 
     pub fn text(&mut self, mut run: TextRun) {
+        run.layer = self.layer;
         // The label role is always uppercase. Applied here rather than at every call site, so
         // a caller cannot accidentally ship a lowercase label.
         if run.spec.uppercase {

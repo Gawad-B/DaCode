@@ -3,7 +3,7 @@
 //! Building a frame involves no GPU, which is the reason the UI layer is split from the
 //! renderer: layout regressions get caught in a normal `cargo test` run rather than by eye.
 
-use vex_render::{Align, Frame, Rect, TextRun};
+use vex_render::{Align, Frame, Layer, Rect, TextRun};
 use vex_theme::{Mode, Role, Theme, Typography};
 
 fn spec(role: Role) -> vex_theme::FontSpec {
@@ -64,6 +64,7 @@ fn labels_are_uppercased_centrally() {
         align: Align::Left,
         center_vertically: true,
         wrap: false,
+        layer: Layer::default(),
     });
 
     assert_eq!(frame.texts[0].text, "NORMAL MODE");
@@ -80,6 +81,7 @@ fn code_runs_are_not_uppercased() {
         align: Align::Left,
         center_vertically: false,
         wrap: false,
+        layer: Layer::default(),
     });
 
     assert_eq!(frame.texts[0].text, "let mut offset = CharOffset(0);");
@@ -96,6 +98,7 @@ fn empty_text_is_dropped() {
         align: Align::Left,
         center_vertically: false,
         wrap: false,
+        layer: Layer::default(),
     });
     assert!(frame.texts.is_empty());
 }
@@ -186,4 +189,61 @@ fn mode_change_repaints_every_accent() {
     colors.sort();
     colors.dedup();
     assert_eq!(colors.len(), 4, "modes must be visually distinct");
+}
+
+/// An overlay must occlude what is beneath it.
+///
+/// The renderer draws a whole layer at a time — that layer's rectangles, then its glyphs — so a
+/// panel on a higher layer covers text on a lower one. Within a *single* layer it cannot, because
+/// all the rectangles go down before any of the glyphs. This test pins the property the popup
+/// depends on: everything drawn after `set_layer` carries that layer, and the layers stay ordered.
+#[test]
+fn a_panel_layer_carries_everything_drawn_after_it() {
+    let theme = Theme::dark();
+    let mut frame = Frame::default();
+
+    // Base: some code.
+    frame.fill(Rect::new(0.0, 0.0, 200.0, 100.0), theme.bg);
+    frame.text(run("fn main() {", Rect::new(0.0, 0.0, 200.0, 20.0)));
+
+    // A completion popup over it.
+    frame.set_layer(Layer::Panel);
+    frame.fill(Rect::new(20.0, 10.0, 100.0, 40.0), theme.bg_panel);
+    frame.text(run("char_to_point", Rect::new(20.0, 10.0, 100.0, 20.0)));
+
+    frame.set_layer(Layer::Base);
+    frame.text(run("statusline", Rect::new(0.0, 80.0, 200.0, 20.0)));
+
+    assert_eq!(frame.quads_on(Layer::Panel).count(), 1);
+    assert_eq!(
+        frame
+            .texts_on(Layer::Panel)
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["char_to_point"],
+        "only the popup's own text is on its layer"
+    );
+    assert_eq!(
+        frame.texts_on(Layer::Base).count(),
+        2,
+        "drawing returns to the base layer when asked"
+    );
+    assert_eq!(frame.quads_on(Layer::Modal).count(), 0);
+
+    // Paint order: a panel is drawn after the base, a modal after the panel.
+    assert!(Layer::Base < Layer::Panel && Layer::Panel < Layer::Modal);
+    assert_eq!(Layer::default(), Layer::Base);
+}
+
+fn run(text: &str, rect: Rect) -> TextRun {
+    TextRun {
+        text: text.to_string(),
+        spec: Typography::default().spec(Role::Code),
+        color: Theme::dark().ink,
+        rect,
+        align: Align::Left,
+        center_vertically: false,
+        wrap: false,
+        layer: Layer::default(),
+    }
 }

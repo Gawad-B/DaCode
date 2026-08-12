@@ -144,6 +144,7 @@ fn new_state(
         results: None,
         search_matches: Vec::new(),
         hover: None,
+        completion: None,
         pending_request: None,
         project_root,
         buffer_count: 1,
@@ -186,7 +187,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 7] = [
+const VALUE_FLAGS: [&str; 8] = [
     "--screenshot",
     "--mode",
     "--columns",
@@ -194,6 +195,7 @@ const VALUE_FLAGS: [&str; 7] = [
     "--search",
     "--grep",
     "--diagnostic",
+    "--complete",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -400,6 +402,36 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             let target = text.point_to_char(vex_text::Point::new(away, 0));
             state.document.set_primary_caret(target);
         }
+    }
+
+    // `--complete PREFIX` opens a completion popup with a canned list, so the popup is inspectable
+    // without a language server.
+    if let Some(prefix) = value("--complete") {
+        // Typed into the buffer rather than handed to the session: the popup is a function of the
+        // text before the caret, so faking the prefix any other way would not exercise the filter.
+        // At the end of the line and after a space, because a prefix typed into the middle of an
+        // identifier would extend *that* word and match nothing.
+        state.document.move_to_line_edge(true, false);
+        state.document.insert(&format!(" {prefix}"));
+        let caret = state.cursor();
+        let mut session = vex::completion::Completion::new(
+            state.document.text(),
+            caret,
+            state.document.version(),
+        );
+        session.offer(
+            vec![
+                "char_to_point".into(),
+                "char_to_byte".into(),
+                "char_to_line".into(),
+                "chars".into(),
+                "clamp".into(),
+                "clone".into(),
+            ],
+            state.document.text(),
+            caret,
+        );
+        state.completion = Some(session);
     }
 
     // The screenshot path parses synchronously: there is no event loop to poll a worker from, and
@@ -634,6 +666,7 @@ impl ApplicationHandler for App {
                 } else {
                     if self.state.palette.is_none() && self.state.prompt.is_none() {
                         self.reveal_cursor();
+                        self.refresh_completion();
                         self.sync_syntax();
                         self.sync_lsp();
                     }
@@ -763,6 +796,9 @@ impl App {
         // selections — one Escape, one effect.
         if self.state.hover.is_some() && key.code == KeyCode::Escape {
             self.state.hover = None;
+            return false;
+        }
+        if self.state.completion.is_some() && self.handle_completion_key(key) {
             return false;
         }
         if self.state.results.is_some() && self.handle_results_key(key) {
@@ -961,6 +997,7 @@ impl App {
                     let sent = match request {
                         Action::Hover => client.hover(&path, position),
                         Action::GotoDefinition => client.definition(&path, position),
+                        Action::RequestCompletion => client.completion(&path, position),
                         _ => Ok(0),
                     };
                     if let Err(error) = sent {
@@ -1026,6 +1063,13 @@ impl App {
                         }
                     }
                 }
+                vex_lsp::ServerEvent::Completion { items } => {
+                    let caret = self.state.cursor();
+                    let text = self.state.document.text().clone();
+                    if let Some(completion) = &mut self.state.completion {
+                        completion.offer(items, &text, caret);
+                    }
+                }
                 vex_lsp::ServerEvent::Hover { text } => {
                     self.state.hover = Some(if text.trim().is_empty() {
                         "no information here".to_string()
@@ -1042,9 +1086,6 @@ impl App {
                     self.lsp = None;
                     break;
                 }
-                // Hover, definition and completion are requested by actions that do not exist yet;
-                // the plumbing is in place and unused rather than half-wired into the UI.
-                _ => {}
             }
         }
 
@@ -1073,6 +1114,76 @@ impl App {
             .as_ref()
             .map(|worker| worker.latest().is_none())
             .unwrap_or(false)
+    }
+
+    /// Keys the completion popup consumes. Returns true if the key was used.
+    ///
+    /// Only the keys that mean something to a popup are taken: everything else — including ordinary
+    /// characters — falls through to the editor, which then refilters. Swallowing every key would
+    /// make the popup a modal dialog, and completion is not one.
+    fn handle_completion_key(&mut self, key: Key) -> bool {
+        let Some(completion) = &mut self.state.completion else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Escape => {
+                self.state.completion = None;
+                true
+            }
+            KeyCode::Up => {
+                completion.move_selection(-1);
+                true
+            }
+            KeyCode::Down => {
+                completion.move_selection(1);
+                true
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                let chosen = completion.selection().map(|item| item.label.clone());
+                let anchor = completion.anchor;
+                self.state.completion = None;
+
+                match chosen {
+                    Some(label) => {
+                        // Replace the typed prefix, so accepting `length` after typing `len` does not
+                        // produce `lenlength`.
+                        let caret = self.state.cursor();
+                        let edit = vex_text::Edit::replace(anchor..caret, label);
+                        let _ = self.state.document.apply(
+                            vex_text::Transaction::new(vec![edit]),
+                            vex_buffer::EditKind::Discrete,
+                        );
+                        true
+                    }
+                    // Nothing selected: let Enter do what Enter does.
+                    None => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Keeps an open completion session in step with what has been typed.
+    fn refresh_completion(&mut self) {
+        let Some(completion) = &self.state.completion else {
+            return;
+        };
+        let caret = self.state.cursor();
+
+        if !completion.is_valid(caret) {
+            self.state.completion = None;
+            return;
+        }
+
+        let text = self.state.document.text().clone();
+        if let Some(completion) = &mut self.state.completion {
+            completion.refilter(&text, caret);
+            // A session with nothing left to offer is noise.
+            if !completion.pending && completion.items.is_empty() {
+                self.state.completion = None;
+            }
+        }
     }
 
     /// Opens a file (if needed) and puts the cursor on an LSP position.

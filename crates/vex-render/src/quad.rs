@@ -1,6 +1,6 @@
 //! The rectangle pipeline. One instanced draw call for every non-text element on screen.
 
-use crate::frame::Quad;
+use crate::frame::{Layer, Quad};
 use bytemuck::{Pod, Zeroable};
 
 #[repr(C)]
@@ -28,7 +28,8 @@ pub struct QuadPipeline {
     bind_group: wgpu::BindGroup,
     instances: wgpu::Buffer,
     capacity: usize,
-    live: usize,
+    /// Where each layer's instances start and end in the buffer, so a layer can be drawn on its own.
+    ranges: Vec<(Layer, std::ops::Range<u32>)>,
 }
 
 impl QuadPipeline {
@@ -119,7 +120,7 @@ impl QuadPipeline {
             bind_group,
             instances,
             capacity: Self::INITIAL_CAPACITY,
-            live: 0,
+            ranges: Vec::new(),
         }
     }
 
@@ -149,13 +150,24 @@ impl QuadPipeline {
             }),
         );
 
-        let instances: Vec<Instance> = quads
-            .iter()
-            .map(|quad| Instance {
-                rect: [quad.rect.x, quad.rect.y, quad.rect.width, quad.rect.height],
-                color: quad.color,
-            })
-            .collect();
+        // Grouped by layer so each layer can be drawn between the text passes. Stable within a
+        // layer, so painting order inside one is still the order the UI asked for.
+        let mut instances: Vec<Instance> = Vec::with_capacity(quads.len());
+        let mut ranges = Vec::new();
+
+        for layer in Layer::ALL {
+            let start = instances.len() as u32;
+            instances.extend(quads.iter().filter(|quad| quad.layer == layer).map(|quad| {
+                Instance {
+                    rect: [quad.rect.x, quad.rect.y, quad.rect.width, quad.rect.height],
+                    color: quad.color,
+                }
+            }));
+            let end = instances.len() as u32;
+            if end > start {
+                ranges.push((layer, start..end));
+            }
+        }
 
         if instances.len() > self.capacity {
             // Grow geometrically so a busy frame does not reallocate repeatedly.
@@ -166,16 +178,17 @@ impl QuadPipeline {
         if !instances.is_empty() {
             queue.write_buffer(&self.instances, 0, bytemuck::cast_slice(&instances));
         }
-        self.live = instances.len();
+        self.ranges = ranges;
     }
 
-    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if self.live == 0 {
+    /// Draws one layer's rectangles.
+    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>, layer: Layer) {
+        let Some((_, range)) = self.ranges.iter().find(|(l, _)| *l == layer) else {
             return;
-        }
+        };
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instances.slice(..));
-        pass.draw(0..4, 0..self.live as u32);
+        pass.draw(0..4, range.clone());
     }
 }

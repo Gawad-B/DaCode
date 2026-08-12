@@ -5,7 +5,7 @@
 //! buffers are cached across frames, because reshaping every visible line every frame is
 //! exactly the kind of unbounded per-frame work the 60fps contract forbids.
 
-use crate::frame::{Align, TextRun};
+use crate::frame::{Align, Layer, TextRun};
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family as CtFamily, FontSystem, Metrics, Resolution, Shaping,
     Style as CtStyle, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -76,7 +76,9 @@ pub struct TextStack {
     swash: SwashCache,
     atlas: TextAtlas,
     viewport: Viewport,
-    renderer: TextRenderer,
+    /// One renderer per layer: `prepare` overwrites a renderer's vertex buffer, so layers that must
+    /// be drawn at different points in the pass cannot share one.
+    renderers: Vec<(Layer, TextRenderer)>,
     buffers: HashMap<u64, Cached>,
     families: ResolvedFamilies,
     frame: u64,
@@ -94,15 +96,22 @@ impl TextStack {
         let cache = Cache::new(device);
         let viewport = Viewport::new(device, &cache);
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
-        let renderer =
-            TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+        let renderers = Layer::ALL
+            .into_iter()
+            .map(|layer| {
+                (
+                    layer,
+                    TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None),
+                )
+            })
+            .collect();
 
         Self {
             font_system,
             swash: SwashCache::new(),
             atlas,
             viewport,
-            renderer,
+            renderers,
             buffers: HashMap::new(),
             families,
             frame: 0,
@@ -191,18 +200,18 @@ impl TextStack {
             );
         }
 
-        // Pass 2: place each shaped buffer.
+        // Pass 2: place each shaped buffer, one prepare per layer.
         let Self {
             font_system,
             swash,
             atlas,
             viewport,
-            renderer,
+            renderers,
             buffers,
             ..
         } = self;
 
-        let areas = runs.iter().zip(&keys).filter_map(|(run, key)| {
+        let place = |run: &TextRun, key: &u64| -> Option<TextArea<'_>> {
             let cached = buffers.get(key)?;
             let line_height = run.spec.size_px * run.spec.line_height;
 
@@ -232,9 +241,17 @@ impl TextStack {
                 default_color: Color::rgba(r, g, b, a),
                 custom_glyphs: &[],
             })
-        });
+        };
 
-        renderer.prepare(device, queue, font_system, atlas, viewport, areas, swash)?;
+        for (layer, renderer) in renderers.iter_mut() {
+            let areas = runs
+                .iter()
+                .zip(&keys)
+                .filter(|(run, _)| run.layer == *layer)
+                .filter_map(|(run, key)| place(run, key));
+
+            renderer.prepare(device, queue, font_system, atlas, viewport, areas, swash)?;
+        }
 
         self.evict();
         Ok(())
@@ -246,8 +263,11 @@ impl TextStack {
             .retain(|_, cached| frame.saturating_sub(cached.last_used) < CACHE_TTL_FRAMES);
     }
 
-    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>) -> anyhow::Result<()> {
-        self.renderer.render(&self.atlas, &self.viewport, pass)?;
+    /// Draws one layer's glyphs.
+    pub fn render(&self, pass: &mut wgpu::RenderPass<'_>, layer: Layer) -> anyhow::Result<()> {
+        if let Some((_, renderer)) = self.renderers.iter().find(|(l, _)| *l == layer) {
+            renderer.render(&self.atlas, &self.viewport, pass)?;
+        }
         Ok(())
     }
 
