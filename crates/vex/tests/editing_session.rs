@@ -28,6 +28,7 @@ impl Session {
                 theme: Theme::dark(),
                 typography: Typography::default(),
                 document: Document::from_str(contents),
+                pairs: vex_buffer::PairConfig::default(),
                 display: DisplayMap::default(),
                 scroll: ScrollAnchor::default(),
                 path: vec!["test".into()],
@@ -262,12 +263,42 @@ fn escape_leaves_insert_mode_and_returns_to_normal() {
 
 #[test]
 fn insert_mode_typing_and_backspace() {
+    // With auto-pairing, `{` supplies its own `}` and Enter between them opens the body — so the
+    // closer is never typed. This test was written before pairing existed and typed it manually,
+    // which now produces a second brace.
     let mut s = session("").at(0);
-    s.keys("ifn main() {<cr>}<esc>");
-    assert_eq!(s.text(), "fn main() {\n}");
+    s.keys("ifn main() {<cr>");
+    assert_eq!(
+        s.text(),
+        "fn main() {\n    \n}",
+        "the block opens with the closer already placed"
+    );
 
+    s.keys("<esc>");
     s.keys("i<bs><esc>");
-    assert_eq!(s.text(), "fn main() {\n");
+    assert_eq!(
+        s.text(),
+        "fn main() {\n   \n}",
+        "backspace removes one space of indentation"
+    );
+}
+
+#[test]
+fn typing_a_call_pairs_the_parentheses() {
+    let mut s = session("").at(0);
+    s.keys("iprint(<esc>");
+    assert_eq!(s.text(), "print()");
+}
+
+#[test]
+fn typing_the_closer_steps_over_it_rather_than_doubling() {
+    let mut s = session("").at(0);
+    s.keys("iprint(x)<esc>");
+    assert_eq!(
+        s.text(),
+        "print(x)",
+        "the typed `)` steps over the auto-inserted one"
+    );
 }
 
 #[test]

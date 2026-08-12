@@ -23,6 +23,8 @@ pub struct EditorState {
     pub typography: Typography,
 
     pub document: Document,
+    /// Bracket pairing and indentation rules for the active buffer's language.
+    pub pairs: vex_buffer::PairConfig,
     pub display: DisplayMap,
     pub scroll: ScrollAnchor,
     pub path: Vec<String>,

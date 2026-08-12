@@ -414,3 +414,210 @@ fn the_current_match_index_is_reported() {
     assert_eq!(vex_buffer::index_of(&matches, CharOffset(9)), Some(1));
     assert_eq!(vex_buffer::index_of(&matches, CharOffset(5)), None);
 }
+
+// ---- pairing and indentation -----------------------------------------------------------
+
+use vex_buffer::{PairConfig, TypeAction};
+
+fn config() -> PairConfig {
+    PairConfig::default()
+}
+
+#[test]
+fn typing_an_opener_at_end_of_line_pairs_it() {
+    let mut document = doc("call");
+    document.set_primary_caret(CharOffset(4));
+    document.type_char('(', &config());
+
+    assert_eq!(document.text().to_string(), "call()");
+    assert_eq!(
+        document.selections().primary().head,
+        CharOffset(5),
+        "the cursor lands between the halves"
+    );
+}
+
+#[test]
+fn typing_an_opener_before_a_word_does_not_pair() {
+    // Typing `(` before an identifier usually means wrapping it, not creating an empty call. A pair
+    // that fires when you did not want it costs more keystrokes than it saved.
+    let mut document = doc("value");
+    document.set_primary_caret(CharOffset(0));
+    document.type_char('(', &config());
+
+    assert_eq!(document.text().to_string(), "(value");
+}
+
+#[test]
+fn typing_a_closer_steps_over_the_one_already_there() {
+    let mut document = doc("call()");
+    document.set_primary_caret(CharOffset(5));
+    let action = document.type_char(')', &config());
+
+    assert_eq!(action, TypeAction::StepOver);
+    assert_eq!(document.text().to_string(), "call()", "nothing is inserted");
+    assert_eq!(document.selections().primary().head, CharOffset(6));
+}
+
+#[test]
+fn quotes_do_not_pair_inside_a_word() {
+    // `don't` must not become `don''t`, and a Rust lifetime must not become `''a`.
+    let mut document = doc("don");
+    document.set_primary_caret(CharOffset(3));
+    document.type_char('\'', &config());
+    assert_eq!(document.text().to_string(), "don'");
+
+    let mut document = doc("let x: &str = a");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.type_char('"', &config());
+    assert_eq!(
+        document.text().to_string(),
+        "let x: &str = a\"",
+        "a quote after an identifier is literal"
+    );
+}
+
+#[test]
+fn quotes_pair_in_open_space() {
+    let mut document = doc("let s = ");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.type_char('"', &config());
+
+    assert_eq!(document.text().to_string(), "let s = \"\"");
+    assert_eq!(document.selections().primary().head, CharOffset(9));
+}
+
+#[test]
+fn typing_a_pair_around_a_selection_wraps_it() {
+    let mut document = doc("wrap me");
+    document.set_selections(SelectionSet::single(Selection::new(
+        CharOffset(0),
+        CharOffset(4),
+    )));
+    document.type_char('(', &config());
+
+    assert_eq!(document.text().to_string(), "(wrap) me");
+}
+
+#[test]
+fn backspace_between_an_empty_pair_removes_both() {
+    let mut document = doc("call()");
+    document.set_primary_caret(CharOffset(5));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(document.text().to_string(), "call");
+}
+
+#[test]
+fn backspace_next_to_a_non_empty_pair_removes_one_character() {
+    let mut document = doc("call(x)");
+    document.set_primary_caret(CharOffset(6));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(document.text().to_string(), "call()");
+}
+
+#[test]
+fn a_newline_carries_the_previous_indentation() {
+    let mut document = doc("    let x = 1;");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.insert_newline_smart(&config());
+
+    assert_eq!(document.text().to_string(), "    let x = 1;\n    ");
+}
+
+#[test]
+fn a_newline_after_an_opener_adds_a_level() {
+    let mut document = doc("fn main() {");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.insert_newline_smart(&config());
+
+    assert_eq!(document.text().to_string(), "fn main() {\n    ");
+}
+
+#[test]
+fn a_newline_between_a_pair_opens_a_block() {
+    // The behavior that makes `{` then Enter produce a body with the closer below it.
+    let mut document = doc("fn main() {}");
+    document.set_primary_caret(CharOffset(11));
+    document.insert_newline_smart(&config());
+
+    assert_eq!(document.text().to_string(), "fn main() {\n    \n}");
+    let point = document
+        .text()
+        .char_to_point(document.selections().primary().head);
+    assert_eq!(point.line, 1, "the cursor lands on the blank middle line");
+    assert_eq!(point.column, 4, "and at the indented column");
+}
+
+#[test]
+fn a_newline_after_a_colon_indents_for_python() {
+    let mut document = doc("def main():");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.insert_newline_smart(&config());
+
+    assert_eq!(document.text().to_string(), "def main():\n    ");
+}
+
+#[test]
+fn indentation_respects_the_configured_width() {
+    let narrow = PairConfig {
+        tab_width: 2,
+        ..PairConfig::default()
+    };
+    let mut document = doc("if x {");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.insert_newline_smart(&narrow);
+
+    assert_eq!(document.text().to_string(), "if x {\n  ");
+}
+
+#[test]
+fn typing_a_closer_alone_on_a_line_dedents_it() {
+    // Electric dedent: the one indentation correction people expect an editor to make.
+    let mut document = doc("fn main() {\n    let x = 1;\n        ");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.type_char('}', &config());
+
+    assert_eq!(
+        document.text().to_string(),
+        "fn main() {\n    let x = 1;\n}",
+        "the closer aligns with its opener"
+    );
+}
+
+#[test]
+fn a_closer_with_code_before_it_is_left_alone() {
+    // Reindenting a line with code on it would move text placed deliberately.
+    let mut document = doc("    let v = vec![1, 2");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.type_char(']', &config());
+
+    assert_eq!(document.text().to_string(), "    let v = vec![1, 2]");
+}
+
+#[test]
+fn pairing_with_several_cursors_is_one_undo() {
+    let mut document = doc("a\nb\nc");
+    document.set_selections(SelectionSet::from_iter(
+        [
+            Selection::caret(CharOffset(1)),
+            Selection::caret(CharOffset(3)),
+            Selection::caret(CharOffset(5)),
+        ],
+        0,
+    ));
+    document.type_char('(', &config());
+
+    assert_eq!(document.text().to_string(), "a()\nb()\nc()");
+    assert!(document.undo());
+    assert_eq!(document.text().to_string(), "a\nb\nc");
+}

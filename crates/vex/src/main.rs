@@ -122,6 +122,7 @@ fn new_state(
         theme: theme_override.unwrap_or(settings.theme),
         typography: settings.typography,
         document: Document::from_text(text),
+        pairs: pair_config(file_path.as_deref(), settings.tab_width),
         display,
         scroll: ScrollAnchor::default(),
         path,
@@ -148,6 +149,39 @@ fn new_state(
         buffer_count: 1,
         active_buffer: 0,
     }
+}
+
+/// Pairing and indentation rules for a file.
+///
+/// Per-language, because the differences matter: Python indents after `:` and has no braces to
+/// balance, while HTML and CSS should not pair quotes the way a programming language does.
+fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
+    use vex_syntax::Language;
+
+    let mut config = vex_buffer::PairConfig {
+        tab_width,
+        ..Default::default()
+    };
+
+    match path.and_then(Language::from_path) {
+        Some(Language::Python) => {
+            // A colon opens a block; braces are dictionaries and still worth pairing.
+            config.block_openers = vec![':', '{', '(', '['];
+        }
+        Some(Language::Rust) => {
+            // `'` is a lifetime far more often than a character literal, and pairing it is a
+            // constant irritation. `on_type` already refuses mid-word; this covers the rest.
+            config.quotes = vec!['"'];
+        }
+        Some(Language::Html) => {
+            // Angle brackets are matched by the language, not by us: pairing `<` would fight every
+            // comparison and generic in embedded script.
+            config.quotes = vec!['"', '\''];
+        }
+        _ => {}
+    }
+
+    config
 }
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
@@ -1546,6 +1580,12 @@ impl App {
 
     /// Resets per-buffer derived state after the active document changes.
     fn after_buffer_change(&mut self) {
+        // Pairing rules are per-language, so they travel with the buffer.
+        self.state.pairs = pair_config(
+            self.state.file_path.as_deref(),
+            self.state.display.tab_width,
+        );
+
         // Highlights belong to the old document; keeping them would paint one file's colors over
         // another's text until the next parse landed.
         self.state.highlights.clear();

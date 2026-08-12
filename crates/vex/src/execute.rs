@@ -46,9 +46,26 @@ pub fn execute(
         }
         Action::InsertAt(position) => enter_insert(state, *position),
 
-        Action::InsertText(text) => state.document.insert(text),
-        Action::Newline => state.document.insert_newline(),
-        Action::DeleteBackward => state.document.delete_backward(),
+        Action::InsertText(text) => {
+            // Typed characters go through the pairing rules; longer runs (a paste, a snippet) do
+            // not, because pairing a whole string would mangle it.
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(single), None) => {
+                    let config = state.pairs.clone();
+                    state.document.type_char(single, &config);
+                }
+                _ => state.document.insert(text),
+            }
+        }
+        Action::Newline => {
+            let config = state.pairs.clone();
+            state.document.insert_newline_smart(&config);
+        }
+        Action::DeleteBackward => {
+            let config = state.pairs.clone();
+            state.document.delete_backward_pairs(&config);
+        }
         Action::DeleteForward => state.document.delete_forward(),
         Action::ReplaceChar(c) => {
             // Overwrite: one intent, so the delete and insert land in one undo group.

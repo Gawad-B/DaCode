@@ -41,6 +41,7 @@ fn state(lines: usize) -> EditorState {
         theme: Theme::dark(),
         typography: Typography::default(),
         document,
+        pairs: vex_buffer::PairConfig::default(),
         display: DisplayMap::default(),
         scroll: ScrollAnchor::at_line(20),
         path: vec!["bench.rs".into()],

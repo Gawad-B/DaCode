@@ -10,9 +10,11 @@
 //! current version is discarded rather than applied.
 
 pub mod history;
+pub mod pairs;
 pub mod search;
 
 pub use history::{EditKind, History, Step};
+pub use pairs::{NewlineAction, PairConfig, TypeAction};
 pub use search::{SearchOptions, find_all, find_next, index_of};
 
 use std::collections::VecDeque;
@@ -259,6 +261,144 @@ impl Document {
         }
 
         edits
+    }
+
+    /// Types one character, pairing brackets and quotes where it makes sense.
+    ///
+    /// Multi-cursor safe: each caret is decided independently and the results become one
+    /// transaction, so `(` with three cursors produces three pairs and one undo.
+    pub fn type_char(&mut self, typed: char, config: &PairConfig) -> TypeAction {
+        let text = self.text.clone();
+        let primary = self.selections.primary().head;
+
+        // The primary caret decides, and every caret follows it. Deciding per caret would be more
+        // clever and less predictable: the same keystroke would insert different things in different
+        // places, and the user only sees one of them.
+        let action = if self.selections.primary().is_caret() {
+            pairs::on_type(&text, primary, typed, config)
+        } else {
+            // With a selection, the pair wraps it — that is the useful behavior, and stepping over
+            // makes no sense when there is something selected.
+            match config.closer_for(typed) {
+                Some(close) => TypeAction::Pair { open: typed, close },
+                None if config.is_quote(typed) => TypeAction::Pair {
+                    open: typed,
+                    close: typed,
+                },
+                None => TypeAction::Literal,
+            }
+        };
+
+        match action {
+            TypeAction::Literal => {
+                // Electric dedent: a closer alone on its line pulls the line back to its opener.
+                if let Some(indent) = pairs::dedent_for_closer(&text, primary, typed, config) {
+                    self.reindent_line(&indent);
+                }
+                self.insert(&typed.to_string());
+            }
+            TypeAction::StepOver => {
+                self.selections = self
+                    .selections
+                    .map(|selection| Selection::caret(text.next_grapheme(selection.head)));
+                self.history.end_group();
+            }
+            TypeAction::Pair { open, close } => {
+                if self.selections.primary().is_caret() {
+                    if let Some(indent) = pairs::dedent_for_closer(&text, primary, open, config) {
+                        self.reindent_line(&indent);
+                    }
+                    self.insert(&format!("{open}{close}"));
+                    // Land between the halves.
+                    self.selections = self
+                        .selections
+                        .map(|selection| Selection::caret(self.text.prev_grapheme(selection.head)));
+                } else {
+                    // Wrap each selection: one transaction, two edits per selection.
+                    let mut edits = Vec::with_capacity(self.selections.len() * 2);
+                    for selection in self.selections.iter() {
+                        edits.push(Edit::insert(selection.start(), open.to_string()));
+                        edits.push(Edit::insert(selection.end(), close.to_string()));
+                    }
+                    let _ = self.apply(Transaction::new(edits), EditKind::Discrete);
+                }
+            }
+        }
+
+        action
+    }
+
+    /// Replaces the current line's leading whitespace.
+    fn reindent_line(&mut self, indent: &str) {
+        let point = self.text.char_to_point(self.selections.primary().head);
+        let start = self.text.line_to_char(point.line);
+        let content = self.text.slice_to_string(self.text.line_range(point.line));
+        let existing = content
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .count();
+
+        let edit = Edit::replace(
+            start..CharOffset(start.get() + existing),
+            indent.to_string(),
+        );
+        let _ = self.apply(Transaction::new(vec![edit]), EditKind::Discrete);
+    }
+
+    /// Backspace that removes both halves of an empty pair.
+    pub fn delete_backward_pairs(&mut self, config: &PairConfig) {
+        let text = self.text.clone();
+        let primary = self.selections.primary().head;
+
+        if self.selections.primary().is_caret() && pairs::deletes_pair(&text, primary, config) {
+            let edits: Vec<Edit> = self
+                .selections
+                .iter()
+                .filter(|selection| selection.is_caret())
+                .map(|selection| {
+                    Edit::delete(
+                        text.prev_grapheme(selection.head)..text.next_grapheme(selection.head),
+                    )
+                })
+                .collect();
+            let _ = self.apply(Transaction::new(edits), EditKind::Delete);
+            return;
+        }
+
+        self.delete_backward();
+    }
+
+    /// A newline that indents, and that opens a block when the cursor sits inside a pair.
+    pub fn insert_newline_smart(&mut self, config: &PairConfig) {
+        let text = self.text.clone();
+        let primary = self.selections.primary().head;
+        let action = pairs::on_newline(&text, primary, config);
+
+        match &action.closing_line {
+            // Between `{` and `}`: two newlines, and the cursor lands on the blank one.
+            Some(closing) => {
+                let insertion = format!("\n{}\n{}", action.indent, closing);
+                let edits = self.selections.replace_edits(&insertion);
+                let _ = self.apply(Transaction::new(edits), EditKind::Insert);
+
+                let back = 1 + closing.chars().count();
+                self.selections = self.selections.map(|selection| {
+                    let mut head = selection.head;
+                    for _ in 0..back {
+                        head = self.text.prev_grapheme(head);
+                    }
+                    Selection::caret(head)
+                });
+            }
+            None => {
+                let insertion = format!("\n{}", action.indent);
+                let edits = self.selections.replace_edits(&insertion);
+                let _ = self.apply(Transaction::new(edits), EditKind::Insert);
+                self.selections = self
+                    .selections
+                    .map(|selection| Selection::caret(selection.head));
+            }
+        }
     }
 
     /// Inserts a newline at every caret, carrying the current line's leading whitespace.

@@ -183,7 +183,7 @@ Each milestone has a demo and an acceptance bar. Do not advance until the bar is
 what prevents a half-working engine with ten half-working features on top.
 
 > **Status.** M0–M6 done (M5 partially — see below), plus the VSCode importer, a measured
-> optimization pass, and the first slice of M7. 288 tests, zero clippy warnings.
+> optimization pass, and much of M7. 306 tests, zero clippy warnings.
 > Crates:
 > `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
 > `vex-theme` (OKLCH color, mode accents, type roles — 9 tests),
@@ -355,6 +355,22 @@ mistakes, and budget for that rather than being surprised by it.
 >   LSP regardless.
 >
 > Also fixed here: the statusline reported `rust` for every file, whatever its language.
+>
+> - **Auto-pairing and indentation.** Typing `(` supplies `)`, typing the closer steps over it rather
+>   than doubling, backspace between an empty pair removes both halves, a pair around a selection
+>   wraps it, Enter between `{` and `}` opens an indented body with the closer below, and a closer
+>   alone on a line dedents to match its opener. Per-language: Python indents after `:`, Rust does not
+>   pair `'` (it is a lifetime far more often than a character literal).
+>
+>   **Deliberately lexical, not syntax-aware.** Indentation must be decided on the keystroke, and the
+>   syntax tree lags by design — worse, at the instant Enter is pressed the line being opened does not
+>   exist in any tree. So the rules read the previous line's indentation and the delimiters around the
+>   cursor: bounded, instant, and predictable in a way a version-behind tree is not. Tree-sitter indent
+>   queries remain the better answer for pathological cases and would need a synchronous parse of the
+>   current line — a separate decision.
+>
+>   The rules are conservative because auto-pairing that fires unwanted costs more keystrokes than it
+>   saves: `(` before an identifier does not pair, and a quote never pairs mid-word.
 
 ### M7 — Daily-driver gaps (ongoing, 3–4 weeks)
 Whatever is actually blocking use: soft wrap, folding, multi-cursor, git gutter and blame,
