@@ -10,8 +10,10 @@
 //! current version is discarded rather than applied.
 
 pub mod history;
+pub mod search;
 
 pub use history::{EditKind, History, Step};
+pub use search::{SearchOptions, find_all, find_next, index_of};
 
 use std::collections::VecDeque;
 use vex_text::{CharOffset, Edit, Point, Selection, SelectionSet, Text, Transaction, Version};
@@ -95,6 +97,14 @@ impl Document {
 
     pub fn mark_saved(&mut self) {
         self.dirty = false;
+    }
+
+    /// Marks the buffer as differing from disk without recording an edit.
+    ///
+    /// For recovered content: the text genuinely differs from the file, but it arrived whole rather
+    /// than through a transaction, so there is nothing to undo back to.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     pub fn history(&self) -> &History {

@@ -8,6 +8,8 @@
 //! because it is the only consumer.
 
 use crate::chrome::EditorState;
+use crate::prompt::{Prompt, PromptKind};
+use crate::results::Results;
 use vex_buffer::EditKind;
 use vex_input::{
     Action, InsertPosition, Motion, Operator, Registers, Target, line_range, operator_range,
@@ -111,6 +113,29 @@ pub fn execute(
 
         Action::Save => save(state),
         Action::Quit => return Outcome::Quit,
+
+        Action::StartSearch { forward } => {
+            state.prompt = Some(Prompt::new(
+                PromptKind::Search { forward: *forward },
+                state.cursor(),
+            ));
+        }
+        Action::StartCommand => {
+            state.prompt = Some(Prompt::new(PromptKind::Command, state.cursor()));
+        }
+        Action::RepeatSearch { forward } => repeat_search(state, *forward),
+        Action::SearchProject => {
+            // The word under the cursor is the query people actually want from a bare invocation.
+            let query = word_under_cursor(state);
+            if query.is_empty() {
+                state.prompt = Some(Prompt::new(PromptKind::Command, state.cursor()));
+                if let Some(prompt) = &mut state.prompt {
+                    prompt.input.push_str("grep ");
+                }
+            } else {
+                state.results = Some(Results::start(&state.project_root, &query));
+            }
+        }
     }
 
     // Vertical motion is the only action that needs the viewport; everything else is independent
@@ -441,6 +466,33 @@ fn select_lines(state: &mut EditorState, count: usize) {
         Selection::new(range.start, range.end)
     });
     state.document.set_selections(selections);
+}
+
+/// Moves to the next or previous match of the last search.
+///
+/// Uses the cached match list rather than re-scanning: `n` is pressed repeatedly, and rescanning the
+/// document on each press would make it feel heavier the larger the file.
+fn repeat_search(state: &mut EditorState, forward: bool) {
+    if state.search_matches.is_empty() {
+        return;
+    }
+    let from = state.cursor();
+    if let Some(found) = vex_buffer::find_next(&state.search_matches, from, forward) {
+        state.document.set_primary_caret(found.start);
+    }
+}
+
+/// The word the cursor sits in or just after, for a bare project search.
+fn word_under_cursor(state: &EditorState) -> String {
+    let text = state.document.text();
+    let object = vex_input::TextObject::Word {
+        around: false,
+        big: false,
+    };
+    match vex_input::resolve_object(text, state.cursor(), object) {
+        Some(range) if range.start < range.end => text.slice_to_string(range),
+        _ => String::new(),
+    }
 }
 
 fn save(state: &mut EditorState) {

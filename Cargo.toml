@@ -33,6 +33,13 @@ png = "0.18"
 # what makes structural text objects and real indentation possible later.
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-html = "0.23"
+tree-sitter-css = "0.25"
 
 # Import. `zip` reads .vsix packages (they are zip archives); no JS runtime is involved, because
 # running VSCode extensions is out of scope — see crates/vex-import/src/lib.rs.

@@ -334,6 +334,12 @@ impl Grammar {
                 })
             }
 
+            '/' => self.emit(Action::StartSearch { forward: true }),
+            '?' => self.emit(Action::StartSearch { forward: false }),
+            'n' => self.emit(Action::RepeatSearch { forward: true }),
+            'N' => self.emit(Action::RepeatSearch { forward: false }),
+            ':' => self.emit(Action::StartCommand),
+
             'u' => self.emit(Action::Undo),
             '.' => self.emit(Action::RepeatChange),
 

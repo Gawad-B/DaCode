@@ -56,6 +56,10 @@ fn state(lines: usize) -> EditorState {
         diagnostics: vex_lsp::Diagnostics::default(),
         server_status: "bench".into(),
         palette: None,
+        prompt: None,
+        results: None,
+        search_matches: Vec::new(),
+        project_root: std::path::PathBuf::from("."),
         buffer_count: 1,
         active_buffer: 0,
     }

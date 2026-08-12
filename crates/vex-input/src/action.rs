@@ -196,6 +196,19 @@ pub enum Action {
 
     Save,
     Quit,
+
+    /// `/` and `?` — open the search prompt.
+    StartSearch {
+        forward: bool,
+    },
+    /// `n` / `N` — jump to the next or previous match of the last search.
+    RepeatSearch {
+        forward: bool,
+    },
+    /// `:` — open the command line.
+    StartCommand,
+    /// Project-wide search for the word under the cursor, or via `:grep`.
+    SearchProject,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

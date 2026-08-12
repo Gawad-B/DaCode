@@ -14,6 +14,8 @@ use vex::chrome::{self, EditorState};
 use vex::config;
 use vex::execute::{Outcome, execute};
 use vex::palette::{Palette, PaletteKind, Target};
+use vex::prompt::{Command, PromptKind, parse_command};
+use vex::recovery::Recovery;
 use vex_buffer::Document;
 use vex_display::{DisplayMap, ScrollAnchor, WrapMode};
 use vex_input::{Action, Grammar, Key, KeyCode, Registers, Resolution};
@@ -78,11 +80,12 @@ fn main() -> Result<()> {
         requested_range: None,
         lsp: None,
         sent_version: None,
+        recovery: Recovery::new(),
         wakes: 0,
         index: FileIndex::new(root.clone()),
-        walk: Some(FileWalk::start(root)),
+        walk: Some(FileWalk::start(root.clone())),
         buffers: Vec::new(),
-        state: new_state(text, crumbs, file_path, Mode::Normal, None),
+        state: new_state(text, crumbs, file_path, Mode::Normal, None, root.clone()),
     };
 
     event_loop.run_app(&mut app).context("running the app")?;
@@ -95,6 +98,7 @@ fn new_state(
     file_path: Option<String>,
     mode: Mode,
     theme_override: Option<Theme>,
+    project_root: std::path::PathBuf,
 ) -> EditorState {
     // Config decides the theme and metrics unless the caller overrode them (the screenshot path
     // does, to render a specific appearance on demand).
@@ -135,6 +139,10 @@ fn new_state(
         diagnostics: vex_lsp::Diagnostics::default(),
         server_status: "no language server".to_string(),
         palette: None,
+        prompt: None,
+        results: None,
+        search_matches: Vec::new(),
+        project_root,
         buffer_count: 1,
         active_buffer: 0,
     }
@@ -142,7 +150,14 @@ fn new_state(
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 4] = ["--screenshot", "--mode", "--columns", "--palette"];
+const VALUE_FLAGS: [&str; 6] = [
+    "--screenshot",
+    "--mode",
+    "--columns",
+    "--palette",
+    "--search",
+    "--grep",
+];
 
 /// The first non-flag argument: the file to open.
 fn positional(args: &[String]) -> Option<String> {
@@ -223,7 +238,8 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let (text, crumbs, file_path) = load(positional(args))?;
 
     let (width, height) = (1600u32, 1000u32);
-    let mut state = new_state(text, crumbs, file_path, mode, theme);
+    let root = find_root(&std::path::PathBuf::from("."));
+    let mut state = new_state(text, crumbs, file_path, mode, theme, root);
 
     // Land somewhere with content so the cursor line, the coordinate panel and the cursor shape
     // are all exercised rather than sitting at 0:0.
@@ -281,6 +297,35 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         palette.refresh_files(&mut index);
         palette.move_selection(1);
         state.palette = Some(palette);
+    }
+
+    // `--search QUERY` shows the search prompt with live matches; `--grep QUERY` shows the results
+    // panel. Both exist so the new UI is inspectable the same way the rest of the design was.
+    if let Some(query) = value("--search") {
+        let matches = vex_buffer::find_all(
+            state.document.text(),
+            &query,
+            &vex_buffer::SearchOptions::default(),
+        );
+        let mut prompt =
+            vex::prompt::Prompt::new(vex::prompt::PromptKind::Search { forward: true }, cursor);
+        prompt.input = query;
+        prompt.matches = matches.clone();
+        state.search_matches = matches;
+        state.prompt = Some(prompt);
+    }
+    if let Some(query) = value("--grep") {
+        let mut results = vex::results::Results::start(&state.project_root, &query);
+        // A one-shot render can wait for the search; the editor never does.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            results.poll();
+            if results.finished {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        state.results = Some(results);
     }
 
     // The screenshot path parses synchronously: there is no event loop to poll a worker from, and
@@ -359,6 +404,8 @@ struct App {
     lsp: Option<vex_lsp::LspClient>,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
+    /// Persists dirty buffers so a crash loses seconds, not work.
+    recovery: Recovery,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Buffers other than the active one. The active document lives in `state`, and switching swaps
@@ -423,6 +470,7 @@ impl ApplicationHandler for App {
                 Err(err) => eprintln!("vex: syntax highlighting unavailable: {err}"),
             }
         }
+        self.restore_recovery();
         self.sync_syntax();
         self.start_language_server();
     }
@@ -443,6 +491,9 @@ impl ApplicationHandler for App {
         }
         let mut changed = self.poll_walk();
         changed |= self.sync_lsp();
+        if let Some(results) = &mut self.state.results {
+            changed |= results.poll();
+        }
 
         if changed {
             self.request_redraw();
@@ -462,7 +513,10 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                self.persist_recovery(true);
+                event_loop.exit();
+            }
 
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
 
@@ -500,13 +554,16 @@ impl ApplicationHandler for App {
                 self.poll_walk();
 
                 if self.handle_key(logical_key) {
+                    // Quitting is the last chance to save unsaved work.
+                    self.persist_recovery(true);
                     event_loop.exit();
                 } else {
-                    if self.state.palette.is_none() {
+                    if self.state.palette.is_none() && self.state.prompt.is_none() {
                         self.reveal_cursor();
                         self.sync_syntax();
                         self.sync_lsp();
                     }
+                    self.persist_recovery(false);
                     self.request_redraw();
                 }
             }
@@ -625,6 +682,12 @@ impl App {
             self.handle_palette_key(key);
             return false;
         }
+        if self.state.prompt.is_some() {
+            return self.handle_prompt_key(key);
+        }
+        if self.state.results.is_some() && self.handle_results_key(key) {
+            return false;
+        }
 
         // Opening the palette is a Ctrl binding, so it works from any mode.
         if key.ctrl {
@@ -635,6 +698,18 @@ impl App {
                 }
                 KeyCode::Char('b') => {
                     self.open_palette(PaletteKind::Buffers);
+                    return false;
+                }
+                KeyCode::Char('f') => {
+                    // Project search for the word under the cursor, or a `:grep` prompt when there
+                    // is no word there.
+                    let rows = self.code_rows();
+                    execute(
+                        &mut self.state,
+                        &mut self.registers,
+                        &Action::SearchProject,
+                        rows,
+                    );
                     return false;
                 }
                 _ => {}
@@ -875,6 +950,10 @@ impl App {
         if self.walk.is_some() {
             return true;
         }
+        // A streaming search must keep being polled or its hits never appear.
+        if self.state.results.as_ref().is_some_and(|r| !r.finished) {
+            return true;
+        }
         if let Some(client) = &self.lsp {
             // A live server always warrants a slow poll: replies arrive unprompted.
             return client.state() != vex_lsp::State::Stopped;
@@ -883,6 +962,48 @@ impl App {
             .as_ref()
             .map(|worker| worker.latest().is_none())
             .unwrap_or(false)
+    }
+
+    /// Writes a recovery copy of the active buffer if it is dirty.
+    ///
+    /// Throttled by `recovery::INTERVAL`, so this is safe to call on every keystroke; `force` is for
+    /// the moments where losing anything is unacceptable.
+    fn persist_recovery(&mut self, force: bool) {
+        if !self.state.document.is_dirty() {
+            return;
+        }
+        let Some(path) = self.state.file_path.clone() else {
+            // A scratch buffer has no identity to recover to. Rather than invent one, it is left
+            // alone — and that limitation is stated in the plan rather than hidden.
+            return;
+        };
+        let text = self.state.document.text().to_string();
+        self.recovery
+            .maybe_write(std::path::Path::new(&path), &text, force);
+    }
+
+    /// Offers unsaved work from a previous session.
+    ///
+    /// The copy is loaded into the buffer and left dirty, so the next `:w` writes it. Silently
+    /// discarding it would defeat the purpose; silently *saving* it would overwrite a file the user
+    /// may not want changed.
+    fn restore_recovery(&mut self) {
+        let Some(path) = self.state.file_path.clone() else {
+            return;
+        };
+        let Some(found) = self.recovery.find(std::path::Path::new(&path)) else {
+            return;
+        };
+
+        eprintln!(
+            "vex: recovered unsaved changes for {path} from {} — the buffer is dirty, :w to keep them",
+            found.recovery.display()
+        );
+        self.state.document = Document::from_str(&found.text);
+        // Mark it modified by touching the document through its own edit path would add an undo
+        // step; instead the flag is set directly, since the *file* genuinely differs from the buffer.
+        self.state.document.mark_dirty();
+        self.state.server_status = "recovered unsaved changes".into();
     }
 
     /// Collects the file walk when it finishes.
@@ -965,6 +1086,211 @@ impl App {
             self.state.highlights = spans;
             self.state.node_path = node_path;
             self.state.syntax_error = has_error;
+        }
+    }
+
+    /// Keys for the `/` and `:` prompt. Returns true if the editor should quit.
+    fn handle_prompt_key(&mut self, key: Key) -> bool {
+        let Some(prompt) = &mut self.state.prompt else {
+            return false;
+        };
+        // A message from the previous attempt clears as soon as the user types again.
+        prompt.message = None;
+
+        match key.code {
+            KeyCode::Escape => {
+                // Incremental search moved the cursor; cancelling must put it back, or `/` becomes a
+                // way to lose your place.
+                let origin = prompt.origin;
+                let was_search = prompt.is_search();
+                self.state.prompt = None;
+                if was_search {
+                    self.state.search_matches.clear();
+                    self.state.document.set_primary_caret(origin);
+                }
+            }
+            KeyCode::Enter => {
+                let prompt = self.state.prompt.take().expect("checked above");
+                match prompt.kind {
+                    PromptKind::Search { .. } => {
+                        // Matches stay highlighted after accepting, so `n` has something to move
+                        // through and the eye can find the rest.
+                        self.state.search_matches = prompt.matches;
+                    }
+                    PromptKind::Command => return self.run_command(&prompt.input),
+                }
+            }
+            KeyCode::Backspace => {
+                prompt.input.pop();
+                self.refresh_prompt();
+            }
+            KeyCode::Char(c) if !key.ctrl && !key.alt => {
+                prompt.input.push(c);
+                self.refresh_prompt();
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// Re-runs an incremental search and moves the cursor to the first match ahead of the origin.
+    fn refresh_prompt(&mut self) {
+        let Some(prompt) = &self.state.prompt else {
+            return;
+        };
+        if !prompt.is_search() {
+            return;
+        }
+
+        let query = prompt.input.clone();
+        let origin = prompt.origin;
+        let forward = prompt.forward();
+
+        let matches = vex_buffer::find_all(
+            self.state.document.text(),
+            &query,
+            &vex_buffer::SearchOptions::default(),
+        );
+
+        // Show the search as it is typed: the highlight is the feedback that makes `/` feel live.
+        self.state.search_matches = matches.clone();
+        if let Some(found) = vex_buffer::find_next(&matches, origin, forward) {
+            self.state.document.set_primary_caret(found.start);
+        } else {
+            self.state.document.set_primary_caret(origin);
+        }
+
+        if let Some(prompt) = &mut self.state.prompt {
+            prompt.matches = matches;
+        }
+        self.reveal_cursor();
+    }
+
+    /// Runs a `:` command. Returns true if the editor should quit.
+    fn run_command(&mut self, input: &str) -> bool {
+        match parse_command(input) {
+            Command::Write { path } => {
+                if let Some(path) = path {
+                    self.state.file_path = Some(path.clone());
+                    self.state.path = relative_crumbs(&path);
+                }
+                self.save_active();
+            }
+            Command::Quit { force } => {
+                if self.state.document.is_dirty() && !force {
+                    self.warn("unsaved changes — :q! to discard, :wq to save");
+                    return false;
+                }
+                return true;
+            }
+            Command::WriteQuit => {
+                self.save_active();
+                return !self.state.document.is_dirty();
+            }
+            Command::GotoLine(line) => {
+                let text = self.state.document.text();
+                // Commands are 1-based, offsets are 0-based; the conversion belongs here, once.
+                let target = line.saturating_sub(1).min(text.last_line());
+                let offset = text.point_to_char(vex_text::Point::new(target, 0));
+                self.state.document.set_primary_caret(offset);
+                self.reveal_cursor();
+            }
+            Command::Edit { path } => {
+                if path.is_empty() {
+                    self.warn("usage: :e <path>");
+                } else {
+                    self.activate(Target::File(std::path::PathBuf::from(path)));
+                }
+            }
+            Command::Grep { pattern } => {
+                if pattern.is_empty() {
+                    self.warn("usage: :grep <pattern>");
+                } else {
+                    self.state.results = Some(vex::results::Results::start(
+                        &self.state.project_root,
+                        &pattern,
+                    ));
+                }
+            }
+            Command::SetOption { name, value } => match name.as_str() {
+                "wrap" => {
+                    self.state.display.mode = if value {
+                        WrapMode::Word
+                    } else {
+                        WrapMode::None
+                    };
+                }
+                other => self.warn(&format!("unknown option: {other}")),
+            },
+            Command::Unknown(name) => self.warn(&format!("not a command: {name}")),
+        }
+        false
+    }
+
+    /// Shows a message on the prompt line rather than silently doing nothing.
+    fn warn(&mut self, message: &str) {
+        let mut prompt = vex::prompt::Prompt::new(PromptKind::Command, self.state.cursor());
+        prompt.message = Some(message.to_string());
+        self.state.prompt = Some(prompt);
+    }
+
+    /// Keys for the results panel. Returns true if the key was consumed.
+    fn handle_results_key(&mut self, key: Key) -> bool {
+        let Some(results) = &mut self.state.results else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Escape => {
+                self.state.results = None;
+                true
+            }
+            KeyCode::Enter => {
+                let chosen = results
+                    .selection()
+                    .map(|hit| (hit.path.clone(), hit.line_number));
+                self.state.results = None;
+                if let Some((path, line)) = chosen {
+                    self.activate(Target::File(path));
+                    let text = self.state.document.text();
+                    let target = (line.saturating_sub(1) as usize).min(text.last_line());
+                    let offset = text.point_to_char(vex_text::Point::new(target, 0));
+                    self.state.document.set_primary_caret(offset);
+                    self.reveal_cursor();
+                }
+                true
+            }
+            // Only the navigation keys are consumed, so editing continues to work with the panel
+            // open — it is a list beside the editor, not a modal dialog.
+            KeyCode::Up => {
+                results.move_selection(-1);
+                true
+            }
+            KeyCode::Down => {
+                results.move_selection(1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Writes the active buffer, keeping the recovery copy in step.
+    fn save_active(&mut self) {
+        let Some(path) = self.state.file_path.clone() else {
+            self.warn("no file name — use :w <path>");
+            return;
+        };
+        let text = self.state.document.text().to_string();
+
+        match std::fs::write(&path, &text) {
+            Ok(()) => {
+                self.state.document.mark_saved();
+                // The file on disk is authoritative now, so the recovery copy must go — otherwise it
+                // would be offered again on the next open.
+                self.recovery.discard(std::path::Path::new(&path));
+                eprintln!("vex: wrote {path}");
+            }
+            Err(error) => self.warn(&format!("could not write {path}: {error}")),
         }
     }
 

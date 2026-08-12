@@ -8,6 +8,8 @@
 //! several rows, and the gutter figure belongs only to the first of them.
 
 use crate::palette::Palette;
+use crate::prompt::Prompt;
+use crate::results::Results;
 use vex_buffer::Document;
 use vex_display::{DisplayMap, ScrollAnchor, WrapMode};
 use vex_render::{Align, Frame, Rect, TextRun};
@@ -44,6 +46,14 @@ pub struct EditorState {
 
     /// The command palette, when open. It overlays everything and owns the keyboard.
     pub palette: Option<Palette>,
+    /// The `/` or `:` prompt, when open. Takes over the statusline.
+    pub prompt: Option<Prompt>,
+    /// Project-search results, when the panel is open.
+    pub results: Option<Results>,
+    /// Matches of the last search, highlighted in the text.
+    pub search_matches: Vec<std::ops::Range<CharOffset>>,
+    /// The project root, for showing paths relatively.
+    pub project_root: std::path::PathBuf,
     /// Diagnostics for the active buffer, and the version they describe.
     pub diagnostics: vex_lsp::Diagnostics,
     /// What the language server is called, or why there isn't one.
@@ -88,18 +98,138 @@ pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
     draw_title(frame, state, title, scale);
     draw_tabs(frame, state, tabs, scale);
 
-    let sidebar_width = px(292.0).min(body.width * 0.32);
-    let (sidebar, editor) = body.split_right(sidebar_width);
+    // The results panel takes the bottom of the editor area, above the statusline: it is a list
+    // beside the text, not an overlay, because you read the hit and the code together.
+    let (body_area, results_area) = match &state.results {
+        Some(results) => {
+            let rows = results.visible().0.len().max(1);
+            let height = (rows as f32 + 2.0) * 22.0 * scale;
+            let (panel, rest) = body.split_bottom(height.min(body.height * 0.5));
+            (rest, Some(panel))
+        }
+        None => (body, None),
+    };
+
+    let sidebar_width = px(292.0).min(body_area.width * 0.32);
+    let (sidebar, editor) = body_area.split_right(sidebar_width);
     let (gutter, code) = editor.split_left(px(78.0));
 
     let visible = state.visible_rows(code.height, row_height);
     draw_code(frame, state, gutter, code, row_height, scale);
     draw_sidebar(frame, state, sidebar, visible, scale);
+    if let (Some(results), Some(area)) = (&state.results, results_area) {
+        draw_results(frame, state, results, area, scale);
+    }
     draw_statusline(frame, state, status, scale);
 
     // Last, so it covers everything: the palette is a modal overlay.
     if let Some(palette) = &state.palette {
         draw_palette(frame, state, palette, bounds, scale);
+    }
+}
+
+/// The project-search results panel.
+fn draw_results(
+    frame: &mut Frame,
+    state: &EditorState,
+    results: &crate::results::Results,
+    rect: Rect,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    frame.fill(rect, theme.bg_panel);
+    frame.rule_top(rect, theme.rule, border::BORDER);
+
+    let pad = space::XL * scale;
+    let row_height = 22.0 * scale;
+    let (header, rows_area) = rect.split_top(row_height);
+
+    frame.text(label(
+        state,
+        format!("search: {}", results.query),
+        Rect::new(
+            header.x + pad,
+            header.y,
+            header.width - pad * 2.0,
+            header.height,
+        ),
+        theme.ink_dim,
+        Align::Left,
+        scale,
+    ));
+    frame.text(label(
+        state,
+        results.summary(),
+        Rect::new(
+            header.x + pad,
+            header.y,
+            header.width - pad * 2.0,
+            header.height,
+        ),
+        theme.ink_faint,
+        Align::Right,
+        scale,
+    ));
+
+    let (visible, cursor) = results.visible();
+    for (index, hit) in visible.iter().enumerate() {
+        let y = rows_area.y + index as f32 * row_height;
+        let row = Rect::new(rows_area.x, y, rows_area.width, row_height);
+        let selected = index == cursor;
+
+        if selected {
+            frame.fill(row, theme.row_active);
+        }
+
+        // `path:line` first, then the matching line — the order that lets you scan the list.
+        let location = format!(
+            "{}:{}",
+            results.relative(hit, &state.project_root),
+            hit.line_number
+        );
+        let location_width = 320.0 * scale;
+        frame.text(run(
+            state,
+            Role::Value,
+            location,
+            Rect::new(row.x + pad, y, location_width, row_height),
+            if selected { accent } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+
+        // The matched line, trimmed: leading indentation wastes the width that shows context.
+        frame.text(run(
+            state,
+            Role::Value,
+            hit.line.trim_start().to_string(),
+            Rect::new(
+                row.x + pad + location_width + space::MD * scale,
+                y,
+                (row.right() - row.x - pad * 2.0 - location_width).max(0.0),
+                row_height,
+            ),
+            if selected { theme.ink } else { theme.ink_faint },
+            Align::Left,
+            scale,
+        ));
+    }
+
+    if results.hits.is_empty() {
+        frame.text(run(
+            state,
+            Role::Value,
+            if results.finished {
+                "no matches"
+            } else {
+                "searching…"
+            },
+            Rect::new(rows_area.x + pad, rows_area.y, rows_area.width, row_height),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
     }
 }
 
@@ -531,6 +661,32 @@ fn draw_code(
             frame.fill(
                 Rect::new(code.x, y, border::ACCENT_BORDER * scale, row_height),
                 accent,
+            );
+        }
+
+        // Search matches, under the selection fills: a match you have also selected should read as
+        // selected.
+        for range in &state.search_matches {
+            let start = range.start.max(row.range.start);
+            let end = range.end.min(row.range.end);
+            if start >= end {
+                continue;
+            }
+            let from_column = columns_between(state, text, row.range.start, start);
+            let to_column = columns_between(state, text, row.range.start, end);
+            frame.fill_linear(
+                Rect::new(
+                    text_left + (from_column + row.indent) as f32 * advance,
+                    y,
+                    ((to_column - from_column) as f32 * advance).max(advance * 0.4),
+                    row_height,
+                ),
+                // The visual hue at low alpha: a found-text wash that is not the selection and not
+                // the cursor line.
+                theme
+                    .accent(vex_theme::Mode::Visual)
+                    .with_alpha(0.20)
+                    .over(theme.bg),
             );
         }
 
@@ -1069,6 +1225,65 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     frame.fill(rect, theme.bg_alt);
     frame.rule_top(rect, theme.rule, border::BORDER);
 
+    // While a prompt is open it owns this line, as it does in Vim: `/` is used mid-thought, and an
+    // overlay large enough for its own chrome would hide the text being searched.
+    if let Some(prompt) = &state.prompt {
+        let inner = Rect::new(
+            rect.x + space::XL * scale,
+            rect.y,
+            rect.width - space::XL * 2.0 * scale,
+            rect.height,
+        );
+        frame.text(run(
+            state,
+            Role::Value,
+            prompt.display(),
+            inner,
+            if prompt.message.is_some() {
+                theme.over_budget()
+            } else {
+                theme.ink
+            },
+            Align::Left,
+            scale,
+        ));
+
+        // A caret after the input, so it reads as a field rather than a label.
+        let advance = advance_for(state.typography.spec(Role::Value).size_px * scale);
+        let caret_x = inner.x + prompt.display().chars().count() as f32 * advance + advance * 0.2;
+        frame.fill(
+            Rect::new(
+                caret_x.min(inner.right() - 2.0 * scale),
+                inner.y + inner.height * 0.25,
+                2.0 * scale,
+                inner.height * 0.5,
+            ),
+            accent,
+        );
+
+        // Match count on the right, so `/` tells you whether it found anything before you commit.
+        if prompt.is_search() && !prompt.input.is_empty() {
+            frame.text(run(
+                state,
+                Role::Value,
+                if prompt.matches.is_empty() {
+                    "no matches".to_string()
+                } else {
+                    format!("{} matches", prompt.matches.len())
+                },
+                inner,
+                if prompt.matches.is_empty() {
+                    theme.stale()
+                } else {
+                    theme.ink_dim
+                },
+                Align::Right,
+                scale,
+            ));
+        }
+        return;
+    }
+
     let inner = Rect::new(
         rect.x + space::XL * scale,
         rect.y,
@@ -1132,7 +1347,15 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         ),
         (
             format!(
-                "rust · utf-8 · lf{}",
+                "{} · utf-8 · lf{}",
+                // The detected language, not a hardcoded one: a Python file reading "rust" is the
+                // kind of detail that makes an editor feel unfinished.
+                state
+                    .file_path
+                    .as_deref()
+                    .and_then(vex_syntax::Language::from_path)
+                    .map(|language| language.name())
+                    .unwrap_or("text"),
                 if state.document.is_dirty() {
                     " · mod"
                 } else {

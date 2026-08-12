@@ -182,8 +182,8 @@ Do **not** embed Neovim or Vimscript. Do not aim for plugin compatibility.
 Each milestone has a demo and an acceptance bar. Do not advance until the bar is met — this is
 what prevents a half-working engine with ten half-working features on top.
 
-> **Status.** M0–M6 done (M5 and M6 partially — see below), plus the VSCode importer and a measured
-> optimization pass. 243 tests, zero clippy warnings.
+> **Status.** M0–M6 done (M5 and M6 partially — see below), plus the VSCode importer, a measured
+> optimization pass, and the first slice of M7. 280 tests, zero clippy warnings.
 > Crates:
 > `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
 > `vex-theme` (OKLCH color, mode accents, type roles — 9 tests),
@@ -316,6 +316,32 @@ rename, code actions, format-on-save.
 **Bar:** rust-analyzer working end-to-end on this repo. Note: completion and diagnostics are
 where the async architecture is truly tested — expect this milestone to expose latent design
 mistakes, and budget for that rather than being surprised by it.
+
+> **M7 so far.**
+>
+> - **`/` search and `:` commands.** A Vim-style prompt line that takes over the statusline, with
+>   incremental highlighting as you type, a live match count, `n`/`N`, and cancel restoring the
+>   original cursor position — a search that loses your place is worse than no search. Commands:
+>   `:w`, `:w path`, `:q`, `:q!`, `:wq`/`:x`, `:42`, `:e path`, `:grep`, `:set wrap`/`nowrap`. An
+>   unknown command names itself, so a typo is distinguishable from an unimplemented feature.
+> - **Crash recovery.** Dirty buffers are written to `$XDG_STATE_HOME/vex/recovery` on a two-second
+>   timer and forced before quitting, so a crash costs seconds rather than work. Writes are atomic
+>   (temp file plus rename) because a crash *during* the recovery write would otherwise replace a
+>   good copy with a truncated one. A copy older than the saved file is discarded rather than
+>   offered. Scratch buffers are not covered — they have no identity to recover to.
+> - **Project-search UI.** A streaming results panel below the editor: `path:line` plus the matching
+>   line, `ctrl-f` for the word under the cursor or `:grep` for anything else, `↑↓` to move and `↵`
+>   to open at the line. Capped at 500 hits, with the count marked `500+` so it never reads as
+>   complete.
+> - **Seven more grammars.** Python, JavaScript, TypeScript, TSX, C, C++, HTML and CSS alongside
+>   Rust. Two findings, both caught by a test that loads every grammar and highlights a real sample:
+>   TypeScript's query is *not self-contained* (by convention it is combined with JavaScript's, and
+>   alone it highlights only types), and CSS/HTML use a markup capture vocabulary — `tag`,
+>   `property`, `@media` — that fell through to `Text` and produced **no highlights at all** until
+>   mapped. Dart is deferred: no maintained crate is published, and its language server works over
+>   LSP regardless.
+>
+> Also fixed here: the statusline reported `rust` for every file, whatever its language.
 
 ### M7 — Daily-driver gaps (ongoing, 3–4 weeks)
 Whatever is actually blocking use: soft wrap, folding, multi-cursor, git gutter and blame,

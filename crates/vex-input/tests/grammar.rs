@@ -535,3 +535,20 @@ proptest! {
         prop_assert!(grammar.is_idle() || !grammar.pending().is_empty());
     }
 }
+
+#[test]
+fn search_and_command_keys_resolve() {
+    assert_eq!(normal("/"), Action::StartSearch { forward: true });
+    assert_eq!(normal("?"), Action::StartSearch { forward: false });
+    assert_eq!(normal("n"), Action::RepeatSearch { forward: true });
+    assert_eq!(normal("N"), Action::RepeatSearch { forward: false });
+    assert_eq!(normal(":"), Action::StartCommand);
+}
+
+#[test]
+fn opening_a_prompt_is_not_a_repeatable_change() {
+    // `.` must not reopen a prompt: it repeats edits, not interactions.
+    assert!(!Action::StartSearch { forward: true }.is_change());
+    assert!(!Action::StartCommand.is_change());
+    assert!(!Action::RepeatSearch { forward: true }.is_change());
+}

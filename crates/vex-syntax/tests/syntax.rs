@@ -389,3 +389,111 @@ fn wait_for_result(worker: &mut SyntaxWorker) -> vex_syntax::SyntaxResult {
         std::thread::yield_now();
     }
 }
+
+#[test]
+fn every_grammar_loads_and_its_query_compiles() {
+    // The failure mode adding a language: the grammar links but the query references a node kind it
+    // does not have, so `Query::new` fails at runtime and that language silently loses all color.
+    for language in Language::ALL {
+        let highlighter = Highlighter::new(language)
+            .unwrap_or_else(|error| panic!("{}: {error}", language.name()));
+        drop(highlighter);
+    }
+}
+
+#[test]
+fn extensions_map_to_the_right_language() {
+    assert_eq!(Language::from_path("a.py"), Some(Language::Python));
+    assert_eq!(Language::from_path("a.tsx"), Some(Language::Tsx));
+    assert_eq!(Language::from_path("a.ts"), Some(Language::TypeScript));
+    assert_eq!(Language::from_path("a.jsx"), Some(Language::JavaScript));
+    assert_eq!(Language::from_path("a.cpp"), Some(Language::Cpp));
+    assert_eq!(
+        Language::from_path("a.h"),
+        Some(Language::C),
+        "a bare header is C"
+    );
+    assert_eq!(Language::from_path("a.css"), Some(Language::Css));
+    assert_eq!(Language::from_path("a.txt"), None);
+}
+
+#[test]
+fn each_language_highlights_its_own_keywords() {
+    // One real sample per grammar: enough to prove the query matches the grammar rather than merely
+    // compiling against it.
+    let cases: &[(Language, &str, &str)] = &[
+        (Language::Python, "def main():\n    return 1\n", "def"),
+        (
+            Language::JavaScript,
+            "function main() { return 1; }\n",
+            "function",
+        ),
+        (
+            Language::TypeScript,
+            "function f(x: number) { return x; }\n",
+            "function",
+        ),
+        (Language::C, "int main(void) { return 0; }\n", "return"),
+        (Language::Cpp, "int main() { return 0; }\n", "return"),
+        (Language::Css, "body { color: red; }\n", "body"),
+    ];
+
+    for (language, source, needle) in cases {
+        let text = Text::from_str(source);
+        let mut highlighter = Highlighter::new(*language).unwrap();
+        assert!(
+            highlighter.parse(&text),
+            "{} failed to parse",
+            language.name()
+        );
+
+        let spans = highlighter.highlights(&text, CharOffset(0)..text.len_chars());
+        assert!(
+            !spans.is_empty(),
+            "{} produced no highlights at all",
+            language.name()
+        );
+
+        let offset = source.find(needle).unwrap();
+        let covered = spans
+            .iter()
+            .any(|span| span.range.start.get() <= offset && offset < span.range.end.get());
+        assert!(
+            covered,
+            "{}: {needle:?} was not highlighted; spans were {:?}",
+            language.name(),
+            spans
+                .iter()
+                .map(|s| (text.slice_to_string(s.range.clone()), s.highlight))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn html_highlights_tags() {
+    let source = "<!-- note -->\n<div class=\"x\">text</div>\n";
+    let text = Text::from_str(source);
+    let mut highlighter = Highlighter::new(Language::Html).unwrap();
+    assert!(highlighter.parse(&text));
+
+    let spans = highlighter.highlights(&text, CharOffset(0)..text.len_chars());
+    assert!(!spans.is_empty(), "html produced no highlights");
+    assert!(
+        spans
+            .iter()
+            .any(|span| span.highlight == Highlight::Comment),
+        "the comment should be recognized: {spans:?}"
+    );
+}
+
+#[test]
+fn markup_capture_names_are_mapped() {
+    // CSS and HTML name things differently from programming-language grammars. Without these, a CSS
+    // file came back with no highlights at all — every capture fell through to `Text` and was
+    // filtered out.
+    assert_eq!(Highlight::from_capture("tag"), Highlight::Type);
+    assert_eq!(Highlight::from_capture("property"), Highlight::Attribute);
+    assert_eq!(Highlight::from_capture("media"), Highlight::Keyword);
+    assert_eq!(Highlight::from_capture("import"), Highlight::Keyword);
+}

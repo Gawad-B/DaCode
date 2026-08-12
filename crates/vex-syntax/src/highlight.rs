@@ -39,36 +39,161 @@ impl<'a> TextProvider<&'a [u8]> for RopeText<'a> {
 
 /// A language the editor knows how to parse.
 ///
-/// One variant per grammar. The plan targets Rust, TS/JS/HTML/CSS, Python, C/C++ and Dart; Rust
-/// is wired first because the editor is written in it and must highlight itself.
+/// The set from the plan's locked decisions, minus Dart: no maintained `tree-sitter-dart` crate is
+/// published, so its grammar would have to be vendored and built here — deferred rather than
+/// half-done, since the Dart language server still works over LSP without it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
+    Python,
+    JavaScript,
+    TypeScript,
+    Tsx,
+    C,
+    Cpp,
+    Html,
+    Css,
 }
 
 impl Language {
+    pub const ALL: [Language; 9] = [
+        Language::Rust,
+        Language::Python,
+        Language::JavaScript,
+        Language::TypeScript,
+        Language::Tsx,
+        Language::C,
+        Language::Cpp,
+        Language::Html,
+        Language::Css,
+    ];
+
     /// Guesses the language from a file extension. Content sniffing and modelines can come later;
     /// the extension is right almost always.
     pub fn from_path(path: &str) -> Option<Self> {
         let extension = path.rsplit('.').next()?;
-        match extension {
-            "rs" => Some(Language::Rust),
-            _ => None,
+        Some(match extension {
+            "rs" => Language::Rust,
+            "py" | "pyi" => Language::Python,
+            "js" | "mjs" | "cjs" | "jsx" => Language::JavaScript,
+            "ts" | "mts" | "cts" => Language::TypeScript,
+            "tsx" => Language::Tsx,
+            // Headers are ambiguous. `.h` is treated as C, because a C++ header that uses C++-only
+            // syntax still parses error-tolerantly, while parsing C as C++ misreads nothing.
+            "c" | "h" => Language::C,
+            "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => Language::Cpp,
+            "html" | "htm" => Language::Html,
+            "css" => Language::Css,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::Python => "python",
+            Language::JavaScript => "javascript",
+            Language::TypeScript => "typescript",
+            Language::Tsx => "tsx",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Html => "html",
+            Language::Css => "css",
         }
     }
 
     fn ts_language(self) -> tree_sitter::Language {
         match self {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+            Language::Python => tree_sitter_python::LANGUAGE.into(),
+            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Language::C => tree_sitter_c::LANGUAGE.into(),
+            Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Language::Html => tree_sitter_html::LANGUAGE.into(),
+            Language::Css => tree_sitter_css::LANGUAGE.into(),
         }
     }
 
-    fn highlights_query(self) -> &'static str {
+    /// The highlight query source for this language.
+    ///
+    /// Returns an owned string because TypeScript's query is not self-contained: by convention it
+    /// carries only the TypeScript-specific captures and is *combined with* the JavaScript query.
+    /// Using it alone highlights types and nothing else — which is exactly what happened before a
+    /// test caught it.
+    fn highlights_query(self) -> String {
         match self {
-            Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY,
+            Language::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_string(),
+            Language::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
+            Language::JavaScript => tree_sitter_javascript::HIGHLIGHT_QUERY.to_string(),
+            // JavaScript first: later patterns win in tree-sitter, so the TypeScript-specific
+            // captures must come last to take precedence.
+            Language::TypeScript | Language::Tsx => format!(
+                "{}\n{}",
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY
+            ),
+            Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
+            Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+            // The C and C++ crates ship query files but do not expose them, and one crate cannot
+            // `include_str!` another's source. Rather than reach into a vendored path that may move,
+            // these are written here — small, and they cover the roles the theme actually
+            // distinguishes.
+            Language::C | Language::Cpp => C_FAMILY_HIGHLIGHTS.to_string(),
         }
     }
 }
+
+/// A compact highlight query for C and C++.
+///
+/// Deliberately limited to the captures this editor's theme has colors for. A longer query would add
+/// captures that all collapse to the same few roles anyway.
+const C_FAMILY_HIGHLIGHTS: &str = r#"
+(comment) @comment
+(string_literal) @string
+(char_literal) @string
+(system_lib_string) @string
+(number_literal) @number
+(true) @constant
+(false) @constant
+(null) @constant
+
+(primitive_type) @type
+(sized_type_specifier) @type
+(type_identifier) @type
+
+(function_declarator declarator: (identifier) @function)
+(call_expression function: (identifier) @function)
+(call_expression function: (field_expression field: (field_identifier) @function))
+(preproc_function_def name: (identifier) @function)
+
+"break" @keyword
+"case" @keyword
+"const" @keyword
+"continue" @keyword
+"default" @keyword
+"do" @keyword
+"else" @keyword
+"enum" @keyword
+"extern" @keyword
+"for" @keyword
+"if" @keyword
+"inline" @keyword
+"return" @keyword
+"sizeof" @keyword
+"static" @keyword
+"struct" @keyword
+"switch" @keyword
+"typedef" @keyword
+"union" @keyword
+"volatile" @keyword
+"while" @keyword
+
+(preproc_include) @attribute
+(preproc_def) @attribute
+(preproc_ifdef) @attribute
+"#;
 
 /// The theme-facing highlight roles.
 ///
@@ -99,9 +224,18 @@ impl Highlight {
         let base = name.split('.').next().unwrap_or(name);
         match base {
             "keyword" => Highlight::Keyword,
+            // Markup vocabularies: CSS and HTML name things differently from programming-language
+            // grammars, and without these every CSS file came back with no highlights at all. A tag
+            // is the nearest thing to a type; a CSS property is the nearest thing to an attribute.
+            "tag" => Highlight::Type,
+            "property" => Highlight::Attribute,
+            // CSS at-rules (`@media`, `@import`, …) are keywords in every other language's terms.
+            "media" | "import" | "charset" | "namespace" | "keyframes" | "supports" => {
+                Highlight::Keyword
+            }
             "type" | "constructor" => Highlight::Type,
             "function" | "method" => Highlight::Function,
-            "attribute" | "label" => Highlight::Attribute,
+            "attribute" | "label" | "decorator" => Highlight::Attribute,
             "comment" => Highlight::Comment,
             "string" | "character" => Highlight::String,
             "number" | "float" | "integer" => Highlight::Number,
@@ -138,7 +272,7 @@ impl Highlighter {
         parser
             .set_language(&ts_language)
             .map_err(|err| format!("loading the {language:?} grammar: {err}"))?;
-        let query = Query::new(&ts_language, language.highlights_query())
+        let query = Query::new(&ts_language, &language.highlights_query())
             .map_err(|err| format!("compiling the {language:?} highlight query: {err}"))?;
 
         Ok(Self {

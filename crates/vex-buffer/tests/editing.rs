@@ -311,3 +311,106 @@ fn transactions_from_outside_still_go_through_history() {
     assert!(document.undo());
     assert_eq!(document.text().to_string(), "a b c");
 }
+
+// ---- buffer search ---------------------------------------------------------------------
+
+#[test]
+fn search_finds_every_occurrence_in_order() {
+    let text = vex_text::Text::from_str("one two one three one");
+    let matches = vex_buffer::find_all(&text, "one", &Default::default());
+
+    assert_eq!(matches.len(), 3);
+    assert_eq!(matches[0].start.get(), 0);
+    assert_eq!(matches[1].start.get(), 8);
+    assert_eq!(matches[2].start.get(), 18);
+    assert!(
+        matches.windows(2).all(|w| w[0].start < w[1].start),
+        "matches must be in document order"
+    );
+}
+
+#[test]
+fn search_is_smart_case_like_project_search() {
+    let text = vex_text::Text::from_str("Total total TOTAL");
+
+    let lower = vex_buffer::find_all(&text, "total", &Default::default());
+    assert_eq!(lower.len(), 3, "a lowercase query matches any case");
+
+    let upper = vex_buffer::find_all(&text, "Total", &Default::default());
+    assert_eq!(upper.len(), 1, "an uppercase letter means case matters");
+    assert_eq!(upper[0].start.get(), 0);
+}
+
+#[test]
+fn search_offsets_are_char_based_not_byte_based() {
+    // The bug this guards: byte offsets from the scan must be converted, or every match after a
+    // multi-byte character points at the wrong place.
+    let text = vex_text::Text::from_str("héllo 👋 needle here");
+    let matches = vex_buffer::find_all(&text, "needle", &Default::default());
+
+    assert_eq!(matches.len(), 1);
+    let found = text.slice_to_string(matches[0].clone());
+    assert_eq!(found, "needle", "the range must cover exactly the match");
+}
+
+#[test]
+fn search_finds_multi_byte_queries() {
+    let text = vex_text::Text::from_str("a 日本語 b 日本語 c");
+    let matches = vex_buffer::find_all(&text, "日本語", &Default::default());
+    assert_eq!(matches.len(), 2);
+    assert_eq!(text.slice_to_string(matches[1].clone()), "日本語");
+}
+
+#[test]
+fn an_empty_query_matches_nothing() {
+    let text = vex_text::Text::from_str("anything");
+    assert!(vex_buffer::find_all(&text, "", &Default::default()).is_empty());
+}
+
+#[test]
+fn the_match_limit_is_respected() {
+    let text = vex_text::Text::from_str(&"x".repeat(5_000));
+    let options = vex_buffer::SearchOptions {
+        limit: 10,
+        ..Default::default()
+    };
+    assert_eq!(vex_buffer::find_all(&text, "x", &options).len(), 10);
+}
+
+#[test]
+fn next_and_previous_wrap_around() {
+    // A search that stops at the end of the file forces a manual jump back every time.
+    let text = vex_text::Text::from_str("one two one three one");
+    let matches = vex_buffer::find_all(&text, "one", &Default::default());
+
+    let first = vex_buffer::find_next(&matches, CharOffset(0), true).unwrap();
+    assert_eq!(first.start.get(), 8, "forward from 0 skips the match at 0");
+
+    let wrapped = vex_buffer::find_next(&matches, CharOffset(20), true).unwrap();
+    assert_eq!(wrapped.start.get(), 0, "forward past the last match wraps");
+
+    let backward = vex_buffer::find_next(&matches, CharOffset(8), false).unwrap();
+    assert_eq!(backward.start.get(), 0);
+
+    let wrapped_back = vex_buffer::find_next(&matches, CharOffset(0), false).unwrap();
+    assert_eq!(
+        wrapped_back.start.get(),
+        18,
+        "backward from the first wraps"
+    );
+}
+
+#[test]
+fn next_on_no_matches_is_none() {
+    assert!(vex_buffer::find_next(&[], CharOffset(0), true).is_none());
+}
+
+#[test]
+fn the_current_match_index_is_reported() {
+    let text = vex_text::Text::from_str("one two one");
+    let matches = vex_buffer::find_all(&text, "one", &Default::default());
+
+    assert_eq!(vex_buffer::index_of(&matches, CharOffset(0)), Some(0));
+    assert_eq!(vex_buffer::index_of(&matches, CharOffset(9)), Some(1));
+    assert_eq!(vex_buffer::index_of(&matches, CharOffset(5)), None);
+}
