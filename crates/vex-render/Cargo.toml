@@ -1,0 +1,18 @@
+[package]
+name = "vex-render"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GPU rendering for the vex editor: rectangles and shaped text"
+
+[dependencies]
+vex-theme = { path = "../vex-theme" }
+
+wgpu.workspace = true
+glyphon.workspace = true
+winit.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
+png.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "vex-import"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Import VSCode settings, keybindings, themes and snippets into vex"
+
+[dependencies]
+vex-theme.workspace = true
+vex-input.workspace = true
+
+serde_json.workspace = true
+zip.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+# ZipWriter, to build a sample .vsix in tests rather than committing a binary fixture.
+zip = { workspace = true, features = ["deflate"] }

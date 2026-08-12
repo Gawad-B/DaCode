@@ -1,0 +1,77 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+vex-text = { path = "crates/vex-text" }
+vex-theme = { path = "crates/vex-theme" }
+vex-render = { path = "crates/vex-render" }
+vex-buffer = { path = "crates/vex-buffer" }
+vex-display = { path = "crates/vex-display" }
+vex-input = { path = "crates/vex-input" }
+vex-syntax = { path = "crates/vex-syntax" }
+vex-import = { path = "crates/vex-import" }
+vex-project = { path = "crates/vex-project" }
+vex-lsp = { path = "crates/vex-lsp" }
+
+# Rendering. glyphon pins the wgpu and cosmic-text versions, so it is the crate that decides
+# this trio: glyphon 0.12 -> wgpu 30, cosmic-text 0.19.
+wgpu = "30"
+glyphon = "0.12"
+winit = "0.30"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+# Offscreen capture, for verifying the design without a compositor.
+png = "0.18"
+
+# Syntax. Incremental and error-tolerant, and it gives structure (not just colors), which is
+# what makes structural text objects and real indentation possible later.
+tree-sitter = "0.26"
+tree-sitter-rust = "0.24"
+
+# Import. `zip` reads .vsix packages (they are zip archives); no JS runtime is involved, because
+# running VSCode extensions is out of scope — see crates/vex-import/src/lib.rs.
+serde_json = "1"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+
+# Project layer. `ignore` is ripgrep's gitignore-aware walker and `grep-*` its search engine —
+# writing either by hand is a mistake. `nucleo-matcher` is Helix's fuzzy matcher, taken without the
+# full `nucleo` crate's threaded worker, which we do not need.
+# LSP. `lsp-types` is the protocol's type definitions; the client, framing and process handling are
+# ours. Deliberately **no async runtime**: a language server is a child process and two pipes, and
+# threads with channels model that directly — the same shape the syntax worker already uses.
+lsp-types = "0.97"
+serde = { version = "1", features = ["derive"] }
+
+ignore = "0.4"
+nucleo-matcher = "0.3"
+grep-searcher = "0.1"
+grep-regex = "0.1"
+grep-matcher = "0.1"
+
+ropey = "1.6"
+unicode-segmentation = "1"
+unicode-width = "0.2"
+thiserror = "2"
+anyhow = "1"
+smallvec = "1"
+
+proptest = "1"
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[profile.dev]
+# The editor must feel fast even in debug builds, otherwise dogfighting is painful.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind" # never abort: unsaved buffers must be recoverable

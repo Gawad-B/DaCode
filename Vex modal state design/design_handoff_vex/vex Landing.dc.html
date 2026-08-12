@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,400&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; background: oklch(0.165 0.008 70); }
+  * { box-sizing: border-box; }
+  a { color: oklch(0.74 0.13 250); text-decoration: none; }
+  a:hover { color: oklch(0.85 0.1 250); }
+  @keyframes landBlink { 0%, 48% { opacity: 1 } 58%, 100% { opacity: 0.12 } }
+</style>
+</helmet>
+<div style="min-height: 100vh; background: {{ bg }}; color: {{ ink }}; font-family: 'IBM Plex Mono', ui-monospace, monospace;">
+
+  <div style="display: flex; align-items: baseline; gap: 20px; padding: 26px 56px; border-bottom: 1px solid {{ rule }};">
+    <span style="font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-size: 27px; line-height: 1;">vex</span>
+    <span style="width: 8px; height: 19px; background: {{ modeColor }}; align-self: center;"></span>
+    <span style="flex: 1;"></span>
+    <span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkDim }}; display: flex; gap: 28px; align-items: center;">
+      <a href="#design">design</a><a href="#roadmap">roadmap</a><a href="#identity">identity</a><a href="#scope">scope</a>
+      <span onClick="{{ toggleTheme }}" style="cursor: pointer; color: {{ inkFaint }}; border: 1px solid {{ rule }}; padding: 6px 10px;">{{ themeLabel }}</span>
+    </span>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1.15fr 1fr; border-bottom: 1px solid {{ rule }};">
+    <div style="padding: 92px 56px 80px; display: flex; flex-direction: column; gap: 34px; border-right: 1px solid {{ ruleSoft }};">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: clamp(50px, 6.2vw, 92px); line-height: 0.96; letter-spacing: -0.02em; text-wrap: pretty;">
+        A modal editor that never<br /><span style="font-style: italic;">stalls</span> on your keystroke.
+      </div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 17px; line-height: 1.62; max-width: 46ch; color: {{ inkDim }}; text-wrap: pretty;">
+        vex is built on one rule: nothing on the UI thread may ever be unbounded in cost. Parsing, LSP, search and git run against immutable, version-tagged snapshots — stale answers are discarded, never applied.
+      </div>
+      <div style="display: flex; align-items: center; gap: 14px; padding: 15px 20px; background: {{ bgPanel }}; border: 1px solid {{ rule }}; width: fit-content; font-size: 13.5px;">
+        <span style="color: {{ modeColor }};">$</span><span>cargo install vex</span><span style="width: 8px; height: 15px; background: {{ modeColor }}; display: inline-block; animation: landBlink 1.15s steps(1) infinite;"></span>
+      </div>
+      <div style="display: flex; gap: 40px; font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: {{ inkFaint }};">
+        <span>Rust · edition 2024</span><span>Linux first</span><span>wgpu + tree-sitter</span>
+      </div>
+    </div>
+
+    <div style="padding: 56px 56px 48px; display: flex; flex-direction: column; gap: 22px; background: {{ bgAlt }};">
+      <div style="display: flex; align-items: baseline; justify-content: space-between;">
+        <span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }};">mode is the environment</span>
+        <span style="font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-size: 20px; color: {{ modeColor }};">{{ modeName }}</span>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <div onClick="{{ toNormal }}" style="flex: 1; padding: 11px 0; text-align: center; border: 1px solid {{ rule }}; font-size: 11px; cursor: pointer; background: {{ bgPanel }};" style-hover="border-color: {{ hoverNormal }}; color: {{ hoverNormal }};">normal</div>
+        <div onClick="{{ toInsert }}" style="flex: 1; padding: 11px 0; text-align: center; border: 1px solid {{ rule }}; font-size: 11px; cursor: pointer; background: {{ bgPanel }};" style-hover="border-color: {{ hoverInsert }}; color: {{ hoverInsert }};">insert</div>
+        <div onClick="{{ toVisual }}" style="flex: 1; padding: 11px 0; text-align: center; border: 1px solid {{ rule }}; font-size: 11px; cursor: pointer; background: {{ bgPanel }};" style-hover="border-color: {{ hoverVisual }}; color: {{ hoverVisual }};">visual</div>
+        <div onClick="{{ toReplace }}" style="flex: 1; padding: 11px 0; text-align: center; border: 1px solid {{ rule }}; font-size: 11px; cursor: pointer; background: {{ bgPanel }};" style-hover="border-color: {{ hoverReplace }}; color: {{ hoverReplace }};">replace</div>
+      </div>
+      <div style="border: 1px solid {{ rule }}; background: {{ bgPanel }}; padding: 20px 0; display: flex; font-size: 13px; line-height: 1.95; white-space: pre;">
+        <div style="width: 58px; flex-shrink: 0; text-align: right; padding-right: 18px; display: flex; flex-direction: column; font-family: 'Instrument Serif', Georgia, serif; color: {{ inkFaint }};">
+          <div>20</div><div>21</div><div style="color: {{ modeColor }};">22</div><div>23</div><div>24</div>
+        </div>
+        <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden;">
+          <div><span style="color: {{ synKw }};">pub struct</span> <span style="color: {{ synType }};">Anchor</span> {</div>
+          <div>    offset: <span style="color: {{ synType }};">CharOffset</span>,</div>
+          <div style="background: {{ lineTint }}; border-left: 2px solid {{ modeColor }}; padding-left: 6px; margin-left: -8px;">    bias: <span style="color: {{ synType }};">Bias</span>,<span style="{{ cursorStyle }}"></span></div>
+          <div>    version: <span style="color: {{ synType }};">Version</span>,</div>
+          <div>}</div>
+        </div>
+      </div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13.5px; line-height: 1.6; color: {{ inkDim }}; text-wrap: pretty;">{{ modeBlurb }}</div>
+    </div>
+  </div>
+
+  <div id="design" style="display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid {{ rule }};">
+    <div style="padding: 54px 44px; border-right: 1px solid {{ ruleSoft }}; display: flex; flex-direction: column; gap: 16px;">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 44px; line-height: 1; color: {{ hoverNormal }};">16.6</div>
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 25px;">The frame budget is the spec</div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; line-height: 1.62; color: {{ inkDim }}; text-wrap: pretty;">Keystroke to glyph is bounded work: a rope edit and a repaint of visible rows. No full-file scan, no reparse, no disk touch. Frame time stays on screen, next to the budget it has to beat.</div>
+    </div>
+    <div style="padding: 54px 44px; border-right: 1px solid {{ ruleSoft }}; display: flex; flex-direction: column; gap: 16px;">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 44px; line-height: 1; color: {{ hoverInsert }};">5</div>
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 25px;">Five position types, zero bare integers</div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; line-height: 1.62; color: {{ inkDim }}; text-wrap: pretty;">ByteOffset, CharOffset, Point, DisplayPoint, Anchor — distinct types with explicit, tested conversions. Editors are bug factories because “position” is ambiguous. Here it never is, and the editor shows you all of them at once.</div>
+    </div>
+    <div style="padding: 54px 44px; display: flex; flex-direction: column; gap: 16px;">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 44px; line-height: 1; color: {{ hoverVisual }};">1</div>
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 25px;">One vocabulary: everything is an Action</div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 14px; line-height: 1.62; color: {{ inkDim }}; text-wrap: pretty;">Keymaps resolve to Actions. The palette lists them, macros record them, dot-repeat replays them, tests drive them headless. Composability stops being special cases and becomes a grammar.</div>
+    </div>
+  </div>
+
+  <div style="display: grid; grid-template-columns: 1fr 1.15fr; border-bottom: 1px solid {{ rule }};">
+    <div style="padding: 58px 56px; border-right: 1px solid {{ ruleSoft }}; background: {{ bgAlt }}; display: flex; flex-direction: column; gap: 22px;">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 40px; line-height: 1.05;">Vim's grammar.<br />A selection set underneath.</div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 15px; line-height: 1.62; color: {{ inkDim }}; max-width: 42ch; text-wrap: pretty;">A cursor is a one-wide selection with a primary. Every operator maps over the set, so multi-cursor is never a special case — and tree-sitter makes structural objects nearly free.</div>
+    </div>
+    <div style="padding: 58px 56px; display: flex; flex-direction: column;">
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }}; padding-bottom: 20px;">pending grammar</div>
+      <div style="display: flex; flex-direction: column; font-size: 14px;">
+        <div style="display: grid; grid-template-columns: 92px 1fr; gap: 20px; padding: 13px 0; border-bottom: 1px solid {{ ruleSoft }};"><span style="color: {{ modeColor }};">3dw</span><span style="color: {{ inkDim }};">count · operator · motion, resolved to one Action</span></div>
+        <div style="display: grid; grid-template-columns: 92px 1fr; gap: 20px; padding: 13px 0; border-bottom: 1px solid {{ ruleSoft }};"><span style="color: {{ modeColor }};">"ayif</span><span style="color: {{ inkDim }};">register · yank · structural function body</span></div>
+        <div style="display: grid; grid-template-columns: 92px 1fr; gap: 20px; padding: 13px 0; border-bottom: 1px solid {{ ruleSoft }};"><span style="color: {{ modeColor }};">.</span><span style="color: {{ inkDim }};">replay the last change — it was already an Action</span></div>
+        <div style="display: grid; grid-template-columns: 92px 1fr; gap: 20px; padding: 13px 0;"><span style="color: {{ modeColor }};">⌥s</span><span style="color: {{ inkDim }};">split selection, then edit all of it at once</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="roadmap" style="padding: 62px 56px 68px; border-bottom: 1px solid {{ rule }};">
+    <div style="display: flex; align-items: baseline; gap: 22px; padding-bottom: 34px;">
+      <span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 40px;">Roadmap</span>
+      <span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; color: {{ inkFaint }};">each milestone has a demo and a bar it must clear</span>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: {{ rule }};">
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ hoverInsert }};">M0 · render spike</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Glyph grid on wgpu. Bar: a full screen of text under 5 ms.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ hoverInsert }};">M1 · text core</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Rope, transactions, anchors. Bar: property tests survive random edit storms.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ hoverInsert }};">M2 · usable editor</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Soft wrap designed in. Bar: a 100 MB file with no perceptible lag.</span></div>
+      <div style="background: {{ bgPanel }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px; outline: 2px solid {{ modeColor }}; outline-offset: -2px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ modeColor }};">M3 · modal editing ←</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ ink }};">Operators, counts, registers, dot-repeat. Bar: it becomes the daily editor.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ inkFaint }};">M4 · syntax</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Incremental reparse off-thread. Bar: highlighting never applied stale.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ inkFaint }};">M5 · project layer</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Panes, palette, project search. Bar: navigate by keyboard, no shell.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ inkFaint }};">M6 · LSP</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Diagnostics through code actions. Bar: rust-analyzer end to end.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ inkFaint }};">M7 · daily-driver gaps</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Driven by observed friction only. Bar: two weeks, no other editor.</span></div>
+      <div style="background: {{ bgAlt }}; padding: 24px 26px; display: flex; flex-direction: column; gap: 10px;"><span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 22px; color: {{ inkFaint }};">M8 · polish</span><span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 13px; line-height: 1.55; color: {{ inkDim }};">Startup budget, crash-safe buffers, hot config. Bar: nothing lost, ever.</span></div>
+    </div>
+  </div>
+
+  <div id="identity" style="padding: 62px 56px 68px; border-bottom: 1px solid {{ rule }}; background: {{ bgAlt }};">
+    <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 40px; padding-bottom: 36px;">Identity</div>
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 44px;">
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }};">mark</div>
+        <div style="background: {{ bgPanel }}; border: 1px solid {{ rule }}; height: 118px; display: flex; align-items: center; justify-content: center; gap: 4px;">
+          <span style="font-family: 'Instrument Serif', Georgia, serif; font-style: italic; font-size: 58px; line-height: 1;">vex</span>
+          <span style="width: 9px; height: 40px; background: {{ modeColor }};"></span>
+        </div>
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 12.5px; line-height: 1.55; color: {{ inkDim }};">Italic serif wordmark, lowercase always, with the cursor block set as a fourth letter.</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }};">mode palette</div>
+        <div style="display: flex; height: 118px; border: 1px solid {{ rule }};">
+          <div style="flex: 1; background: {{ hoverNormal }}; display: flex; align-items: flex-end; padding: 8px; color: {{ bg }}; font-size: 9px; letter-spacing: 0.1em;">250</div>
+          <div style="flex: 1; background: {{ hoverInsert }}; display: flex; align-items: flex-end; padding: 8px; color: {{ bg }}; font-size: 9px; letter-spacing: 0.1em;">155</div>
+          <div style="flex: 1; background: {{ hoverVisual }}; display: flex; align-items: flex-end; padding: 8px; color: {{ bg }}; font-size: 9px; letter-spacing: 0.1em;">70</div>
+          <div style="flex: 1; background: {{ hoverReplace }}; display: flex; align-items: flex-end; padding: 8px; color: {{ bg }}; font-size: 9px; letter-spacing: 0.1em;">25</div>
+        </div>
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 12.5px; line-height: 1.55; color: {{ inkDim }};">One lightness, one chroma, four hues. Modes read as states of one instrument, not four themes.</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }};">cursor set</div>
+        <div style="background: {{ bgPanel }}; border: 1px solid {{ rule }}; height: 118px; display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: 0 18px; font-size: 12.5px;">
+          <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 11px; height: 17px; background: {{ cNormal }}; border-bottom: 2px solid {{ hoverNormal }};"></span><span style="color: {{ inkDim }};">normal · wide, underlined</span></div>
+          <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 2px; height: 17px; background: {{ hoverInsert }};"></span><span style="color: {{ inkDim }};">insert · bar, blinking</span></div>
+          <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 40px; height: 17px; background: {{ cVisual }};"></span><span style="color: {{ inkDim }};">visual · the whole set</span></div>
+          <div style="display: flex; align-items: center; gap: 12px;"><span style="width: 11px; height: 17px; background: {{ cReplace }};"></span><span style="color: {{ inkDim }};">replace · filled</span></div>
+        </div>
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 12.5px; line-height: 1.55; color: {{ inkDim }};">Shape says what the next keystroke will do. Colour only confirms it.</div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }};">type</div>
+        <div style="background: {{ bgPanel }}; border: 1px solid {{ rule }}; height: 118px; display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 0 18px;">
+          <span style="font-family: 'Instrument Serif', Georgia, serif; font-size: 27px;">Instrument Serif</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size: 14px; color: {{ inkDim }};">IBM Plex Mono</span>
+          <span style="font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: {{ inkFaint }};">Plex Sans · labels</span>
+        </div>
+        <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 12.5px; line-height: 1.55; color: {{ inkDim }};">Prose and comments are typeset, not printed. Code stays mono; labels stay small and spaced.</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="scope" style="display: grid; grid-template-columns: 1fr 1fr;">
+    <div style="padding: 58px 56px 66px; border-right: 1px solid {{ ruleSoft }}; display: flex; flex-direction: column; gap: 18px;">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 34px;">What vex will not do</div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 14.5px; line-height: 1.62; color: {{ inkDim }}; max-width: 44ch; text-wrap: pretty;">No plugin system, no remote editing, no debugger UI, no collaboration, no settings GUI, no Windows or macOS build in v1. Deferring the extension API is what keeps the rest honest — it is the thing that makes other editors enormous, and it constrains every internal API the moment it exists.</div>
+    </div>
+    <div style="padding: 58px 56px 66px; display: flex; flex-direction: column; gap: 18px; background: {{ bgAlt }};">
+      <div style="font-family: 'Instrument Serif', Georgia, serif; font-size: 34px;">Success has one criterion</div>
+      <div style="font-family: 'IBM Plex Sans', sans-serif; font-size: 14.5px; line-height: 1.62; color: {{ inkDim }}; max-width: 44ch; text-wrap: pretty;">Not feature parity — daily use. From M3 onward vex is written inside vex, and its own bug tracker is the friction of using it. Four to six months of steady part-time work to a genuine daily driver.</div>
+      <div style="display: flex; align-items: baseline; gap: 12px; padding-top: 8px; font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: {{ inkFaint }};">
+        <span style="width: 26px; height: 2px; background: {{ modeColor }};"></span><span>self-hosting since M3</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Theme&quot;},&quot;mode&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;normal&quot;,&quot;insert&quot;,&quot;visual&quot;,&quot;replace&quot;],&quot;default&quot;:&quot;normal&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;State&quot;}}">
+const MODES = { normal: 250, insert: 155, visual: 70, replace: 25 };
+
+const BLURBS = {
+  normal: "Normal: the cursor is a one-wide selection. 3dw is a count, an operator and a motion resolved into a single Action — the same value a keymap, the palette, a macro or a test can produce.",
+  insert: "Insert: the cursor narrows to a bar and the chrome cools. Every keystroke is a transaction with its own inverse, so undo grouping is policy rather than guesswork.",
+  visual: "Visual: selections are the data model, not a mode-specific overlay. Split one into many and every operator maps over the set — multi-cursor is never a special case.",
+  replace: "Replace: the warmest hue in the palette, because it is the mode that destroys text. Shape and colour both change before you type, not after.",
+};
+
+const DARK = {
+  bg: "oklch(0.165 0.008 70)",
+  bgAlt: "oklch(0.19 0.009 70)",
+  bgPanel: "oklch(0.215 0.01 70)",
+  rule: "oklch(0.3 0.01 70)",
+  ruleSoft: "oklch(0.25 0.009 70)",
+  ink: "oklch(0.91 0.012 80)",
+  inkDim: "oklch(0.7 0.012 75)",
+  inkFaint: "oklch(0.55 0.01 72)",
+  synKw: "oklch(0.74 0.12 300)",
+  synType: "oklch(0.83 0.09 60)",
+  modeL: 0.74, modeC: 0.13,
+  label: "light",
+};
+
+const LIGHT = {
+  bg: "oklch(0.965 0.008 85)",
+  bgAlt: "oklch(0.978 0.008 85)",
+  bgPanel: "oklch(0.99 0.006 85)",
+  rule: "oklch(0.88 0.012 85)",
+  ruleSoft: "oklch(0.91 0.01 85)",
+  ink: "oklch(0.24 0.015 70)",
+  inkDim: "oklch(0.47 0.015 70)",
+  inkFaint: "oklch(0.64 0.012 70)",
+  synKw: "oklch(0.42 0.13 300)",
+  synType: "oklch(0.44 0.11 45)",
+  modeL: 0.52, modeC: 0.13,
+  label: "dark",
+};
+
+class Component extends DCLogic {
+  state = { mode: null, theme: null };
+
+  componentDidMount() {
+    this.onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = e.key;
+      if (k === "Escape") this.setState({ mode: "normal" });
+      else if (k === "i") this.setState({ mode: "insert" });
+      else if (k === "v") this.setState({ mode: "visual" });
+      else if (k === "R") this.setState({ mode: "replace" });
+    };
+    window.addEventListener("keydown", this.onKey);
+  }
+  componentWillUnmount() { window.removeEventListener("keydown", this.onKey); }
+
+  renderVals() {
+    const themeKey = this.state.theme ?? this.props.theme ?? "dark";
+    const t = themeKey === "light" ? LIGHT : DARK;
+    if (typeof document !== "undefined") document.documentElement.style.background = t.bg;
+
+    const key = this.state.mode ?? this.props.mode ?? "normal";
+    const h = MODES[key] ?? MODES.normal;
+    const mode = (hue, a) => `oklch(${t.modeL} ${t.modeC} ${hue}${a ? ` / ${a}` : ""})`;
+    const color = mode(h);
+
+    return {
+      ...t,
+      themeLabel: t.label,
+      modeName: key,
+      modeColor: color,
+      modeBlurb: BLURBS[key] || BLURBS.normal,
+      hoverNormal: mode(250), hoverInsert: mode(155), hoverVisual: mode(70), hoverReplace: mode(25),
+      cNormal: mode(250, 0.32), cVisual: mode(70, 0.3), cReplace: mode(25, 0.5),
+      lineTint: mode(h, key === "visual" ? 0.16 : 0.07),
+      cursorStyle: key === "insert"
+        ? `display:inline-block;width:2px;height:1.05em;background:${color};vertical-align:-0.18em;animation:landBlink 1.15s steps(1) infinite`
+        : `display:inline-block;width:0.6em;height:1.1em;background:${mode(h, 0.32)};border-bottom:2px solid ${color};vertical-align:-0.22em`,
+      toNormal: () => this.setState({ mode: "normal" }),
+      toInsert: () => this.setState({ mode: "insert" }),
+      toVisual: () => this.setState({ mode: "visual" }),
+      toReplace: () => this.setState({ mode: "replace" }),
+      toggleTheme: () => this.setState(s => ({ theme: (s.theme ?? this.props.theme ?? "dark") === "dark" ? "light" : "dark" })),
+    };
+  }
+}
+</script>
+</body>
+</html>

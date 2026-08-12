@@ -1,0 +1,4 @@
+/target
+**/*.proptest-regressions
+# The design bundle is committed extracted; the archive is redundant.
+Vex modal state design.zip
