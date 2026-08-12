@@ -2802,6 +2802,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "lsp-types",
  "serde_json",
  "vex-buffer",
  "vex-display",

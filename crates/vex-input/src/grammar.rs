@@ -48,6 +48,8 @@ enum Stage {
     ReplaceChar,
     /// Saw `g`, waiting for the second key (`gg`, `ge`, …).
     GPrefix,
+    /// Saw `]` or `[`, waiting for what to jump to.
+    BracketPrefix { forward: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +197,7 @@ impl Grammar {
             Stage::ReplaceChar => return self.take_replace_char(key),
             Stage::ObjectKind { around } => return self.take_object_kind(key, around),
             Stage::GPrefix => return self.take_g_prefix(key, extend),
+            Stage::BracketPrefix { forward } => return self.take_bracket_prefix(key, forward),
             Stage::Start | Stage::Target => {}
         }
 
@@ -261,6 +264,12 @@ impl Grammar {
 
             'g' => {
                 self.stage = Stage::GPrefix;
+                self.push_display(&key);
+                Resolution::Pending(self.display.clone())
+            }
+
+            ']' | '[' => {
+                self.stage = Stage::BracketPrefix { forward: c == ']' };
                 self.push_display(&key);
                 Resolution::Pending(self.display.clone())
             }
@@ -345,6 +354,8 @@ impl Grammar {
 
             // Multi-cursor, Helix-style but on Vim's grammar.
             'C' => self.emit(Action::AddCaretBelow),
+            // `K` for hover: the convention every Neovim LSP configuration uses.
+            'K' => self.emit(Action::Hover),
             'S' => self.emit(Action::SplitSelectionIntoLines),
             ',' => self.emit(Action::KeepPrimarySelection),
             'V' => {
@@ -546,8 +557,28 @@ impl Grammar {
                 self.stage = Stage::Start;
                 self.resolve_motion(Motion::LineEnd, extend)
             }
+            'd' => self.emit(Action::GotoDefinition),
             't' => self.emit(Action::ToggleTheme),
             'a' => self.emit(Action::SelectAll),
+            'A' => self.emit(Action::AddCaretAbove),
+            _ => {
+                self.clear();
+                Resolution::Unhandled
+            }
+        }
+    }
+}
+
+impl Grammar {
+    fn take_bracket_prefix(&mut self, key: Key, forward: bool) -> Resolution {
+        let KeyCode::Char(c) = key.code else {
+            self.clear();
+            return Resolution::Unhandled;
+        };
+
+        match c {
+            // `]d` / `[d`, as LSP configurations spell it.
+            'd' => self.emit(Action::NextDiagnostic { forward }),
             _ => {
                 self.clear();
                 Resolution::Unhandled

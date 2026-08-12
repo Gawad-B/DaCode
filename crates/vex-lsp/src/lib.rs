@@ -21,6 +21,8 @@ pub mod position;
 pub mod transport;
 
 pub use client::{Diagnostics, LspClient, Pending, ServerEvent, State};
+/// Re-exported so consumers can name severities and ranges without depending on the crate directly.
+pub use lsp_types;
 pub use position::{from_lsp, path_to_uri, range_from_lsp, range_to_lsp, to_lsp, uri_to_path};
 
 /// Which server to run for a language, and what to call the language on the wire.

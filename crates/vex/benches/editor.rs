@@ -59,6 +59,8 @@ fn state(lines: usize) -> EditorState {
         prompt: None,
         results: None,
         search_matches: Vec::new(),
+        hover: None,
+        pending_request: None,
         project_root: std::path::PathBuf::from("."),
         buffer_count: 1,
         active_buffer: 0,

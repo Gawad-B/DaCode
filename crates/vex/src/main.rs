@@ -142,6 +142,8 @@ fn new_state(
         prompt: None,
         results: None,
         search_matches: Vec::new(),
+        hover: None,
+        pending_request: None,
         project_root,
         buffer_count: 1,
         active_buffer: 0,
@@ -150,13 +152,14 @@ fn new_state(
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 6] = [
+const VALUE_FLAGS: [&str; 7] = [
     "--screenshot",
     "--mode",
     "--columns",
     "--palette",
     "--search",
     "--grep",
+    "--diagnostic",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -326,6 +329,43 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             std::thread::yield_now();
         }
         state.results = Some(results);
+    }
+
+    // `--diagnostic LINE:COL:MESSAGE` injects a diagnostic so the underline and message box can be
+    // checked without waiting on a language server.
+    if let Some(spec) = value("--diagnostic") {
+        let parts: Vec<&str> = spec.splitn(3, ':').collect();
+        if parts.len() == 3 {
+            let line: u32 = parts[0].parse().unwrap_or(0);
+            let column: u32 = parts[1].parse().unwrap_or(0);
+            let end = column + 12;
+            state.diagnostics.apply(
+                vec![vex_lsp::lsp_types::Diagnostic {
+                    range: vex_lsp::lsp_types::Range {
+                        start: vex_lsp::lsp_types::Position {
+                            line,
+                            character: column,
+                        },
+                        end: vex_lsp::lsp_types::Position {
+                            line,
+                            character: end,
+                        },
+                    },
+                    severity: Some(vex_lsp::lsp_types::DiagnosticSeverity::ERROR),
+                    message: parts[2].to_string(),
+                    ..Default::default()
+                }],
+                None,
+                state.document.version(),
+            );
+            // The cursor is parked a few lines away so the underline renders unobstructed; the
+            // message box only appears when the cursor is *on* the diagnostic, which is checked
+            // separately.
+            let text = state.document.text();
+            let away = (line as usize + 3).min(text.last_line());
+            let target = text.point_to_char(vex_text::Point::new(away, 0));
+            state.document.set_primary_caret(target);
+        }
     }
 
     // The screenshot path parses synchronously: there is no event loop to poll a worker from, and
@@ -685,6 +725,12 @@ impl App {
         if self.state.prompt.is_some() {
             return self.handle_prompt_key(key);
         }
+        // A hover box is dismissed by the next Escape, before it reaches the grammar and collapses
+        // selections — one Escape, one effect.
+        if self.state.hover.is_some() && key.code == KeyCode::Escape {
+            self.state.hover = None;
+            return false;
+        }
         if self.state.results.is_some() && self.handle_results_key(key) {
             return false;
         }
@@ -872,6 +918,27 @@ impl App {
             }
         }
 
+        // Requests the executor recorded: sent here, where the client lives.
+        if let Some(request) = self.state.pending_request.take() {
+            if client.state() == vex_lsp::State::Ready {
+                if let Some(path) = self.state.file_path.clone() {
+                    let path = std::path::PathBuf::from(path);
+                    let position = vex_lsp::to_lsp(self.state.document.text(), self.state.cursor());
+                    let sent = match request {
+                        Action::Hover => client.hover(&path, position),
+                        Action::GotoDefinition => client.definition(&path, position),
+                        _ => Ok(0),
+                    };
+                    if let Err(error) = sent {
+                        eprintln!("vex: request failed: {error:#}");
+                    }
+                }
+            } else {
+                // Saying so beats a keypress that appears to do nothing while the server starts.
+                self.state.hover = Some(format!("{} is still starting", self.state.server_status));
+            }
+        }
+
         let active_path = self
             .state
             .file_path
@@ -925,6 +992,16 @@ impl App {
                         }
                     }
                 }
+                vex_lsp::ServerEvent::Hover { text } => {
+                    self.state.hover = Some(if text.trim().is_empty() {
+                        "no information here".to_string()
+                    } else {
+                        text
+                    });
+                }
+                vex_lsp::ServerEvent::Definition { path, position } => {
+                    self.jump_to(path, position);
+                }
                 vex_lsp::ServerEvent::Message { text } => eprintln!("vex: {text}"),
                 vex_lsp::ServerEvent::Stopped => {
                     self.state.server_status = "server stopped".into();
@@ -962,6 +1039,30 @@ impl App {
             .as_ref()
             .map(|worker| worker.latest().is_none())
             .unwrap_or(false)
+    }
+
+    /// Opens a file (if needed) and puts the cursor on an LSP position.
+    ///
+    /// Used by goto-definition, where the target is frequently in another file — and where landing on
+    /// the wrong line would be worse than not jumping at all, so the position is converted through
+    /// the same UTF-16 aware function as everything else.
+    fn jump_to(&mut self, path: std::path::PathBuf, position: vex_lsp::lsp_types::Position) {
+        let already_here = self
+            .state
+            .file_path
+            .as_deref()
+            .map(std::path::Path::new)
+            .and_then(|current| current.canonicalize().ok())
+            == path.canonicalize().ok();
+
+        if !already_here {
+            self.activate(Target::File(path));
+        }
+
+        let offset = vex_lsp::from_lsp(self.state.document.text(), position);
+        self.state.document.set_primary_caret(offset);
+        self.state.hover = None;
+        self.reveal_cursor();
     }
 
     /// Writes a recovery copy of the active buffer if it is dirty.

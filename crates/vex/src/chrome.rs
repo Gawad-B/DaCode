@@ -52,6 +52,10 @@ pub struct EditorState {
     pub results: Option<Results>,
     /// Matches of the last search, highlighted in the text.
     pub search_matches: Vec<std::ops::Range<CharOffset>>,
+    /// A hover reply from the language server, shown near the cursor until dismissed.
+    pub hover: Option<String>,
+    /// A request the executor wants sent, picked up by the caller that owns the LSP client.
+    pub pending_request: Option<vex_input::Action>,
     /// The project root, for showing paths relatively.
     pub project_root: std::path::PathBuf,
     /// Diagnostics for the active buffer, and the version they describe.
@@ -122,10 +126,117 @@ pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
     }
     draw_statusline(frame, state, status, scale);
 
+    // Info boxes sit above the code but below the palette: a hover is contextual, a palette is modal.
+    draw_info(frame, state, code, row_height, scale);
+
     // Last, so it covers everything: the palette is a modal overlay.
     if let Some(palette) = &state.palette {
         draw_palette(frame, state, palette, bounds, scale);
     }
+}
+
+/// A hover reply, or the message of the diagnostic under the cursor.
+///
+/// Hover wins when both apply: it was asked for explicitly, while the diagnostic message appears
+/// merely because the cursor is on the line.
+fn draw_info(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32, scale: f32) {
+    let theme = &state.theme;
+
+    let (text, accent) = match (&state.hover, diagnostic_at_cursor(state)) {
+        (Some(hover), _) => (hover.clone(), theme.accent(state.mode)),
+        (None, Some((message, is_error))) => (
+            message,
+            if is_error {
+                theme.over_budget()
+            } else {
+                theme.stale()
+            },
+        ),
+        (None, None) => return,
+    };
+
+    // Lines are trimmed to keep the box a box: hover replies can be pages of markdown, and a panel
+    // that grows to fit one would cover the code it describes.
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty() && line.trim() != "```")
+        .take(6)
+        .collect();
+    if lines.is_empty() {
+        return;
+    }
+
+    let line_height = 20.0 * scale;
+    let width = (620.0 * scale).min(code.width - space::XL * scale);
+    let height = lines.len() as f32 * line_height + space::MD * scale;
+
+    // Below the cursor line where there is room, above it otherwise, so the box never hides the
+    // thing it is describing.
+    let cursor_y = state
+        .display
+        .display_point(state.document.text(), state.scroll, 512, state.cursor())
+        .map(|point| code.y + point.row as f32 * row_height)
+        .unwrap_or(code.y);
+    let below = cursor_y + row_height;
+    let y = if below + height <= code.bottom() {
+        below
+    } else {
+        (cursor_y - height).max(code.y)
+    };
+
+    let box_rect = Rect::new(code.x + space::SM * scale, y, width, height);
+    frame.fill(box_rect, theme.bg_panel);
+    frame.rule_top(box_rect, theme.rule, border::BORDER);
+    frame.rule_bottom(box_rect, theme.rule, border::BORDER);
+    frame.fill(
+        Rect::new(
+            box_rect.x,
+            box_rect.y,
+            border::ACCENT_BORDER * scale,
+            box_rect.height,
+        ),
+        accent,
+    );
+
+    for (index, line) in lines.iter().enumerate() {
+        frame.text(run(
+            state,
+            Role::Value,
+            line.trim_end().to_string(),
+            Rect::new(
+                box_rect.x + space::SM * scale,
+                box_rect.y + space::XS * scale + index as f32 * line_height,
+                box_rect.width - space::SM * 2.0 * scale,
+                line_height,
+            ),
+            theme.ink,
+            Align::Left,
+            scale,
+        ));
+    }
+}
+
+/// The message of the diagnostic covering the cursor, and whether it is an error.
+pub fn diagnostic_at_cursor(state: &EditorState) -> Option<(String, bool)> {
+    let text = state.document.text();
+    let cursor = state.cursor();
+
+    state
+        .diagnostics
+        .items()
+        .iter()
+        .find(|diagnostic| {
+            let range = vex_lsp::range_from_lsp(text, diagnostic.range);
+            // `<=` on the end so a diagnostic about a single position still matches when the cursor
+            // sits on it.
+            range.start <= cursor && cursor <= range.end
+        })
+        .map(|diagnostic| {
+            (
+                diagnostic.message.clone(),
+                diagnostic.severity == Some(vex_lsp::lsp_types::DiagnosticSeverity::ERROR),
+            )
+        })
 }
 
 /// The project-search results panel.
@@ -661,6 +772,39 @@ fn draw_code(
             frame.fill(
                 Rect::new(code.x, y, border::ACCENT_BORDER * scale, row_height),
                 accent,
+            );
+        }
+
+        // Diagnostic underlines. Drawn as a 2px rule beneath the offending span rather than as a
+        // fill, so the code stays readable — a wash over an error makes it *harder* to read the
+        // thing you are being told about.
+        for diagnostic in state.diagnostics.items() {
+            let range = vex_lsp::range_from_lsp(text, diagnostic.range);
+            let start = range.start.max(row.range.start);
+            let end = range.end.min(row.range.end);
+            if start >= end {
+                continue;
+            }
+
+            let from_column = columns_between(state, text, row.range.start, start);
+            let to_column = columns_between(state, text, row.range.start, end);
+            let severity = diagnostic
+                .severity
+                .unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING);
+            let color = if severity == vex_lsp::lsp_types::DiagnosticSeverity::ERROR {
+                theme.over_budget()
+            } else {
+                theme.stale()
+            };
+
+            frame.fill(
+                Rect::new(
+                    text_left + (from_column + row.indent) as f32 * advance,
+                    y + row_height - border::ACCENT_BORDER * scale - 1.0,
+                    ((to_column - from_column) as f32 * advance).max(advance),
+                    border::ACCENT_BORDER * scale,
+                ),
+                color,
             );
         }
 
@@ -1369,8 +1513,19 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
             if errors + warnings == 0 {
                 (state.server_status.clone(), theme.ink_faint)
             } else {
+                let plural = |count: usize, word: &str| {
+                    if count == 1 {
+                        format!("{count} {word}")
+                    } else {
+                        format!("{count} {word}s")
+                    }
+                };
                 (
-                    format!("{errors} errors · {warnings} warnings"),
+                    format!(
+                        "{} · {}",
+                        plural(errors, "error"),
+                        plural(warnings, "warning")
+                    ),
                     if errors > 0 {
                         theme.over_budget()
                     } else {

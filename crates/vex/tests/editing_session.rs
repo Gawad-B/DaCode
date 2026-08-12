@@ -46,6 +46,8 @@ impl Session {
                 prompt: None,
                 results: None,
                 search_matches: Vec::new(),
+                hover: None,
+                pending_request: None,
                 project_root: std::path::PathBuf::from("."),
                 buffer_count: 1,
                 active_buffer: 0,
@@ -97,6 +99,10 @@ impl Session {
 
     fn mode(&self) -> Mode {
         self.state.mode
+    }
+
+    fn cursor_line(&self) -> usize {
+        self.state.cursor_point().line
     }
 }
 
@@ -419,4 +425,108 @@ fn every_edit_advances_the_version() {
     let before = s.state.document.version();
     s.keys("dw");
     assert!(s.state.document.version() > before);
+}
+
+// ---- LSP-driven actions, without a server ----------------------------------------------
+//
+// The executor deliberately does not own the client: it records what to request and acts on
+// diagnostics it already has. That split is what makes these testable with no process involved.
+
+use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+
+fn diagnostic(line: u32, start: u32, end: u32, error: bool) -> Diagnostic {
+    Diagnostic {
+        range: Range {
+            start: Position {
+                line,
+                character: start,
+            },
+            end: Position {
+                line,
+                character: end,
+            },
+        },
+        severity: Some(if error {
+            DiagnosticSeverity::ERROR
+        } else {
+            DiagnosticSeverity::WARNING
+        }),
+        message: format!("problem on line {line}"),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn hover_and_definition_record_a_request_rather_than_blocking() {
+    let mut s = session("fn main() {}").at(3);
+
+    s.keys("K");
+    assert_eq!(
+        s.state.pending_request,
+        Some(Action::Hover),
+        "the key records a request for the caller to send"
+    );
+
+    s.state.pending_request = None;
+    s.keys("gd");
+    assert_eq!(s.state.pending_request, Some(Action::GotoDefinition));
+}
+
+#[test]
+fn diagnostic_navigation_walks_them_in_order_and_wraps() {
+    let mut s = session("one\ntwo\nthree\nfour\n").at(0);
+    s.state.diagnostics.apply(
+        vec![diagnostic(1, 0, 3, true), diagnostic(3, 0, 4, false)],
+        None,
+        s.state.document.version(),
+    );
+
+    s.keys("]d");
+    assert_eq!(s.cursor_line(), 1);
+
+    s.keys("]d");
+    assert_eq!(s.cursor_line(), 3);
+
+    // Wrapping, for the same reason `n` wraps.
+    s.keys("]d");
+    assert_eq!(s.cursor_line(), 1);
+
+    s.keys("[d");
+    assert_eq!(
+        s.cursor_line(),
+        3,
+        "backward from the first wraps to the last"
+    );
+}
+
+#[test]
+fn diagnostic_navigation_with_none_present_does_nothing() {
+    let mut s = session("one\ntwo\n").at(0);
+    s.keys("]d");
+    assert_eq!(s.cursor(), 0, "no diagnostics means no movement");
+}
+
+#[test]
+fn the_message_under_the_cursor_is_found() {
+    let mut s = session("let x = 1;\nlet y = 2;\n").at(0);
+    s.state.diagnostics.apply(
+        vec![diagnostic(1, 4, 5, true)],
+        None,
+        s.state.document.version(),
+    );
+
+    // Off the diagnostic: nothing to show.
+    assert!(vex::chrome::diagnostic_at_cursor(&s.state).is_none());
+
+    let target = s
+        .state
+        .document
+        .text()
+        .point_to_char(vex_text::Point::new(1, 4));
+    s.state.document.set_primary_caret(target);
+
+    let (message, is_error) =
+        vex::chrome::diagnostic_at_cursor(&s.state).expect("the cursor is on the diagnostic");
+    assert_eq!(message, "problem on line 1");
+    assert!(is_error);
 }

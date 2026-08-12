@@ -182,8 +182,8 @@ Do **not** embed Neovim or Vimscript. Do not aim for plugin compatibility.
 Each milestone has a demo and an acceptance bar. Do not advance until the bar is met — this is
 what prevents a half-working engine with ten half-working features on top.
 
-> **Status.** M0–M6 done (M5 and M6 partially — see below), plus the VSCode importer, a measured
-> optimization pass, and the first slice of M7. 280 tests, zero clippy warnings.
+> **Status.** M0–M6 done (M5 partially — see below), plus the VSCode importer, a measured
+> optimization pass, and the first slice of M7. 288 tests, zero clippy warnings.
 > Crates:
 > `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
 > `vex-theme` (OKLCH color, mode accents, type roles — 9 tests),
@@ -306,9 +306,22 @@ search and replace, file watching.
 > why the client keeps the server's stderr and surfaces it — that is how the first integration failure
 > explained itself instead of looking like a vex bug.
 >
-> **Still to do in M6:** hover, goto-definition, completion and rename are *plumbed* (requests send,
-> replies parse into events) but no keybinding or UI consumes them; no code actions; no
-> format-on-save; diagnostics are not yet underlined in the text or listed in the sidebar.
+> **M6 is now user-facing.** `K` hovers, `gd` goes to the definition (opening another file when the
+> target is there), and `]d` / `[d` walk the diagnostics with the same wrapping `n` uses. Diagnostics
+> are underlined beneath the offending span — a rule rather than a wash, because a wash over an error
+> makes the thing you are being told about *harder* to read — and the message for the diagnostic under
+> the cursor appears in a box that flips above the cursor when there is no room below, so it never
+> hides what it describes.
+>
+> The split worth noting: `execute` records a *request* on the state and the event loop sends it,
+> because the executor must not own a process handle. That is what lets hover and goto-definition be
+> tested with no language server running at all.
+>
+> `K` displaced the old add-caret-above binding, which moved to `gA`: `K` for hover is what every
+> Neovim LSP configuration binds, and matching that is the point of "Neovim's keybindings".
+>
+> **Still to do in M6:** completion and rename are plumbed but unconsumed; no code actions; no
+> format-on-save; no diagnostics list in the sidebar; one server at a time.
 
 ### M6 — LSP (3–4 weeks)
 Client + lifecycle, diagnostics, hover, goto-definition/references, completion,

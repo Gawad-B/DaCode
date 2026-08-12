@@ -209,6 +209,17 @@ pub enum Action {
     StartCommand,
     /// Project-wide search for the word under the cursor, or via `:grep`.
     SearchProject,
+
+    /// `K` — ask the language server what is under the cursor.
+    Hover,
+    /// `gd` — jump to the definition of the symbol under the cursor.
+    GotoDefinition,
+    /// `]d` / `[d` — move to the next or previous diagnostic in this file.
+    NextDiagnostic {
+        forward: bool,
+    },
+    /// Dismiss a hover box or diagnostic message.
+    DismissInfo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

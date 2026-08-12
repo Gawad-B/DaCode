@@ -124,6 +124,13 @@ pub fn execute(
             state.prompt = Some(Prompt::new(PromptKind::Command, state.cursor()));
         }
         Action::RepeatSearch { forward } => repeat_search(state, *forward),
+        // Requests go out through the caller, which owns the client; the executor records what was
+        // asked for. Splitting it this way keeps `execute` free of process handling and testable
+        // without a language server.
+        Action::Hover | Action::GotoDefinition => state.pending_request = Some(action.clone()),
+        Action::NextDiagnostic { forward } => next_diagnostic(state, *forward),
+        Action::DismissInfo => state.hover = None,
+
         Action::SearchProject => {
             // The word under the cursor is the query people actually want from a bare invocation.
             let query = word_under_cursor(state);
@@ -492,6 +499,45 @@ fn word_under_cursor(state: &EditorState) -> String {
     match vex_input::resolve_object(text, state.cursor(), object) {
         Some(range) if range.start < range.end => text.slice_to_string(range),
         _ => String::new(),
+    }
+}
+
+/// Moves the cursor to the next or previous diagnostic in this file.
+fn next_diagnostic(state: &mut EditorState, forward: bool) {
+    let text = state.document.text().clone();
+    let mut starts: Vec<CharOffset> = state
+        .diagnostics
+        .items()
+        .iter()
+        .map(|diagnostic| vex_lsp::range_from_lsp(&text, diagnostic.range).start)
+        .collect();
+    if starts.is_empty() {
+        return;
+    }
+    starts.sort_unstable();
+    starts.dedup();
+
+    let cursor = state.cursor();
+    // Wrapping, for the same reason `n` wraps: stopping at the last one forces a manual jump back.
+    let target = if forward {
+        starts
+            .iter()
+            .find(|start| **start > cursor)
+            .copied()
+            .or_else(|| starts.first().copied())
+    } else {
+        starts
+            .iter()
+            .rev()
+            .find(|start| **start < cursor)
+            .copied()
+            .or_else(|| starts.last().copied())
+    };
+
+    if let Some(target) = target {
+        state.document.set_primary_caret(target);
+        // The message for the diagnostic just jumped to is the point of jumping there.
+        state.hover = None;
     }
 }
 

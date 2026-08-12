@@ -552,3 +552,40 @@ fn opening_a_prompt_is_not_a_repeatable_change() {
     assert!(!Action::StartCommand.is_change());
     assert!(!Action::RepeatSearch { forward: true }.is_change());
 }
+
+#[test]
+fn lsp_keys_follow_the_conventions_people_already_know() {
+    // `K` for hover and `gd` for definition are what every Neovim LSP configuration binds; matching
+    // them is the whole point of "Neovim's keybindings".
+    assert_eq!(normal("K"), Action::Hover);
+    assert_eq!(normal("gd"), Action::GotoDefinition);
+    assert_eq!(normal("]d"), Action::NextDiagnostic { forward: true });
+    assert_eq!(normal("[d"), Action::NextDiagnostic { forward: false });
+}
+
+#[test]
+fn a_bracket_prefix_shows_itself_and_a_stray_key_clears_it() {
+    let mut grammar = Grammar::new();
+    grammar.feed(Mode::Normal, Key::char(']'));
+    assert_eq!(grammar.pending(), "]");
+
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::char('z')),
+        Resolution::Unhandled
+    );
+    assert!(grammar.is_idle());
+}
+
+#[test]
+fn adding_a_caret_above_moved_to_g_a_so_k_could_be_hover() {
+    assert_eq!(normal("gA"), Action::AddCaretAbove);
+    assert_eq!(normal("C"), Action::AddCaretBelow);
+}
+
+#[test]
+fn lsp_requests_are_not_repeatable_changes() {
+    // `.` repeats edits. Repeating a hover would be noise.
+    assert!(!Action::Hover.is_change());
+    assert!(!Action::GotoDefinition.is_change());
+    assert!(!Action::NextDiagnostic { forward: true }.is_change());
+}

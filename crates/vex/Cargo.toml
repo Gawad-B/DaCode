@@ -32,6 +32,7 @@ anyhow.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+lsp-types.workspace = true
 
 [[bench]]
 name = "editor"
