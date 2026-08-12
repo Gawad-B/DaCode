@@ -10,12 +10,13 @@
 
 pub mod frame;
 mod headless;
+mod mark;
 mod painter;
 mod quad;
 mod text;
 mod timer;
 
-pub use frame::{Align, Frame, Layer, Quad, Rect, TextRun};
+pub use frame::{Align, Frame, Layer, MARK_INK_LEFT, Mark, Quad, Rect, TextRun};
 pub use headless::Headless;
 pub use timer::FrameTimer;
 

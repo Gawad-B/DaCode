@@ -5,6 +5,7 @@
 //! texture and be compared against a reference image, with no compositor involved.
 
 use crate::frame::{Frame, Layer};
+use crate::mark::MarkPipeline;
 use crate::quad::QuadPipeline;
 use crate::text::TextStack;
 use anyhow::Result;
@@ -14,17 +15,20 @@ pub struct Painter {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     quads: QuadPipeline,
+    marks: MarkPipeline,
     text: TextStack,
 }
 
 impl Painter {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let quads = QuadPipeline::new(&device, format);
+        let marks = MarkPipeline::new(&device, format);
         let text = TextStack::new(&device, &queue, format);
         Self {
             device,
             queue,
             quads,
+            marks,
             text,
         }
     }
@@ -45,6 +49,8 @@ impl Painter {
     ) -> Result<()> {
         self.quads
             .prepare(&self.device, &self.queue, width, height, &frame.quads);
+        self.marks
+            .prepare(&self.device, &self.queue, width, height, &frame.marks);
         self.text
             .prepare(&self.device, &self.queue, width, height, &frame.texts)?;
 
@@ -75,6 +81,9 @@ impl Painter {
         // would leave every overlay transparent, because the text beneath would be painted over it.
         for layer in Layer::ALL {
             self.quads.render(&mut pass, layer);
+            // Between the rectangles and the glyphs: the mark sits on a surface and never over
+            // text — it is chrome, not content.
+            self.marks.render(&mut pass, layer);
             self.text.render(&mut pass, layer)?;
         }
         Ok(())

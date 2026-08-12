@@ -184,6 +184,33 @@ impl Oklch {
 
     /// Composites `self` over `under` — used for the mode tints, which are specified as low
     /// alpha over the canvas and must be resolved before they reach the vertex buffer.
+    /// Interpolates towards `other` in OKLCH: `t = 0` is self, `t = 1` is other.
+    ///
+    /// Perceptual rather than linear-RGB blending, and the difference is the point. A translucent
+    /// ink over a dark surface blended in linear light reads far lighter than the same "34% opacity"
+    /// does in a browser, where the designer chose it — and blended in sRGB it reads muddy. Mixing
+    /// in OKLCH puts the result where the eye expects, which is the same reason the palette is stored
+    /// in OKLCH in the first place.
+    pub fn mix(self, other: Oklch, t: f32) -> Oklch {
+        let t = t.clamp(0.0, 1.0);
+        // Hue takes the shorter way round, or a mix of 350 and 10 degrees would travel through the
+        // whole wheel and come out green.
+        let mut delta = other.h - self.h;
+        if delta > 180.0 {
+            delta -= 360.0;
+        } else if delta < -180.0 {
+            delta += 360.0;
+        }
+        let h = self.h + delta * t;
+
+        Self {
+            l: self.l + (other.l - self.l) * t,
+            c: self.c + (other.c - self.c) * t,
+            h: if h < 0.0 { h + 360.0 } else { h % 360.0 },
+            alpha: self.alpha + (other.alpha - self.alpha) * t,
+        }
+    }
+
     pub fn over(self, under: Oklch) -> [f32; 4] {
         let top = self.to_linear();
         let bottom = under.to_linear();

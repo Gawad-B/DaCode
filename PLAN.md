@@ -97,6 +97,7 @@ never touch UI state; they emit messages the Workspace applies.
 | Text shaping/raster | `cosmic-text` + `glyphon` | Real shaping (ligatures, complex scripts, fallback) + a glyph atlas on wgpu. Writing shaping by hand is a multi-month detour with no payoff. |
 | Syntax | `tree-sitter` | Incremental, error-tolerant, gives structure (not just colors) for text objects and indent. Regex-based highlighting is a dead end. |
 | Async runtime | **None** — `std` threads + channels | Superseded the original `tokio` choice. The background work is a handful of long-lived workers (syntax, LSP, file walk, project search), each a thread that owns a blocking loop and reports over a channel. An async runtime buys nothing for four threads and costs a large dependency tree and a colored-function boundary through the whole editor. |
+| Logo rendering | A dedicated distance-field pipeline (`mark.wgsl`) | The mark is the one graphic element that is not a rectangle: diagonal strokes need antialiasing, and its 34% echo would double-blend into a visible seam if drawn as overlapping translucent quads. Evaluating the stroke outline as a signed distance solves both at once — a union is a `min`, so overlap is free, and coverage is computed once. Alternatives rejected: an image pipeline plus a rasterizer for one shape; approximating the diagonals as stair-stepped rectangles; drawing it as two `v` glyphs, which would put the identity at the mercy of a font fallback. |
 | Paint order | Three layers: base, panel, modal | The renderer draws all rectangles and then all glyphs, so within one layer a panel cannot cover text drawn before it — every overlay was transparent. Each layer is now drawn completely (its quads, then its glyphs) before the next. Alternative — one draw call per panel — costs a pipeline switch per overlay for no gain at three layers. |
 | LSP | `lsp-types` + own client | The protocol plumbing is a weekend; the semantics are the work. |
 | Search | `grep-searcher` + `grep-regex` + `ignore` | The ripgrep crates. Do not write project-wide search by hand. |
@@ -487,6 +488,11 @@ Encoded in `crates/vex-theme`:
   serif and must share the code's row height exactly.
 - **Square corners, 1px rules**, one shadow (the palette), no images or icon fonts — every
   graphic element is a rectangle.
+- **The mark is identity, not state.** The logo — two mitred chevrons, the second a 34% echo one
+  step down — appears in exactly three places (title bar at 26px, the cold-start lockup at 46px, the
+  empty state at 64px) and nowhere else: never in the statusline, the gutter, the palette, or over
+  text. It is also the one element in the chrome immune to the mode hue, which is asserted by
+  rendering all four modes and comparing the pixels. Source and rules: `logo/`.
 - **Overlays occlude.** A hover, completion popup or palette is opaque over the code, which is a
   renderer property rather than a color one: see the paint-layer row in §1.3. Verified by rendering
   each overlay offscreen and looking at it, which is how the transparency was found in the first
@@ -522,6 +528,11 @@ anyway — they remove an allocation that scales with file size — but neither 
 ~4.7 ms (vs ~73 ms cold, so incrementality works; the residual scales with top-level item count).
 That runs on the syntax worker and is version-tagged, so the UI never waits for it. Tree edits
 themselves are ~1.9 µs.
+
+**What the mark costs.** One extra pipeline and one instanced draw call per layer that contains a
+mark, which in practice is one. Frame build is unchanged at **84µs** and the icon adds 6.3KB to the
+binary (the 256px PNG, decoded once at startup with the `png` crate that was already there for
+offscreen capture, rather than pulling in `image` for one file).
 
 **What Lua costs.** The locked decision to configure in Lua was worth checking rather than assuming,
 since "lightweight" is a requirement: the vendored Lua 5.4 static library is **738KB** before linking

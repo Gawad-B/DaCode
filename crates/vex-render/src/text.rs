@@ -218,6 +218,7 @@ impl TextStack {
             let left = match run.align {
                 Align::Left => run.rect.x,
                 Align::Right => run.rect.right() - cached.width,
+                Align::Center => run.rect.x + (run.rect.width - cached.width) / 2.0,
             };
             let top = if run.center_vertically {
                 run.rect.y + (run.rect.height - line_height) / 2.0

@@ -8,6 +8,7 @@ pub mod chrome;
 pub mod completion;
 pub mod config;
 pub mod execute;
+pub mod icon;
 pub mod import_cli;
 pub mod palette;
 pub mod prompt;

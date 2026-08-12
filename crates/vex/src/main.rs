@@ -251,8 +251,18 @@ fn relative_crumbs(path: &str) -> Vec<String> {
 }
 
 /// Loads the file to display, defaulting to this project's own source.
+/// The file the screenshot fixtures open. A real path in this repo, so the captures show real code
+/// with real syntax highlighting rather than a lorem-ipsum buffer that could hide a defect.
+const FIXTURE: &str = "crates/vex-text/src/anchor.rs";
+
 fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
-    let path = path.unwrap_or_else(|| "crates/vex-text/src/anchor.rs".to_string());
+    // No argument means no buffer: the editor opens empty and says how to open something. Until now
+    // it opened a file from this repository, which was a development scaffold from the first
+    // milestone and not behavior anyone would want.
+    let Some(path) = path else {
+        return Ok((Text::from_str(""), vec!["untitled".to_string()], None));
+    };
+
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
             let crumbs = path.split('/').map(str::to_string).collect();
@@ -261,12 +271,8 @@ fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
         // A missing file is a scratch buffer, not a fatal error — but it must not be silently
         // saveable over some other path, so `file_path` stays `None`.
         Err(err) => {
-            eprintln!("vex: could not read {path}: {err} — opening a scratch buffer");
-            Ok((
-                Text::from_str("// vex — scratch buffer\n"),
-                vec!["scratch".to_string()],
-                None,
-            ))
+            eprintln!("vex: could not read {path}: {err} — opening an empty buffer");
+            Ok((Text::from_str(""), vec!["untitled".to_string()], None))
         }
     }
 }
@@ -295,7 +301,13 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         None
     };
 
-    let (text, crumbs, file_path) = load(positional(args))?;
+    // The fixture is explicit here rather than being a default inside `load`: the editor proper
+    // opens empty, and the captures need content.
+    let opened = match (positional(args), flag("--empty")) {
+        (_, true) => None,
+        (explicit, false) => explicit.or_else(|| Some(FIXTURE.to_string())),
+    };
+    let (text, crumbs, file_path) = load(opened)?;
 
     let (width, height) = (1600u32, 1000u32);
     let root = find_root(&std::path::PathBuf::from("."));
@@ -477,21 +489,22 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let [serif, mono, sans] = headless.resolved_families();
     eprintln!("vex: fonts — serif {serif}, mono {mono}, sans {sans}");
 
+    let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
     let mut frame = Frame::default();
-    chrome::draw(
-        &mut frame,
-        &state,
-        Rect::new(0.0, 0.0, width as f32, height as f32),
-        1.0,
-    );
+    if flag("--splash") {
+        chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+    } else {
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    }
 
     headless
         .capture_png(&frame, state.theme.bg, output)
         .with_context(|| format!("writing {output}"))?;
     eprintln!(
-        "vex: wrote {output} — {} quads, {} text runs",
+        "vex: wrote {output} — {} quads, {} text runs, {} marks",
         frame.quads.len(),
-        frame.texts.len()
+        frame.texts.len(),
+        frame.marks.len()
     );
     Ok(())
 }
@@ -557,6 +570,9 @@ impl ApplicationHandler for App {
 
         let attributes = Window::default_attributes()
             .with_title("vex")
+            // `StartupWMClass=vex` in the desktop entry matches this, which is what lets a launcher
+            // associate the running window with the installed icon on X11.
+            .with_window_icon(vex::icon::window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 820.0));
 
         let window = match event_loop.create_window(attributes) {

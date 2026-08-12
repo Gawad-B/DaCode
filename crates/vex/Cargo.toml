@@ -29,6 +29,8 @@ vex-lua.workspace = true
 serde_json.workspace = true
 
 winit.workspace = true
+# For decoding the embedded window icon; already here for the offscreen capture.
+png.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]

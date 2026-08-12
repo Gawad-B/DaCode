@@ -81,6 +81,16 @@ impl EditorState {
         self.document.text().char_to_point(self.cursor())
     }
 
+    /// Whether there is nothing to show: an untouched scratch buffer.
+    ///
+    /// Not merely "the text is empty" — a file that happens to be empty is still a file you opened,
+    /// and replacing its viewport with a splash would hide the fact that you are editing it.
+    pub fn is_empty(&self) -> bool {
+        self.file_path.is_none()
+            && self.document.text().len_chars().get() == 0
+            && !self.document.is_dirty()
+    }
+
     /// How many display rows fit in a viewport of this pixel height.
     pub fn visible_rows(&self, height_px: f32, row_height: f32) -> usize {
         ((height_px / row_height).floor() as usize).max(1)
@@ -90,6 +100,56 @@ impl EditorState {
     pub fn code_height(&self, window_height: f32, scale: f32) -> f32 {
         (window_height - (72.0 + 34.0 + 34.0) * scale).max(0.0)
     }
+}
+
+/// The cold-start frame: the stacked lockup on the editor's own background.
+///
+/// A function of the theme alone, because it is drawn before there is a document, a language or a
+/// mode. Deliberately not animated and with no progress bar — the startup budget is supposed to make
+/// this frame nearly invisible, and anything that draws attention to it is admitting it is not.
+pub fn draw_splash(
+    frame: &mut Frame,
+    theme: &Theme,
+    typography: &Typography,
+    bounds: Rect,
+    scale: f32,
+) {
+    frame.fill(bounds, theme.bg);
+
+    let mark_size = 46.0 * scale;
+    let wordmark_size = 34.0 * scale;
+    let gap = space::SM * scale;
+
+    // Left edges aligned, to the mark's *ink* rather than to its path — see MARK_INK_LEFT.
+    let block_height = mark_size + gap + wordmark_size;
+
+    let left = (bounds.x + (bounds.width - mark_size) / 2.0).round();
+    let top = (bounds.y + (bounds.height - block_height) / 2.0).round();
+
+    frame.mark(
+        Rect::new(left, top, mark_size, mark_size),
+        theme.ink,
+        theme.bg,
+    );
+
+    let mut spec = typography.spec(Role::Display);
+    spec.size_px = wordmark_size;
+    frame.text(TextRun {
+        text: "vex".into(),
+        spec,
+        color: theme.ink,
+        rect: Rect::new(
+            left + mark_size * vex_render::MARK_INK_LEFT,
+            top + mark_size + gap,
+            bounds.width,
+            // Tight: a taller rect centres the glyphs lower and the 8px gap becomes 40px of air.
+            wordmark_size,
+        ),
+        align: Align::Left,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
+    });
 }
 
 pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
@@ -750,6 +810,36 @@ fn label(
     run(state, Role::Label, text, rect, color, align, scale)
 }
 
+/// What the viewport shows when no file is open: the mark, and one line telling you how to open one.
+///
+/// Nothing else. A recent-files list or a tips carousel here would be the first place the editor
+/// started competing with the work instead of holding it.
+fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32) {
+    let theme = &state.theme;
+    let size = 64.0 * scale;
+    let line_height = 28.0 * scale;
+    let block = size + line_height;
+
+    let top = (code.y + (code.height - block) / 2.0).round();
+    let left = (code.x + (code.width - size) / 2.0).round();
+
+    // 40% opacity, over the canvas it sits on: the mark is present, not insistent.
+    frame.mark(
+        Rect::new(left, top, size, size),
+        theme.ink_faint.with_alpha(0.4),
+        theme.bg,
+    );
+
+    frame.text(label(
+        state,
+        "ctrl-p  open a file",
+        Rect::new(code.x, top + size, code.width, line_height),
+        theme.ink_faint,
+        Align::Center,
+        scale,
+    ));
+}
+
 /// Advance of one code column.
 ///
 /// Derived from the type scale for now. At the point where a proportional fallback glyph can
@@ -781,13 +871,30 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         rect.height,
     );
 
+    // The mark, then the wordmark. The mark is dimmer on purpose — it is a maker's stamp, and
+    // nothing in the title bar should compete with the mode indicator on the right. It is also the
+    // one element in the chrome immune to the mode hue, which is what makes it read as identity
+    // rather than state.
+    let mark_size = 26.0 * scale;
+    let (mark_box, after) = inner.split_left(mark_size);
+    frame.mark(
+        Rect::new(
+            mark_box.x,
+            mark_box.y + (mark_box.height - mark_size) / 2.0,
+            mark_size,
+            mark_size,
+        ),
+        theme.ink_faint,
+        theme.bg_alt,
+    );
+
     // Wordmark: lowercase italic serif, always.
-    let (mark, after) = inner.split_left(78.0 * scale);
+    let (wordmark, after) = after.split_left(20.0 * scale).1.split_left(78.0 * scale);
     frame.text(run(
         state,
         Role::Display,
         "vex",
-        mark,
+        wordmark,
         theme.ink,
         Align::Left,
         scale,
@@ -898,6 +1005,11 @@ fn draw_code(
 
     let (from, to) = theme.gutter_tint(state.mode);
     frame.fill_gradient_x(gutter, from, to, 24);
+
+    if state.is_empty() {
+        draw_empty_state(frame, state, code, scale);
+        return;
+    }
 
     let height = state.visible_rows(code.height, row_height);
     let rows = state.display.rows_from(text, state.scroll, height);

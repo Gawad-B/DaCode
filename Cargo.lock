@@ -2851,6 +2851,7 @@ dependencies = [
  "anyhow",
  "criterion",
  "lsp-types",
+ "png",
  "serde_json",
  "vex-buffer",
  "vex-display",

@@ -109,11 +109,46 @@ pub struct Quad {
     pub layer: Layer,
 }
 
+/// The vex mark, drawn as a distance field rather than as rectangles.
+///
+/// A primitive of its own because the identity is not expressible in the other two: the strokes are
+/// diagonal, so they need antialiasing, and the echo is translucent, so overlapping quads would
+/// seam. See `mark.wgsl`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mark {
+    /// The em box. Square; the mark is drawn inside its own 100x100 coordinate space.
+    pub rect: Rect,
+    /// Linear RGBA. Monochrome by rule — the mark never takes a mode hue, which is what lets it
+    /// read as identity rather than state.
+    pub color: [f32; 4],
+    /// The echo's color, already mixed towards the surface it sits on.
+    ///
+    /// Resolved here rather than as an opacity in the shader: 34% alpha blended in linear light reads
+    /// noticeably lighter than the same figure does in the browser the mark was designed in, and this
+    /// palette mixes in OKLCH for exactly that reason.
+    pub echo: [f32; 4],
+    /// The single-chevron variant, for small sizes where the echo turns to mud.
+    pub solo: bool,
+    pub layer: Layer,
+}
+
+/// Below this many pixels the mark switches to the solo variant, as the handoff's PNG set does.
+pub const SOLO_BELOW: f32 = 32.0;
+
+/// Where the mark's leftmost ink falls, as a fraction of its em box.
+///
+/// Not 0.20 — the path starts at x=20, but the stroke is 11 wide and the arm is at 52 degrees, so the
+/// outer edge of the left terminal reaches back to x≈15.7. Anything aligning to the mark's left edge
+/// (the stacked lockup does) has to use the ink, not the path, or it sits visibly inboard.
+pub const MARK_INK_LEFT: f32 = 0.1568;
+
 /// Horizontal placement of a text run within its rect.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Align {
     Left,
     Right,
+    /// Centred within the rect. Used only where there is nothing to align to — the empty state.
+    Center,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,6 +172,7 @@ pub struct TextRun {
 pub struct Frame {
     pub quads: Vec<Quad>,
     pub texts: Vec<TextRun>,
+    pub marks: Vec<Mark>,
     /// The layer subsequent drawing lands on.
     layer: Layer,
 }
@@ -145,6 +181,7 @@ impl Frame {
     pub fn clear(&mut self) {
         self.quads.clear();
         self.texts.clear();
+        self.marks.clear();
         self.layer = Layer::Base;
     }
 
@@ -163,6 +200,40 @@ impl Frame {
 
     pub fn texts_on(&self, layer: Layer) -> impl Iterator<Item = &TextRun> {
         self.texts.iter().filter(move |run| run.layer == layer)
+    }
+
+    pub fn marks_on(&self, layer: Layer) -> impl Iterator<Item = &Mark> {
+        self.marks.iter().filter(move |mark| mark.layer == layer)
+    }
+
+    /// Draws the mark, sized to fit `rect` and optically centred within it.
+    ///
+    /// Optically, not by bounding box: the echo makes the shape bottom-heavy, so centring the box
+    /// leaves it looking low. The handoff's own PNGs carry the same correction.
+    pub fn mark(&mut self, rect: Rect, color: Oklch, on: Oklch) {
+        let size = rect.width.min(rect.height);
+        if size <= 0.0 {
+            return;
+        }
+
+        let solo = size < SOLO_BELOW;
+        let box_rect = Rect::new(
+            (rect.x + (rect.width - size) / 2.0).round(),
+            // Up by 2% of the box, which is the nudge the handoff specifies.
+            (rect.y + (rect.height - size) / 2.0 - size * 0.02).round(),
+            size,
+            size,
+        );
+
+        // 34% of the way from the surface to the ink: the handoff's echo opacity, read as a mix.
+        let echo = on.mix(color, 0.34 * color.alpha).with_alpha(1.0);
+        self.marks.push(Mark {
+            rect: box_rect,
+            color: color.to_linear(),
+            echo: echo.to_linear(),
+            solo,
+            layer: self.layer,
+        });
     }
 
     pub fn fill(&mut self, rect: Rect, color: Oklch) {
