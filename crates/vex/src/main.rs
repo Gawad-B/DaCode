@@ -581,12 +581,26 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title("vex")
-            // `StartupWMClass=vex` in the desktop entry matches this, which is what lets a launcher
-            // associate the running window with the installed icon on X11.
             .with_window_icon(vex::icon::window_icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 820.0));
+
+        // The window has to name itself, or the desktop cannot connect it to its installed entry.
+        //
+        // Wayland has no window icon protocol at all — `with_window_icon` above is ignored there — so
+        // the *only* way GNOME finds an icon for a running window is by matching its `app_id` against
+        // an installed `.desktop` file. `vex` matches `vex.desktop`. On X11 the same string is the
+        // WM_CLASS that `StartupWMClass=vex` in that file refers to. Without this, the running editor
+        // shows a generic placeholder in the dock and the alt-tab switcher even though the icon is
+        // correctly installed.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            use winit::platform::x11::WindowAttributesExtX11;
+            attributes = WindowAttributesExtWayland::with_name(attributes, "vex", "vex");
+            attributes = WindowAttributesExtX11::with_name(attributes, "vex", "vex");
+        }
 
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),

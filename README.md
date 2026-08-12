@@ -152,6 +152,14 @@ packaging/linux/install.sh /usr/local   # or system-wide
 
 Installs the binary, the desktop entry and the icon theme. See `packaging/README.md`.
 
+The entry is written with an **absolute** `Exec` path rather than the bare `vex` the template carries.
+A per-user install lands in `~/.local/bin`, which an interactive shell has on its `PATH` but a desktop
+session routinely does not — so a launcher-clicked `Exec=vex` fails while the identical command works
+in a terminal.
+
+If the entry does not appear, GNOME appends newly installed apps to the **end** of the app grid rather
+than sorting them in, so searching (`Super`, then type `vex`) finds it when scrolling does not.
+
 ## Recovering unsaved work
 
 Dirty buffers are written to `$XDG_STATE_HOME/vex/recovery` every two seconds and forced before

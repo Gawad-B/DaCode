@@ -15,7 +15,18 @@ if [ ! -x "$root/target/release/vex" ]; then
 fi
 
 install -Dm755 "$root/target/release/vex" "$prefix/bin/vex"
-install -Dm644 "$here/vex.desktop" "$prefix/share/applications/vex.desktop"
+
+# The desktop entry gets an *absolute* Exec, rather than the bare `vex` the template carries.
+# A per-user install lands in ~/.local/bin, which is on an interactive shell's PATH but is
+# routinely absent from the desktop session's — so a launcher-clicked `Exec=vex` fails while the
+# same command works in a terminal. TryExec is the same path, which also makes the entry hide
+# itself if the binary is ever removed.
+entry="$(mktemp)"
+sed -e "s|^Exec=vex|Exec=$prefix/bin/vex|" \
+    -e "s|^Icon=vex|TryExec=$prefix/bin/vex\nIcon=vex|" \
+    "$here/vex.desktop" > "$entry"
+install -Dm644 "$entry" "$prefix/share/applications/vex.desktop"
+rm -f "$entry"
 
 # The icon theme, every size the mark ships in. `scalable` is what modern desktops actually use;
 # the rasters are for panels and docks that still pick a fixed size.
