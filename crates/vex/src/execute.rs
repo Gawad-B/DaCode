@@ -152,6 +152,12 @@ pub fn execute(
         | Action::Format
         | Action::CodeAction
         | Action::FindReferences => state.pending_request = Some(action.clone()),
+        // The jumplist and macros need the editor's own history, which the executor does not hold —
+        // the same split as the window actions.
+        Action::Jump { .. } | Action::RecordMacro { .. } | Action::ReplayMacro { .. } => {
+            return Outcome::Window(action.clone());
+        }
+
         Action::ToggleFold => {
             let line = state.cursor_point().line;
             if state.display.folds.open(line) {

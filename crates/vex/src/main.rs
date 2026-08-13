@@ -55,7 +55,21 @@ fn main() -> Result<()> {
     }
 
     let path = positional(&args);
-    let (text, crumbs, file_path) = load(path)?;
+
+    // With no file named, the last session for this project is what to open. Named explicitly, the
+    // named file wins — asking for a file and getting the last three back would be surprising.
+    let restore = (path.is_none() && !args.iter().any(|arg| arg == "--no-session"))
+        .then(|| {
+            let here = std::env::current_dir().unwrap_or_default();
+            vex::session::load(&vex::session::session_dir(), &find_root(&here))
+        })
+        .flatten();
+
+    let first = restore
+        .as_ref()
+        .and_then(|session| session.files.get(session.active))
+        .map(|file| file.path.to_string_lossy().to_string());
+    let (text, crumbs, file_path) = load(path.or(first))?;
 
     // The project root anchors file discovery: a marker search from the opened file, so opening a
     // stray file does not index a home directory.
@@ -86,6 +100,8 @@ fn main() -> Result<()> {
         servers: std::collections::HashMap::new(),
         active_server: None,
         sent_version: None,
+        jumps: vex_input::JumpList::default(),
+        macros: vex_input::Macros::default(),
         code_actions: Vec::new(),
         hinted_version: None,
         recovery: Recovery::new(),
@@ -109,6 +125,29 @@ fn main() -> Result<()> {
         buffers: Vec::new(),
         state,
     };
+
+    // The rest of the session's files, opened behind the active one so `ctrl-b` finds them.
+    if let Some(session) = restore {
+        let active = session
+            .files
+            .get(session.active)
+            .map(|file| file.path.clone());
+        let others = session.files.len().saturating_sub(1);
+
+        for file in session.files.iter().rev() {
+            if Some(&file.path) == active.as_ref() {
+                continue;
+            }
+            app.open_in_background(&file.path, file.line, file.column);
+        }
+        // Cursor restoration for the active file, which was opened before the app existed.
+        if let Some(file) = session.files.get(session.active) {
+            app.restore_cursor(file.line, file.column);
+        }
+        if others > 0 {
+            eprintln!("vex: restored {} more from the last session", others);
+        }
+    }
 
     event_loop.run_app(&mut app).context("running the app")?;
     Ok(())
@@ -187,6 +226,7 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
+        recording: None,
         diff: vex::git::Diff::default(),
         show_diagnostics: false,
         inlay_hints: Vec::new(),
@@ -721,6 +761,10 @@ struct App {
     /// user typed while the server was thinking, applying them would corrupt the file, so the reply
     /// is refused — see `edits::apply_to_document`.
     edit_version: Option<vex_text::Version>,
+    /// Where the cursor has jumped from, for `ctrl-o` / `ctrl-i`.
+    jumps: vex_input::JumpList,
+    /// Recorded action sequences, for `q` and `@`.
+    macros: vex_input::Macros,
     /// The code actions the server last offered, indexed by the palette.
     code_actions: Vec<vex_lsp::CodeActionItem>,
     /// The version inlay hints were last requested for, so typing does not queue one per keystroke.
@@ -877,6 +921,7 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => {
                 self.persist_recovery(true);
+                self.save_session();
                 event_loop.exit();
             }
 
@@ -916,8 +961,10 @@ impl ApplicationHandler for App {
                 self.poll_walk();
 
                 if self.handle_key(logical_key) {
-                    // Quitting is the last chance to save unsaved work.
+                    // Quitting is the last chance to save unsaved work, and to remember where we
+                    // were.
                     self.persist_recovery(true);
+                    self.save_session();
                     event_loop.exit();
                 } else {
                     if self.state.palette.is_none() && self.state.prompt.is_none() {
@@ -1127,6 +1174,16 @@ impl App {
         }
 
         let rows = self.code_rows();
+        // Recorded before executing, so a macro captures what was asked for rather than what it
+        // happened to do — and before the jumplist, so `ctrl-o` inside a macro replays too.
+        self.macros.record(&action);
+
+        // A jump remembers where you were *before* it moves you.
+        if vex_input::is_jump(&action) {
+            let here = self.here();
+            self.jumps.push(here);
+        }
+
         let outcome = execute(&mut self.state, &mut self.registers, &action, rows);
         if let Outcome::Window(action) = &outcome {
             self.window_action(action);
@@ -2024,6 +2081,52 @@ impl App {
                     self.restore_pane();
                 }
             }
+            Action::Jump { forward } => {
+                let here = self.here();
+                let target = if *forward {
+                    self.jumps.forward()
+                } else {
+                    self.jumps.back(here)
+                };
+                match target {
+                    Some(jump) => self.go_to(jump),
+                    None => {
+                        self.state.hover = Some(
+                            if *forward {
+                                "no newer position in the jumplist"
+                            } else {
+                                "no older position in the jumplist"
+                            }
+                            .into(),
+                        )
+                    }
+                }
+            }
+            Action::RecordMacro { register } => {
+                if self.macros.toggle(*register) {
+                    self.state.hover = Some(format!("recorded @{register}"));
+                }
+                self.state.recording = self.macros.recording_register();
+            }
+            Action::ReplayMacro { register } => {
+                let Some(actions) = self.macros.replay(*register) else {
+                    self.state.hover = Some("that register is empty".into());
+                    return;
+                };
+                let rows = self.code_rows();
+                // Replayed as one undo group: a macro is one intent, however many edits it makes,
+                // and undoing it a keystroke at a time is what makes macros frightening elsewhere.
+                self.state.document.end_undo_group();
+                for action in actions {
+                    if let Outcome::Quit =
+                        execute(&mut self.state, &mut self.registers, &action, rows)
+                    {
+                        break;
+                    }
+                }
+                self.state.document.end_undo_group();
+                self.reveal_cursor();
+            }
             Action::ToggleTree => {
                 if self.state.tree.is_some() {
                     self.state.tree = None;
@@ -2052,6 +2155,110 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Opens a file without making it active — for restoring a session's other buffers.
+    fn open_in_background(&mut self, path: &std::path::Path, line: usize, column: usize) {
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let mut document = Document::from_str(&contents);
+        let offset = document
+            .text()
+            .point_to_char(vex_text::Point::new(line, column));
+        document.set_primary_caret(offset);
+
+        let display = path.to_string_lossy().to_string();
+        self.buffers.push(Buffer {
+            document,
+            path: relative_crumbs(&display),
+            file_path: Some(display),
+            scroll: ScrollAnchor::default(),
+            highlights: Vec::new(),
+        });
+        self.state.buffer_count = self.buffers.len() + 1;
+    }
+
+    /// Puts the cursor back where the session left it.
+    fn restore_cursor(&mut self, line: usize, column: usize) {
+        let text = self.state.document.text();
+        let line = line.min(text.last_line());
+        let offset = text.point_to_char(vex_text::Point::new(line, column));
+        self.state.document.set_primary_caret(offset);
+    }
+
+    /// Records the open files and where the cursor is in each, for the next run.
+    ///
+    /// Written on the way out rather than continuously: unlike crash recovery, which must survive a
+    /// kill, a session is only interesting when the editor closed properly.
+    fn save_session(&mut self) {
+        self.save_pane();
+
+        let mut files = Vec::new();
+        let mut active = 0;
+
+        for index in 0..=self.buffers.len() {
+            let (path, offset, text) = if index == self.state.active_buffer {
+                active = files.len();
+                (
+                    self.state.file_path.clone(),
+                    self.state.cursor(),
+                    self.state.document.text(),
+                )
+            } else {
+                match stored_index(index, self.state.active_buffer)
+                    .and_then(|stored| self.buffers.get(stored))
+                {
+                    Some(buffer) => (
+                        buffer.file_path.clone(),
+                        buffer.document.selections().primary().head,
+                        buffer.document.text(),
+                    ),
+                    None => continue,
+                }
+            };
+
+            // Only files with a path: a scratch buffer has nothing to reopen, and crash recovery is
+            // what protects its contents.
+            let Some(path) = path else { continue };
+            let point = text.char_to_point(offset);
+            files.push(vex::session::OpenFile {
+                path: std::path::PathBuf::from(path),
+                line: point.line,
+                column: point.column,
+            });
+        }
+
+        let session = vex::session::Session { files, active };
+        vex::session::save(&vex::session::session_dir(), self.index.root(), &session);
+    }
+
+    /// Where the cursor is, as a jumplist entry.
+    fn here(&self) -> vex_input::Jump {
+        let point = self.state.cursor_point();
+        vex_input::Jump {
+            path: self.state.file_path.clone(),
+            line: point.line,
+            column: point.column,
+        }
+    }
+
+    /// Goes to a remembered position, opening its file if it is not the one on screen.
+    fn go_to(&mut self, jump: vex_input::Jump) {
+        if jump.path != self.state.file_path {
+            match &jump.path {
+                Some(path) => self.activate(Target::File(std::path::PathBuf::from(path))),
+                // A scratch buffer cannot be reopened by path, so the jump is dropped rather than
+                // landing in whatever file happens to be open.
+                None => return,
+            }
+        }
+
+        let text = self.state.document.text();
+        let line = jump.line.min(text.last_line());
+        let offset = text.point_to_char(vex_text::Point::new(line, jump.column));
+        self.state.document.set_primary_caret(offset);
+        self.reveal_cursor();
     }
 
     /// Records where the focused pane is looking, before focus moves away from it.

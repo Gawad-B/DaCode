@@ -55,6 +55,10 @@ enum Stage {
     WindowPrefix,
     /// Saw `z`, waiting for a fold command.
     FoldPrefix,
+    /// Saw `q`, waiting for the register to record into.
+    RecordRegister,
+    /// Saw `@`, waiting for the register to replay.
+    ReplayRegister,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +206,8 @@ impl Grammar {
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
+                KeyCode::Char('o') => Some(Action::Jump { forward: false }),
+                KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 _ => None,
             };
         }
@@ -293,6 +299,8 @@ impl Grammar {
             Stage::BracketPrefix { forward } => return self.take_bracket_prefix(key, forward),
             Stage::WindowPrefix => return self.take_window_prefix(key),
             Stage::FoldPrefix => return self.take_fold_prefix(key),
+            Stage::RecordRegister => return self.take_macro_register(key, true),
+            Stage::ReplayRegister => return self.take_macro_register(key, false),
             Stage::Start | Stage::Target => {}
         }
 
@@ -445,6 +453,14 @@ impl Grammar {
             ':' => self.emit(Action::StartCommand),
 
             'u' => self.emit(Action::Undo),
+            'q' => {
+                self.stage = Stage::RecordRegister;
+                Resolution::Pending(self.display.clone())
+            }
+            '@' => {
+                self.stage = Stage::ReplayRegister;
+                Resolution::Pending(self.display.clone())
+            }
             '.' => self.emit(Action::RepeatChange),
 
             // Multi-cursor, Helix-style but on Vim's grammar.
@@ -626,6 +642,22 @@ impl Grammar {
             operator,
             target: Target::Object(object),
             register,
+        })
+    }
+
+    /// The register after `q` or `@`.
+    fn take_macro_register(&mut self, key: Key, record: bool) -> Resolution {
+        let KeyCode::Char(c) = key.code else {
+            self.clear();
+            return Resolution::Unhandled;
+        };
+
+        if record {
+            return self.emit(Action::RecordMacro { register: c });
+        }
+        // `@@` repeats the last register, which is what the `None` means.
+        self.emit(Action::ReplayMacro {
+            register: (c != '@').then_some(c),
         })
     }
 

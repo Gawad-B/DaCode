@@ -54,6 +54,7 @@ impl Session {
                 project_root: std::path::PathBuf::from("."),
                 buffer_count: 1,
                 active_buffer: 0,
+                recording: None,
                 diff: vex::git::Diff::default(),
                 show_diagnostics: false,
                 inlay_hints: Vec::new(),

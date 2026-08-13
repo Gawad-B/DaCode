@@ -450,6 +450,25 @@ mistakes, and budget for that rather than being surprised by it.
 >   The rules are conservative because auto-pairing that fires unwanted costs more keystrokes than it
 >   saves: `(` before an identifier does not pair, and a quote never pairs mid-word.
 
+> **M7: folding, git gutter, jumps, macros, sessions.** Two of these were only possible because every
+> operation is an `Action`: a macro is a list of Actions and a jump is one that declared itself
+> far-reaching, so neither needed a new mechanism. That is the payoff §1.4 predicted for defining the
+> vocabulary before the code that produces it, and it arrived exactly where predicted.
+>
+> Macros record **actions, not keystrokes**. Keystrokes would replay the grammar as well as the
+> command, so a macro recorded under one keymap would do something else under another — and a macro
+> that breaks when you rebind a key is a macro you cannot trust. Replay is one undo step, because a
+> macro is one intent however many edits it makes.
+>
+> The git gutter shells out to `git show HEAD:path` rather than linking a git library: the editor
+> needs exactly one thing from git, and linking `gix` would add an object-database implementation to
+> an editor premised on staying light while still having to agree with the `git` binary about
+> worktrees and submodules. The diff is ours, version-tagged like every other background result.
+>
+> Sessions are separate from crash recovery on purpose: recovery must survive a `kill -9` and so is
+> written every two seconds, while a session is only interesting when the editor closed properly and
+> is written once, on the way out.
+
 ### M7 — Daily-driver gaps (ongoing, 3–4 weeks)
 Whatever is actually blocking use: soft wrap, folding, multi-cursor, git gutter and blame,
 integrated terminal, session restore, jumplist, macros, autopairs, snippets, sticky scroll,

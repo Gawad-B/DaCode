@@ -17,4 +17,5 @@ pub mod panes;
 pub mod prompt;
 pub mod recovery;
 pub mod results;
+pub mod session;
 pub mod tree;

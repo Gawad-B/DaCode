@@ -73,6 +73,13 @@ machinery for them exists.
 `]d` `[d` next/previous diagnostic · `gD` diagnostics list · `gi` toggle inlay hints
 `ctrl-space` completion (also in insert mode) · `esc` dismisses an info box
 
+### Jumps and macros
+`ctrl-o` back · `ctrl-i` forward — only far-reaching moves are recorded, so `j` and `w` do not fill it
+`q<letter>` start/stop recording · `@<letter>` replay · `@@` replay the last one
+
+A macro records **actions**, not keystrokes, so it keeps working if you rebind a key. Replay is one
+undo step.
+
 ### Folding
 `za` fold or unfold the block at the cursor · `zR` open all · `zM` fold every top-level block
 
@@ -172,6 +179,14 @@ in a terminal.
 
 If the entry does not appear, GNOME appends newly installed apps to the **end** of the app grid rather
 than sorting them in, so searching (`Super`, then type `vex`) finds it when scrolling does not.
+
+## Sessions
+
+Closing the editor properly remembers which files were open and where the cursor was in each, per
+project. Running `vex` with no arguments in that project reopens them; naming a file opens that file
+instead. `--no-session` starts clean.
+
+Distinct from crash recovery below, which exists to save unsaved *text* and is written continuously.
 
 ## Recovering unsaved work
 

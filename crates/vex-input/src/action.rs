@@ -254,6 +254,19 @@ pub enum Action {
     FoldAll {
         close: bool,
     },
+
+    /// `q<register>` — start or stop recording.
+    RecordMacro {
+        register: char,
+    },
+    /// `@<register>`, or `@@` for the last one used.
+    ReplayMacro {
+        register: Option<char>,
+    },
+    /// `ctrl-o` / `ctrl-i` — walk the jumplist.
+    Jump {
+        forward: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,6 +397,9 @@ impl Action {
             "toggle_fold" => Action::ToggleFold,
             "fold_all" => Action::FoldAll { close: true },
             "unfold_all" => Action::FoldAll { close: false },
+            "jump_back" => Action::Jump { forward: false },
+            "jump_forward" => Action::Jump { forward: true },
+            "replay_macro" => Action::ReplayMacro { register: None },
 
             _ => return None,
         })

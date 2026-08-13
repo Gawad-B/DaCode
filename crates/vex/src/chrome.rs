@@ -90,6 +90,8 @@ pub struct EditorState {
     pub buffer_count: usize,
     /// Index of the active buffer.
     pub active_buffer: usize,
+    /// The macro register being recorded into, if any.
+    pub recording: Option<char>,
     /// What changed since the last commit, per line.
     pub diff: crate::git::Diff,
     /// Whether the sidebar shows the diagnostics list instead of the structure panel.
@@ -2185,7 +2187,12 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     let (mode_cell, after_mode) = left.split_left(110.0 * scale);
     frame.text(label(
         state,
-        state.mode.label(),
+        // Recording replaces the mode word, in the mode's own accent. An editor that is silently
+        // recording is an editor that surprises you ten minutes later.
+        match state.recording {
+            Some(register) => format!("rec @{register}"),
+            None => state.mode.label().to_string(),
+        },
         mode_cell,
         accent,
         Align::Left,

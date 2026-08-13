@@ -13,12 +13,14 @@
 
 pub mod action;
 pub mod grammar;
+pub mod history;
 pub mod key;
 pub mod keymap;
 pub mod resolve;
 
 pub use action::{Action, InsertPosition, Motion, Operator, Target, TextObject};
 pub use grammar::{Grammar, Resolution};
+pub use history::{Jump, JumpList, Macros, is_jump};
 pub use key::{Key, KeyCode};
 pub use keymap::{BindError, Keymap, Match};
 pub use resolve::{line_range, operator_range, resolve_motion, resolve_object};
