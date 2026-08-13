@@ -226,6 +226,7 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
+        sticky_scroll: true,
         recording: None,
         diff: vex::git::Diff::default(),
         show_diagnostics: false,
@@ -272,7 +273,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 9] = [
+const VALUE_FLAGS: [&str; 10] = [
     "--screenshot",
     "--mode",
     "--columns",
@@ -282,6 +283,7 @@ const VALUE_FLAGS: [&str; 9] = [
     "--diagnostic",
     "--complete",
     "--split",
+    "--at",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -500,6 +502,16 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             let target = text.point_to_char(vex_text::Point::new(away, 0));
             state.document.set_primary_caret(target);
         }
+    }
+
+    // `--at LINE` parks the cursor on a line, for captures that need a particular part of the file
+    // on screen — sticky scroll only appears when a block head has actually scrolled off.
+    if let Some(line) = value("--at").and_then(|v| v.parse::<usize>().ok()) {
+        let text = state.document.text();
+        let line = line.min(text.last_line());
+        let offset = text.point_to_char(vex_text::Point::new(line, 0));
+        state.document.set_primary_caret(offset);
+        state.scroll = ScrollAnchor::at_line(line.saturating_sub(2));
     }
 
     // `--diagnostics-list` fills the file with a spread of diagnostics so the sidebar list can be
@@ -839,6 +851,15 @@ impl ApplicationHandler for App {
                 return;
             }
         };
+
+        // The config is watched like any other file, so editing `init.lua` in vex shows the result
+        // on save rather than on the next launch.
+        let config_file = vex::config::config_dir().join("init.lua");
+        if config_file.exists() {
+            if let Some(watcher) = &mut self.watcher {
+                let _ = watcher.watch(&config_file);
+            }
+        }
 
         // The file opened at startup never went through `after_buffer_change`, so this is where it
         // starts being watched. Missing it meant the first file you opened — the one you are most
@@ -2728,6 +2749,47 @@ impl App {
         }
     }
 
+    /// Re-reads configuration after `init.lua` changes.
+    ///
+    /// Theme, metrics and key bindings are replaced; nothing about the *documents* is touched. A
+    /// reload that reset scroll positions or dropped undo history would make editing your own config
+    /// a hostile experience — which is exactly when this feature is used.
+    fn reload_config(&mut self) {
+        let settings = vex::config::load();
+
+        self.state.theme = settings.theme;
+        self.state.typography = settings.typography;
+        self.state.format_on_save = settings.format_on_save;
+        self.state.display.tab_width = settings.tab_width;
+        self.state.display.mode = if settings.soft_wrap {
+            WrapMode::Word
+        } else {
+            WrapMode::None
+        };
+        self.state.pairs = pair_config(self.state.file_path.as_deref(), settings.tab_width);
+        self.grammar.set_keymap(settings.keymap);
+
+        // Wrap width is in columns and follows the font size, which may just have changed.
+        if let Some(window) = &self.window {
+            let scale = window.scale_factor() as f32;
+            let width = window.inner_size().width as f32;
+            fit_wrap_columns(&mut self.state, width, scale);
+        }
+
+        self.state.hover = Some(if settings.problems.is_empty() {
+            "config reloaded".to_string()
+        } else {
+            for problem in &settings.problems {
+                eprintln!("vex: config: {problem}");
+            }
+            std::iter::once(format!("config: {} problems", settings.problems.len()))
+                .chain(settings.problems.iter().cloned())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+        eprintln!("vex: reloaded configuration");
+    }
+
     /// Starts watching the active file, if it has one.
     fn watch_active(&mut self) {
         let Some(path) = self.state.file_path.clone() else {
@@ -2756,7 +2818,21 @@ impl App {
         }
 
         let mut redraw = false;
+        let config_file = vex::config::config_dir().join("init.lua");
+
         for path in changed {
+            // Config first: it is not a buffer, and reloading it is not reloading text.
+            if path
+                .canonicalize()
+                .ok()
+                .zip(config_file.canonicalize().ok())
+                .is_some_and(|(a, b)| a == b)
+            {
+                self.reload_config();
+                redraw = true;
+                continue;
+            }
+
             // A save this editor just made comes back as an event; ignoring it once is the whole
             // difference between a quiet save and a reload storm.
             if self.self_written.remove(&path) {

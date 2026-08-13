@@ -90,6 +90,8 @@ pub struct EditorState {
     pub buffer_count: usize,
     /// Index of the active buffer.
     pub active_buffer: usize,
+    /// Whether to pin enclosing block heads above the viewport.
+    pub sticky_scroll: bool,
     /// The macro register being recorded into, if any.
     pub recording: Option<char>,
     /// What changed since the last commit, per line.
@@ -1404,6 +1406,62 @@ fn draw_code(
     if pane.focused && state.is_empty() {
         draw_empty_state(frame, state, code, scale);
         return;
+    }
+
+    // Sticky scroll: the block heads enclosing the top of the viewport, pinned above it. Only when
+    // the head has actually scrolled off — pinning a line that is already visible would show it
+    // twice, which is the thing that makes this feature annoying elsewhere.
+    let sticky: Vec<usize> = if pane.focused && state.sticky_scroll {
+        vex_display::enclosing_heads(text, pane.scroll.line, state.display.tab_width, 3)
+            .into_iter()
+            .filter(|head| *head < pane.scroll.line)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let (code, sticky_area) = if sticky.is_empty() {
+        (code, None)
+    } else {
+        let strip = row_height * sticky.len() as f32;
+        let (top, rest) = code.split_top(strip);
+        (rest, Some(top))
+    };
+
+    if let Some(area) = sticky_area {
+        frame.fill(area, theme.bg_alt);
+        frame.rule_bottom(area, theme.rule_soft, border::BORDER);
+
+        for (index, head) in sticky.iter().enumerate() {
+            let y = area.y + index as f32 * row_height;
+            let range = text.line_range(*head);
+            let raw = text.slice_to_string(range.start..range.end);
+            let content = expand_tabs(state, &raw);
+            frame.text(run(
+                state,
+                Role::Code,
+                content.trim_end().to_string(),
+                Rect::new(
+                    code.x + space::SM * scale,
+                    y,
+                    code.width - space::SM * scale,
+                    row_height,
+                ),
+                theme.ink_dim,
+                Align::Left,
+                scale,
+            ));
+            // The line number, in the gutter beside it, so the pinned line is locatable.
+            frame.text(run(
+                state,
+                Role::LineNumber,
+                (head + 1).to_string(),
+                Rect::new(gutter.x, y, gutter.width - space::LG * scale, row_height),
+                theme.ink_faint,
+                Align::Right,
+                scale,
+            ));
+        }
     }
 
     let height = state.visible_rows(code.height, row_height);

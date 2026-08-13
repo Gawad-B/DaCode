@@ -451,3 +451,37 @@ fn opening_a_fold_restores_the_rows() {
         "opening what is already open changes nothing"
     );
 }
+
+#[test]
+fn sticky_scroll_reports_the_enclosing_block_heads() {
+    use vex_display::enclosing_heads;
+
+    let text = Text::from_str(
+        "impl Thing {\n    fn method(&self) {\n        if true {\n            work();\n        }\n    }\n}\n",
+    );
+
+    // Inside the `if`, three levels deep.
+    assert_eq!(
+        enclosing_heads(&text, 3, 4, 8),
+        vec![0, 1, 2],
+        "outermost first, so they read down the screen in nesting order"
+    );
+
+    // At the top level there is nothing to pin.
+    assert_eq!(enclosing_heads(&text, 0, 4, 8), Vec::<usize>::new());
+
+    // The depth bound keeps the context from pushing the code off screen.
+    assert_eq!(enclosing_heads(&text, 3, 4, 2), vec![1, 2]);
+}
+
+#[test]
+fn a_blank_line_borrows_the_context_of_the_code_above_it() {
+    use vex_display::enclosing_heads;
+
+    let text = Text::from_str("fn main() {\n    let a = 1;\n\n    let b = 2;\n}\n");
+    assert_eq!(
+        enclosing_heads(&text, 2, 4, 8),
+        vec![0],
+        "standing on a blank line inside a function still shows the function"
+    );
+}

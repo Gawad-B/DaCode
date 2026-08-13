@@ -149,6 +149,60 @@ impl Folds {
     }
 }
 
+/// The chain of block heads enclosing a line, outermost first.
+///
+/// The same indentation reasoning folding uses, and for the same reason: it is synchronous, works in
+/// every language, and matches what the code looks like. A tree-sitter query would name the
+/// constructs more precisely and arrive a frame late for a version that may have moved.
+///
+/// Bounded by `depth`, because the point is to keep two or three lines of context on screen — a
+/// twelve-level chain would push the code off it.
+pub fn enclosing_heads(text: &Text, line: usize, tab_width: usize, depth: usize) -> Vec<usize> {
+    let indent_of = |line: usize| -> Option<usize> {
+        let range = text.line_range(line);
+        let mut columns = 0;
+        for c in text
+            .rope()
+            .slice(range.start.get()..range.end.get())
+            .chars()
+        {
+            match c {
+                ' ' => columns += 1,
+                '\t' => columns += tab_width - (columns % tab_width),
+                '\n' | '\r' => return None,
+                _ => return Some(columns),
+            }
+        }
+        None
+    };
+
+    let Some(mut inner) = indent_of(line).or_else(|| {
+        // A blank line takes the indentation of the nearest line above it that has any.
+        (0..line).rev().find_map(indent_of)
+    }) else {
+        return Vec::new();
+    };
+
+    let mut heads = Vec::new();
+    let mut candidate = line;
+    while candidate > 0 && heads.len() < depth {
+        candidate -= 1;
+        match indent_of(candidate) {
+            Some(indent) if indent < inner => {
+                heads.push(candidate);
+                inner = indent;
+                if indent == 0 {
+                    break;
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    heads.reverse();
+    heads
+}
+
 /// The line range a fold at `line` would cover, from indentation.
 ///
 /// The block is the run of following lines indented deeper than `line`, with blank lines carried

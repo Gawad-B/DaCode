@@ -475,6 +475,11 @@ integrated terminal, session restore, jumplist, macros, autopairs, snippets, sti
 inlay hints.
 **Bar:** two weeks with no reaching for another editor.
 
+> **M8: config hot-reload.** `init.lua` is watched like any other file and re-read on save. Theme,
+> metrics and bindings are replaced; nothing about the *documents* is touched — a reload that reset
+> scroll positions or dropped undo history would make editing your own config hostile, which is
+> exactly when the feature is used.
+
 ### M8 — Polish and performance (ongoing)
 Startup-time budget, frame-time instrumentation, memory profiling, crash-safe recovery of
 unsaved buffers, config hot-reload, documentation.

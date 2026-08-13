@@ -97,6 +97,9 @@ mkdir -p ~/.config/vex
 cp examples/init.lua ~/.config/vex/init.lua
 ```
 
+`init.lua` is re-read when you save it, so editing your config in vex shows the result immediately —
+theme, metrics and bindings all change in place, and nothing about the open documents is touched.
+
 `examples/init.lua` documents every option and shows how to bind keys. Mistakes are reported in a
 box when the editor opens — with a did-you-mean for a misspelled action or theme token — and never
 prevent startup.
