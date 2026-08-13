@@ -65,6 +65,8 @@ impl Session {
                 settings: None,
                 setting_sources: std::collections::HashMap::new(),
                 tree: None,
+                help: None,
+                menu: None,
             },
             grammar: Grammar::new(),
             registers: Registers::new(),

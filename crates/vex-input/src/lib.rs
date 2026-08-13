@@ -12,6 +12,7 @@
 //! routes `Motion::Up`/`Down` to `vex-display` instead of resolving it here.
 
 pub mod action;
+pub mod commands;
 pub mod grammar;
 pub mod history;
 pub mod key;
@@ -19,6 +20,7 @@ pub mod keymap;
 pub mod resolve;
 
 pub use action::{Action, InsertPosition, Motion, Operator, Target, TextObject};
+pub use commands::{COMMANDS, Command, Group};
 pub use grammar::{Grammar, Resolution};
 pub use history::{Jump, JumpList, Macros, is_jump};
 pub use key::{Key, KeyCode};

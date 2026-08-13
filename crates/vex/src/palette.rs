@@ -23,6 +23,13 @@ pub enum PaletteKind {
     /// is exactly what the palette already is, and a second overlay with its own keys would be one
     /// more thing to learn for no gain.
     CodeActions,
+    /// `ctrl-shift-p` — every command the editor has, with the key that runs it beside it.
+    ///
+    /// The reason this exists: there were seventy-odd commands and the only way to reach one was to
+    /// type its name blind into the command line, which requires already knowing the name. A list
+    /// you can search is how anybody finds out what an editor can do, and showing each command's key
+    /// beside it is how the palette stops being needed — you use it twice and learn the shortcut.
+    Commands,
 }
 
 impl PaletteKind {
@@ -31,6 +38,7 @@ impl PaletteKind {
             PaletteKind::CodeActions => "code action",
             PaletteKind::Files => "open file",
             PaletteKind::Buffers => "switch buffer",
+            PaletteKind::Commands => "run a command",
         }
     }
 }
@@ -56,6 +64,8 @@ pub enum Target {
     Buffer(usize),
     /// The index of a code action in the list the server sent.
     CodeAction(usize),
+    /// A command, by the name config binds it under.
+    Command(&'static str),
 }
 
 /// How many rows the palette shows. The design's card is a fixed height, and a palette that scrolls
@@ -142,6 +152,41 @@ impl Palette {
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
     }
 
+    /// Fills the palette with every command, ranked against the query.
+    ///
+    /// Matched on the description as well as the name, because "comment" is what someone types and
+    /// `toggle_comment` is what the command is called — a palette that only matched names would
+    /// require knowing the vocabulary it exists to teach. The key is the row's context, which is the
+    /// dimmed column the design already draws for a file's directory.
+    pub fn refresh_commands(&mut self, modal: bool) {
+        let query = self.query.trim().to_lowercase();
+        let commands = vex_input::commands::COMMANDS;
+        self.total = commands.len();
+
+        let mut scored: Vec<(u32, Row)> = commands
+            .iter()
+            .filter_map(|command| {
+                let score = score_command(command, &query)?;
+                Some((
+                    score,
+                    Row {
+                        name: command.what.to_string(),
+                        context: command.keys_for(modal).to_string(),
+                        score,
+                        highlights: highlight_substring(command.what, &query),
+                        target: Target::Command(command.name),
+                    },
+                ))
+            })
+            .collect();
+
+        // Stable within a score, so an empty query shows the table in its own order — which is
+        // grouped by what the commands are for, and is therefore browsable.
+        scored.sort_by(|left, right| right.0.cmp(&left.0));
+        self.rows = scored.into_iter().map(|(_, row)| row).collect();
+        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
         if self.rows.is_empty() {
             return;
@@ -190,6 +235,47 @@ fn row_from_match(matched: Match) -> Row {
         highlights,
         target: Target::File(matched.file.absolute),
     }
+}
+
+/// How well a command answers a query, or `None` if it does not.
+///
+/// Ranked so that what someone typed the *start* of comes first: typing "com" should offer "comment
+/// or uncomment these lines" above "collapse to one cursor", and both above anything that merely
+/// contains the letters somewhere. Every word of the description is a candidate for that
+/// prefix match, so "uncomment" finds it too.
+fn score_command(command: &vex_input::commands::Command, query: &str) -> Option<u32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+
+    let what = command.what.to_lowercase();
+    let name = command.name.to_lowercase();
+
+    if what.starts_with(query) || name.starts_with(query) {
+        return Some(100);
+    }
+    if what.split_whitespace().any(|word| word.starts_with(query))
+        || name.split('_').any(|word| word.starts_with(query))
+    {
+        return Some(80);
+    }
+    if what.contains(query) || name.contains(query) {
+        return Some(50);
+    }
+    // Last resort: the letters in order, anywhere — how a fuzzy finder behaves, and what rescues a
+    // query like "tgcm" for "toggle comment".
+    subsequence(&what, query)
+        .or_else(|| subsequence(&name, query))
+        .map(|_| 10)
+}
+
+/// Whether `query`'s characters appear in `haystack` in order.
+fn subsequence(haystack: &str, query: &str) -> Option<()> {
+    let mut chars = haystack.chars();
+    for wanted in query.chars() {
+        chars.by_ref().find(|c| *c == wanted)?;
+    }
+    Some(())
 }
 
 /// Positions of a substring match, for the buffer palette.

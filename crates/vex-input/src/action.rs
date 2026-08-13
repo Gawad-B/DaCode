@@ -333,6 +333,111 @@ pub enum InsertPosition {
 }
 
 impl Action {
+    /// Every name [`Action::from_name`] accepts.
+    ///
+    /// Written out rather than derived, because `from_name` is a match over string literals and
+    /// nothing can enumerate that. Two tests hold the pair together: one that every name here
+    /// resolves, and one in `commands` that every name here has a palette entry. Without the list
+    /// there is no way to ask "what can this editor do?", which is exactly the question the command
+    /// palette exists to answer.
+    pub const NAMES: &'static [&'static str] = &[
+        "move_left",
+        "move_right",
+        "move_up",
+        "move_down",
+        "move_word_forward",
+        "move_word_backward",
+        "move_word_end",
+        "move_line_start",
+        "move_line_end",
+        "move_first_non_blank",
+        "move_file_start",
+        "move_file_end",
+        "move_matching_bracket",
+        "move_paragraph_forward",
+        "move_paragraph_backward",
+        "normal_mode",
+        "insert_mode",
+        "visual_mode",
+        "replace_mode",
+        "insert_before",
+        "insert_after",
+        "insert_line_start",
+        "insert_line_end",
+        "open_below",
+        "open_above",
+        "newline",
+        "delete_backward",
+        "delete_forward",
+        "paste",
+        "paste_before",
+        "undo",
+        "redo",
+        "repeat_change",
+        "add_caret_above",
+        "add_caret_below",
+        "split_selection_into_lines",
+        "keep_primary_selection",
+        "collapse_selections",
+        "select_line",
+        "select_all",
+        "toggle_soft_wrap",
+        "toggle_theme",
+        "increase_font_size",
+        "decrease_font_size",
+        "save",
+        "quit",
+        "search",
+        "search_backward",
+        "search_next",
+        "search_previous",
+        "command",
+        "search_project",
+        "hover",
+        "goto_definition",
+        "next_diagnostic",
+        "previous_diagnostic",
+        "dismiss_info",
+        "completion",
+        "rename",
+        "format",
+        "split_vertical",
+        "split_horizontal",
+        "close_pane",
+        "next_pane",
+        "previous_pane",
+        "toggle_tree",
+        "code_action",
+        "find_references",
+        "toggle_inlay_hints",
+        "toggle_diagnostics",
+        "toggle_fold",
+        "fold_all",
+        "unfold_all",
+        "jump_back",
+        "jump_forward",
+        "replay_macro",
+        "expand_snippet",
+        "open_folder",
+        "settings",
+        "move_line_up",
+        "move_line_down",
+        "duplicate_line_up",
+        "duplicate_line_down",
+        "toggle_comment",
+        "select_next_occurrence",
+        "select_all_occurrences",
+        "delete_word_backward",
+        "delete_word_forward",
+        "delete_line",
+        "indent",
+        "outdent",
+        "command_palette",
+        "help",
+        "menu",
+        "context_menu",
+    ];
+
     /// Resolves a configuration name to an action.
     ///
     /// This is the vocabulary config can reach: the actions that make sense as the whole meaning of
@@ -506,5 +611,38 @@ impl Action {
             | Action::DeleteWord { .. } => true,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_advertised_name_resolves() {
+        // `NAMES` is public API — config, the palette and the help panel all read it — so a name in
+        // it that `from_name` does not accept is a command the editor advertises and cannot run.
+        for name in Action::NAMES {
+            assert!(
+                Action::from_name(name).is_some(),
+                "`{name}` is advertised but does not resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_name_is_refused_rather_than_defaulted() {
+        // A typo in init.lua has to be reportable. Silently binding the key to something would be
+        // the worst of both: no error, and a key that does the wrong thing.
+        assert!(Action::from_name("definitely_not_a_command").is_none());
+    }
+
+    #[test]
+    fn the_name_list_has_no_duplicates() {
+        let mut names = Action::NAMES.to_vec();
+        names.sort_unstable();
+        let total = names.len();
+        names.dedup();
+        assert_eq!(total, names.len(), "a name is listed twice");
     }
 }

@@ -116,6 +116,10 @@ pub struct EditorState {
     /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
     /// a path in.
     pub tree: Option<crate::tree::FileTree>,
+    /// The help panel, when open. `F1`, and the answer to "how does this thing work".
+    pub help: Option<crate::help::Help>,
+    /// The menu bar or a context menu, when one is open.
+    pub menu: Option<crate::menu::Menu>,
 }
 
 impl EditorState {
@@ -809,10 +813,20 @@ pub fn draw_panes(
     draw_info(frame, state, code, row_height, scale);
     draw_completion(frame, state, code, row_height, scale);
 
-    // Last, so it covers everything: the palette is a modal overlay.
+    // The which-key hint sits with the info boxes: it is contextual, it appears beside what you are
+    // doing, and a scrim over the document would be absurd for something that lasts one keystroke.
+    draw_which_key(frame, state, code, scale);
+
+    // Last, so they cover everything: these are modal overlays.
     frame.set_layer(Layer::Modal);
     if let Some(palette) = &state.palette {
         draw_palette(frame, state, palette, bounds, scale);
+    }
+    if let Some(help) = &state.help {
+        draw_help(frame, state, help, bounds, scale);
+    }
+    if let Some(menu) = &state.menu {
+        draw_menu(frame, state, menu, bounds, scale);
     }
     frame.set_layer(Layer::Base);
 }
@@ -1284,21 +1298,24 @@ fn draw_palette(
             frame.fill(row_rect, theme.row_active);
         }
 
-        // Score, right-aligned in a narrow column.
+        // Score, right-aligned in a narrow column. Not for commands: a match score beside "save this
+        // file" is the editor showing its workings to someone who asked what it can do.
         let score_rect = Rect::new(row_rect.x + pad, y, 30.0 * scale, row_height);
-        frame.text(run(
-            state,
-            Role::Value,
-            row.score.to_string(),
-            score_rect,
-            if selected {
-                theme.ink_dim
-            } else {
-                theme.ink_faint
-            },
-            Align::Right,
-            scale,
-        ));
+        if palette.kind != PaletteKind::Commands {
+            frame.text(run(
+                state,
+                Role::Value,
+                row.score.to_string(),
+                score_rect,
+                if selected {
+                    theme.ink_dim
+                } else {
+                    theme.ink_faint
+                },
+                Align::Right,
+                scale,
+            ));
+        }
 
         // Name, with matched characters in the mode color. Drawn as per-character runs only where
         // a highlight falls, so the common case stays one run.
@@ -1334,21 +1351,37 @@ fn draw_palette(
             ));
         }
 
-        // Directory, dimmed, after the name.
+        // Directory, dimmed, after the name — except in the command palette, where the context is
+        // the *key*, and a key column has to be a column. Ragged keys trailing each description
+        // would be unreadable as the table it needs to be, and reading it as a table is how the
+        // palette teaches shortcuts instead of merely running things.
         if !row.context.is_empty() {
-            let context_x = name_x + (row.name.chars().count() as f32 + 2.0) * advance;
+            let (context_rect, align, color) = if palette.kind == PaletteKind::Commands {
+                (
+                    Rect::new(rows_area.x, y, rows_area.width - pad, row_height),
+                    Align::Right,
+                    if selected { accent } else { theme.ink_faint },
+                )
+            } else {
+                let context_x = name_x + (row.name.chars().count() as f32 + 2.0) * advance;
+                (
+                    Rect::new(
+                        context_x,
+                        y,
+                        (rows_area.right() - context_x - pad).max(0.0),
+                        row_height,
+                    ),
+                    Align::Left,
+                    theme.ink_faint,
+                )
+            };
             frame.text(run(
                 state,
                 Role::Value,
                 row.context.clone(),
-                Rect::new(
-                    context_x,
-                    y,
-                    (rows_area.right() - context_x - pad).max(0.0),
-                    row_height,
-                ),
-                theme.ink_faint,
-                Align::Left,
+                context_rect,
+                color,
+                align,
                 scale,
             ));
         }
@@ -1386,6 +1419,329 @@ fn draw_palette(
         Align::Left,
         scale,
     ));
+}
+
+/// The which-key hint: what can follow the keys typed so far.
+///
+/// The statusline already showed the prefix — `<c-w>` sat there on its own, which tells you the
+/// editor is waiting and nothing about what for. This is the thing Helix is repeatedly praised for
+/// and which people bolt onto Neovim with a plugin: press a prefix, read the menu, learn the key.
+///
+/// Anchored under the cursor rather than centred, because it is about what you are typing, and
+/// drawn without a scrim: it is a hint, not a decision. It disappears the moment the command
+/// resolves — no dismissal, nothing to learn about the popup itself.
+fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32) {
+    if state.pending.is_empty() {
+        return;
+    }
+    let entries = vex_input::commands::continuations(&state.pending);
+    if entries.is_empty() {
+        return;
+    }
+
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let row_height = 22.0 * scale;
+    let pad = space::MD * scale;
+
+    // Wide enough for the longest description, so nothing is clipped — the popup is small and the
+    // measurement is over a handful of static strings.
+    let longest = entries
+        .iter()
+        .map(|(key, what)| key.chars().count() + what.chars().count())
+        .max()
+        .unwrap_or(20) as f32;
+    let width = (longest * 8.0 * scale + pad * 6.0).min(code.width - pad * 2.0);
+    let height = entries.len() as f32 * row_height + pad * 2.0;
+
+    // Under the cursor if it fits, above it if it does not: the popup must not fall off the bottom
+    // of the window, which is exactly where a cursor near the end of a file is.
+    let cursor_y = code.y + row_height;
+    let y = if cursor_y + height > code.bottom() {
+        (code.bottom() - height).max(code.y)
+    } else {
+        cursor_y
+    };
+    let card = Rect::new(code.x + pad, y, width, height);
+
+    frame.fill(
+        Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
+        theme.shadow,
+    );
+    frame.fill(card, theme.bg_panel);
+    frame.rule_top(card, theme.rule, border::BORDER);
+    frame.rule_bottom(card, theme.rule, border::BORDER);
+    frame.rule_left(card, theme.rule, border::BORDER);
+
+    for (index, (key, what)) in entries.iter().enumerate() {
+        let y = card.y + pad + index as f32 * row_height;
+        frame.text(run(
+            state,
+            Role::Value,
+            *key,
+            Rect::new(card.x + pad, y, 70.0 * scale, row_height),
+            accent,
+            Align::Left,
+            scale,
+        ));
+        frame.text(run(
+            state,
+            Role::Value,
+            *what,
+            Rect::new(
+                card.x + pad + 76.0 * scale,
+                y,
+                (card.width - pad * 2.0 - 76.0 * scale).max(0.0),
+                row_height,
+            ),
+            theme.ink_dim,
+            Align::Left,
+            scale,
+        ));
+    }
+}
+
+/// The help panel: every key that works right now, grouped and filterable.
+fn draw_help(
+    frame: &mut Frame,
+    state: &EditorState,
+    help: &crate::help::Help,
+    bounds: Rect,
+    scale: f32,
+) {
+    use crate::help::Line;
+
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    frame.fill(bounds, theme.scrim);
+
+    let pad = space::LG * scale;
+    let row_height = 24.0 * scale;
+    let width = (720.0 * scale).min(bounds.width - space::XXL * 2.0 * scale);
+    let card = Rect::new(
+        bounds.x + (bounds.width - width) / 2.0,
+        bounds.y + 80.0 * scale,
+        width,
+        (bounds.height - 160.0 * scale).max(row_height * 6.0),
+    );
+
+    frame.fill(card, theme.bg_panel);
+    frame.rule_top(card, theme.rule, border::BORDER);
+    frame.rule_bottom(card, theme.rule, border::BORDER);
+    frame.rule_left(card, theme.rule, border::BORDER);
+
+    let (header, rest) = card.split_top(52.0 * scale);
+    let (rows_area, footer) = rest.split_bottom(30.0 * scale);
+
+    let mut title_spec = state.typography.spec(Role::Display);
+    title_spec.size_px = 22.0 * scale;
+    frame.text(TextRun {
+        // Says which grammar these are, because that is the question underneath the question: a
+        // non-modal user needs to know they are not being shown Vim's keys.
+        text: if help.query.is_empty() {
+            match state.modal {
+                true => "keys — vim grammar".to_string(),
+                false => "keys".to_string(),
+            }
+        } else {
+            help.query.clone()
+        },
+        spec: title_spec,
+        color: if help.query.is_empty() {
+            theme.ink
+        } else {
+            accent
+        },
+        rect: Rect::new(header.x + pad, header.y, header.width - pad * 2.0, header.height),
+        align: Align::Left,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
+    });
+    frame.text(label(
+        state,
+        "type to filter",
+        Rect::new(header.x + pad, header.y, header.width - pad * 2.0, header.height),
+        theme.ink_faint,
+        Align::Right,
+        scale,
+    ));
+    frame.rule_bottom(header, theme.rule_soft, border::BORDER);
+
+    let visible = ((rows_area.height / row_height).floor() as usize).max(1);
+    let lines = help.lines();
+    for (index, line) in lines.iter().skip(help.scroll).take(visible).enumerate() {
+        let y = rows_area.y + index as f32 * row_height;
+        match line {
+            Line::Heading(title) => {
+                frame.text(label(
+                    state,
+                    *title,
+                    Rect::new(rows_area.x + pad, y, rows_area.width - pad * 2.0, row_height),
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            }
+            Line::Binding { keys, what } => {
+                // Keys in the mode colour on the left, what they do beside them. The key column is
+                // fixed so the list reads as a table rather than as prose.
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    *keys,
+                    Rect::new(rows_area.x + pad * 2.0, y, 150.0 * scale, row_height),
+                    accent,
+                    Align::Left,
+                    scale,
+                ));
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    *what,
+                    Rect::new(
+                        rows_area.x + pad * 2.0 + 160.0 * scale,
+                        y,
+                        (rows_area.width - pad * 4.0 - 160.0 * scale).max(0.0),
+                        row_height,
+                    ),
+                    theme.ink_dim,
+                    Align::Left,
+                    scale,
+                ));
+            }
+        }
+    }
+
+    frame.rule_top(footer, theme.rule_soft, border::BORDER);
+    frame.text(label(
+        state,
+        "↑↓ scroll · esc close · ctrl-shift-p every command",
+        Rect::new(footer.x + pad, footer.y, footer.width - pad * 2.0, footer.height),
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+}
+
+/// The menu bar, or a context menu at the pointer.
+fn draw_menu(
+    frame: &mut Frame,
+    state: &EditorState,
+    menu: &crate::menu::Menu,
+    bounds: Rect,
+    scale: f32,
+) {
+    use crate::menu::Kind;
+
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let row_height = 24.0 * scale;
+    let pad = space::MD * scale;
+
+    // The widest row decides the width. Keys are right-aligned in their own column, so the label
+    // column and the key column each need their own measure.
+    let label_width = menu
+        .items
+        .iter()
+        .map(|item| item.label.chars().count())
+        .max()
+        .unwrap_or(10) as f32
+        * 8.0
+        * scale;
+    let keys_width = menu
+        .items
+        .iter()
+        .map(|item| item.keys.chars().count())
+        .max()
+        .unwrap_or(0) as f32
+        * 8.0
+        * scale;
+    let width = (label_width + keys_width + pad * 6.0).min(bounds.width - pad * 2.0);
+    let height = menu.items.len() as f32 * row_height + pad * 2.0;
+
+    let (x, y) = match menu.kind {
+        Kind::Bar => {
+            // Under its title in the top row. The titles are drawn here too, since the bar only
+            // exists while it is open — a permanent menu bar would cost a row of every window for
+            // something most people use twice.
+            let title_y = bounds.y + 40.0 * scale;
+            let title_width =
+                |title: &str| (title.chars().count() as f32 + 2.0) * 9.0 * scale;
+
+            let mut x = bounds.x + space::LG * scale;
+            let mut open_x = x;
+            for (index, title) in menu.titles.iter().enumerate() {
+                let rect = Rect::new(x, title_y, title_width(title), row_height);
+                if index == menu.open {
+                    frame.fill(rect, theme.row_active);
+                    // Remembered so the list hangs from the title it belongs to, which is the whole
+                    // grammar of a menu bar.
+                    open_x = x;
+                }
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    *title,
+                    Rect::new(rect.x + 4.0 * scale, rect.y, rect.width, rect.height),
+                    if index == menu.open { accent } else { theme.ink_dim },
+                    Align::Left,
+                    scale,
+                ));
+                x += rect.width;
+            }
+
+            (open_x, title_y + row_height)
+        }
+        // Clamped so a right-click near an edge still shows the whole menu rather than half of it
+        // off the window.
+        Kind::Context => (
+            menu.at.0.min(bounds.right() - width - pad),
+            menu.at.1.min(bounds.bottom() - height - pad),
+        ),
+    };
+
+    let card = Rect::new(x, y, width, height);
+    frame.fill(
+        Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
+        theme.shadow,
+    );
+    frame.fill(card, theme.bg_panel);
+    frame.rule_top(card, theme.rule, border::BORDER);
+    frame.rule_bottom(card, theme.rule, border::BORDER);
+    frame.rule_left(card, theme.rule, border::BORDER);
+
+    for (index, item) in menu.items.iter().enumerate() {
+        let y = card.y + pad + index as f32 * row_height;
+        let row = Rect::new(card.x, y, card.width, row_height);
+        if index == menu.selected {
+            frame.fill(row, theme.row_active);
+        }
+        frame.text(run(
+            state,
+            Role::Value,
+            item.label.clone(),
+            Rect::new(card.x + pad, y, label_width + pad, row_height),
+            if index == menu.selected {
+                theme.ink
+            } else {
+                theme.ink_dim
+            },
+            Align::Left,
+            scale,
+        ));
+        if !item.keys.is_empty() {
+            frame.text(run(
+                state,
+                Role::Value,
+                item.keys.clone(),
+                Rect::new(card.x + pad, y, card.width - pad * 2.0, row_height),
+                theme.ink_faint,
+                Align::Right,
+                scale,
+            ));
+        }
+    }
 }
 
 fn run(

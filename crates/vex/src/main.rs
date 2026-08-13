@@ -154,6 +154,8 @@ fn main() -> Result<()> {
         save_after_format: false,
         pointer: (0.0, 0.0),
         dragging: false,
+        last_click: None,
+        click_count: 1,
         wakes: 0,
         index: FileIndex::new(root.clone()),
         walk: Some(FileWalk::start(root.clone())),
@@ -286,6 +288,8 @@ fn new_state(
         settings: None,
         setting_sources: settings.sources.clone(),
         tree: None,
+        help: None,
+        menu: None,
     };
 
     (state, settings.keymap)
@@ -885,6 +889,15 @@ struct App {
     pointer: (f32, f32),
     /// Whether the left button is held, so a move extends the selection.
     dragging: bool,
+    /// When and where the last click landed, for recognising a double or triple one.
+    ///
+    /// The platform does not tell us: `winit` reports presses, and the "is this the second click of
+    /// a double?" question is the application's. Both halves are needed — a second click a second
+    /// later, or an inch away, is a new click and not a word selection.
+    last_click: Option<(std::time::Instant, f32, f32)>,
+    /// 1, 2 or 3: caret, word, line. Kept for the whole gesture so a drag after a double-click is
+    /// still a word-wise drag.
+    click_count: u8,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Open panes, and which has focus. Always at least one — see `vex::panes`.
@@ -1061,17 +1074,22 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::MouseInput {
-                state,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                match state {
-                    ElementState::Pressed => {
+            WindowEvent::MouseInput { state, button, .. } => {
+                match (button, state) {
+                    (winit::event::MouseButton::Left, ElementState::Pressed) => {
                         self.dragging = true;
+                        self.click_count = self.count_click();
                         self.click(false);
                     }
-                    ElementState::Released => self.dragging = false,
+                    (winit::event::MouseButton::Left, ElementState::Released) => {
+                        self.dragging = false
+                    }
+                    // The context menu, which is where a mouse user looks for cut, copy and "go to
+                    // definition" before they look for a keyboard shortcut.
+                    (winit::event::MouseButton::Right, ElementState::Pressed) => {
+                        self.open_context_menu()
+                    }
+                    _ => {}
                 }
                 self.request_redraw();
             }
@@ -1266,6 +1284,15 @@ impl App {
         if self.handle_welcome_key(key) {
             return false;
         }
+        // The menu and the help panel own the keyboard while they are open — they are things you are
+        // reading or choosing from, and a key that fell through would type into the file behind
+        // them. Both return whether the editor should quit, which a menu entry can ask for.
+        if self.state.menu.is_some() {
+            return self.handle_menu_key(key);
+        }
+        if self.state.help.is_some() {
+            return self.handle_help_key(key);
+        }
         if self.handle_settings_key(key) {
             return false;
         }
@@ -1314,6 +1341,76 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Keys for the menu bar and the context menu, which own the keyboard while open.
+    ///
+    /// Returns whether the editor should quit — `file ▸ quit` is a menu entry, and a menu that
+    /// swallowed it would be a menu with a broken row in it.
+    fn handle_menu_key(&mut self, key: Key) -> bool {
+        let modal = self.state.modal;
+
+        match key.code {
+            KeyCode::Escape => self.state.menu = None,
+            KeyCode::Enter => {
+                let action = self
+                    .state
+                    .menu
+                    .as_ref()
+                    .and_then(|menu| menu.selection().map(|item| item.action.clone()));
+                // Closed before running: a command that opens something of its own — the palette, a
+                // prompt — must not find the menu still sitting on top of it.
+                self.state.menu = None;
+                if let Some(action) = action {
+                    return self.run(action);
+                }
+            }
+            code => {
+                if let Some(menu) = &mut self.state.menu {
+                    match code {
+                        KeyCode::Up => menu.move_selection(-1),
+                        KeyCode::Down => menu.move_selection(1),
+                        KeyCode::Left => menu.move_menu(-1, modal),
+                        KeyCode::Right => menu.move_menu(1, modal),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Keys for the help panel. Typing filters it, which is the only way a list this long answers a
+    /// question rather than presenting one.
+    fn handle_help_key(&mut self, key: Key) -> bool {
+        let rows = self.code_rows();
+        match key.code {
+            KeyCode::Escape => self.state.help = None,
+            code => {
+                if let Some(help) = &mut self.state.help {
+                    match code {
+                        KeyCode::Up => help.scroll_by(-1, rows),
+                        KeyCode::Down => help.scroll_by(1, rows),
+                        KeyCode::PageUp => help.scroll_by(-(rows as isize), rows),
+                        KeyCode::PageDown => help.scroll_by(rows as isize, rows),
+                        KeyCode::Backspace => help.backspace(),
+                        KeyCode::Char(c) if !key.ctrl && !key.alt => help.type_char(c),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Opens the context menu where the pointer is.
+    fn open_context_menu(&mut self) {
+        // The caret moves to the click first: every command in the menu is about the thing under the
+        // pointer, and a "go to definition" that used the old cursor position would be a trap.
+        if self.state.menu.is_none() {
+            self.click(false);
+        }
+        self.state.menu = Some(vex::menu::Menu::context(self.pointer, self.state.modal));
     }
 
     fn run(&mut self, action: Action) -> bool {
@@ -2339,6 +2436,28 @@ impl App {
                 }
             }
             Action::ExpandSnippet => self.expand_snippet(),
+            // The three ways of finding out what the editor can do. Each is a toggle, because the
+            // key that opened it is the key someone presses again to get rid of it.
+            Action::ToggleCommandPalette => {
+                if self.state.palette.is_some() {
+                    self.state.palette = None;
+                } else {
+                    self.open_palette(PaletteKind::Commands);
+                }
+            }
+            Action::ToggleHelp => {
+                self.state.help = match self.state.help {
+                    Some(_) => None,
+                    None => Some(vex::help::Help::new(self.state.modal)),
+                };
+            }
+            Action::ToggleMenu => {
+                self.state.menu = match self.state.menu {
+                    Some(_) => None,
+                    None => Some(vex::menu::Menu::bar()),
+                };
+            }
+            Action::ToggleContextMenu => self.open_context_menu(),
             Action::OpenFolder => {
                 // The desktop's own folder chooser when there is one — that is what "open a folder"
                 // means to everyone who did not come from Vim. Typing a path is the fallback, not the
@@ -3226,6 +3345,7 @@ impl App {
         match kind {
             PaletteKind::Files => palette.refresh_files(&mut self.index),
             PaletteKind::Buffers => palette.refresh_buffers(&self.buffer_names()),
+            PaletteKind::Commands => palette.refresh_commands(self.state.modal),
             PaletteKind::CodeActions => {}
         }
         self.state.palette = Some(palette);
@@ -3294,10 +3414,12 @@ impl App {
 
     fn refresh_palette(&mut self) {
         let names = self.buffer_names();
+        let modal = self.state.modal;
         if let Some(palette) = &mut self.state.palette {
             match palette.kind {
                 PaletteKind::Files => palette.refresh_files(&mut self.index),
                 PaletteKind::Buffers => palette.refresh_buffers(&names),
+                PaletteKind::Commands => palette.refresh_commands(modal),
                 // Filtered against the list already fetched: the server is asked once per
                 // invocation, and typing narrows what it offered.
                 PaletteKind::CodeActions => {
@@ -3339,6 +3461,14 @@ impl App {
             }
             Target::Buffer(index) => self.switch_to(index),
             Target::CodeAction(index) => self.apply_code_action(index),
+            // Chosen from the palette, run exactly as if its key had been pressed — same action,
+            // same executor, same macro recording. A palette that had its own path to each command
+            // would be a second implementation of every one of them.
+            Target::Command(name) => {
+                if let Some(action) = Action::from_name(name) {
+                    let _ = self.run(action);
+                }
+            }
         }
     }
 
@@ -3534,17 +3664,95 @@ impl App {
             vex_text::DisplayPoint { row, column },
         );
 
-        if extend {
+        // A drag, or shift-click, keeps the anchor and moves the head — the same gesture, and
+        // shift-click is the one every editor offers to people who do not like dragging.
+        if extend || self.modifiers.shift_key() {
             let anchor = self.state.document.selections().primary().anchor;
             self.state
                 .document
                 .set_selections(vex_text::SelectionSet::single(Selection::new(
                     anchor, offset,
                 )));
-        } else {
-            self.state.document.set_primary_caret(offset);
+            self.sync_syntax();
+            return;
         }
+
+        // Alt-click adds a cursor rather than replacing the set. This is how multi-cursor editing is
+        // *discovered*: nobody reads a manual to find ctrl-alt-↓, but everybody tries alt-click.
+        if self.modifiers.alt_key() {
+            let mut selections: Vec<Selection> =
+                self.state.document.selections().iter().copied().collect();
+            // Alt-clicking an existing cursor removes it, which is how you undo the one you put in
+            // the wrong place without starting the whole set again.
+            match selections
+                .iter()
+                .position(|selection| selection.is_caret() && selection.head == offset)
+            {
+                Some(at) if selections.len() > 1 => {
+                    selections.remove(at);
+                }
+                _ => selections.push(Selection::caret(offset)),
+            }
+            let primary = selections.len() - 1;
+            self.state
+                .document
+                .set_selections(vex_text::SelectionSet::from_iter(selections, primary));
+            self.sync_syntax();
+            return;
+        }
+
+        self.state.document.set_primary_caret(offset);
+
+        // Ctrl-click is "go to definition", as it is in every editor with a language server. The
+        // caret moves first, because the request is about where the caret is.
+        if self.modifiers.control_key() {
+            let _ = self.run(Action::GotoDefinition);
+            return;
+        }
+
+        match self.click_count {
+            // Double-click takes the word; triple takes the line. Their absence was the most
+            // obviously broken-feeling thing about using vex with a mouse. Both go through the
+            // action they share with the keyboard rather than reaching into the selection set here,
+            // so the mouse cannot drift from what `ctrl-d` and `ctrl-l` do.
+            2 => {
+                let _ = self.run(Action::SelectNextOccurrence { all: false });
+            }
+            count if count >= 3 => {
+                let _ = self.run(Action::SelectLine { count: 1 });
+            }
+            _ => {}
+        }
+
         self.sync_syntax();
+    }
+
+    /// Which click of a multi-click this is.
+    ///
+    /// The window system does not answer this, so the rule is the usual one: within half a second
+    /// and within a few pixels of the last press. The distance test matters as much as the time —
+    /// two deliberate clicks in different places are two clicks however fast you are.
+    fn count_click(&mut self) -> u8 {
+        const INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+        const SLOP: f32 = 4.0;
+
+        let (x, y) = self.pointer;
+        let now = std::time::Instant::now();
+        let count = match self.last_click {
+            Some((when, at_x, at_y))
+                if now.duration_since(when) < INTERVAL
+                    && (at_x - x).abs() < SLOP
+                    && (at_y - y).abs() < SLOP =>
+            {
+                // Wraps at three: a fourth click starts again at a caret, which is what every editor
+                // does and what stops a rapid series from getting stuck selecting whole lines.
+                (self.click_count % 3) + 1
+            }
+            _ => 1,
+        };
+
+        self.last_click = Some((now, x, y));
+        count
     }
 
     /// A click in the sidebar: the tree, the settings panel, or nothing.
