@@ -195,11 +195,30 @@ Useful when something misbehaves:
 
 ## Installing
 
+**Linux, from source:**
+
 ```sh
 cargo build --release
 packaging/linux/install.sh              # into ~/.local
 packaging/linux/install.sh /usr/local   # or system-wide
 ```
+
+**Linux, as a package:**
+
+```sh
+packaging/build-deb.sh     # Debian, Ubuntu, Mint …
+packaging/build-rpm.sh     # Fedora, RHEL, openSUSE — needs rpm-build
+```
+
+**Windows:**
+
+```powershell
+cargo build --release
+powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
+```
+
+Settings live in `%APPDATA%\vex\init.lua` there, sessions and recovery in `%LOCALAPPDATA%\vex\`.
+See `packaging/windows/README.md`, including an honest note on what is untested.
 
 Installs the binary, the desktop entry and the icon theme. See `packaging/README.md`.
 

@@ -84,15 +84,7 @@ impl Session {
 
 /// Where sessions are kept.
 pub fn session_dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".local/state")
-        })
-        .join("vex/sessions")
+    crate::paths::state_dir().join("sessions")
 }
 
 /// The file a project's session is stored in.

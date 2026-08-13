@@ -148,7 +148,24 @@ fn remove_trailing_commas(source: &str) -> String {
 /// Returned whether or not it exists, so callers can report a precise "looked here" message
 /// rather than a vague failure.
 pub fn vscode_config_dir() -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    // Windows keeps it under the roaming profile; every other platform under the home directory.
+    // Checked before `HOME` because a POSIX shell on Windows sets both, and `%APPDATA%` is where
+    // VSCode itself writes.
+    if cfg!(windows) {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let appdata = std::path::PathBuf::from(appdata);
+            for candidate in ["Code/User", "VSCodium/User", "Code - OSS/User"] {
+                let path = appdata.join(candidate);
+                if path.join("settings.json").exists() || path.join("snippets").exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)?;
 
     // Linux; the same layout with different roots applies to macOS and Windows, which are not v1
     // targets. VSCodium keeps an identical structure under a different directory name.

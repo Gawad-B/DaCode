@@ -523,6 +523,26 @@ inlay hints.
 > scroll positions or dropped undo history would make editing your own config hostile, which is
 > exactly when the feature is used.
 
+> **Portability.** Windows is now a target rather than an aspiration: paths go through one module that
+> knows `%APPDATA%` is for configuration the user edits and `%LOCALAPPDATA%` for state they never see —
+> putting a session file in the roaming profile would follow someone to a machine where the files it
+> names do not exist. Program lookup consults `PATHEXT`, because a bare-name check finds neither
+> `rust-analyzer.exe` nor the `.cmd` shims most language servers install as, and would have reported
+> every server missing while all were present.
+>
+> Seven of the nine crates type-check against `x86_64-pc-windows-msvc` here. The two that cannot are
+> the ones needing a C toolchain for tree-sitter and Lua, which is why `.github/workflows/build.yml`
+> has a Windows job — a Windows build cannot be verified from this machine, so it is verified by a
+> push instead. The Windows-only functions are compiled on every platform and selected by a runtime
+> check rather than `#[cfg]`, because a `#[cfg(windows)]` body is never type-checked on Linux and that
+> is exactly the code that cannot be tested here.
+>
+> **Packaging.** `.deb` and `.rpm` scripts, plus a PowerShell installer. The `.deb` is assembled with
+> `ar` and `tar` rather than `dpkg-deb` so it builds anywhere — verified by unpacking one and checking
+> its member order, control fields and payload layout. The `.rpm` spec is written but was not built
+> here: `rpmbuild` is not installed, and the script says so plainly rather than producing something
+> that only looks like a package.
+
 ### M8 — Polish and performance (ongoing)
 Startup-time budget, frame-time instrumentation, memory profiling, crash-safe recovery of
 unsaved buffers, config hot-reload, documentation.

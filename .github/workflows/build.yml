@@ -1,0 +1,45 @@
+# Builds the three installable artifacts: vex.exe, a .deb and an .rpm.
+#
+# The Windows job exists because a Windows build cannot be verified from a Linux machine — the crates
+# needing a C toolchain (tree-sitter, Lua) cannot even be type-checked without one. This is where that
+# happens, so a broken Windows build is caught by a push rather than by a user.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libwayland-dev libxkbcommon-dev
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --release
+      - name: Package
+        run: |
+          packaging/build-deb.sh
+          packaging/build-rpm.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: target/packages/*
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The whole point of this job: everything the Linux machine cannot check.
+      - run: cargo build --release
+      - run: cargo test --workspace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vex-windows
+          path: target/release/vex.exe

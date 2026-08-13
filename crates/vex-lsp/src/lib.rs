@@ -83,5 +83,25 @@ pub fn is_installed(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|directory| directory.join(program).is_file())
+
+    // On Windows the file is `name.exe`, `name.cmd` or `name.bat`, and several language servers ship
+    // as `.cmd` shims. A bare-name check finds none of them, which would report every server as
+    // missing while they were all installed.
+    let extensions: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
+            .split(';')
+            .filter(|extension| !extension.is_empty())
+            .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    std::env::split_paths(&path).any(|directory| {
+        directory.join(program).is_file()
+            || extensions
+                .iter()
+                .any(|extension| directory.join(format!("{program}.{extension}")).is_file())
+    })
 }

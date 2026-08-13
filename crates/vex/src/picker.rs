@@ -19,7 +19,9 @@ use std::sync::mpsc::{Receiver, channel};
 
 /// Whether any folder dialog is available.
 pub fn is_available() -> bool {
-    which("zenity") || which("kdialog") || portal_available()
+    // Windows always has one: PowerShell ships with the OS, and the shell's folder browser needs no
+    // extra install.
+    cfg!(windows) || which("zenity") || which("kdialog") || portal_available()
 }
 
 /// Which dialog would be used, for reporting.
@@ -31,7 +33,9 @@ pub fn is_available() -> bool {
 /// stream. It is kept as the fallback for systems with neither dialog installed, where it is better
 /// than refusing, but it is not what runs when something simpler is present.
 pub fn describe() -> &'static str {
-    if which("zenity") {
+    if cfg!(windows) {
+        "windows shell"
+    } else if which("zenity") {
         "zenity"
     } else if which("kdialog") {
         "kdialog"
@@ -68,12 +72,10 @@ impl FolderPicker {
 }
 
 fn which(program: &str) -> bool {
-    std::process::Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {program}"))
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    // `PATH` is walked directly rather than shelling out to `command -v`, which does not exist on
+    // Windows, and to `where`, which is slower and prints to stdout for a question with a yes/no
+    // answer.
+    crate::paths::program_on_path(program)
 }
 
 /// Whether the desktop portal is on the session bus.
@@ -104,6 +106,13 @@ fn portal_available() -> bool {
 /// One dialog, whatever happens. A chain that opened a second one after the first was cancelled would
 /// be worse than not having the feature.
 fn choose(start: &std::path::Path) -> Option<PathBuf> {
+    // Compiled on every platform and chosen by a runtime check, not `#[cfg]`. A `#[cfg(windows)]`
+    // body is never type-checked on Linux, and this is exactly the code that cannot be tested here —
+    // the combination that ships a Windows build broken in a way nobody saw.
+    if cfg!(windows) {
+        return via_powershell(start);
+    }
+
     if which("zenity") {
         return via_command(
             "zenity",
@@ -128,6 +137,33 @@ fn choose(start: &std::path::Path) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// The Windows shell's folder browser, through PowerShell.
+///
+/// `Shell.Application`'s `BrowseForFolder` rather than `System.Windows.Forms.FolderBrowserDialog`:
+/// the Forms one needs the .NET desktop assemblies, which are present on desktop Windows but not in
+/// every edition, while the shell COM object is part of the OS. Printed on stdout, which is the same
+/// contract zenity and kdialog use, so the caller does not care which ran.
+fn via_powershell(start: &std::path::Path) -> Option<PathBuf> {
+    let script = format!(
+        "$shell = New-Object -ComObject Shell.Application; \
+         $folder = $shell.BrowseForFolder(0, 'Open folder in vex', 0, '{}'); \
+         if ($folder) {{ Write-Output $folder.Self.Path }}",
+        start.display()
+    );
+
+    via_command(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ],
+    )
 }
 
 /// A dialog that prints the chosen path on stdout, which both zenity and kdialog do.

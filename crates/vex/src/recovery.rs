@@ -22,18 +22,7 @@ pub const INTERVAL: Duration = Duration::from_secs(2);
 /// `$XDG_STATE_HOME` (or `~/.local/state`) rather than the config directory: this is machine state
 /// nobody edits by hand, and it must not end up in a dotfiles repository.
 pub fn recovery_dir() -> PathBuf {
-    if let Some(state) = std::env::var_os("VEX_STATE_DIR") {
-        return PathBuf::from(state);
-    }
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".local/state")
-        });
-    base.join("vex/recovery")
+    crate::paths::state_dir().join("recovery")
 }
 
 /// A stable file name for a buffer's recovery copy.

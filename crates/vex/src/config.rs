@@ -147,15 +147,9 @@ impl Default for Settings {
     }
 }
 
+/// Re-exported so callers do not have to know which module owns the platform rules.
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("VEX_CONFIG_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join(".config/vex")
-        })
+    crate::paths::config_dir()
 }
 
 /// Loads settings, then a theme if one is named or a single theme file exists.
