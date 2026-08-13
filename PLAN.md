@@ -184,21 +184,23 @@ Do **not** embed Neovim or Vimscript. Do not aim for plugin compatibility.
 Each milestone has a demo and an acceptance bar. Do not advance until the bar is met — this is
 what prevents a half-working engine with ten half-working features on top.
 
-> **Status.** M0–M6 done (M5 partially — see below), plus the VSCode importer, a measured
-> optimization pass, Lua configuration, the logo, and much of M7. 371 tests, zero clippy warnings.
+> **Status.** M0–M7 done but for an integrated terminal, and M8's config hot-reload, plus the VSCode
+> importer, a measured optimization pass, Lua configuration and the logo. 452 tests, zero clippy
+> warnings.
 > Crates:
 > `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
 > `vex-theme` (OKLCH color, mode accents, type roles, theme tokens — 15 tests),
 > `vex-buffer` (document, versioning, undo grouping, multi-cursor editing — 19 tests),
-> `vex-display` (soft wrap, anchored viewport, display-aware motion — 20 tests),
-> `vex-input` (Action vocabulary, modal grammar, motions, text objects, user keymap — 70 tests),
+> `vex-display` (soft wrap, anchored viewport, display-aware motion, folding, sticky scroll — 31 tests),
+> `vex-input` (Action vocabulary, modal grammar, motions, text objects, user keymap, jumplist, macros — 82 tests),
 > `vex-syntax` (tree-sitter parsing, incremental reparse, version-tagged worker — 18 tests),
 > `vex-render` (wgpu quad pipeline + glyphon text, paint layers, frame timer, offscreen capture — 10 tests),
 > `vex-import` (VSCode settings/keys/themes/snippets, `.vsix` reading — 19 tests),
-> `vex-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search — 20 tests),
+> `vex-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search, file watching — 25 tests),
 > `vex-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics, rename, formatting — 17 tests),
 > `vex-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 14 tests),
-> `vex` (window, chrome, action executor, config, palette, edit application, `vex import` — 106 tests).
+> `vex` (window, chrome, executor, config, panes, file tree, git gutter, sessions, snippets, edit
+> application, `vex import` — 154 tests).
 >
 > **Everything is an `Action`.** Keys resolve to Actions, the executor consumes them, dot-repeat
 > replays them, and the end-to-end tests drive them — so `3dw` and `ci"` are verified as behavior,
@@ -481,6 +483,15 @@ Whatever is actually blocking use: soft wrap, folding, multi-cursor, git gutter 
 integrated terminal, session restore, jumplist, macros, autopairs, snippets, sticky scroll,
 inlay hints.
 **Bar:** two weeks with no reaching for another editor.
+
+> **Everything in M7 is done except the integrated terminal and git blame**, and the terminal is
+> deferred deliberately rather than half-built. A terminal is a PTY, a VT-sequence parser and a
+> second rendering path with its own scrollback, selection and colour model — a subsystem the size of
+> several crates here, whose failure mode when done badly is a shell that eats your keystrokes. The
+> editor already sits in a terminal for anyone who wants one, and `ctrl-z` is not a worse answer than
+> a bad terminal emulator. It gets built when it is the thing actually blocking use, which is the bar
+> this milestone sets. Blame is a smaller gap: the gutter machinery is there and `git blame --porcelain`
+> would feed it, but per-line authorship earns its screen space far less often than per-line change.
 
 > **M8: config hot-reload.** `init.lua` is watched like any other file and re-read on save. Theme,
 > metrics and bindings are replaced; nothing about the *documents* is touched — a reload that reset
