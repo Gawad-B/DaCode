@@ -35,6 +35,16 @@ packaging/build-rpm.sh     # Fedora, RHEL, openSUSE — needs rpm-build installe
 
 **Windows**
 
+Download `vex-setup.exe` from the build artifacts and run it: it installs per-user under
+`%LOCALAPPDATA%\Programs\vex`, so there is no UAC prompt, and it puts vex on your `PATH`, in the Start
+Menu and on a folder's right-click menu. To build that installer yourself (needs Inno Setup):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\windows\build-installer.ps1
+```
+
+Or skip the installer and just place the binary:
+
 ```powershell
 cargo build --release
 powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1

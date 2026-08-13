@@ -1,9 +1,9 @@
 //! Conventions that a compiler cannot check but a repository can.
 //!
-//! One test, for one rule that has now broken a Windows build three times in a row. It is a grep
-//! wearing a test's clothes, which is unusual — but the alternative is a rule written in `CLAUDE.md`
-//! that I have demonstrably failed to follow three times, and each failure cost a fifteen-minute CI
-//! round trip to discover.
+//! Greps wearing tests' clothes, which is unusual — but the alternative is a rule written in
+//! `CLAUDE.md` and then not followed, which is what happened with `canonicalize` three times running,
+//! each costing a fifteen-minute CI round trip to discover. The second rule joined it when a GUI build
+//! on Windows started flashing a console window every time it asked git anything.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +48,52 @@ fn paths_are_resolved_through_one_function() {
         offenders.is_empty(),
         "use vex_project::canonical instead of canonicalize directly — on Windows the latter returns \
          an extended-length path that must not reach comparisons, URIs or the screen:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The only places allowed to spawn a process with a bare `Command::new`.
+const MAY_SPAWN: [&str; 5] = [
+    // Where the helper lives, and its counterpart in vex-lsp.
+    "crates/vex/src/process.rs",
+    "crates/vex-lsp/src/client.rs",
+    // Run from a terminal on purpose, where inheriting the console is what you want: the import CLI's
+    // downloader and the language-server probe the tests use.
+    "crates/vex-import/src/vsix.rs",
+    "crates/vex-lsp/src/lib.rs",
+    "crates/vex/tests/conventions.rs",
+];
+
+#[test]
+fn helper_processes_are_spawned_without_a_console_window() {
+    // The release build is a GUI application and so has no console. Windows gives a console child one
+    // of its own, and shows it: a black window over the editor, once per git call. `process::command`
+    // sets CREATE_NO_WINDOW; a bare `Command::new` does not, and nothing on Linux can see the
+    // difference — which is exactly the kind of rule that needs a test rather than a paragraph.
+    let mut offenders = Vec::new();
+
+    for file in rust_files(&workspace_root()) {
+        let relative = file.to_string_lossy().replace('\\', "/");
+        if MAY_SPAWN.iter().any(|allowed| relative.ends_with(allowed)) {
+            continue;
+        }
+
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        // Tests may spawn whatever they like: they run from a terminal that already has a console.
+        let source = text.split("\nmod tests {").next().unwrap_or(&text).to_string();
+        for (number, line) in source.lines().enumerate() {
+            if line.contains("Command::new(") {
+                offenders.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "spawn through vex::process::command, not Command::new — on Windows a GUI application's \
+         console child gets a console window of its own, in front of the editor:\n{}",
         offenders.join("\n")
     );
 }

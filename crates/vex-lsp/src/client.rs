@@ -21,6 +21,24 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use vex_text::Version;
 
+/// Spawns without a console window.
+///
+/// A language server is a console program; the editor's release build is a GUI application with no
+/// console of its own, so Windows allocates the child a fresh one and shows it — a black window
+/// appearing over the editor a second after it starts. The same rule as `vex::process::quiet`, which
+/// is the copy to keep in step with this one: `vex-lsp` is below the binary in the dependency order
+/// and cannot borrow it.
+fn no_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 /// What the client is waiting for.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum State {
@@ -160,7 +178,9 @@ impl LspClient {
     /// Spawns a server and sends `initialize`. Returns as soon as the process is running — the
     /// handshake completes asynchronously, announced by [`ServerEvent::Ready`].
     pub fn start(program: &str, args: &[&str], root: &Path) -> Result<Self> {
-        let mut child = Command::new(program)
+        let mut command = Command::new(program);
+        no_window(&mut command);
+        let mut child = command
             .args(args)
             .current_dir(root)
             .stdin(Stdio::piped())

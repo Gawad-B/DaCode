@@ -50,5 +50,9 @@ install -Dm644 %{_sourcedir}/init.lua %{buildroot}%{_docdir}/vex/examples/init.l
 %doc %{_docdir}/vex/examples/init.lua
 
 %changelog
+* Fri Aug 14 2026 vex - 0.1.1-1
+- Windows: built-in theme names load again, the folder chooser can leave the folder
+  it opened in, and helper processes no longer flash console windows.
+
 * Thu Aug 13 2026 vex - 0.1.0-1
 - First packaged release.

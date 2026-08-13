@@ -304,14 +304,22 @@ const MARKER: &str =
 /// makes it authoritative — and moving a setting out of it back into your own code is as simple as
 /// deleting the line, because your line runs first only until the block runs after it.
 pub fn write_back(existing: &str, values: &Values) -> String {
+    // A theme loaded from a file has no name the panel could write, and writing "dark" for it would
+    // throw that theme away the next time anyone changed the font size — a setting the user did not
+    // touch, silently replacing one they did. Nothing written means nothing changed.
+    let theme = match values.theme {
+        Some(name) => format!("  theme = \"{name}\",\n"),
+        None => String::new(),
+    };
+
     let block = format!(
         "{MARKER}\nvex.set {{\n  \
          vim_keys = {},\n  \
          font_size = {:.1},\n  \
          tab_width = {},\n  \
          soft_wrap = {},\n  \
-         format_on_save = {},\n  \
-         theme = \"{}\",\n  \
+         format_on_save = {},\n\
+         {theme}  \
          sticky_scroll = {},\n  \
          inlay_hints = {},\n}}\n",
         values.modal,
@@ -319,7 +327,6 @@ pub fn write_back(existing: &str, values: &Values) -> String {
         values.tab_width,
         values.soft_wrap,
         values.format_on_save,
-        values.theme.unwrap_or("dark"),
         values.sticky_scroll,
         values.inlay_hints,
     );
@@ -445,6 +452,23 @@ mod tests {
         assert!(written.contains("tab_width = 4"));
         assert!(written.contains("theme = \"dark\""));
         assert!(written.ends_with("}\n"));
+    }
+
+    #[test]
+    fn a_file_theme_is_left_alone_by_the_panel_rather_than_overwritten_with_a_built_in() {
+        // The panel has no name for a theme that came from a file, and it used to write "dark" in
+        // that case — so changing the font size threw away an imported theme, a setting the user did
+        // not touch replacing one they did.
+        let mut values = values();
+        values.theme = None;
+        let written = write_back("vex.set { theme = \"one-dark-pro\" }\n", &values);
+
+        assert!(!written.contains("theme = \"dark\""), "{written}");
+        assert!(
+            written.contains("theme = \"one-dark-pro\""),
+            "the user's own line still chooses the theme: {written}"
+        );
+        assert!(written.contains("tab_width = 4"), "the rest is still written");
     }
 
     #[test]

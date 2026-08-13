@@ -84,7 +84,7 @@ fn which(program: &str) -> bool {
 /// activatable without its executable being on `PATH`.
 fn portal_available() -> bool {
     which("gdbus")
-        && std::process::Command::new("gdbus")
+        && crate::process::command("gdbus")
             .args([
                 "call",
                 "--session",
@@ -139,39 +139,86 @@ fn choose(start: &std::path::Path) -> Option<PathBuf> {
     None
 }
 
-/// The Windows shell's folder browser, through PowerShell.
+/// The Windows folder browser, through PowerShell.
 ///
-/// `Shell.Application`'s `BrowseForFolder` rather than `System.Windows.Forms.FolderBrowserDialog`:
-/// the Forms one needs the .NET desktop assemblies, which are present on desktop Windows but not in
-/// every edition, while the shell COM object is part of the OS. Printed on stdout, which is the same
-/// contract zenity and kdialog use, so the caller does not care which ran.
+/// `FolderBrowserDialog` first, `Shell.Application` second, and the order matters both ways. The Forms
+/// dialog is the modern one — it has an address bar, it takes a typed path, and `SelectedPath` opens it
+/// *at* a folder without confining it to one. It needs the .NET desktop assemblies, which are on every
+/// desktop Windows but not on every edition, so the shell's COM browser stays as the fallback.
+///
+/// The fallback's fourth argument is the **root** of the tree it shows, not where it starts. Passing
+/// the current project's parent there is what left the chooser unable to reach anything outside that
+/// one folder — everything above it simply was not in the tree. It is `0` (the desktop, so the whole
+/// machine) plus `BIF_EDITBOX`, which at least gives a box to type a path into.
+///
+/// The dialog is given an invisible topmost owner form. Without one it belongs to a PowerShell process
+/// that has no window at all, and Windows is free to put it *behind* the editor — which reads as a
+/// freeze, since the editor is sitting there saying "choose a folder…".
+///
+/// The path is printed on stdout, the same contract zenity and kdialog use, so the caller does not
+/// care which of the two ran.
 fn via_powershell(start: &std::path::Path) -> Option<PathBuf> {
-    let script = format!(
-        "$shell = New-Object -ComObject Shell.Application; \
-         $folder = $shell.BrowseForFolder(0, 'Open folder in vex', 0, '{}'); \
-         if ($folder) {{ Write-Output $folder.Self.Path }}",
-        start.display()
-    );
-
     via_command(
         "powershell",
         &[
             "-NoProfile",
             "-NonInteractive",
+            // The Forms dialog is a COM host and refuses to run on a multi-threaded apartment. Windows
+            // PowerShell already defaults to STA; saying so means the dialog does not depend on that
+            // staying true.
+            "-Sta",
             "-WindowStyle",
             "Hidden",
             "-Command",
-            &script,
+            &powershell_script(start),
         ],
     )
 }
 
+/// The script itself, separated so it can be inspected from a machine that cannot run it — which is
+/// every machine this is developed on. The Windows dialog is the one part of the editor nothing else
+/// here can exercise.
+fn powershell_script(start: &std::path::Path) -> String {
+    format!(
+        "$path = ''; \
+         $start = '{}'; \
+         try {{ \
+           Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop; \
+           $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; \
+           $dialog.Description = 'Open folder in vex'; \
+           $dialog.ShowNewFolderButton = $true; \
+           if (Test-Path -LiteralPath $start) {{ $dialog.SelectedPath = $start }}; \
+           $owner = New-Object System.Windows.Forms.Form; \
+           $owner.TopMost = $true; \
+           $owner.ShowInTaskbar = $false; \
+           $null = $owner.Handle; \
+           $answer = $dialog.ShowDialog($owner); \
+           $owner.Dispose(); \
+           if ($answer -eq [System.Windows.Forms.DialogResult]::OK) {{ \
+             $path = $dialog.SelectedPath \
+           }} \
+         }} catch {{ \
+           $shell = New-Object -ComObject Shell.Application; \
+           $folder = $shell.BrowseForFolder(0, 'Open folder in vex', 0x11, 0); \
+           if ($folder -and $folder.Self) {{ $path = $folder.Self.Path }} \
+         }}; \
+         if ($path) {{ Write-Output $path }}",
+        quote(start)
+    )
+}
+
+/// A path as a PowerShell single-quoted string. Doubling the quote is the whole escaping rule for
+/// them, and a folder with an apostrophe in it would otherwise end the string and run what followed.
+fn quote(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\'', "''")
+}
+
 /// A dialog that prints the chosen path on stdout, which both zenity and kdialog do.
 fn via_command(program: &str, args: &[&str]) -> Option<PathBuf> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
+    // Through `process::command`, so the console-mode `powershell.exe` does not get a console window
+    // of its own allocated in front of the editor — which is what made "open folder" look like it was
+    // launching a terminal.
+    let output = crate::process::command(program).args(args).output().ok()?;
     if !output.status.success() {
         // A non-zero exit is a cancel, which is not an error worth reporting.
         return None;
@@ -189,9 +236,9 @@ fn via_command(program: &str, args: &[&str]) -> Option<PathBuf> {
 /// in between — which is the whole difficulty of driving this interface from a shell.
 fn via_portal(start: &std::path::Path) -> Option<PathBuf> {
     use std::io::{BufRead, BufReader};
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut monitor = Command::new("gdbus")
+    let mut monitor = crate::process::command("gdbus")
         .args([
             "monitor",
             "--session",
@@ -203,7 +250,7 @@ fn via_portal(start: &std::path::Path) -> Option<PathBuf> {
         .spawn()
         .ok()?;
 
-    let call = Command::new("gdbus")
+    let call = crate::process::command("gdbus")
         .args([
             "call",
             "--session",
@@ -293,6 +340,32 @@ mod tests {
         // A stray percent is left alone rather than eating the characters after it.
         assert_eq!(decode("/100%"), "/100%");
         assert_eq!(decode("/a%zz"), "/a%zz");
+    }
+
+    #[test]
+    fn the_windows_dialog_opens_at_a_folder_rather_than_being_confined_to_it() {
+        // The bug this guards: the starting directory was passed as `BrowseForFolder`'s *root*, which
+        // is the top of the tree it shows — so the chooser could not reach anything above the folder
+        // vex happened to be started in, and on a Start Menu launch that was the install directory.
+        // The start belongs in `SelectedPath`; the root stays 0, the desktop.
+        let script = powershell_script(std::path::Path::new("C:/Users/someone/code"));
+        assert!(script.contains("$dialog.SelectedPath = $start"));
+        assert!(
+            script.contains("BrowseForFolder(0, 'Open folder in vex', 0x11, 0)"),
+            "the fallback's root must stay 0: {script}"
+        );
+        assert!(
+            !script.contains("BrowseForFolder(0, 'Open folder in vex', 0, '"),
+            "the old rooted form is back: {script}"
+        );
+    }
+
+    #[test]
+    fn a_path_with_an_apostrophe_cannot_end_the_powershell_string() {
+        // `C:\Users\O'Brien` is a real name, and an unescaped quote there would close the string and
+        // run whatever came after it as PowerShell.
+        let script = powershell_script(std::path::Path::new(r"C:\Users\O'Brien\code"));
+        assert!(script.contains(r"$start = 'C:\Users\O''Brien\code'"), "{script}");
     }
 
     #[test]

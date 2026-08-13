@@ -1,0 +1,129 @@
+# Publishes a release from a tag.
+#
+# `build.yml` proves a commit works; this turns one into something people can install. It exists
+# because the artifacts cannot all be built on one machine — the .deb, .rpm and tarball need Linux,
+# and the installer needs a Windows box with a C toolchain for tree-sitter and Lua. Doing that by hand
+# is how a release ends up carrying a Windows binary from a different commit than its Linux one.
+#
+# Tag and push, and this does the rest:
+#
+#     git tag -a v0.1.1 -m "vex 0.1.1" && git push origin v0.1.1
+#
+# Nothing is published unless both builds *and both test suites* pass, so a bad tag fails loudly
+# rather than shipping.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v0.1.1"
+        required: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libwayland-dev libxkbcommon-dev
+      - run: rustup component add rust-analyzer
+      - run: cargo test --workspace
+      - run: cargo build --release
+      - name: Package
+        run: |
+          packaging/build-deb.sh
+          packaging/build-rpm.sh
+          packaging/build-tarball.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/packages/*
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: rustup component add rust-analyzer
+      - run: cargo test --workspace
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+          packaging\windows\build-installer.ps1 -SkipBuild
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/packages/vex-setup.exe
+
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Write the release notes
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          # The install instructions belong to the release, not to the commit log: someone reading a
+          # release page wants the command for their platform, not a list of what changed in it.
+          cat > notes.md <<NOTES
+          ## Install
+
+          **Windows**
+
+          Run \`vex-setup.exe\`. It installs per-user under \`%LOCALAPPDATA%\Programs\vex\` — no
+          administrator rights, no UAC prompt — and adds a Start Menu entry, \`vex\` on your \`PATH\`,
+          "Open with vex" on a folder's right-click menu, and an uninstaller.
+
+          **Debian, Ubuntu, Mint**
+
+          \`\`\`sh
+          sudo apt install ./vex_${version}_amd64.deb
+          \`\`\`
+
+          **Fedora, RHEL, openSUSE**
+
+          \`\`\`sh
+          sudo dnf install ./vex-${version}-1.x86_64.rpm
+          \`\`\`
+
+          **Any Linux, no package manager**
+
+          \`\`\`sh
+          tar xzf vex-${version}-x86_64-linux.tar.gz
+          ./vex-${version}-x86_64-linux/install.sh        # into ~/.local, no root needed
+          \`\`\`
+
+          A language server (\`rust-analyzer\`, \`pyright-langserver\`, …) and \`git\` are found on
+          \`PATH\` if they are there; neither is needed to start.
+          NOTES
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          # Created if it is not there, updated if it is, so re-running a failed publish is safe.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "vex ${TAG#v}" --notes-file notes.md
+            gh release upload "$TAG" artifacts/*/* --clobber
+          else
+            gh release create "$TAG" --title "vex ${TAG#v}" --notes-file notes.md artifacts/*/*
+          fi

@@ -94,6 +94,10 @@ layer occludes text below it. Within one layer it cannot. Panels go on `Layer::P
 drawing and mouse hit-testing read it. Two copies of that arithmetic drift, and the symptom — clicks
 landing a line off — gets blamed on the display map.
 
+**A theme name is a file *or* a built-in.** `config::resolve_theme` tries `themes/<slug>.toml` and then
+`Theme::by_name`, in that order. It only did the first, which meant the settings panel — which writes
+`theme = "amoled"` — produced config its own reader rejected on the next start.
+
 **Folds live in the display map** because folding *is* a mapping from buffer lines to display rows.
 They are cleared on buffer change: they are line numbers and nothing more.
 
@@ -160,6 +164,11 @@ anything platform-shaped:
   its keep immediately: it caught `file://` URIs being built by percent-encoding a whole Windows path,
   which made rust-analyzer reject every request as an "invalid international domain name" and broke
   every language-server feature on Windows. Nothing on Linux could have seen it.
+- **Spawn through `vex::process::command`, never `Command::new`.** A release build is a GUI
+  application with no console, so Windows gives every console child — git, powershell, a language
+  server — a brand new console window, in front of the editor. `CREATE_NO_WINDOW` is what suppresses
+  it. `vex-lsp` keeps its own copy of the helper because it sits below the binary; `crates/vex/tests/
+  conventions.rs` enforces both.
 - **Anything platform-shaped gets the platform as a parameter**, like `paths::resolve` and
   `position::encode_uri(path, windows)`. Then the Windows rules have tests that run here. A
   `cfg!(windows)` branch inside the function is untestable from Linux, which is how the URI bug

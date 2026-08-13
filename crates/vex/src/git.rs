@@ -146,7 +146,9 @@ fn committed(path: &Path) -> Option<String> {
     let directory = absolute.parent()?;
 
     // The path has to be relative to the repository root, which is what `--show-prefix` gives.
-    let prefix = std::process::Command::new("git")
+    // `git` is a console program and the release build is a GUI one, so an ordinary spawn flashes a
+    // console window — once per reload, which on a busy file is once a keystroke.
+    let prefix = crate::process::command("git")
         .arg("-C")
         .arg(directory)
         .args(["rev-parse", "--show-prefix"])
@@ -156,7 +158,7 @@ fn committed(path: &Path) -> Option<String> {
     let prefix = String::from_utf8_lossy(&prefix.stdout).trim().to_string();
     let name = absolute.file_name()?.to_string_lossy().to_string();
 
-    let output = std::process::Command::new("git")
+    let output = crate::process::command("git")
         .arg("-C")
         .arg(directory)
         .arg("show")
