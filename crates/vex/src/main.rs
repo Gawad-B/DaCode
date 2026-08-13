@@ -89,6 +89,8 @@ fn main() -> Result<()> {
         code_actions: Vec::new(),
         hinted_version: None,
         recovery: Recovery::new(),
+        git: vex::git::GitWorker::spawn(),
+        diffed_version: None,
         watcher: match vex_project::FileWatcher::new() {
             Ok(watcher) => Some(watcher),
             Err(error) => {
@@ -185,6 +187,7 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
+        diff: vex::git::Diff::default(),
         show_diagnostics: false,
         inlay_hints: Vec::new(),
         show_inlay_hints: false,
@@ -569,6 +572,20 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let mut frame = Frame::default();
     if flag("--splash") {
         chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+    } else if flag("--git") {
+        // A canned diff against the file on screen, so the gutter marks are inspectable without
+        // depending on what happens to be uncommitted right now.
+        state.diff = vex::git::Diff::from_marks(
+            vec![
+                (12, vex::git::Change::Added),
+                (13, vex::git::Change::Added),
+                (17, vex::git::Change::Modified),
+                (24, vex::git::Change::Removed),
+                (28, vex::git::Change::Modified),
+            ],
+            state.document.version(),
+        );
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--folded") {
         // Fold every top-level block, so the marker and the hidden-line count are inspectable.
         let mut line = 0;
@@ -710,6 +727,10 @@ struct App {
     hinted_version: Option<vex_text::Version>,
     /// Persists dirty buffers so a crash loses seconds, not work.
     recovery: Recovery,
+    /// Diffs the buffer against `HEAD`, off the UI thread.
+    git: vex::git::GitWorker,
+    /// The version the last diff was asked for, so typing does not spawn a `git show` per keystroke.
+    diffed_version: Option<vex_text::Version>,
     /// Watches open files for changes made outside the editor.
     watcher: Option<vex_project::FileWatcher>,
     /// Paths this editor is about to write, so its own saves are not mistaken for someone else's
@@ -830,6 +851,7 @@ impl ApplicationHandler for App {
         }
         let mut changed = self.poll_walk();
         changed |= self.sync_lsp();
+        changed |= self.sync_git();
         changed |= self.handle_file_changes();
         if let Some(results) = &mut self.state.results {
             changed |= results.poll();
@@ -2468,6 +2490,37 @@ impl App {
         self.after_buffer_change();
     }
 
+    /// Keeps the git gutter in step with the buffer.
+    ///
+    /// Version-tagged like every other background result: a diff computed for text that has since
+    /// changed is discarded rather than drawn, so the marks never describe a document that is no
+    /// longer on screen.
+    fn sync_git(&mut self) -> bool {
+        let version = self.state.document.version();
+
+        if self.diffed_version != Some(version) {
+            if let Some(path) = &self.state.file_path {
+                self.git.request(vex::git::DiffRequest {
+                    path: std::path::PathBuf::from(path),
+                    text: self.state.document.text().to_string(),
+                    version,
+                });
+                self.diffed_version = Some(version);
+            }
+        }
+
+        match self.git.poll() {
+            Some(diff) if diff.version() == Some(version) => {
+                self.state.diff = diff;
+                true
+            }
+            // Stale: the buffer moved on while the diff ran. Dropped, and the newer request that
+            // caused the move is already queued.
+            Some(_) => false,
+            None => false,
+        }
+    }
+
     /// Starts watching the active file, if it has one.
     fn watch_active(&mut self) {
         let Some(path) = self.state.file_path.clone() else {
@@ -2599,6 +2652,10 @@ impl App {
                 Err(err) => eprintln!("vex: syntax unavailable: {err}"),
             }
         }
+
+        // The diff describes the document that just left.
+        self.state.diff = vex::git::Diff::default();
+        self.diffed_version = None;
 
         // Folds describe the document that just left. Keeping them would hide unrelated lines in
         // the new one, since they are line numbers and nothing more.

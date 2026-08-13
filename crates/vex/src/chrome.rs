@@ -90,6 +90,8 @@ pub struct EditorState {
     pub buffer_count: usize,
     /// Index of the active buffer.
     pub active_buffer: usize,
+    /// What changed since the last commit, per line.
+    pub diff: crate::git::Diff,
     /// Whether the sidebar shows the diagnostics list instead of the structure panel.
     pub show_diagnostics: bool,
     /// Inlay hints for the visible range, when they are on.
@@ -1508,6 +1510,30 @@ fn draw_code(
                     Mode::Normal
                 }),
             );
+        }
+
+        // The git mark, on the gutter's inner edge. A 2px bar rather than a letter or an icon: it is
+        // read peripherally while looking at the code, and shape at the edge of vision is all that
+        // survives — which is also the whole reason the design is made of rectangles.
+        if pane.focused && row.is_first() {
+            if let Some(change) = state.diff.change_at(row.line) {
+                let (color, height) = match change {
+                    crate::git::Change::Added => (theme.fresh(), row_height),
+                    crate::git::Change::Modified => (theme.stale(), row_height),
+                    // A deletion has no line of its own, so it is drawn as a short mark straddling
+                    // the boundary where the removed lines used to be.
+                    crate::git::Change::Removed => (theme.over_budget(), row_height * 0.35),
+                };
+                frame.fill(
+                    Rect::new(
+                        gutter.right() - 3.0 * scale,
+                        y + (row_height - height) / 2.0,
+                        2.0 * scale,
+                        height,
+                    ),
+                    color,
+                );
+            }
         }
 
         // A folded head says what it hides, at the end of its own text. Not a `…` glyph in the
