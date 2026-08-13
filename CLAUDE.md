@@ -94,7 +94,13 @@ They are cleared on buffer change: they are line numbers and nothing more.
   asserts is a test nobody can safely change.
 - Property tests (`proptest`) for anything about coordinates or text invariants.
 - Live `rust-analyzer` tests **skip** when it is absent rather than failing. A test that fails on a
-  machine without a dependency is testing the machine.
+  machine without a dependency is testing the machine. Skip on `vex_lsp::can_start`, not
+  `is_installed`: on any rustup machine `rust-analyzer` is a *shim* that exists whether or not the
+  component does, and speaking LSP to it fails in a way that looks like a vex bug. CI failed on exactly
+  this.
+- When a test asserts against a list of allowed values, adding a new value means updating the list. The
+  Windows CI run's only failure was `describe()` returning `"windows shell"`, which the test's list did
+  not include — a value that cannot occur on the machine the test was written on.
 - **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
   thread-safe against the `getenv` other tests do in parallel, and doing it deadlocked this suite
   inside glibc for twenty minutes. Take the value as a parameter instead — see

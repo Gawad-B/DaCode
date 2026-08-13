@@ -257,8 +257,10 @@ fn servers_are_chosen_by_extension() {
 /// testing the machine, not the code.
 #[test]
 fn a_real_server_completes_the_handshake_and_reports_diagnostics() {
-    if !vex_lsp::is_installed("rust-analyzer") {
-        eprintln!("skipping: rust-analyzer is not installed");
+    // `can_start`, not `is_installed`: on a rustup machine the latter finds a shim that exists whether
+    // or not the component does, and speaking LSP to it fails in a way that looks like a vex bug.
+    if !vex_lsp::can_start("rust-analyzer") {
+        eprintln!("skipping: rust-analyzer is not installed, or is a shim that cannot run");
         return;
     }
 
@@ -333,8 +335,10 @@ fn a_real_server_completes_the_handshake_and_reports_diagnostics() {
 /// a real server exercises the shape it actually chooses to send.
 #[test]
 fn a_real_server_renames_a_symbol() {
-    if !vex_lsp::is_installed("rust-analyzer") {
-        eprintln!("skipping: rust-analyzer is not installed");
+    // `can_start`, not `is_installed`: on a rustup machine the latter finds a shim that exists whether
+    // or not the component does, and speaking LSP to it fails in a way that looks like a vex bug.
+    if !vex_lsp::can_start("rust-analyzer") {
+        eprintln!("skipping: rust-analyzer is not installed, or is a shim that cannot run");
         return;
     }
 

@@ -307,7 +307,14 @@ mod tests {
         // because the caller shows this string to the user.
         let named = describe();
         assert!(
-            ["desktop portal", "zenity", "kdialog", "none"].contains(&named),
+            [
+                "windows shell",
+                "desktop portal",
+                "zenity",
+                "kdialog",
+                "none"
+            ]
+            .contains(&named),
             "unexpected description: {named}"
         );
         assert_eq!(named != "none", is_available());

@@ -1727,7 +1727,14 @@ impl App {
                 }
                 vex_lsp::ServerEvent::Message { text } => eprintln!("vex: {text}"),
                 vex_lsp::ServerEvent::Stopped => {
-                    self.state.server_status = "server stopped".into();
+                    // Dying *before* the handshake means it never was a server: a rustup shim without
+                    // the component installed does exactly this. Worth distinguishing, because
+                    // "stopped" reads as "it was working and quit".
+                    self.state.server_status = if self.sent_version.is_none() {
+                        format!("{name} could not start — is it really installed?")
+                    } else {
+                        "server stopped".into()
+                    };
                     self.servers.remove(&name);
                     self.active_server = None;
                     break;

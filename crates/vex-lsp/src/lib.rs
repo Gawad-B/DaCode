@@ -79,6 +79,31 @@ pub fn server_for(path: &str) -> Option<ServerSpec> {
 /// exists whether or not the component is installed, and exits with an explanation when it is not.
 /// That is why the client keeps the server's stderr and reports it — this check only avoids the
 /// unhelpful failure mode, it does not promise success.
+/// Whether a server on `PATH` can actually *start*.
+///
+/// [`is_installed`] only proves a file exists, and on any rustup machine `rust-analyzer` is a shim that
+/// exists whether or not the component is installed — running it prints
+/// "Unknown binary 'rust-analyzer' in official toolchain" and exits. That was already recorded as a
+/// finding in this project's notes; CI then failed on exactly it, because a test that trusted
+/// `is_installed` tried to speak LSP to a shim.
+///
+/// Spawns `program --version`, which every language server supports and which is fast. Not called on
+/// the editor's startup path — it costs a process spawn, and the editor learns the same thing a moment
+/// later when the server it launched exits. Used by tests to decide whether there is a server to test
+/// against at all.
+pub fn can_start(program: &str) -> bool {
+    if !is_installed(program) {
+        return false;
+    }
+    std::process::Command::new(program)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 pub fn is_installed(program: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
