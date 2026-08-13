@@ -12,9 +12,11 @@
 
 pub mod files;
 pub mod search;
+pub mod watch;
 
 pub use files::{FileIndex, FileWalk, Match, ProjectFile, WalkResult};
 pub use search::{ProjectSearch, SearchHit, SearchQuery, search_file};
+pub use watch::FileWatcher;
 
 /// Finds the project root by walking up for a version-control or manifest marker.
 ///

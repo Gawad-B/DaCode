@@ -108,6 +108,11 @@ pub enum Command {
     Rename {
         new_name: Option<String>,
     },
+    /// `:replace old new` — replace across the files the current search found.
+    Replace {
+        pattern: String,
+        replacement: String,
+    },
     SetOption {
         name: String,
         value: bool,
@@ -142,6 +147,15 @@ pub fn parse_command(input: &str) -> Command {
             pattern: rest.to_string(),
         },
         "fmt" | "format" => Command::Format,
+        // Two arguments, split on whitespace. Not Vim's `:%s/old/new/` — that syntax needs escaping
+        // rules for the delimiter, and this operates on search results rather than on a range.
+        "replace" => {
+            let (pattern, replacement) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            Command::Replace {
+                pattern: pattern.to_string(),
+                replacement: replacement.trim().to_string(),
+            }
+        }
         "rename" => Command::Rename {
             new_name: (!rest.is_empty()).then(|| rest.to_string()),
         },
@@ -236,5 +250,37 @@ mod tests {
         // A message replaces it, so an error is not appended to a query the user must then clear.
         prompt.message = Some("not found: needle".into());
         assert_eq!(prompt.display(), "not found: needle");
+    }
+
+    #[test]
+    fn replace_takes_two_arguments() {
+        assert_eq!(
+            parse_command("replace old new"),
+            Command::Replace {
+                pattern: "old".into(),
+                replacement: "new".into()
+            }
+        );
+        // Deleting every occurrence is a replacement with nothing, which has to be expressible.
+        assert_eq!(
+            parse_command("replace old"),
+            Command::Replace {
+                pattern: "old".into(),
+                replacement: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn format_and_rename_parse() {
+        assert_eq!(parse_command("format"), Command::Format);
+        assert_eq!(parse_command("fmt"), Command::Format);
+        assert_eq!(
+            parse_command("rename total"),
+            Command::Rename {
+                new_name: Some("total".into())
+            }
+        );
+        assert_eq!(parse_command("rename"), Command::Rename { new_name: None });
     }
 }

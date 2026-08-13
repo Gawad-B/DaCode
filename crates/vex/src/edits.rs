@@ -561,3 +561,231 @@ mod tests {
         assert_eq!(many.summary("rename"), "rename: 6 changes in 2 files");
     }
 }
+
+/// Replaces every match of `pattern` with `replacement`, across the files a search found.
+///
+/// Driven by the search results the user is already looking at, rather than by a fresh sweep. That
+/// is the honest design: you replace in what you can see, having read it, and the count in the panel
+/// is the count that changes. A replace that silently touched files never listed would be a
+/// different and much more dangerous operation.
+///
+/// The open buffer goes through its undo history; other files are written atomically and are not
+/// undoable — the same limitation a cross-file rename has, and reported the same way.
+pub fn replace_in_hits(
+    document: &mut Document,
+    open_path: Option<&Path>,
+    hits: &[vex_project::SearchHit],
+    pattern: &str,
+    replacement: &str,
+) -> Result<Applied, EditError> {
+    if pattern.is_empty() {
+        return Err(EditError::Invalid("nothing to replace".into()));
+    }
+
+    // Grouped per file, and *rebuilt* from each file's text rather than trusting the byte ranges in
+    // the hits: those were computed when the search ran, and a file edited since would be corrupted
+    // by applying them blindly.
+    let mut by_file: BTreeMap<PathBuf, ()> = BTreeMap::new();
+    for hit in hits {
+        by_file.insert(
+            hit.path.canonicalize().unwrap_or_else(|_| hit.path.clone()),
+            (),
+        );
+    }
+
+    let open = open_path.map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    let mut applied = Applied::default();
+
+    for (path, ()) in by_file {
+        if Some(&path) == open.as_ref() {
+            let text = document.text().to_string();
+            let count = text.matches(pattern).count();
+            if count == 0 {
+                continue;
+            }
+            let edits = replacement_edits(&text, pattern, replacement);
+            applied.in_buffer = apply_to_document(document, &edits, None)?;
+            continue;
+        }
+
+        let contents = std::fs::read_to_string(&path).map_err(|err| EditError::Io {
+            path: path.clone(),
+            message: err.to_string(),
+        })?;
+        if !contents.contains(pattern) {
+            continue;
+        }
+
+        let edits = replacement_edits(&contents, pattern, replacement);
+        let count = apply_to_file(&path, &edits)?;
+        if count > 0 {
+            applied.files.push((path, count));
+        }
+    }
+
+    Ok(applied)
+}
+
+/// Every occurrence of `pattern` in `text`, as LSP-shaped edits.
+///
+/// Built in line/character terms because that is what the edit pipeline already validates and
+/// applies; going through it means replace inherits the same overlap checking and the same single
+/// undo entry rather than growing a second path with its own bugs.
+fn replacement_edits(text: &str, pattern: &str, replacement: &str) -> Vec<TextEdit> {
+    let mut edits = Vec::new();
+
+    for (line_number, line) in text.lines().enumerate() {
+        let mut from = 0;
+        while let Some(found) = line[from..].find(pattern) {
+            let start = from + found;
+            let end = start + pattern.len();
+
+            // UTF-16 code units, which is what LSP positions count — a match after an emoji is at a
+            // different character than its byte offset suggests.
+            let to_utf16 = |byte: usize| line[..byte].encode_utf16().count() as u32;
+
+            edits.push(TextEdit {
+                range: vex_lsp::lsp_types::Range {
+                    start: vex_lsp::lsp_types::Position {
+                        line: line_number as u32,
+                        character: to_utf16(start),
+                    },
+                    end: vex_lsp::lsp_types::Position {
+                        line: line_number as u32,
+                        character: to_utf16(end),
+                    },
+                },
+                new_text: replacement.to_string(),
+            });
+            from = end;
+        }
+    }
+
+    edits
+}
+
+#[cfg(test)]
+mod replace_tests {
+    use super::*;
+    use vex_project::SearchHit;
+
+    fn hit(path: &Path) -> SearchHit {
+        SearchHit {
+            path: path.to_path_buf(),
+            line_number: 1,
+            line: String::new(),
+            range: 0..0,
+        }
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("vex-replace-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn every_occurrence_in_the_open_buffer_changes_as_one_undo_step() {
+        let dir = scratch("buffer");
+        let open = dir.join("open.rs");
+        std::fs::write(&open, "").unwrap();
+
+        let mut document = Document::from_str("let a = old; let b = old;\nold\n");
+        let applied =
+            replace_in_hits(&mut document, Some(&open), &[hit(&open)], "old", "new").unwrap();
+
+        assert_eq!(applied.in_buffer, 3);
+        assert_eq!(
+            document.text().to_string(),
+            "let a = new; let b = new;\nnew\n"
+        );
+
+        assert!(document.undo());
+        assert_eq!(
+            document.text().to_string(),
+            "let a = old; let b = old;\nold\n",
+            "one undo, not three"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn files_that_are_not_open_are_rewritten_on_disk() {
+        let dir = scratch("files");
+        let one = dir.join("one.rs");
+        let two = dir.join("two.rs");
+        std::fs::write(&one, "old and old\n").unwrap();
+        std::fs::write(&two, "nothing here\n").unwrap();
+
+        let mut document = Document::from_str("");
+        let applied =
+            replace_in_hits(&mut document, None, &[hit(&one), hit(&two)], "old", "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&one).unwrap(), "new and new\n");
+        assert_eq!(
+            std::fs::read_to_string(&two).unwrap(),
+            "nothing here\n",
+            "a file with no match is left alone entirely"
+        );
+        assert_eq!(applied.files.len(), 1, "and is not counted as changed");
+        assert_eq!(applied.total(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn matches_are_found_by_rereading_the_file_not_by_trusting_stale_offsets() {
+        // The ranges in a SearchHit were computed when the search ran. If the file changed since,
+        // applying them blindly corrupts it — so they are deliberately not used.
+        let dir = scratch("stale");
+        let file = dir.join("moved.rs");
+        std::fs::write(&file, "old\n").unwrap();
+
+        let mut stale = hit(&file);
+        stale.range = 900..950;
+        stale.line_number = 42;
+
+        let mut document = Document::from_str("");
+        let applied = replace_in_hits(&mut document, None, &[stale], "old", "new").unwrap();
+
+        assert_eq!(applied.total(), 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn utf16_positions_survive_a_replace_after_an_emoji() {
+        let dir = scratch("utf16");
+        let file = dir.join("emoji.rs");
+        std::fs::write(&file, "// 🌍 old\n").unwrap();
+
+        let mut document = Document::from_str("");
+        replace_in_hits(&mut document, None, &[hit(&file)], "old", "new").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "// 🌍 new\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_empty_pattern_is_refused() {
+        let mut document = Document::from_str("text");
+        assert!(matches!(
+            replace_in_hits(&mut document, None, &[], "", "x"),
+            Err(EditError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn replacing_with_a_longer_string_does_not_shift_later_matches() {
+        // Every edit is computed against the original text and applied as one transaction, so a
+        // replacement longer than what it replaces cannot disturb the ranges after it.
+        let mut document = Document::from_str("a a a\n");
+        let dir = scratch("shift");
+        let open = dir.join("open.rs");
+        std::fs::write(&open, "").unwrap();
+
+        replace_in_hits(&mut document, Some(&open), &[hit(&open)], "a", "xxxx").unwrap();
+        assert_eq!(document.text().to_string(), "xxxx xxxx xxxx\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

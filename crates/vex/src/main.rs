@@ -86,6 +86,15 @@ fn main() -> Result<()> {
         lsp: None,
         sent_version: None,
         recovery: Recovery::new(),
+        watcher: match vex_project::FileWatcher::new() {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                // Not fatal: the editor works, it just will not notice outside edits.
+                eprintln!("vex: file watching unavailable: {error}");
+                None
+            }
+        },
+        self_written: std::collections::HashSet::new(),
         panes: Panes::new(),
         edit_version: None,
         save_after_format: false,
@@ -616,6 +625,11 @@ struct App {
     edit_version: Option<vex_text::Version>,
     /// Persists dirty buffers so a crash loses seconds, not work.
     recovery: Recovery,
+    /// Watches open files for changes made outside the editor.
+    watcher: Option<vex_project::FileWatcher>,
+    /// Paths this editor is about to write, so its own saves are not mistaken for someone else's
+    /// edit. Without this, every save would come straight back as "changed on disk".
+    self_written: std::collections::HashSet<std::path::PathBuf>,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Open panes, and which has focus. Always at least one — see `vex::panes`.
@@ -676,6 +690,11 @@ impl ApplicationHandler for App {
             }
         };
 
+        // The file opened at startup never went through `after_buffer_change`, so this is where it
+        // starts being watched. Missing it meant the first file you opened — the one you are most
+        // likely to be editing — was the one file changes were not noticed for.
+        self.watch_active();
+
         match Renderer::new(window.clone()) {
             Ok(renderer) => {
                 let [serif, mono, sans] = renderer.resolved_families();
@@ -726,6 +745,7 @@ impl ApplicationHandler for App {
         }
         let mut changed = self.poll_walk();
         changed |= self.sync_lsp();
+        changed |= self.handle_file_changes();
         if let Some(results) = &mut self.state.results {
             changed |= results.poll();
         }
@@ -1660,6 +1680,10 @@ impl App {
                 }
             }
             Command::Format => self.state.pending_request = Some(Action::Format),
+            Command::Replace {
+                pattern,
+                replacement,
+            } => self.replace_in_results(&pattern, &replacement),
             Command::Rename { new_name } => match new_name {
                 Some(name) => self.request_rename(&name),
                 // Without a name, open the prompt — pre-filled, exactly as `gr` does. Routed through
@@ -1878,6 +1902,49 @@ impl App {
         }
     }
 
+    /// Replaces across the files the open search found.
+    ///
+    /// Deliberately scoped to the results panel rather than the whole project: you replace in what
+    /// you can see, having read it. A replace that also touched files never listed would be a much
+    /// more dangerous operation wearing the same name.
+    fn replace_in_results(&mut self, pattern: &str, replacement: &str) {
+        let Some(results) = &self.state.results else {
+            self.warn("replace needs search results — run :grep or ctrl-f first");
+            return;
+        };
+        if results.hits.is_empty() {
+            self.warn("nothing to replace: the search found no matches");
+            return;
+        }
+        if !results.finished {
+            self.warn("the search is still running — wait for it to finish");
+            return;
+        }
+
+        let hits = results.hits.clone();
+        let path = self.state.file_path.clone().map(std::path::PathBuf::from);
+
+        match vex::edits::replace_in_hits(
+            &mut self.state.document,
+            path.as_deref(),
+            &hits,
+            pattern,
+            replacement,
+        ) {
+            Ok(applied) if applied.total() == 0 => self.warn("nothing matched"),
+            Ok(applied) => {
+                let summary = applied.summary(&format!("replaced `{pattern}`"));
+                eprintln!("vex: {summary}");
+                self.state.hover = Some(summary);
+                self.sync_syntax();
+                // The results describe text that no longer exists, so the panel closes rather than
+                // listing hits that would jump to the wrong place.
+                self.state.results = None;
+            }
+            Err(error) => self.warn(&format!("replace failed: {error}")),
+        }
+    }
+
     /// Shows a message on the prompt line rather than silently doing nothing.
     fn warn(&mut self, message: &str) {
         let mut prompt = vex::prompt::Prompt::new(PromptKind::Command, self.state.cursor());
@@ -1959,8 +2026,16 @@ impl App {
         };
         let text = self.state.document.text().to_string();
 
+        if let Ok(absolute) = std::path::Path::new(&path).canonicalize() {
+            self.self_written.insert(absolute);
+        }
+
         match std::fs::write(&path, &text) {
             Ok(()) => {
+                // Canonicalization only works once the file exists, so a first save records it here.
+                if let Ok(absolute) = std::path::Path::new(&path).canonicalize() {
+                    self.self_written.insert(absolute);
+                }
                 self.state.document.mark_saved();
                 // The file on disk is authoritative now, so the recovery copy must go — otherwise it
                 // would be offered again on the next open.
@@ -2136,6 +2211,93 @@ impl App {
         self.after_buffer_change();
     }
 
+    /// Starts watching the active file, if it has one.
+    fn watch_active(&mut self) {
+        let Some(path) = self.state.file_path.clone() else {
+            return;
+        };
+        if let Some(watcher) = &mut self.watcher {
+            if let Err(error) = watcher.watch(std::path::Path::new(&path)) {
+                eprintln!("vex: could not watch {path}: {error}");
+            }
+        }
+    }
+
+    /// Handles files that changed outside the editor.
+    ///
+    /// The rule is that unsaved work is never discarded. A clean buffer is reloaded silently, which
+    /// is what makes `git checkout` and a formatter run in a terminal behave the way you expect. A
+    /// buffer with unsaved changes is *not* touched — it says so instead, and the choice of whose
+    /// version wins stays with the person who made both.
+    fn handle_file_changes(&mut self) -> bool {
+        let Some(watcher) = &self.watcher else {
+            return false;
+        };
+        let changed = watcher.poll();
+        if changed.is_empty() {
+            return false;
+        }
+
+        let mut redraw = false;
+        for path in changed {
+            // A save this editor just made comes back as an event; ignoring it once is the whole
+            // difference between a quiet save and a reload storm.
+            if self.self_written.remove(&path) {
+                continue;
+            }
+
+            let active = self
+                .state
+                .file_path
+                .as_ref()
+                .and_then(|open| std::path::Path::new(open).canonicalize().ok());
+            if active.as_deref() != Some(path.as_path()) {
+                continue;
+            }
+
+            if self.state.document.is_dirty() {
+                self.state.hover = Some(format!(
+                    "{} changed on disk, and this buffer has unsaved changes — :e to discard yours, \
+                     :w to overwrite theirs",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                ));
+                redraw = true;
+                continue;
+            }
+
+            match std::fs::read_to_string(&path) {
+                Ok(contents) => {
+                    if contents == self.state.document.text().to_string() {
+                        continue;
+                    }
+                    // The cursor is kept by offset rather than reset: a formatter run should not
+                    // send you back to the top of the file.
+                    let cursor = self.state.cursor();
+                    let previous = self.state.document.version();
+                    self.state.document = Document::from_str(&contents);
+                    // Versions must keep increasing across the replacement, or the language server
+                    // is told to go backwards and every diagnostic after it reads as stale.
+                    self.state.document.resume_from(previous);
+                    let clamped = cursor.min(self.state.document.text().len_chars());
+                    self.state.document.set_primary_caret(clamped);
+                    self.after_buffer_change();
+                    let name = relative_crumbs(&path.to_string_lossy()).join("/");
+                    eprintln!("vex: reloaded {name} — changed on disk");
+                    self.state.hover = Some(format!("reloaded {name}"));
+                    redraw = true;
+                }
+                Err(error) => {
+                    self.state.hover = Some(format!(
+                        "{} changed but could not be read: {error}",
+                        path.display()
+                    ));
+                    redraw = true;
+                }
+            }
+        }
+        redraw
+    }
+
     /// Points the tree at the file that just became active.
     fn reveal_in_tree(&mut self) {
         let root = self.index.root().to_path_buf();
@@ -2182,6 +2344,7 @@ impl App {
         }
 
         self.reveal_in_tree();
+        self.watch_active();
 
         // Drain the change queue: the new document's changes are not the old one's.
         self.state.document.take_changes();

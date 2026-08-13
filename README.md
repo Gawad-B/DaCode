@@ -61,7 +61,7 @@ machinery for them exists.
 ### Search and commands
 `/` `?` search · `n` `N` next/previous · `ctrl-f` project search for the word under the cursor
 `:` command line — `:w` `:w path` `:q` `:q!` `:wq` `:42` `:e path` `:grep pattern`
-`:set wrap` / `:set nowrap` · `:format` · `:rename [name]`
+`:set wrap` / `:set nowrap` · `:format` · `:rename [name]` · `:replace old new`
 
 ### Files, buffers and panes
 `ctrl-p` file palette · `ctrl-b` buffer palette · `ctrl-s` save · `ctrl-q` quit

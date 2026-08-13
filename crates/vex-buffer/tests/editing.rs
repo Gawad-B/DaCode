@@ -621,3 +621,31 @@ fn pairing_with_several_cursors_is_one_undo() {
     assert!(document.undo());
     assert_eq!(document.text().to_string(), "a\nb\nc");
 }
+
+#[test]
+fn a_replaced_document_can_continue_the_old_version_numbering() {
+    // Reloading a file changed on disk builds a new Document. Versions must keep increasing: they
+    // are how every background consumer tells a fresh result from a stale one, and the LSP protocol
+    // requires it outright.
+    let mut original = Document::from_str("before\n");
+    original.insert("x");
+    original.insert("y");
+    let last = original.version();
+
+    let mut reloaded = Document::from_str("after\n");
+    assert!(
+        reloaded.version() < last,
+        "a fresh document starts over, which is the problem"
+    );
+
+    reloaded.resume_from(last);
+    assert!(
+        reloaded.version() > last,
+        "after resuming, the new document's version is ahead of the old one's"
+    );
+
+    // And it keeps increasing from there.
+    let resumed = reloaded.version();
+    reloaded.insert("z");
+    assert!(reloaded.version() > resumed);
+}

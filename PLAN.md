@@ -303,8 +303,20 @@ highlight queries; theme file; tree-sitter-driven indent.
 > The index arithmetic lives in `crates/vex/src/panes.rs` rather than the event loop, because
 > arithmetic only reachable by pressing keys in a window is arithmetic that never gets tested.
 >
-> **Still to do in M5:** a file tree, file watching, and project-wide *replace* — search has an
-> engine and a results panel, but nothing edits across the matches yet.
+> **M5 is complete.** The file tree is derived from the project's flat index rather than a second
+> walk, so it can never disagree with the file palette about what is in the project. File watching
+> watches the *directory*, not the file: editors and formatters save by writing a temporary file and
+> renaming it over the original, which replaces the inode and leaves a file watch following a ghost.
+> A clean buffer reloads silently; a dirty one is never touched, and says so instead.
+>
+> Replace is scoped to the results panel rather than the whole project — you replace in what you can
+> see, having read it — and rebuilds its matches by re-reading each file rather than trusting the byte
+> offsets the search recorded, which describe the file as it was.
+>
+> One protocol bug found on the way: reloading a changed file builds a new `Document`, whose version
+> restarts at 1. Versions are how every asynchronous consumer tells fresh from stale, and LSP requires
+> them to increase — so a reload was telling the server to go backwards, after which every diagnostic
+> it returned read as stale forever. `Document::resume_from` keeps the numbering monotonic.
 
 ### M5 — Project layer (2 weeks)
 Multiple buffers, splits/panes, file tree, fuzzy file palette, command palette, project-wide

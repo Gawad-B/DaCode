@@ -75,6 +75,19 @@ impl Document {
         Self::from_text(Text::from_str(contents))
     }
 
+    /// Continues version numbering from `after`, for a buffer that replaced another.
+    ///
+    /// Document versions are what every asynchronous consumer uses to tell fresh results from stale
+    /// ones, and the language-server protocol requires them to *increase*. Reloading a file changed
+    /// on disk builds a new `Document`, which would otherwise restart at 1 — telling a server that
+    /// had already seen version 5 to go backwards, and making every diagnostic it returns look stale
+    /// forever after.
+    pub fn resume_from(&mut self, after: Version) {
+        if after >= self.version {
+            self.version = after.next();
+        }
+    }
+
     pub fn text(&self) -> &Text {
         &self.text
     }

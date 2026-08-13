@@ -10,6 +10,7 @@ description = "Project layer for vex: file discovery, fuzzy matching, project-wi
 vex-text.workspace = true
 
 ignore.workspace = true
+notify.workspace = true
 nucleo-matcher.workspace = true
 grep-searcher.workspace = true
 grep-regex.workspace = true
