@@ -29,6 +29,15 @@ bytemuck = { version = "1", features = ["derive"] }
 pollster = "0.4"
 # Offscreen capture, for verifying the design without a compositor.
 png = "0.18"
+# The system clipboard, which winit does not provide and which cannot be written by hand without a
+# platform backend per platform. Default features off: the image support pulls in a decoder stack
+# for a feature a text editor has no use for.
+#
+# `image-data` is off — it drags in a decoder stack for pictures, which a text editor never puts on
+# the clipboard. `wayland-data-control` is on, because without it a Wayland session falls back to
+# X11 and a session with no XWayland has no clipboard at all — and that is the session this is
+# developed in.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 # Syntax. Incremental and error-tolerant, and it gives structure (not just colors), which is
 # what makes structural text objects and real indentation possible later.

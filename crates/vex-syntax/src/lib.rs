@@ -16,7 +16,7 @@
 pub mod highlight;
 pub mod worker;
 
-pub use highlight::{Highlight, HighlightSpan, Highlighter, Language};
+pub use highlight::{Comment, Highlight, HighlightSpan, Highlighter, Language};
 pub use worker::{SyntaxRequest, SyntaxResult, SyntaxWorker};
 
 use vex_text::Version;

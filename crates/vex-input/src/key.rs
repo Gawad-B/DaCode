@@ -21,6 +21,11 @@ pub enum KeyCode {
     End,
     PageUp,
     PageDown,
+    /// `F1`–`F12`. A named key and not a character: a function key is not text, and one that fell
+    /// through to `Char` would be typed into the document. They exist because the conventional
+    /// bindings for rename, go-to-definition and help are function keys everywhere else, and
+    /// someone who turned the modal grammar off is telling you they expect the conventional ones.
+    Function(u8),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -110,6 +115,13 @@ impl Key {
             });
         }
 
+        // `<f1>` … `<f12>`, before the table: they are the one family with a number in the name.
+        if let Some(number) = lower.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
+            if (1..=12).contains(&number) {
+                return Some(Key::named(KeyCode::Function(number)));
+            }
+        }
+
         let code = match lower.as_str() {
             "esc" | "escape" => KeyCode::Escape,
             "cr" | "enter" | "return" => KeyCode::Enter,
@@ -148,11 +160,19 @@ impl Key {
             KeyCode::End => "<end>".into(),
             KeyCode::PageUp => "<pgup>".into(),
             KeyCode::PageDown => "<pgdn>".into(),
+            KeyCode::Function(number) => format!("<f{number}>"),
         };
 
-        match (self.ctrl, self.alt) {
-            (true, _) => format!("<c-{base}>"),
-            (_, true) => format!("<a-{base}>"),
+        // Shift is shown only for the keys where it is not already in the character: `<s-f12>` is
+        // meaningful, `<s-a>` would be a confusing way to write `A`.
+        let shifted = self.shift && !matches!(self.code, KeyCode::Char(_));
+        match (self.ctrl, self.alt, shifted) {
+            (true, true, _) => format!("<c-a-{base}>"),
+            (true, _, true) => format!("<c-s-{base}>"),
+            (true, _, _) => format!("<c-{base}>"),
+            (_, true, true) => format!("<a-s-{base}>"),
+            (_, true, _) => format!("<a-{base}>"),
+            (_, _, true) => format!("<s-{base}>"),
             _ => base,
         }
     }

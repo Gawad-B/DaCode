@@ -1208,6 +1208,21 @@ impl App {
             WinitKey::Named(NamedKey::PageUp) => KeyCode::PageUp,
             WinitKey::Named(NamedKey::PageDown) => KeyCode::PageDown,
             WinitKey::Named(NamedKey::Space) => KeyCode::Char(' '),
+            // The function keys, which carry the bindings every editor agrees on: F2 rename, F12
+            // definition, F8 next error. Written out rather than computed because `NamedKey` has no
+            // ordering to compute from.
+            WinitKey::Named(NamedKey::F1) => KeyCode::Function(1),
+            WinitKey::Named(NamedKey::F2) => KeyCode::Function(2),
+            WinitKey::Named(NamedKey::F3) => KeyCode::Function(3),
+            WinitKey::Named(NamedKey::F4) => KeyCode::Function(4),
+            WinitKey::Named(NamedKey::F5) => KeyCode::Function(5),
+            WinitKey::Named(NamedKey::F6) => KeyCode::Function(6),
+            WinitKey::Named(NamedKey::F7) => KeyCode::Function(7),
+            WinitKey::Named(NamedKey::F8) => KeyCode::Function(8),
+            WinitKey::Named(NamedKey::F9) => KeyCode::Function(9),
+            WinitKey::Named(NamedKey::F10) => KeyCode::Function(10),
+            WinitKey::Named(NamedKey::F11) => KeyCode::Function(11),
+            WinitKey::Named(NamedKey::F12) => KeyCode::Function(12),
             WinitKey::Character(text) => KeyCode::Char(text.chars().next()?),
             _ => return None,
         };
@@ -1330,9 +1345,26 @@ impl App {
             self.jumps.push(here);
         }
 
+        // The unnamed register *is* the system clipboard, so it is filled from outside before a
+        // paste and pushed outside after anything that changed it. Done here rather than in
+        // `execute`, which must stay free of the machine it runs on to be testable.
+        if matches!(action, Action::Paste { register: None, .. }) {
+            if let Some(outside) = vex::clipboard::get() {
+                self.registers.set(None, outside);
+            }
+        }
+        let before = self.registers.get(None).to_string();
+
         let outcome = execute(&mut self.state, &mut self.registers, &action, rows);
         if let Outcome::Window(action) = &outcome {
             self.window_action(action);
+        }
+
+        // Compared rather than predicted from the action: every path that yanks goes through the
+        // register, and a list of which actions those are would drift the first time one was added.
+        let after = self.registers.get(None);
+        if after != before {
+            vex::clipboard::set(after);
         }
 
         // Font size changes the column advance, so the wrap width has to be recomputed or text

@@ -274,6 +274,46 @@ pub enum Action {
     OpenFolder,
     /// `ctrl-,` — the settings panel.
     ToggleSettings,
+
+    // ---- the conventional editor's own vocabulary ---------------------------------------
+    //
+    // Vim reaches these by composition — `ddp` moves a line, `yyp` duplicates one — so the modal
+    // grammar never needed them as verbs. With the grammar off there is nothing to compose *with*,
+    // and their absence is most of why the non-modal mode felt like the modal one with the good
+    // parts removed. They are actions rather than special cases in the keymap so they compose the
+    // other way too: bindable, in the palette, recorded by macros, repeatable with `.`.
+    /// `alt-↑` / `alt-↓` — move the line or selected lines by one, carrying the selection with them.
+    MoveLine {
+        down: bool,
+    },
+    /// `shift-alt-↑` / `shift-alt-↓` — copy the line or selected lines above or below themselves.
+    DuplicateLine {
+        down: bool,
+    },
+    /// `ctrl-/` — comment the selected lines, or uncomment them if they are all already commented.
+    ToggleComment,
+    /// `ctrl-d` — select the word under the cursor; pressed again, add the next occurrence of what
+    /// is selected as another cursor. `all` takes every occurrence at once (`ctrl-shift-l`).
+    ///
+    /// The one shortcut a VSCode user reaches for first, and the reason `ctrl-d` is not
+    /// [`Action::AddCaretBelow`] in the non-modal keymap however convenient that was.
+    SelectNextOccurrence {
+        all: bool,
+    },
+    /// `ctrl-backspace` / `ctrl-delete` — delete to the word boundary.
+    DeleteWord {
+        forward: bool,
+    },
+
+    // ---- finding out what the editor can do ---------------------------------------------
+    /// `ctrl-shift-p` — every command, searchable, each with the key that runs it.
+    ToggleCommandPalette,
+    /// `f1` — the keys that work right now, in a panel, without leaving the editor.
+    ToggleHelp,
+    /// `alt` or `f10` — the menu bar, which is also what the mouse clicks.
+    ToggleMenu,
+    /// `shift-f10`, or a right-click — the context menu at the cursor.
+    ToggleContextMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -411,6 +451,38 @@ impl Action {
             "open_folder" => Action::OpenFolder,
             "settings" => Action::ToggleSettings,
 
+            // The conventional vocabulary.
+            "move_line_up" => Action::MoveLine { down: false },
+            "move_line_down" => Action::MoveLine { down: true },
+            "duplicate_line_up" => Action::DuplicateLine { down: false },
+            "duplicate_line_down" => Action::DuplicateLine { down: true },
+            "toggle_comment" => Action::ToggleComment,
+            "select_next_occurrence" => Action::SelectNextOccurrence { all: false },
+            "select_all_occurrences" => Action::SelectNextOccurrence { all: true },
+            "delete_word_backward" => Action::DeleteWord { forward: false },
+            "delete_word_forward" => Action::DeleteWord { forward: true },
+            "delete_line" => Action::Apply {
+                operator: Operator::Delete,
+                target: Target::WholeLine { count: 1 },
+                register: None,
+            },
+            "indent" => Action::Apply {
+                operator: Operator::Indent,
+                target: Target::Selection,
+                register: None,
+            },
+            "outdent" => Action::Apply {
+                operator: Operator::Outdent,
+                target: Target::Selection,
+                register: None,
+            },
+
+            // Finding out what the editor can do.
+            "command_palette" => Action::ToggleCommandPalette,
+            "help" => Action::ToggleHelp,
+            "menu" => Action::ToggleMenu,
+            "context_menu" => Action::ToggleContextMenu,
+
             _ => return None,
         })
     }
@@ -427,7 +499,11 @@ impl Action {
             | Action::DeleteBackward
             | Action::DeleteForward
             | Action::ReplaceChar(_)
-            | Action::Paste { .. } => true,
+            | Action::Paste { .. }
+            | Action::MoveLine { .. }
+            | Action::DuplicateLine { .. }
+            | Action::ToggleComment
+            | Action::DeleteWord { .. } => true,
             _ => false,
         }
     }
