@@ -25,6 +25,12 @@ impl Config {
         let mut values = HashMap::new();
         let mut section = String::new();
 
+        // The same byte-order mark `vex_lua::eval` strips, for the same reason: an editor on Windows
+        // writes one without saying so, and it would otherwise become part of the first section's
+        // name — which fails silently here rather than loudly, since a section nobody asked for is
+        // simply never read.
+        let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+
         for line in source.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -167,6 +173,10 @@ pub fn load() -> Settings {
 /// cargo runs them in parallel. That lesson came from the recovery tests.
 pub fn load_from(dir: &Path) -> Settings {
     let mut settings = Settings::default();
+    // Tracked rather than derived from `theme_source`, which is only set for a theme that came from a
+    // *file*: a built-in named here has no source, and reading its absence as "nothing chose a theme"
+    // would let `appearance = "light"` overwrite the amoled the user asked for by name.
+    let mut named_theme = false;
 
     // `imported-settings.toml` is what the importer writes; `config.toml` is the hand-written one,
     // and wins where both set the same key.
@@ -193,15 +203,15 @@ pub fn load_from(dir: &Path) -> Settings {
             settings.sources.insert("format_on_save".into(), imported);
         }
 
-        // A named theme is looked up as a file; `appearance` alone flips the built-in theme.
+        // A named theme is a file or a built-in; `appearance` alone flips the built-in theme.
         if let Some(name) = config.string("theme.name") {
-            let path = theme_path(dir, name);
-            if let Some(theme) = load_theme(&path) {
-                settings.theme = theme;
-                settings.theme_source = Some(path.display().to_string());
+            if let Some(resolved) = resolve_theme(dir, name) {
+                settings.theme = resolved.theme;
+                settings.theme_source = resolved.file;
+                named_theme = true;
             }
         }
-        if settings.theme_source.is_none() {
+        if !named_theme {
             if let Some("light") = config.string("theme.appearance") {
                 settings.theme = Theme::light();
             }
@@ -258,15 +268,17 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     // A named theme replaces the whole theme; `appearance` alone flips the built-in one. Either way
     // this happens before `paint`, so individual token overrides land on top of the right base.
     if let Some(name) = &config.theme_name {
-        let path = theme_path(dir, name);
-        match load_theme(&path) {
-            Some(theme) => {
-                settings.theme = theme;
-                settings.theme_source = Some(path.display().to_string());
+        match resolve_theme(dir, name) {
+            Some(resolved) => {
+                settings.theme = resolved.theme;
+                settings.theme_source = resolved.file;
+                settings.sources.insert("theme".into(), from_config);
             }
-            None => settings
-                .problems
-                .push(format!("theme `{name}` not found at {}", path.display())),
+            None => settings.problems.push(format!(
+                "theme `{name}` is not one of {} and there is no file at {}",
+                built_in_names(),
+                theme_path(dir, name).display()
+            )),
         }
     } else if let Some(appearance) = config.appearance {
         settings.theme = Theme::for_appearance(appearance);
@@ -277,6 +289,43 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     config.paint(&mut settings.theme);
     settings.keymap = config.keymap;
     settings.problems.extend(config.problems);
+}
+
+/// A theme found by name, and the file it came from if it came from one.
+struct Resolved {
+    theme: Theme,
+    file: Option<String>,
+}
+
+/// A theme by the name written in config: a file in `themes/`, or one of the built-ins.
+///
+/// The file is tried first, so a `themes/dark.toml` the user wrote shadows the built-in of that name —
+/// their file is the more specific answer, and silently preferring the compiled-in one would leave
+/// them editing a file that never loads.
+///
+/// Built-ins were missing from this lookup, which made the settings panel contradict itself: choosing
+/// a theme there writes `theme = "amoled"` into `init.lua`, and the next start reported it as a theme
+/// that could not be found. The panel's own output was rejected by the reader that wrote it.
+fn resolve_theme(dir: &Path, name: &str) -> Option<Resolved> {
+    let path = theme_path(dir, name);
+    if let Some(theme) = load_theme(&path) {
+        return Some(Resolved {
+            theme,
+            file: Some(path.display().to_string()),
+        });
+    }
+
+    Theme::by_name(name).map(|theme| Resolved { theme, file: None })
+}
+
+/// The built-in names, for the message a bad theme name earns. Read from `Theme::BUILT_IN` so a theme
+/// added there cannot go unmentioned here.
+fn built_in_names() -> String {
+    Theme::BUILT_IN
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Where a named theme lives. A name is slugified rather than used verbatim, so `theme = "One Dark
@@ -351,6 +400,15 @@ mod tests {
         assert_eq!(config.string("editor.font_family"), Some("JetBrains Mono"));
         assert_eq!(config.string("theme.name"), Some("One Dark Pro"));
         assert_eq!(config.string("missing.key"), None);
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_hide_the_first_section() {
+        // Without stripping it the first section is named "\u{feff}editor", which nothing ever asks
+        // for — so an imported config edited on Windows loses everything above its second heading and
+        // says nothing about it.
+        let config = Config::parse("\u{feff}[editor]\ntab_width = 2\n");
+        assert_eq!(config.usize("editor.tab_width"), Some(2));
     }
 
     #[test]
@@ -492,6 +550,52 @@ mod tests {
         assert!(settings.problems.is_empty(), "{:?}", settings.problems);
         assert!(settings.theme_source.is_some(), "the file was found");
         assert!((settings.theme.syntax.keyword.h - 318.0).abs() < 0.5);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn every_theme_the_settings_panel_can_write_loads_again() {
+        // The panel writes `theme = "<built-in name>"` into init.lua, so every one of those names has
+        // to come back as a theme and not as a problem. It did not: the reader looked names up as
+        // files only, and choosing a theme in the panel meant an error box on the next start.
+        for (name, build) in Theme::BUILT_IN {
+            let dir = scratch(&format!("built-in-{name}"));
+            std::fs::write(
+                dir.join("init.lua"),
+                format!("vex.set {{ theme = \"{name}\" }}\n"),
+            )
+            .unwrap();
+
+            let settings = load_from(&dir);
+            assert!(settings.problems.is_empty(), "{name}: {:?}", settings.problems);
+            assert_eq!(settings.theme.bg.to_hex(), build().bg.to_hex(), "{name}");
+            assert!(
+                settings.theme_source.is_none(),
+                "{name} is compiled in, not a file"
+            );
+
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn a_theme_file_shadows_the_built_in_of_the_same_name() {
+        // Someone who writes themes/dark.toml means it; preferring the compiled-in one would leave
+        // them editing a file that never loads.
+        let dir = scratch("shadow");
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        std::fs::write(
+            dir.join("themes/dark.toml"),
+            "[theme]\nbg = \"oklch(0.2 0.02 250)\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("init.lua"), "vex.set { theme = \"dark\" }\n").unwrap();
+
+        let settings = load_from(&dir);
+        assert!(settings.problems.is_empty(), "{:?}", settings.problems);
+        assert!(settings.theme_source.is_some(), "the file won");
+        assert_ne!(settings.theme.bg.to_hex(), Theme::dark().bg.to_hex());
 
         std::fs::remove_dir_all(&dir).ok();
     }

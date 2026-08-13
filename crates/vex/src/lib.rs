@@ -17,6 +17,7 @@ pub mod palette;
 pub mod panes;
 pub mod paths;
 pub mod picker;
+pub mod process;
 pub mod prompt;
 pub mod recovery;
 pub mod results;
