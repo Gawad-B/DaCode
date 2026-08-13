@@ -11,7 +11,7 @@
 //! program to store a checkbox has overstepped. Appending wins because `init.lua` applies in order,
 //! so the panel's block is simply the last word.
 
-use vex_theme::Appearance;
+use vex_theme::Theme;
 
 /// Where a value came from. The point of the panel.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -43,7 +43,7 @@ pub enum Field {
     TabWidth,
     SoftWrap,
     FormatOnSave,
-    Appearance,
+    Theme,
     StickyScroll,
     InlayHints,
 }
@@ -54,7 +54,7 @@ impl Field {
         Field::TabWidth,
         Field::SoftWrap,
         Field::FormatOnSave,
-        Field::Appearance,
+        Field::Theme,
         Field::StickyScroll,
         Field::InlayHints,
     ];
@@ -65,7 +65,7 @@ impl Field {
             Field::TabWidth => "tab_width",
             Field::SoftWrap => "soft_wrap",
             Field::FormatOnSave => "format_on_save",
-            Field::Appearance => "appearance",
+            Field::Theme => "theme",
             Field::StickyScroll => "sticky_scroll",
             Field::InlayHints => "inlay_hints",
         }
@@ -77,7 +77,7 @@ impl Field {
             Field::TabWidth => "columns a tab stands for",
             Field::SoftWrap => "wrap long lines instead of scrolling sideways",
             Field::FormatOnSave => "reformat through the language server after each save",
-            Field::Appearance => "dark or light, unless a theme file overrides it",
+            Field::Theme => "one of the five that ship with vex",
             Field::StickyScroll => "pin enclosing block heads above the viewport",
             Field::InlayHints => "show inferred types and parameter names inline",
         }
@@ -225,7 +225,9 @@ pub struct Values {
     pub tab_width: usize,
     pub soft_wrap: bool,
     pub format_on_save: bool,
-    pub appearance: Appearance,
+    /// The built-in theme's name, or `None` when a theme file is loaded — which the panel cannot
+    /// cycle through, because a file's colours are not one of a known set.
+    pub theme: Option<&'static str>,
     pub sticky_scroll: bool,
     pub inlay_hints: bool,
 }
@@ -237,10 +239,7 @@ impl Values {
             Field::TabWidth => self.tab_width.to_string(),
             Field::SoftWrap => on_off(self.soft_wrap),
             Field::FormatOnSave => on_off(self.format_on_save),
-            Field::Appearance => match self.appearance {
-                Appearance::Dark => "dark".into(),
-                Appearance::Light => "light".into(),
-            },
+            Field::Theme => self.theme.unwrap_or("from a file").to_string(),
             Field::StickyScroll => on_off(self.sticky_scroll),
             Field::InlayHints => on_off(self.inlay_hints),
         }
@@ -259,11 +258,20 @@ impl Values {
             }
             Field::SoftWrap => self.soft_wrap = !self.soft_wrap,
             Field::FormatOnSave => self.format_on_save = !self.format_on_save,
-            Field::Appearance => {
-                self.appearance = match self.appearance {
-                    Appearance::Dark => Appearance::Light,
-                    Appearance::Light => Appearance::Dark,
-                }
+            Field::Theme => {
+                // Cycles through the built-ins in the order they are listed, both ways.
+                let names: Vec<&'static str> =
+                    Theme::BUILT_IN.iter().map(|(name, _)| *name).collect();
+                let at = self
+                    .theme
+                    .and_then(|current| names.iter().position(|name| *name == current))
+                    .unwrap_or(0);
+                let next = if delta < 0 {
+                    (at + names.len() - 1) % names.len()
+                } else {
+                    (at + 1) % names.len()
+                };
+                self.theme = Some(names[next]);
             }
             Field::StickyScroll => self.sticky_scroll = !self.sticky_scroll,
             Field::InlayHints => self.inlay_hints = !self.inlay_hints,
@@ -292,14 +300,14 @@ pub fn write_back(existing: &str, values: &Values) -> String {
          tab_width = {},\n  \
          soft_wrap = {},\n  \
          format_on_save = {},\n  \
-         appearance = \"{}\",\n  \
+         theme = \"{}\",\n  \
          sticky_scroll = {},\n  \
          inlay_hints = {},\n}}\n",
         values.font_size,
         values.tab_width,
         values.soft_wrap,
         values.format_on_save,
-        values.get(Field::Appearance),
+        values.theme.unwrap_or("dark"),
         values.sticky_scroll,
         values.inlay_hints,
     );
@@ -340,7 +348,7 @@ mod tests {
             tab_width: 4,
             soft_wrap: true,
             format_on_save: false,
-            appearance: Appearance::Dark,
+            theme: Some("dark"),
             sticky_scroll: true,
             inlay_hints: false,
         }
@@ -381,12 +389,31 @@ mod tests {
     }
 
     #[test]
-    fn appearance_cycles_between_the_two() {
+    fn the_theme_cycles_through_every_built_in_both_ways() {
         let mut values = values();
-        values.adjust(Field::Appearance, 1);
-        assert_eq!(values.get(Field::Appearance), "light");
-        values.adjust(Field::Appearance, 1);
-        assert_eq!(values.get(Field::Appearance), "dark");
+        let mut seen = vec![values.get(Field::Theme)];
+
+        for _ in 1..Theme::BUILT_IN.len() {
+            values.adjust(Field::Theme, 1);
+            seen.push(values.get(Field::Theme));
+        }
+        assert_eq!(seen.len(), Theme::BUILT_IN.len());
+        assert!(seen.contains(&"rose-pine".to_string()));
+        assert!(seen.contains(&"amoled".to_string()));
+
+        values.adjust(Field::Theme, 1);
+        assert_eq!(values.get(Field::Theme), "dark", "and wraps round");
+        values.adjust(Field::Theme, -1);
+        assert_eq!(values.get(Field::Theme), "amoled", "backwards too");
+    }
+
+    #[test]
+    fn a_theme_loaded_from_a_file_says_so_rather_than_lying() {
+        // The panel cannot cycle a file's colours, and showing "dark" when the theme is something
+        // imported would be worse than admitting it.
+        let mut values = values();
+        values.theme = None;
+        assert_eq!(values.get(Field::Theme), "from a file");
     }
 
     #[test]
@@ -403,7 +430,7 @@ mod tests {
         let written = write_back("", &values());
         assert!(written.starts_with(MARKER));
         assert!(written.contains("tab_width = 4"));
-        assert!(written.contains("appearance = \"dark\""));
+        assert!(written.contains("theme = \"dark\""));
         assert!(written.ends_with("}\n"));
     }
 
@@ -455,7 +482,7 @@ mod tests {
         // The panel writes a program. If it cannot be parsed, the next launch loses every setting —
         // so it is round-tripped through the real config reader rather than eyeballed.
         let mut original = values();
-        original.adjust(Field::Appearance, 1);
+        original.adjust(Field::Theme, 1);
         original.adjust(Field::SoftWrap, 1);
         original.adjust(Field::TabWidth, 4);
 
@@ -465,7 +492,7 @@ mod tests {
         assert!(config.problems.is_empty(), "{:?}", config.problems);
         assert_eq!(config.tab_width, Some(original.tab_width));
         assert_eq!(config.soft_wrap, Some(original.soft_wrap));
-        assert_eq!(config.appearance, Some(Appearance::Light));
+        assert_eq!(config.theme_name.as_deref(), Some("light"));
         assert_eq!(
             config.font_size.map(|size| format!("{size:.1}")),
             Some(original.get(Field::FontSize))

@@ -301,7 +301,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 10] = [
+const VALUE_FLAGS: [&str; 11] = [
     "--screenshot",
     "--mode",
     "--columns",
@@ -312,6 +312,7 @@ const VALUE_FLAGS: [&str; 10] = [
     "--complete",
     "--split",
     "--at",
+    "--theme",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -393,7 +394,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     } else if flag("--dark") {
         Some(Theme::dark())
     } else {
-        None
+        value("--theme").and_then(|name| Theme::by_name(&name))
     };
 
     // The fixture is explicit here rather than being a default inside `load`: the editor proper
@@ -2700,7 +2701,7 @@ impl App {
             tab_width: self.state.display.tab_width,
             soft_wrap: self.state.display.mode == WrapMode::Word,
             format_on_save: self.state.format_on_save,
-            appearance: self.state.theme.appearance,
+            theme: self.state.theme.name(),
             sticky_scroll: self.state.sticky_scroll,
             inlay_hints: self.state.show_inlay_hints,
         }
@@ -2734,10 +2735,12 @@ impl App {
                 };
             }
             Field::FormatOnSave => self.state.format_on_save = values.format_on_save,
-            Field::Appearance => {
-                // Only the built-in themes: a loaded theme file has colors the panel has no business
-                // inventing a light variant of.
-                self.state.theme = Theme::for_appearance(values.appearance);
+            Field::Theme => {
+                // Only the built-ins: a theme loaded from a file has colours the panel has no
+                // business inventing a variant of, and `Values` reports that case honestly.
+                if let Some(theme) = values.theme.and_then(Theme::by_name) {
+                    self.state.theme = theme;
+                }
             }
             Field::StickyScroll => self.state.sticky_scroll = values.sticky_scroll,
             Field::InlayHints => {

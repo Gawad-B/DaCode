@@ -16,7 +16,7 @@ pub mod typography;
 
 pub use color::Oklch;
 pub use mode::{CursorShape, Mode};
-pub use theme::{Appearance, SyntaxPalette, Theme};
+pub use theme::{Appearance, BuiltIn, SyntaxPalette, Theme};
 pub use typography::{Family, FontSpec, Role, Style, Typography, frame, space};
 
 /// Frame budget in milliseconds. Not decoration: the statusline shows measured frame time
@@ -292,5 +292,83 @@ mod tests {
             "three parts required"
         );
         assert!(Oklch::parse("oklch(0.5 0.1 20 30)").is_none());
+    }
+
+    #[test]
+    fn every_built_in_theme_is_reachable_by_name_and_names_itself() {
+        for (name, build) in Theme::BUILT_IN {
+            let theme = build();
+            assert!(
+                Theme::by_name(name).is_some(),
+                "`{name}` is listed but cannot be looked up"
+            );
+            assert_eq!(
+                theme.name(),
+                Some(name),
+                "a theme must recognise itself, or the settings panel cannot show which is active"
+            );
+        }
+
+        // Names are slugs, and people type them with spaces and underscores.
+        assert!(Theme::by_name("Rose Pine").is_some());
+        assert!(Theme::by_name("rose_pine_moon").is_some());
+        assert!(Theme::by_name("nonsense").is_none());
+    }
+
+    #[test]
+    fn every_built_in_theme_is_legible() {
+        // The one property a theme cannot get wrong: text has to be distinguishable from the surface
+        // it sits on, and every syntax colour from the background. Checked in OKLCH lightness, which
+        // is perceptual — the whole reason the palette is stored this way.
+        for (name, build) in Theme::BUILT_IN {
+            let theme = build();
+            let gap = (theme.ink.l - theme.bg.l).abs();
+            assert!(
+                gap > 0.45,
+                "{name}: ink and background are only {gap:.2} apart in lightness"
+            );
+
+            for (role, color) in [
+                ("keyword", theme.syntax.keyword),
+                ("type", theme.syntax.type_),
+                ("function", theme.syntax.function),
+                ("comment", theme.syntax.comment),
+                ("string", theme.syntax.string),
+                ("number", theme.syntax.number),
+                ("constant", theme.syntax.constant),
+            ] {
+                let gap = (color.l - theme.bg.l).abs();
+                assert!(
+                    gap > 0.20,
+                    "{name}: {role} is only {gap:.2} from the background in lightness"
+                );
+            }
+
+            // And the panels have to be distinguishable from the canvas, or the chrome disappears.
+            assert!(
+                (theme.bg_panel.l - theme.bg.l).abs() > 0.01,
+                "{name}: the panel surface is indistinguishable from the canvas"
+            );
+        }
+    }
+
+    #[test]
+    fn amoled_is_actually_black() {
+        // The point of the theme: those pixels are off on an OLED panel. A near-black would not be.
+        assert_eq!(Theme::amoled().bg.to_hex(), "#000000");
+    }
+
+    #[test]
+    fn mode_accents_stay_distinct_in_every_theme() {
+        for (name, build) in Theme::BUILT_IN {
+            let theme = build();
+            let mut colors: Vec<String> = Mode::ALL
+                .iter()
+                .map(|mode| theme.accent(*mode).to_hex())
+                .collect();
+            colors.sort();
+            colors.dedup();
+            assert_eq!(colors.len(), 4, "{name}: modes must stay visually distinct");
+        }
     }
 }

@@ -17,12 +17,10 @@ vex.set {
   -- reformat is a round trip, and it writes again when it comes back.
   format_on_save = false,
 
-  -- "dark" or "light". Ignored if `theme` names a file.
-  appearance = "dark",
-
-  -- A theme in ~/.config/vex/themes/. The name is slugified, so "One Dark Pro" finds
-  -- one-dark-pro.toml — which is exactly what `vex import` writes.
-  -- theme = "One Dark Pro",
+  -- One of the five built-in themes: dark, light, rose-pine, rose-pine-moon, amoled.
+  -- Or the name of a file in ~/.config/vex/themes/ — which is what `vex import --theme` writes,
+  -- slugified, so "One Dark Pro" finds one-dark-pro.toml. A built-in of the same name wins.
+  theme = "dark",
 
   -- Pin the enclosing block heads above the viewport while scrolling.
   sticky_scroll = true,

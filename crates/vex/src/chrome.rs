@@ -1055,7 +1055,7 @@ fn draw_settings(
         tab_width: state.display.tab_width,
         soft_wrap: state.display.mode == WrapMode::Word,
         format_on_save: state.format_on_save,
-        appearance: state.theme.appearance,
+        theme: state.theme.name(),
         sticky_scroll: state.sticky_scroll,
         inlay_hints: state.show_inlay_hints,
     };
