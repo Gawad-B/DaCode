@@ -98,8 +98,12 @@ Filename: "{app}\{#AppExe}"; Description: "Start vex"; Flags: nowait postinstall
 Type: filesandordirs; Name: "{app}\examples"
 
 [Code]
-{ Whether {app} is missing from the user's PATH. Compared with semicolons around both sides so
-  C:\...\vexes does not count as a match for C:\...\vex. }
+// Whether the install directory is missing from the user's PATH. Compared with semicolons around
+// both sides so C:\...\vexes does not count as a match for C:\...\vex.
+//
+// Comments here are // and not the Pascal { }: a brace comment ends at the first closing brace, and
+// the constants this script is full of are spelled {app} — so a comment that mentioned one silently
+// ended halfway through itself and the rest of the sentence was compiled as code.
 function NeedsAddPath(Directory: string): Boolean;
 var
   Existing: string;
@@ -112,8 +116,8 @@ begin
   Result := Pos(';' + Uppercase(Directory) + ';', ';' + Uppercase(Existing) + ';') = 0;
 end;
 
-{ Take the directory back out of PATH on uninstall. Leaving it behind is the thing every installer
-  that touches PATH gets wrong, and the leftovers accumulate silently. }
+// Take the directory back out of PATH on uninstall. Leaving it behind is the thing every installer
+// that touches PATH gets wrong, and the leftovers accumulate silently.
 procedure RemoveFromPath(Directory: string);
 var
   Existing: string;
