@@ -16,3 +16,4 @@ pub mod panes;
 pub mod prompt;
 pub mod recovery;
 pub mod results;
+pub mod tree;

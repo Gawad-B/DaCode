@@ -199,6 +199,7 @@ impl Grammar {
                 KeyCode::Char('r') => Some(Action::Redo),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('e') => Some(Action::ToggleTree),
                 _ => None,
             };
         }

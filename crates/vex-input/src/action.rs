@@ -237,6 +237,8 @@ pub enum Action {
     FocusPane {
         forward: bool,
     },
+    /// `ctrl-e` — show or hide the file tree.
+    ToggleTree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +361,7 @@ impl Action {
             "close_pane" => Action::ClosePane,
             "next_pane" => Action::FocusPane { forward: true },
             "previous_pane" => Action::FocusPane { forward: false },
+            "toggle_tree" => Action::ToggleTree,
 
             _ => return None,
         })

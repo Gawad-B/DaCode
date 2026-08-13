@@ -172,7 +172,10 @@ pub fn execute(
 
         // Window management belongs to the caller: the executor has no idea how many panes exist,
         // and giving it one would mean giving it the buffer list too.
-        Action::SplitPane { .. } | Action::ClosePane | Action::FocusPane { .. } => {
+        Action::SplitPane { .. }
+        | Action::ClosePane
+        | Action::FocusPane { .. }
+        | Action::ToggleTree => {
             return Outcome::Window(action.clone());
         }
 

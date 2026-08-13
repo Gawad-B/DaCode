@@ -90,6 +90,10 @@ pub struct EditorState {
     pub buffer_count: usize,
     /// Index of the active buffer.
     pub active_buffer: usize,
+    /// The file tree, when open. It takes the sidebar over rather than adding a third column: the
+    /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
+    /// a path in.
+    pub tree: Option<crate::tree::FileTree>,
 }
 
 impl EditorState {
@@ -1001,6 +1005,90 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     ));
 }
 
+/// The file tree, in the sidebar.
+fn draw_tree(
+    frame: &mut Frame,
+    state: &EditorState,
+    tree: &crate::tree::FileTree,
+    rect: Rect,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let pad = space::LG * scale;
+    let line = 22.0 * scale;
+    let mut y = rect.y + pad;
+
+    frame.text(run(
+        state,
+        Role::Prose,
+        "Files",
+        Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+        theme.ink,
+        Align::Left,
+        scale,
+    ));
+    y += line * 1.6;
+
+    if tree.is_empty() {
+        frame.text(label(
+            state,
+            "indexing",
+            Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+        return;
+    }
+
+    let height = (((rect.bottom() - pad) - y) / line).floor().max(1.0) as usize;
+    let (rows, cursor) = tree.visible(height);
+
+    for (index, row) in rows.iter().enumerate() {
+        let row_y = y + index as f32 * line;
+        let selected = index == cursor;
+
+        if selected {
+            frame.fill(Rect::new(rect.x, row_y, rect.width, line), theme.row_active);
+            frame.fill(
+                Rect::new(rect.x, row_y, border::ACCENT_BORDER * scale, line),
+                accent,
+            );
+        }
+
+        // One indent step per level, and an ASCII marker. Not a chevron or a folder glyph: the
+        // bundled fonts have neither, and a missing glyph renders as a tofu box — which is how this
+        // first shipped, in a capture where every directory wore a small empty rectangle.
+        // A trailing slash names the directory, `+`/`-` says whether it is open.
+        let indent = pad + row.depth as f32 * 12.0 * scale;
+        let text = if row.is_directory {
+            format!("{} {}/", if row.expanded { "-" } else { "+" }, row.name)
+        } else {
+            format!("  {}", row.name)
+        };
+
+        frame.text(run(
+            state,
+            Role::Value,
+            text,
+            Rect::new(
+                rect.x + indent,
+                row_y,
+                (rect.right() - pad - (rect.x + indent)).max(0.0),
+                line,
+            ),
+            match (row.is_directory, selected) {
+                (_, true) => theme.ink,
+                (true, false) => theme.ink_dim,
+                (false, false) => theme.ink_faint,
+            },
+            Align::Left,
+            scale,
+        ));
+    }
+}
+
 /// Advance of one code column.
 ///
 /// Derived from the type scale for now. At the point where a proportional fallback glyph can
@@ -1550,6 +1638,11 @@ fn draw_sidebar(
     let accent = theme.accent(state.mode);
     frame.fill(rect, theme.bg_panel);
     frame.rule_left(rect, theme.rule, border::BORDER);
+
+    if let Some(tree) = &state.tree {
+        draw_tree(frame, state, tree, rect, scale);
+        return;
+    }
 
     let pad = space::LG * scale;
     let line = 20.0 * scale;

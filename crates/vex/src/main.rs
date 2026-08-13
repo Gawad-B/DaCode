@@ -173,6 +173,7 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
+        tree: None,
     };
 
     (state, settings.keymap)
@@ -499,6 +500,23 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let mut frame = Frame::default();
     if flag("--splash") {
         chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+    } else if flag("--tree") {
+        // The tree needs a file list; the screenshot path has no background walk, so index inline.
+        let root = find_root(&std::path::PathBuf::from("."));
+        let walk = FileWalk::start(root.clone());
+        let mut index = FileIndex::new(root.clone());
+        for _ in 0..200 {
+            if let Some(result) = walk.poll() {
+                index.set_files(result.files, result.truncated);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let mut tree = vex::tree::FileTree::new(root, index.files());
+        tree.reveal("crates/vex-text/src/anchor.rs");
+        state.tree = Some(tree);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(split) = value("--split") {
         // `--split N[h]` renders N panes on one buffer, so the layout is inspectable without a
         // window. The panes look at different places in the file, which is the case worth seeing:
@@ -913,6 +931,10 @@ impl App {
             return false;
         }
         if self.state.results.is_some() && self.handle_results_key(key) {
+            return false;
+        }
+
+        if self.handle_tree_key(key) {
             return false;
         }
 
@@ -1426,6 +1448,12 @@ impl App {
             let count = result.files.len();
             self.index.set_files(result.files, result.truncated);
             self.walk = None;
+
+            // The walk finishes after the tree can first be opened on a large project, so the tree
+            // is refreshed rather than left showing whatever had been indexed at that moment.
+            if let Some(tree) = &mut self.state.tree {
+                tree.refresh(self.index.files());
+            }
             eprintln!(
                 "vex: indexed {count} files{}",
                 if self.index.is_truncated() {
@@ -1733,6 +1761,26 @@ impl App {
                     self.restore_pane();
                 }
             }
+            Action::ToggleTree => {
+                if self.state.tree.is_some() {
+                    self.state.tree = None;
+                } else {
+                    let mut tree = vex::tree::FileTree::new(
+                        self.index.root().to_path_buf(),
+                        self.index.files(),
+                    );
+                    // Open onto the file being edited rather than a collapsed root: the tree is a
+                    // way to look around from where you are, not a fresh start.
+                    if let Some(path) = &self.state.file_path {
+                        if let Ok(absolute) = std::path::Path::new(path).canonicalize() {
+                            if let Ok(relative) = absolute.strip_prefix(self.index.root()) {
+                                tree.reveal(&relative.to_string_lossy());
+                            }
+                        }
+                    }
+                    self.state.tree = Some(tree);
+                }
+            }
             Action::FocusPane { forward } if self.panes.is_split() => {
                 self.save_pane();
                 self.panes.cycle(*forward);
@@ -1835,6 +1883,32 @@ impl App {
         let mut prompt = vex::prompt::Prompt::new(PromptKind::Command, self.state.cursor());
         prompt.message = Some(message.to_string());
         self.state.prompt = Some(prompt);
+    }
+
+    /// Keys for the file tree. Returns true if the key was consumed.
+    ///
+    /// The tree only takes keys that mean something in it, so `ctrl-p`, `:` and the editing keys all
+    /// keep working with it open — it is a panel beside the text, not a mode.
+    fn handle_tree_key(&mut self, key: Key) -> bool {
+        let Some(tree) = &mut self.state.tree else {
+            return false;
+        };
+        if key.ctrl || key.alt {
+            return false;
+        }
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => tree.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => tree.move_selection(-1),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(path) = tree.activate() {
+                    self.activate(Target::File(path));
+                }
+            }
+            KeyCode::Escape => self.state.tree = None,
+            _ => return false,
+        }
+        true
     }
 
     /// Keys for the results panel. Returns true if the key was consumed.
@@ -2062,6 +2136,22 @@ impl App {
         self.after_buffer_change();
     }
 
+    /// Points the tree at the file that just became active.
+    fn reveal_in_tree(&mut self) {
+        let root = self.index.root().to_path_buf();
+        let Some(path) = self.state.file_path.clone() else {
+            return;
+        };
+        let Some(tree) = &mut self.state.tree else {
+            return;
+        };
+        if let Ok(absolute) = std::path::Path::new(&path).canonicalize() {
+            if let Ok(relative) = absolute.strip_prefix(&root) {
+                tree.reveal(&relative.to_string_lossy());
+            }
+        }
+    }
+
     /// Resets per-buffer derived state after the active document changes.
     fn after_buffer_change(&mut self) {
         // Pairing rules are per-language, so they travel with the buffer.
@@ -2090,6 +2180,8 @@ impl App {
                 Err(err) => eprintln!("vex: syntax unavailable: {err}"),
             }
         }
+
+        self.reveal_in_tree();
 
         // Drain the change queue: the new document's changes are not the old one's.
         self.state.document.take_changes();
