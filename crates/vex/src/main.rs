@@ -54,14 +54,28 @@ fn main() -> Result<()> {
         return screenshot(&args, &output);
     }
 
-    let path = positional(&args);
+    let argument = positional(&args);
 
-    // With no file named, the last session for this project is what to open. Named explicitly, the
-    // named file wins — asking for a file and getting the last three back would be surprising.
+    // `vex some/dir` opens a *project*, the way `vex file.rs` opens a file. The directory itself
+    // becomes the root rather than searching upwards from it for a `.git`: naming a folder is an
+    // explicit choice about what the project is, and second-guessing it would index the parent
+    // repository when you asked for one crate of it.
+    let folder = argument
+        .as_ref()
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_dir())
+        .map(|path| path.canonicalize().unwrap_or(path));
+    let path = if folder.is_some() { None } else { argument };
+
+    // With no file named — including when a folder was — the last session for that project is what
+    // to open. Naming a file explicitly wins: asking for one file and getting the last three back
+    // would be surprising.
     let restore = (path.is_none() && !args.iter().any(|arg| arg == "--no-session"))
         .then(|| {
-            let here = std::env::current_dir().unwrap_or_default();
-            vex::session::load(&vex::session::session_dir(), &find_root(&here))
+            let anchor = folder
+                .clone()
+                .unwrap_or_else(|| find_root(&std::env::current_dir().unwrap_or_default()));
+            vex::session::load(&vex::session::session_dir(), &anchor)
         })
         .flatten();
 
@@ -71,11 +85,14 @@ fn main() -> Result<()> {
         .map(|file| file.path.to_string_lossy().to_string());
     let (text, crumbs, file_path) = load(path.or(first))?;
 
-    // The project root anchors file discovery: a marker search from the opened file, so opening a
-    // stray file does not index a home directory.
-    let root = find_root(&std::path::PathBuf::from(
-        file_path.clone().unwrap_or_else(|| ".".to_string()),
-    ));
+    // The project root anchors file discovery: the folder if one was named, otherwise a marker
+    // search from the opened file, so opening a stray file does not index a home directory.
+    let root = match &folder {
+        Some(folder) => folder.clone(),
+        None => find_root(&std::path::PathBuf::from(
+            file_path.clone().unwrap_or_else(|| ".".to_string()),
+        )),
+    };
     eprintln!("vex: project root {}", root.display());
 
     let event_loop = EventLoop::new().context("creating the event loop")?;
@@ -127,6 +144,12 @@ fn main() -> Result<()> {
         buffers: Vec::new(),
         state,
     };
+
+    // Opening a folder shows what is in it. Nothing else would answer the question the user just
+    // asked by naming a directory.
+    if folder.is_some() {
+        app.show_tree();
+    }
 
     // The rest of the session's files, opened behind the active one so `ctrl-b` finds them.
     if let Some(session) = restore {
@@ -2764,6 +2787,7 @@ impl App {
     /// Opens a file or switches to an already-open buffer.
     fn activate(&mut self, target: Target) {
         match target {
+            Target::File(path) if path.is_dir() => self.open_folder(&path),
             Target::File(path) => {
                 let path_string = path.to_string_lossy().to_string();
 
@@ -3023,6 +3047,42 @@ impl App {
             }
         }
         redraw
+    }
+
+    /// Opens the file tree, revealing the file being edited.
+    ///
+    /// Revealing rather than starting collapsed at the root: the tree is a way to look around from
+    /// where you are, not a fresh start.
+    fn show_tree(&mut self) {
+        let mut tree =
+            vex::tree::FileTree::new(self.index.root().to_path_buf(), self.index.files());
+        if let Some(path) = &self.state.file_path {
+            if let Ok(absolute) = std::path::Path::new(path).canonicalize() {
+                if let Ok(relative) = absolute.strip_prefix(self.index.root()) {
+                    tree.reveal(&relative.to_string_lossy());
+                }
+            }
+        }
+        self.state.tree = Some(tree);
+        self.state.show_diagnostics = false;
+    }
+
+    /// Switches the project to another folder: re-indexes, and shows the tree.
+    ///
+    /// The open buffers stay open. Changing what `ctrl-p` searches should not close the file you were
+    /// reading when you decided to go looking for another one.
+    fn open_folder(&mut self, folder: &std::path::Path) {
+        let root = folder
+            .canonicalize()
+            .unwrap_or_else(|_| folder.to_path_buf());
+        eprintln!("vex: project root {}", root.display());
+
+        self.index = FileIndex::new(root.clone());
+        self.walk = Some(FileWalk::start(root.clone()));
+        self.state.project_root = root;
+        self.state.results = None;
+        self.show_tree();
+        self.state.hover = Some(format!("opened {}", folder.display()));
     }
 
     /// Points the tree at the file that just became active.

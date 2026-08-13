@@ -14,8 +14,14 @@ of each milestone in `PLAN.md`.
 
 ```sh
 cargo build --release
-./target/release/vex path/to/file.rs   # or `vex` alone for an empty buffer
+./target/release/vex path/to/file.rs   # a file
+./target/release/vex path/to/project   # a folder — indexes it and opens the file tree
+./target/release/vex                   # nothing: reopens the last session for this directory
 ```
+
+Naming a **folder** makes it the project: `ctrl-p`, `ctrl-f` and the tree all work from there, and the
+folder you named is the root even if it sits inside a larger repository — asking for one crate should
+not index the whole workspace. `:e some/dir` switches project without closing what you have open.
 
 Debug builds are usable — `opt-level = 1` is set for exactly that reason — but the release binary is
 what the performance claims refer to.
@@ -66,7 +72,7 @@ machinery for them exists.
 `:set wrap` / `:set nowrap` · `:format` · `:rename [name]` · `:replace old new`
 
 ### Files, buffers and panes
-`ctrl-p` file palette · `ctrl-b` buffer palette · `ctrl-s` save · `ctrl-q` quit
+`:e path` open a file **or folder** · `ctrl-p` file palette · `ctrl-b` buffer palette · `ctrl-s` save · `ctrl-q` quit
 `ctrl-w v` split beside · `ctrl-w s` split below · `ctrl-w c` close pane · `ctrl-w w` next pane
 `ctrl-e` file tree — `j`/`k` move, `enter` opens a file or a directory, `esc` closes
 

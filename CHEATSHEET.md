@@ -171,7 +171,7 @@ what `vex import --snippets` writes.
 | `:w` · `:w path` | save · save as |
 | `:q` `:q!` · `:wq` `:x` | quit · save and quit |
 | `:42` | go to line 42 |
-| `:e path` | open a file |
+| `:e path` | open a file, or switch project if it is a folder |
 | `:grep pattern` | search the project |
 | `:replace old new` | replace across the search results |
 | `:format` · `:rename [name]` | through the language server |
