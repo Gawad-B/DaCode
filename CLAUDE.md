@@ -1,0 +1,158 @@
+# CLAUDE.md
+
+Working notes for this codebase. `README.md` is for people using vex; this is for whoever is changing
+it. `PLAN.md` is the long-form architecture and decision record — when this file and `PLAN.md`
+disagree, `PLAN.md` is the reasoning and this is the summary.
+
+## What this is
+
+A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~34,000 lines,
+512 tests, clippy clean.
+
+## Commands
+
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets     # must stay at zero warnings
+cargo fmt --all
+cargo build --release
+
+cargo run -p vex-input --example cheatsheet   # CHEATSHEET.md vs the real grammar
+cargo bench -p vex -p vex-syntax
+cargo check --workspace --target x86_64-pc-windows-msvc   # 7 of 9 crates; see "Windows" below
+```
+
+`VEX_NO_SYSTEM_FONTS=1` makes captures reproducible and startup faster. Use it for every screenshot.
+
+## The one rule
+
+**Nothing unbounded may run on the UI thread.** Everything else in the design follows from it:
+
+- Background work gets a cheap rope snapshot plus the document's `Version`, and returns results
+  **tagged with the version it saw**. The UI applies a result only if that version still matches;
+  otherwise it is discarded. Syntax, LSP, git diff and the file walk all follow this.
+- Anything per-frame must be bounded by the **viewport**, not the document. The one real performance
+  defect found so far was a sidebar walking 512 display rows to compute one coordinate: bounding it to
+  the ~40 visible rows took frame build from 1.13 ms to 84 µs.
+- Keystroke cost is flat with document size: ~7 µs at 1k lines and at 100k.
+
+If you add a background producer, give it a `Version` and a `poll()` that never blocks, and wire it
+into `about_to_wait` beside the others.
+
+## Architecture, in dependency order
+
+```
+vex-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, SelectionSet
+vex-theme    Oklch, five themes, type roles, mode accents
+vex-display  soft wrap, ScrollAnchor, Folds, sticky scroll
+vex-buffer   Document = text + undo history + pending changes + pairing
+vex-input    Action, Grammar, Keymap, JumpList, Macros
+vex-syntax   tree-sitter on a worker thread
+vex-render   Frame -> quads/glyphs/marks, paint Layers, Headless capture
+vex-project  FileIndex, FileWalk, ProjectSearch, FileWatcher
+vex-lsp      transport, client, Diagnostics
+vex-lua      init.lua -> Config
+vex-import   VSCode data, .vsix, colour schemes in four formats
+vex          the binary: chrome, execute, panes, layout, settings, session, welcome
+```
+
+### Non-obvious invariants
+
+**Typed coordinates.** `ByteOffset`, `CharOffset`, `Utf16Column`, `Point`, `DisplayPoint` are distinct
+types and never interchangeable. LSP speaks UTF-16; the rope speaks chars; the screen speaks display
+rows. Bare integers for positions are how editors get their worst bugs — do not add one.
+
+**One mutation path.** Every text change goes through `Document::apply(Transaction, EditKind)`, which
+returns the exact inverse for undo. Nothing else may touch the rope. `EditKind::Discrete` means "its
+own undo group" — use it for anything that is one *intent* however many edits it makes (a rename, a
+format, a macro replay, a snippet expansion).
+
+**Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
+binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
+headlessly. Adding a user-visible operation means adding an `Action` and a name in
+`Action::from_name` — the name is public API that config depends on.
+
+**The executor owns no processes.** `execute()` records a request on the state (`pending_request`) or
+returns `Outcome::Window(action)`; the event loop, which owns the LSP client and the pane list, carries
+it out. That split is what lets hover and rename be tested with no server running.
+
+**Paint layers.** The renderer draws all quads then all glyphs *per layer*, so an overlay on a higher
+layer occludes text below it. Within one layer it cannot. Panels go on `Layer::Panel`, the palette on
+`Layer::Modal`. Forgetting this is how the completion popup shipped transparent.
+
+**Layout is data.** `crates/vex/src/layout.rs` is the single definition of where things are; both
+drawing and mouse hit-testing read it. Two copies of that arithmetic drift, and the symptom — clicks
+landing a line off — gets blamed on the display map.
+
+**Folds live in the display map** because folding *is* a mapping from buffer lines to display rows.
+They are cleared on buffer change: they are line numbers and nothing more.
+
+## Testing conventions
+
+- Test names are sentences about behaviour: `a_stale_reply_is_refused_whole`, not `test_apply_2`.
+- Every test says *why* the behaviour matters when it is not obvious, in a comment. A test that only
+  asserts is a test nobody can safely change.
+- Property tests (`proptest`) for anything about coordinates or text invariants.
+- Live `rust-analyzer` tests **skip** when it is absent rather than failing. A test that fails on a
+  machine without a dependency is testing the machine.
+- **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
+  thread-safe against the `getenv` other tests do in parallel, and doing it deadlocked this suite
+  inside glibc for twenty minutes. Take the value as a parameter instead — see
+  `paths::resolve(Where, bool, &Environment)`, which also means the *Windows* rules are testable from
+  Linux. The recovery and session directories are parameters for the same reason.
+
+### Verify visual work by rendering it
+
+`--screenshot out.png` renders any state offscreen and exits. Read the PNG. This has caught, among
+others: a transparent completion popup, tofu boxes where the bundled font had no glyph, a logo that
+came out as an X, clipped diagnostic messages, and a lockup misaligned by 2px. Screen capture does not
+work on Wayland here, so this is the only way — and it is better anyway, being reproducible.
+
+Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
+--git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
+--splash --empty --at LINE --columns N --no-vim`.
+
+## Style
+
+- Comments explain **why**, never what. If a line's purpose is obvious, it gets no comment.
+- Prefer the honest limitation over the clever workaround, and *say* the limitation in the doc comment.
+  Several of the best comments in this codebase record something that went wrong.
+- Commit messages are prose, not bullet lists of files. Say what changed, why, and what was rejected.
+- British-ish spelling in prose is fine; identifiers are American (`color` in code, "colour" in text) —
+  because the wgpu and CSS vocabulary around them is.
+
+## Windows
+
+Code paths exist and type-check; the editor has **never been run** on Windows. When touching anything
+platform-shaped:
+
+- Paths go through `crates/vex/src/paths.rs`. `%APPDATA%` for config (roams), `%LOCALAPPDATA%` for
+  state (must not roam).
+- Program lookup must consult `PATHEXT` — a bare-name check finds neither `rust-analyzer.exe` nor the
+  `.cmd` shims most language servers install as.
+- Write Windows-only functions **without** `#[cfg(windows)]` and select them with a runtime
+  `cfg!(windows)`. A `#[cfg(windows)]` body is never type-checked on Linux, and that is exactly the
+  code that cannot be tested here.
+- Only 7 of 9 crates type-check for the MSVC target from Linux; `vex-syntax` and `vex-lua` need a
+  Windows C toolchain. `.github/workflows/build.yml` has a Windows job for that reason.
+
+## Where things are
+
+| Want to change | Look at |
+|---|---|
+| A key binding | `crates/vex-input/src/grammar.rs`, then `CHEATSHEET.md` + the example |
+| What a command does | `crates/vex/src/execute.rs` |
+| How something looks | `crates/vex/src/chrome.rs` |
+| Where something is | `crates/vex/src/layout.rs` |
+| A config option | `vex-lua/src/lib.rs`, `vex/src/config.rs`, `vex/src/settings_ui.rs` (all three) |
+| A theme | `crates/vex-theme/src/theme.rs` |
+| LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
+
+Adding a config option touches three places by design: the Lua reader, the settings struct, and the
+panel. If you add it to fewer, it will silently not work somewhere.
+
+## Known gaps
+
+Deliberate, with reasons in `PLAN.md`: no integrated terminal, no git blame, no structural text objects
+(`if`/`ic`), tree-sitter indent queries unused, column advance derived from the type scale rather than
+measured from the shaper, no macOS packaging. Cross-file rename is not undoable and says so.

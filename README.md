@@ -1,261 +1,240 @@
 # vex
 
-A modal code editor. Rust, `winit` + `wgpu` + `glyphon`, no GUI framework and no web view.
+A code editor. Rust, `winit` + `wgpu` + `glyphon` — no GUI framework, no web view.
 
-The design goal, in the order it is enforced: **nothing unbounded on the UI thread**, Vim's grammar
-with Helix's selection model, and VSCode's features earned one at a time rather than assumed. See
-`PLAN.md` for the architecture and the decisions behind it — including the ones that turned out
-wrong.
+Vim's grammar if you want it, a conventional editor if you don't. Tree-sitter highlighting, language
+servers, splits, a file tree and a git gutter. One rule is enforced above the others: **nothing
+unbounded ever runs on the UI thread**, which is why a keystroke costs the same in a 100,000-line file
+as in a ten-line one.
 
-Status: usable for real editing, with gaps. No folding yet. See the "what is left" notes at the end
-of each milestone in `PLAN.md`.
+`PLAN.md` has the architecture and the reasoning, including the decisions that turned out wrong.
 
-## Build and run
+**Status:** used daily by its author on Linux. Windows code paths are written and type-checked but the
+editor has not been *run* there — see `packaging/windows/README.md`. No integrated terminal; see the
+end of M7 in `PLAN.md` for why it is deferred rather than forgotten.
 
-```sh
-cargo build --release
-./target/release/vex path/to/file.rs   # a file
-./target/release/vex path/to/project   # a folder — indexes it and opens the file tree
-./target/release/vex                   # nothing: reopens the last session for this directory
-```
+---
 
-`ctrl-k o` inside the editor opens the desktop's folder chooser (zenity, kdialog or the XDG portal —
-whichever your system has; it falls back to typing a path if none). Naming a **folder** makes it the
-project: `ctrl-p`, `ctrl-f` and the tree all work from there, and the
-folder you named is the root even if it sits inside a larger repository — asking for one crate should
-not index the whole workspace. `:e some/dir` switches project without closing what you have open.
+## Install
 
-Debug builds are usable — `opt-level = 1` is set for exactly that reason — but the release binary is
-what the performance claims refer to.
-
-### Try it on this repository
-
-```sh
-./target/release/vex crates/vex-text/src/anchor.rs
-```
-
-If `rust-analyzer` is on `PATH` it starts automatically; the statusline says so, and diagnostics,
-hover, go-to-definition, rename and formatting all become live. Without it everything else still
-works.
-
-## Keys
-
-Full list: **[CHEATSHEET.md](CHEATSHEET.md)**.
-
-**Not a Vim user?** Turn modal editing off in the settings panel (`ctrl-,`, first row) or with
-`vim_keys = false`. Typing then always inserts, the shortcuts are the familiar ones — `ctrl-c`,
-`ctrl-v`, `ctrl-x`, `ctrl-z`, `ctrl-y`, `ctrl-a`, `ctrl-f`, shift-arrow to select — and the mouse
-places the cursor and selects by dragging. vex's own chords (`ctrl-e`, `ctrl-p`, `ctrl-w`, `ctrl-,`)
-keep working either way, because they are not Vim's.
-
-Vim's grammar, so counts, registers and operator-motion composition work as you expect: `3dw`,
-`d2f)`, `ci"`, `"ayy`, `.` to repeat. What follows is what is bound beyond that.
-
-### Motions
-`h j k l` · `w W b B e E` · `0 ^ $` · `{ }` paragraphs · `%` matching bracket · `gg` `ge` file
-start/end · `gh` `gl` line start/end · `G` with a count · `f F t T` find character
-
-Vertical motion follows **display** rows, so it moves through soft-wrapped lines the way it looks.
-
-### Operators and text objects
-`d` delete · `c` change · `y` yank · `>` `<` indent · `U` uppercase · `L` lowercase — each applied to
-a motion, to a doubled operator (`dd`, `yy`), or to a selection in visual mode.
-
-Objects: `iw aw iW aW` · `i" i' i\`` · `i( i[ i{ i<` and their `a` forms · `ip ap` · `il al`
-
-Structural objects (`if`, `ic` — function, class) are **not** bound yet, though the tree-sitter
-machinery for them exists.
-
-### Modes
-`i a I A o O` insert · `v` visual · `R` replace · `esc` back to normal.
-`esc` in normal mode collapses multiple cursors.
-
-### Multiple cursors
-`gA` above · `C` below · `S` one caret per selected line · `,` keep only the primary · `g%` select all
-· `V` select line · `x` delete character
-
-### Search and commands
-`/` `?` search · `n` `N` next/previous · `ctrl-f` project search for the word under the cursor
-`:` command line — `:w` `:w path` `:q` `:q!` `:wq` `:42` `:e path` `:grep pattern`
-`:set wrap` / `:set nowrap` · `:format` · `:rename [name]` · `:replace old new`
-
-### Files, buffers and panes
-`:e path` open a file **or folder** · `ctrl-p` file palette · `ctrl-b` buffer palette · `ctrl-s` save · `ctrl-q` quit
-`ctrl-w v` split beside · `ctrl-w s` split below · `ctrl-w c` close pane · `ctrl-w w` next pane
-`ctrl-e` file tree — `j`/`k` move, `enter` opens a file or a directory, `esc` closes
-
-### Language server
-`K` hover · `gd` go to definition · `gr` rename · `gf` format · `ga` code actions · `gu` references
-`]d` `[d` next/previous diagnostic · `gD` diagnostics list · `gi` toggle inlay hints
-`ctrl-space` completion (also in insert mode) · `esc` dismisses an info box
-
-### Snippets
-`tab` in insert mode expands the snippet whose prefix you just typed, then walks its tab stops.
-With no snippet to expand it indents, as usual. Snippets come from `~/.config/vex/snippets/*.json`
-— which is exactly what `vex import --snippets` writes.
-
-### Jumps and macros
-`ctrl-o` back · `ctrl-i` forward — only far-reaching moves are recorded, so `j` and `w` do not fill it
-`q<letter>` start/stop recording · `@<letter>` replay · `@@` replay the last one
-
-A macro records **actions**, not keystrokes, so it keeps working if you rebind a key. Replay is one
-undo step.
-
-### Folding
-`za` fold or unfold the block at the cursor · `zR` open all · `zM` fold every top-level block
-
-Folds come from indentation, so they work in every language — including ones with no grammar.
-
-### Appearance
-`zw` toggle soft wrap · `gt` toggle light/dark · `=` `-` font size
-
-## First run
-
-With no configuration present, vex asks three questions before anything else: **how you want to type**
-(conventional keys or Vim's), **which theme** — shown as five live previews rather than named — and
-**whether to import from VSCode**. It writes the answers to `init.lua` and never appears again. `esc`
-skips it, and skipping leaves no config behind, so it returns next time rather than vanishing because
-of one stray keypress.
-
-`--no-welcome` starts without it.
-
-## Configuration
-
-`ctrl-,` opens a **settings panel**: every option, its value, and which of default / `init.lua` /
-imported last set it — plus a checklist for importing from VSCode, so the import is a few keys rather
-than a command line. `h`/`l` change a setting immediately, `w` writes the panel's values into
-`init.lua`. It covers the options that are safe to change blind — sizes, widths and switches; themes
-and keybindings live in the file, where a colour picker and a key capturer would otherwise have to be.
-
-Optional. vex starts with no configuration at all, and the built-in defaults are the real defaults.
-
-```sh
-mkdir -p ~/.config/vex
-cp examples/init.lua ~/.config/vex/init.lua
-```
-
-`init.lua` is re-read when you save it, so editing your config in vex shows the result immediately —
-theme, metrics and bindings all change in place, and nothing about the open documents is touched.
-
-`examples/init.lua` documents every option and shows how to bind keys. Mistakes are reported in a
-box when the editor opens — with a did-you-mean for a misspelled action or theme token — and never
-prevent startup.
-
-To try a config without touching your own:
-
-```sh
-VEX_CONFIG_DIR=/tmp/vex-config ./target/release/vex
-```
-
-### Importing from VSCode
-
-```sh
-./target/release/vex import --help                        # the full list of sources and items
-./target/release/vex import --from-vscode --list           # what your VSCode install offers
-./target/release/vex import --from-vscode --settings --theme --keybindings --snippets
-./target/release/vex import --openvsx zhuangtongfa.material-theme --theme
-```
-
-Opt-in per item: nothing is imported unless you name it, and `--list` imports nothing at all. Extensions are **not** run — see §5a of
-`PLAN.md` for what is portable and what is not, and why.
-
-## Verifying it without a window
-
-The whole appearance can be rendered offscreen to a PNG, which is how the design is checked in CI
-and over SSH — and how most of the visual defects in this project were actually found.
-
-```sh
-./target/release/vex --screenshot /tmp/vex.png                     # the editor
-./target/release/vex --screenshot /tmp/vex.png --light             # light theme
-./target/release/vex --screenshot /tmp/vex.png --mode insert       # any mode
-./target/release/vex --screenshot /tmp/vex.png --palette an        # command palette
-./target/release/vex --screenshot /tmp/vex.png --search Anchor     # search prompt
-./target/release/vex --screenshot /tmp/vex.png --grep Anchor       # project search panel
-./target/release/vex --screenshot /tmp/vex.png --complete ch       # completion popup
-./target/release/vex --screenshot /tmp/vex.png --diagnostic 12     # a diagnostic message
-./target/release/vex --screenshot /tmp/vex.png --splash            # cold-start lockup
-./target/release/vex --screenshot /tmp/vex.png --empty             # empty state
-./target/release/vex --screenshot /tmp/vex.png --split 2           # two panes side by side
-./target/release/vex --screenshot /tmp/vex.png --split 3h          # three stacked
-./target/release/vex --screenshot /tmp/vex.png --tree              # the file tree
-./target/release/vex --screenshot /tmp/vex.png --diagnostics-list  # the diagnostics list
-./target/release/vex --screenshot /tmp/vex.png --folded            # folded blocks
-./target/release/vex --screenshot /tmp/vex.png --settings          # the settings panel
-./target/release/vex --screenshot /tmp/vex.png --welcome theme     # first-run setup, any step
-```
-
-## Tests and benchmarks
-
-```sh
-cargo test --workspace          # 371 tests
-cargo clippy --workspace --all-targets
-cargo bench -p vex -p vex-syntax
-```
-
-The suite includes live language-server tests, which are **skipped** when `rust-analyzer` is not
-installed rather than failing — a test that fails on a machine without a dependency is testing the
-machine.
-
-Useful when something misbehaves:
-
-| Variable | Effect |
-|---|---|
-| `VEX_LSP_TRACE=1` | Logs every message to and from the language server |
-| `VEX_NO_SYSTEM_FONTS=1` | Uses only the bundled fonts — faster startup, and reproducible captures |
-| `VEX_CONFIG_DIR=<dir>` | Reads configuration from somewhere other than `~/.config/vex` |
-
-## Installing
-
-**Linux, from source:**
+**Linux, from source**
 
 ```sh
 cargo build --release
-packaging/linux/install.sh              # into ~/.local
+packaging/linux/install.sh              # into ~/.local — no root needed
 packaging/linux/install.sh /usr/local   # or system-wide
 ```
 
-**Linux, as a package:**
+**Linux, as a package**
 
 ```sh
+cargo build --release
 packaging/build-deb.sh     # Debian, Ubuntu, Mint …
-packaging/build-rpm.sh     # Fedora, RHEL, openSUSE — needs rpm-build
+packaging/build-rpm.sh     # Fedora, RHEL, openSUSE — needs rpm-build installed
 ```
 
-**Windows:**
+**Windows**
 
 ```powershell
 cargo build --release
 powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
 ```
 
-Settings live in `%APPDATA%\vex\init.lua` there, sessions and recovery in `%LOCALAPPDATA%\vex\`.
-See `packaging/windows/README.md`, including an honest note on what is untested.
+Either installer places the binary, the desktop entry and the icon theme. Details, including why the
+Linux desktop entry needs an absolute `Exec` path, are in `packaging/README.md`.
 
-Installs the binary, the desktop entry and the icon theme. See `packaging/README.md`.
+## Run
 
-The entry is written with an **absolute** `Exec` path rather than the bare `vex` the template carries.
-A per-user install lands in `~/.local/bin`, which an interactive shell has on its `PATH` but a desktop
-session routinely does not — so a launcher-clicked `Exec=vex` fails while the identical command works
-in a terminal.
+```sh
+vex path/to/file.rs      # a file
+vex path/to/project      # a folder: indexes it and opens the file tree
+vex                      # nothing: reopens the last session for this directory
+```
 
-If the entry does not appear, GNOME appends newly installed apps to the **end** of the app grid rather
-than sorting them in, so searching (`Super`, then type `vex`) finds it when scrolling does not.
+Naming a **folder** makes it the project — and the folder you name is the root even if it sits inside a
+larger repository, because asking for one crate should not index the whole workspace. Inside the
+editor, `ctrl-k o` opens your desktop's folder chooser and `:e some/dir` switches project without
+closing what you have open.
 
-## Sessions
+Debug builds are usable — `opt-level = 1` is set for exactly that reason — but the release binary is
+what the performance figures refer to.
 
-Closing the editor properly remembers which files were open and where the cursor was in each, per
-project. Running `vex` with no arguments in that project reopens them; naming a file opens that file
-instead. `--no-session` starts clean.
+## First run
 
-Distinct from crash recovery below, which exists to save unsaved *text* and is written continuously.
+With no configuration present, vex asks three questions before anything else:
 
-## Recovering unsaved work
+1. **How do you want to type?** Conventional keys, or Vim's.
+2. **Which theme?** Five live previews — each card renders the same code in its own theme — rather than
+   five names.
+3. **Anything to bring over from VSCode?** A checklist; nothing is ticked by default.
 
-Dirty buffers are written to `$XDG_STATE_HOME/vex/recovery` every two seconds and forced before
-quitting, so a crash costs seconds rather than work. Reopening the file offers the copy back. A copy
-older than the file on disk is discarded rather than offered.
+It writes the answers to your config and never appears again. `esc` skips it, and skipping writes
+nothing, so it returns next launch rather than disappearing because of one stray keypress.
+`--no-welcome` starts without it.
+
+## Keys
+
+**Full list: [CHEATSHEET.md](CHEATSHEET.md)** — every key in it is checked against the real grammar by
+`cargo run -p vex-input --example cheatsheet`, which fails if one stops resolving.
+
+**Not a Vim user?** First row of the settings panel (`ctrl-,`), or `vim_keys = false`. Typing then
+always inserts, the shortcuts are the familiar ones — `ctrl-c`, `ctrl-v`, `ctrl-x`, `ctrl-z`, `ctrl-y`,
+`ctrl-a`, `ctrl-f`, shift-arrow to select — and the mouse places the cursor and selects by dragging.
+
+**With Vim keys on**, the grammar composes as you expect: `3dw`, `d2f)`, `ci"`, `"ayy`, `.` to repeat.
+Vertical motion follows *display* rows, so it moves through soft-wrapped lines the way they look.
+
+Either way, these are vex's own and always work:
+
+| Key | |
+|---|---|
+| `ctrl-p` · `ctrl-b` | file palette · buffer palette |
+| `ctrl-e` | file tree |
+| `ctrl-,` | settings |
+| `ctrl-f` | search the project |
+| `ctrl-k o` | open a folder |
+| `ctrl-w v` · `ctrl-w w` | split · move between panes |
+| `ctrl-s` · `ctrl-q` | save · quit |
+
+## Settings
+
+`ctrl-,` opens a panel with every option, its value, and — the part a file cannot tell you — **which of
+default, `init.lua` or imported last set it**. `h`/`l` change a setting immediately; `w` writes the
+panel's values to `init.lua`.
+
+It also holds the VSCode import checklist and a **load a theme file…** row, so neither needs a
+terminal.
+
+Everything is also a Lua file, which is the same file the panel writes:
+
+```sh
+mkdir -p ~/.config/vex && cp examples/init.lua ~/.config/vex/init.lua
+```
+
+`examples/init.lua` documents every option. Saving it **reloads immediately** — theme, metrics and
+bindings change in place and nothing about the open documents is touched. A mistake gets a box at
+startup with a did-you-mean, and never prevents the editor from opening.
+
+```lua
+vex.set { vim_keys = false, theme = "rose-pine", font_size = 14 }
+vex.map("normal", "<leader>w", "save")
+```
+
+`VEX_CONFIG_DIR=/tmp/somewhere vex` runs against a throwaway config.
+
+### Themes
+
+Five ship in the binary: **dark**, **light**, **rose-pine**, **rose-pine-moon**, **amoled** (true
+black). Cycle them in the settings panel, or `vex.set { theme = "amoled" }`.
+
+Or bring one you found, in any of four formats — VSCode JSON, TextMate `.tmTheme`, base16 YAML, or
+vex's own TOML:
+
+```sh
+vex import --palette ~/Downloads/gruvbox.yaml
+vex import --openvsx zhuangtongfa.material-theme --theme
+```
+
+Both convert it to vex's perceptual (OKLCH) palette and save it under `themes/`, usable as
+`vex.set { theme = "gruvbox" }`. The settings panel's last row does the same thing and applies it at
+once.
+
+### Importing from VSCode
+
+```sh
+vex import --help                      # every source and item
+vex import --from-vscode --list        # what your install offers, importing nothing
+vex import --from-vscode --settings --theme --keybindings --snippets
+```
+
+Opt-in per item: nothing is imported unless you name it. **Extension code is never run** — extensions
+are JavaScript against the `vscode` API and vex has no JS runtime, by design, since that runtime is
+most of what makes VSCode heavy. Extension *data* — themes, snippets, keybindings, language
+configuration — imports; anything whose value is its own JavaScript does not. §5a of `PLAN.md` has the
+full account.
+
+Language support is not extensions here: install `rust-analyzer`, `pyright-langserver`,
+`typescript-language-server` and vex drives them over LSP directly.
+
+## Where files live
+
+| | Linux | Windows |
+|---|---|---|
+| Config, themes, snippets | `~/.config/vex/` | `%APPDATA%\vex\` |
+| Sessions, crash recovery | `~/.local/state/vex/` | `%LOCALAPPDATA%\vex\` |
+
+Configuration and state are separate on purpose: on Windows config roams with your profile, while a
+recovery copy of a file that exists on one machine would be meaningless on another.
+
+**Sessions** remember which files were open and where the cursor was, per project, written when the
+editor closes properly. **Crash recovery** is different: dirty buffers are written every two seconds
+and forced before quitting, so a `kill -9` costs seconds rather than work, and reopening the file
+offers the copy back. A copy older than the file on disk is discarded rather than offered.
+
+## Development
+
+```sh
+cargo test --workspace                      # 512 tests
+cargo clippy --workspace --all-targets      # clean
+cargo bench -p vex -p vex-syntax
+cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar
+```
+
+The suite includes live `rust-analyzer` tests, **skipped** when it is not installed rather than failing:
+a test that fails on a machine without a dependency is testing the machine.
+
+### Seeing the interface without a window
+
+The whole appearance renders offscreen to a PNG. This is how the design gets checked over SSH, and it
+is how most of the visual defects in this project were actually found — a transparent completion popup,
+tofu boxes where a font had no glyph, a logo that came out as an X.
+
+```sh
+vex --screenshot /tmp/vex.png                       # the editor
+vex --screenshot /tmp/vex.png --light               # or --theme rose-pine
+vex --screenshot /tmp/vex.png --mode insert         # any mode
+vex --screenshot /tmp/vex.png --split 2             # panes; 3h for stacked
+vex --screenshot /tmp/vex.png --tree                # file tree
+vex --screenshot /tmp/vex.png --settings            # settings panel
+vex --screenshot /tmp/vex.png --welcome theme       # first-run setup, any step
+vex --screenshot /tmp/vex.png --folded              # folded blocks
+vex --screenshot /tmp/vex.png --git                 # git gutter marks
+vex --screenshot /tmp/vex.png --palette an          # command palette
+vex --screenshot /tmp/vex.png --grep Anchor         # project search
+vex --screenshot /tmp/vex.png --complete ch         # completion popup
+vex --screenshot /tmp/vex.png --diagnostics-list    # diagnostics list
+vex --screenshot /tmp/vex.png --splash --empty      # cold start, empty state
+```
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `VEX_CONFIG_DIR` | Configuration somewhere other than the platform default |
+| `VEX_STATE_DIR` | Sessions and recovery elsewhere |
+| `VEX_LSP_TRACE=1` | Log every message to and from the language server |
+| `VEX_NO_SYSTEM_FONTS=1` | Bundled fonts only — faster startup, reproducible captures |
+
+### Layout
+
+Twelve crates, ~34,000 lines. `CLAUDE.md` has the map and the conventions; the short version:
+
+```
+vex-text     rope, typed coordinates, transactions, anchors, selections
+vex-buffer   Document: text + undo history + pending changes
+vex-display  soft wrap, anchored viewport, folding, sticky scroll
+vex-theme    OKLCH colour, five themes, type roles
+vex-input    the Action vocabulary, modal grammar, keymap, macros, jumplist
+vex-syntax   tree-sitter parsing on a worker, version-tagged
+vex-render   wgpu quad + glyph pipelines, paint layers, offscreen capture
+vex-project  gitignore-aware discovery, fuzzy ranking, ripgrep search, file watching
+vex-lsp      JSON-RPC client, diagnostics, rename, formatting, code actions
+vex-lua      init.lua: options, themes, bindings
+vex-import   VSCode settings/themes/keys/snippets, .vsix, colour schemes
+vex          the binary: chrome, executor, panes, settings, sessions
+```
 
 ## Licence
 
 MIT. The bundled fonts (IBM Plex, Instrument Serif) are SIL Open Font License 1.1 — see
-`crates/vex-render/fonts/`.
+`crates/vex-render/fonts/`. The logo is in `logo/`, with its usage rules.
