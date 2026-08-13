@@ -34,6 +34,8 @@ pub struct Config {
     pub tab_width: Option<usize>,
     pub soft_wrap: Option<bool>,
     pub format_on_save: Option<bool>,
+    pub sticky_scroll: Option<bool>,
+    pub inlay_hints: Option<bool>,
     pub appearance: Option<Appearance>,
     /// A named theme file to load, resolved by the caller — this crate does no file I/O beyond
     /// reading the config itself.
@@ -58,6 +60,8 @@ impl Config {
             && self.tab_width.is_none()
             && self.soft_wrap.is_none()
             && self.format_on_save.is_none()
+            && self.sticky_scroll.is_none()
+            && self.inlay_hints.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
             && self.colors.is_empty()
@@ -126,6 +130,12 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(format) = boolean(&options, "format_on_save") {
                 config.format_on_save = Some(format);
+            }
+            if let Some(sticky) = boolean(&options, "sticky_scroll") {
+                config.sticky_scroll = Some(sticky);
+            }
+            if let Some(hints) = boolean(&options, "inlay_hints") {
+                config.inlay_hints = Some(hints);
             }
             if let Some(appearance) = string(&options, "appearance") {
                 match appearance.as_str() {
@@ -234,7 +244,7 @@ pub fn action_names() -> Vec<&'static str> {
 
 /// The names this crate advertises. Filtered through `Action::from_name`, so a name deleted from the
 /// vocabulary disappears from `vex.actions` instead of being advertised and then rejected.
-const CANDIDATE_ACTIONS: [&str; 77] = [
+const CANDIDATE_ACTIONS: [&str; 79] = [
     "move_left",
     "move_right",
     "move_up",
@@ -312,6 +322,8 @@ const CANDIDATE_ACTIONS: [&str; 77] = [
     "jump_forward",
     "replay_macro",
     "expand_snippet",
+    "open_folder",
+    "settings",
 ];
 
 /// The closest name in `candidates`, if one is close enough to be worth suggesting.

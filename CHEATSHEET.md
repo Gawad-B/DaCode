@@ -98,6 +98,7 @@ Prefix `i` for inner, `a` for around.
 
 | Key | Does |
 |---|---|
+| `ctrl-k o` · `ctrl-k ctrl-o` | open a folder as the project |
 | `ctrl-p` | file palette (fuzzy) |
 | `ctrl-b` | buffer palette |
 | `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
@@ -155,6 +156,19 @@ one undo step.
 
 With no snippet to expand, `tab` indents. Snippets live in `~/.config/vex/snippets/*.json`, which is
 what `vex import --snippets` writes.
+
+## Settings
+
+| Key | Does |
+|---|---|
+| `ctrl-,` · `ctrl-k s` | settings panel |
+| `j` `k` | move between settings |
+| `h` `l` · `enter` | change the selected setting — applies immediately |
+| `w` | write the panel's values into `init.lua` |
+| `esc` | close |
+
+The panel's third column says where each value came from: `default`, `init.lua`, or `imported`. `w`
+writes into a marked block at the end of `init.lua`; your own lines are never rewritten.
 
 ## Appearance
 

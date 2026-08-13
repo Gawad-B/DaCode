@@ -103,6 +103,10 @@ pub struct EditorState {
     /// Whether to ask for and draw them. Off by default: hints move the code sideways as you type,
     /// and that is a preference, not a default worth imposing.
     pub show_inlay_hints: bool,
+    /// The settings panel, when open. Shares the sidebar with the tree and the diagnostics list.
+    pub settings: Option<crate::settings_ui::Settings>,
+    /// Where each setting's value came from, for the panel's third column.
+    pub setting_sources: std::collections::HashMap<String, crate::settings_ui::Source>,
     /// The file tree, when open. It takes the sidebar over rather than adding a third column: the
     /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
     /// a path in.
@@ -1018,6 +1022,129 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     ));
 }
 
+/// The settings panel.
+fn draw_settings(
+    frame: &mut Frame,
+    state: &EditorState,
+    settings: &crate::settings_ui::Settings,
+    rect: Rect,
+    scale: f32,
+) {
+    use crate::settings_ui::{Field, Source};
+
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let pad = space::LG * scale;
+    let line = 20.0 * scale;
+    let width = rect.width - pad * 2.0;
+    let mut y = rect.y + pad;
+
+    frame.text(run(
+        state,
+        Role::Prose,
+        "Settings",
+        Rect::new(rect.x + pad, y, width, line),
+        theme.ink,
+        Align::Left,
+        scale,
+    ));
+    y += line * 1.7;
+
+    let values = crate::settings_ui::Values {
+        font_size: state.typography.code_size,
+        tab_width: state.display.tab_width,
+        soft_wrap: state.display.mode == WrapMode::Word,
+        format_on_save: state.format_on_save,
+        appearance: state.theme.appearance,
+        sticky_scroll: state.sticky_scroll,
+        inlay_hints: state.show_inlay_hints,
+    };
+
+    for (index, field) in Field::ALL.iter().enumerate() {
+        let selected = index == settings.selected;
+        let block = line * 2.0;
+
+        if selected {
+            frame.fill(
+                Rect::new(rect.x, y - 3.0 * scale, rect.width, block),
+                theme.row_active,
+            );
+            frame.fill(
+                Rect::new(
+                    rect.x,
+                    y - 3.0 * scale,
+                    border::ACCENT_BORDER * scale,
+                    block,
+                ),
+                accent,
+            );
+        }
+
+        frame.text(run(
+            state,
+            Role::Value,
+            field.name(),
+            Rect::new(rect.x + pad, y, width * 0.62, line),
+            if selected { theme.ink } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+
+        // The value in the mode accent when selected: it is the thing `h`/`l` changes.
+        frame.text(run(
+            state,
+            Role::Value,
+            values.get(*field),
+            Rect::new(rect.x + pad, y, width, line),
+            if selected { accent } else { theme.ink },
+            Align::Right,
+            scale,
+        ));
+
+        // Where it came from, or what it does — the source is the more useful of the two once you are
+        // looking for why a setting is not what you expected.
+        let source = state
+            .setting_sources
+            .get(field.name())
+            .copied()
+            .unwrap_or(Source::Default);
+        frame.text(label(
+            state,
+            if selected {
+                field.help().to_string()
+            } else {
+                source.label().to_string()
+            },
+            Rect::new(rect.x + pad, y + line * 0.85, width, line),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+
+        y += block + 4.0 * scale;
+    }
+
+    // The footer says how to change and how to keep. Nothing is written without being asked: this is
+    // a file the user owns.
+    let footer = Rect::new(rect.x + pad, rect.bottom() - line * 2.2, width, line);
+    frame.text(label(
+        state,
+        if settings.dirty {
+            "h l change · w write to init.lua · esc close"
+        } else {
+            "h l change · w write · esc close"
+        },
+        footer,
+        if settings.dirty {
+            theme.stale()
+        } else {
+            theme.ink_faint
+        },
+        Align::Left,
+        scale,
+    ));
+}
+
 /// Every diagnostic in the file, as a list.
 ///
 /// The underlines say *where*; this says *what, and how many*. Both are needed: `]d` walks them one
@@ -1913,6 +2040,10 @@ fn draw_sidebar(
     }
     if state.show_diagnostics {
         draw_diagnostics_list(frame, state, rect, scale);
+        return;
+    }
+    if let Some(settings) = &state.settings {
+        draw_settings(frame, state, settings, rect, scale);
         return;
     }
 

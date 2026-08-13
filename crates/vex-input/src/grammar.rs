@@ -59,6 +59,11 @@ enum Stage {
     RecordRegister,
     /// Saw `@`, waiting for the register to replay.
     ReplayRegister,
+    /// Saw `ctrl-k`, waiting for the second key of a chord.
+    ///
+    /// VSCode's convention rather than Vim's, because the things behind it — open folder, settings —
+    /// are the ones people already reach for with `ctrl-k` and have no Vim spelling to inherit.
+    ChordPrefix,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +215,7 @@ impl Grammar {
                 KeyCode::Char('e') => Some(Action::ToggleTree),
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
+                KeyCode::Char(',') => Some(Action::ToggleSettings),
                 _ => None,
             };
         }
@@ -281,6 +287,13 @@ impl Grammar {
             return Resolution::Pending(self.display.clone());
         }
 
+        // `ctrl-k` likewise, for the VSCode-style chords.
+        if key.ctrl && key.code == KeyCode::Char('k') && self.stage == Stage::Start {
+            self.stage = Stage::ChordPrefix;
+            self.push_display(&key);
+            return Resolution::Pending(self.display.clone());
+        }
+
         // Arrow keys and Ctrl bindings bypass the grammar, but must respect visual mode.
         if let Some(action) = self.editing_key(key) {
             let action = match (action, extend) {
@@ -303,6 +316,7 @@ impl Grammar {
             Stage::FoldPrefix => return self.take_fold_prefix(key),
             Stage::RecordRegister => return self.take_macro_register(key, true),
             Stage::ReplayRegister => return self.take_macro_register(key, false),
+            Stage::ChordPrefix => return self.take_chord(key),
             Stage::Start | Stage::Target => {}
         }
 
@@ -652,6 +666,24 @@ impl Grammar {
             target: Target::Object(object),
             register,
         })
+    }
+
+    /// The second key of a `ctrl-k` chord. Accepted with or without Ctrl held, because nobody lets go
+    /// of it deliberately between the two presses.
+    fn take_chord(&mut self, key: Key) -> Resolution {
+        let KeyCode::Char(c) = key.code else {
+            self.clear();
+            return Resolution::Unhandled;
+        };
+
+        match c {
+            'o' => self.emit(Action::OpenFolder),
+            's' => self.emit(Action::ToggleSettings),
+            _ => {
+                self.clear();
+                Resolution::Unhandled
+            }
+        }
     }
 
     /// The register after `q` or `@`.

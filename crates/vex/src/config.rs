@@ -104,10 +104,20 @@ pub struct Settings {
     pub soft_wrap: bool,
     /// Reformat through the language server after every save.
     pub format_on_save: bool,
+    /// Pin enclosing block heads above the viewport.
+    pub sticky_scroll: bool,
+    /// Ask the language server for inlay hints.
+    pub inlay_hints: bool,
     /// Which theme file was loaded, for reporting.
     pub theme_source: Option<String>,
     /// User key bindings from `init.lua`.
     pub keymap: Keymap,
+    /// Which options were set by something other than the built-in defaults, and by what.
+    ///
+    /// Recorded so the settings panel can say where a value came from. When a setting is not what you
+    /// expect, which of three files last set it is the only useful question, and no editor answers it
+    /// by showing you one of them.
+    pub sources: std::collections::HashMap<String, crate::settings_ui::Source>,
     /// Everything wrong with the configuration, in the user's terms. Surfaced at startup rather
     /// than logged, because a binding that silently did not load is indistinguishable from a bug
     /// in the editor.
@@ -124,8 +134,11 @@ impl Default for Settings {
             // Off by default: a formatter reflowing a file you did not ask it to is worse than no
             // formatter, and it is the kind of default that loses trust the first time it fires.
             format_on_save: false,
+            sticky_scroll: true,
+            inlay_hints: false,
             theme_source: None,
             keymap: Keymap::new(),
+            sources: std::collections::HashMap::new(),
             problems: Vec::new(),
         }
     }
@@ -165,17 +178,22 @@ pub fn load_from(dir: &Path) -> Settings {
             continue;
         };
 
+        let imported = crate::settings_ui::Source::Imported;
         if let Some(size) = config.float("editor.font_size") {
             settings.typography = Typography::with_code_size(size);
+            settings.sources.insert("font_size".into(), imported);
         }
         if let Some(width) = config.usize("editor.tab_width") {
             settings.tab_width = width.clamp(1, 16);
+            settings.sources.insert("tab_width".into(), imported);
         }
         if let Some(wrap) = config.bool("editor.soft_wrap") {
             settings.soft_wrap = wrap;
+            settings.sources.insert("soft_wrap".into(), imported);
         }
         if let Some(format) = config.bool("editor.format_on_save") {
             settings.format_on_save = format;
+            settings.sources.insert("format_on_save".into(), imported);
         }
 
         // A named theme is looked up as a file; `appearance` alone flips the built-in theme.
@@ -208,17 +226,32 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
         return;
     }
 
+    let from_config = crate::settings_ui::Source::Config;
     if let Some(size) = config.font_size {
         settings.typography = Typography::with_code_size(size);
+        settings.sources.insert("font_size".into(), from_config);
     }
     if let Some(width) = config.tab_width {
         settings.tab_width = width.clamp(1, 16);
+        settings.sources.insert("tab_width".into(), from_config);
     }
     if let Some(wrap) = config.soft_wrap {
         settings.soft_wrap = wrap;
+        settings.sources.insert("soft_wrap".into(), from_config);
     }
     if let Some(format) = config.format_on_save {
         settings.format_on_save = format;
+        settings
+            .sources
+            .insert("format_on_save".into(), from_config);
+    }
+    if let Some(sticky) = config.sticky_scroll {
+        settings.sticky_scroll = sticky;
+        settings.sources.insert("sticky_scroll".into(), from_config);
+    }
+    if let Some(hints) = config.inlay_hints {
+        settings.inlay_hints = hints;
+        settings.sources.insert("inlay_hints".into(), from_config);
     }
 
     // A named theme replaces the whole theme; `appearance` alone flips the built-in one. Either way
@@ -237,6 +270,7 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     } else if let Some(appearance) = config.appearance {
         settings.theme = Theme::for_appearance(appearance);
         settings.theme_source = None;
+        settings.sources.insert("appearance".into(), from_config);
     }
 
     config.paint(&mut settings.theme);

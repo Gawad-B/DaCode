@@ -493,6 +493,21 @@ inlay hints.
 > this milestone sets. Blame is a smaller gap: the gutter machinery is there and `git blame --porcelain`
 > would feed it, but per-line authorship earns its screen space far less often than per-line change.
 
+> **M8: a settings panel.** Config is a Lua file, and a panel that *replaced* it would have to write
+> the user's program for them. So the panel does something a file cannot: its third column says which
+> of default, `init.lua` or imported-from-VSCode last set each value. When a setting is not what you
+> expect, that is the only useful question, and showing you one of three files does not answer it.
+>
+> Changes apply immediately — a settings panel whose effect you cannot see is a form — and are written
+> back only when asked, into a marked block at the end of `init.lua`. The user's own lines are never
+> rewritten: a `vex.set` call may be inside a loop or a condition, and an editor that reformats your
+> program to store a checkbox has overstepped. Appending works because `init.lua` applies in order, so
+> the panel's block is simply the last word. A test round-trips what the panel writes through the real
+> Lua reader, because a block that will not parse loses every setting on the next launch.
+>
+> It covers the options safe to change blind — sizes, widths, switches, appearance. Themes and
+> keybindings stay in the file, where a colour picker and a key capturer would otherwise have to be.
+
 > **M8: config hot-reload.** `init.lua` is watched like any other file and re-read on save. Theme,
 > metrics and bindings are replaced; nothing about the *documents* is touched — a reload that reset
 > scroll positions or dropped undo history would make editing your own config hostile, which is

@@ -103,6 +103,11 @@ Folds come from indentation, so they work in every language — including ones w
 
 ## Configuration
 
+`ctrl-,` opens a **settings panel**: every option, its value, and which of default / `init.lua` /
+imported last set it. `h`/`l` change a setting immediately, `w` writes the panel's values into
+`init.lua`. It covers the options that are safe to change blind — sizes, widths and switches; themes
+and keybindings live in the file, where a colour picker and a key capturer would otherwise have to be.
+
 Optional. vex starts with no configuration at all, and the built-in defaults are the real defaults.
 
 ```sh
@@ -156,6 +161,7 @@ and over SSH — and how most of the visual defects in this project were actuall
 ./target/release/vex --screenshot /tmp/vex.png --tree              # the file tree
 ./target/release/vex --screenshot /tmp/vex.png --diagnostics-list  # the diagnostics list
 ./target/release/vex --screenshot /tmp/vex.png --folded            # folded blocks
+./target/release/vex --screenshot /tmp/vex.png --settings          # the settings panel
 ```
 
 ## Tests and benchmarks

@@ -270,6 +270,10 @@ pub enum Action {
     /// `tab` in insert mode: expand the snippet before the cursor, or move to the next tab stop.
     /// Falls back to inserting an indent when neither applies.
     ExpandSnippet,
+    /// `ctrl-k ctrl-o` — open a folder as the project.
+    OpenFolder,
+    /// `ctrl-,` — the settings panel.
+    ToggleSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +408,8 @@ impl Action {
             "jump_forward" => Action::Jump { forward: true },
             "replay_macro" => Action::ReplayMacro { register: None },
             "expand_snippet" => Action::ExpandSnippet,
+            "open_folder" => Action::OpenFolder,
+            "settings" => Action::ToggleSettings,
 
             _ => return None,
         })

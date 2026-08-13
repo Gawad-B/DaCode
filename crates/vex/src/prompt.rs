@@ -14,6 +14,8 @@ pub enum PromptKind {
     Search { forward: bool },
     /// `:`
     Command,
+    /// A folder to open as the project, pre-filled with the current root.
+    OpenFolder,
     /// A rename, pre-filled with the symbol under the cursor.
     ///
     /// A prompt rather than a modal dialog, and pre-filled rather than empty, because a rename is
@@ -30,6 +32,7 @@ impl PromptKind {
             PromptKind::Search { forward: false } => "?",
             PromptKind::Command => ":",
             PromptKind::Rename => "rename to ",
+            PromptKind::OpenFolder => "open folder ",
         }
     }
 }
@@ -67,7 +70,7 @@ impl Prompt {
     pub fn forward(&self) -> bool {
         match self.kind {
             PromptKind::Search { forward } => forward,
-            PromptKind::Command | PromptKind::Rename => true,
+            PromptKind::Command | PromptKind::Rename | PromptKind::OpenFolder => true,
         }
     }
 

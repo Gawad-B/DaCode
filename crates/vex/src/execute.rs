@@ -154,7 +154,9 @@ pub fn execute(
         | Action::FindReferences => state.pending_request = Some(action.clone()),
         // The jumplist and macros need the editor's own history, which the executor does not hold —
         // the same split as the window actions.
-        Action::ExpandSnippet
+        Action::OpenFolder
+        | Action::ToggleSettings
+        | Action::ExpandSnippet
         | Action::Jump { .. }
         | Action::RecordMacro { .. }
         | Action::ReplayMacro { .. } => {

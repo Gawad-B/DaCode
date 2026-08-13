@@ -251,12 +251,14 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
-        sticky_scroll: true,
+        sticky_scroll: settings.sticky_scroll,
         recording: None,
         diff: vex::git::Diff::default(),
         show_diagnostics: false,
         inlay_hints: Vec::new(),
-        show_inlay_hints: false,
+        show_inlay_hints: settings.inlay_hints,
+        settings: None,
+        setting_sources: settings.sources.clone(),
         tree: None,
     };
 
@@ -680,6 +682,15 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--diagnostics-list") {
         state.show_diagnostics = true;
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--settings") {
+        state.settings = Some(vex::settings_ui::Settings::new());
+        state
+            .setting_sources
+            .insert("tab_width".into(), vex::settings_ui::Source::Config);
+        state
+            .setting_sources
+            .insert("soft_wrap".into(), vex::settings_ui::Source::Imported);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--tree") {
         // The tree needs a file list; the screenshot path has no background walk, so index inline.
@@ -1158,6 +1169,9 @@ impl App {
             return false;
         }
 
+        if self.handle_settings_key(key) {
+            return false;
+        }
         if self.handle_tree_key(key) {
             return false;
         }
@@ -1937,6 +1951,23 @@ impl App {
                         self.state.search_matches = prompt.matches;
                     }
                     PromptKind::Command => return self.run_command(&prompt.input),
+                    PromptKind::OpenFolder => {
+                        let raw = prompt.input.trim().to_string();
+                        // `~` is expanded here because a prompt is not a shell and nobody types
+                        // `$HOME` into one.
+                        let expanded = match raw.strip_prefix("~/") {
+                            Some(rest) => std::env::var_os("HOME")
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_default()
+                                .join(rest),
+                            None => std::path::PathBuf::from(&raw),
+                        };
+                        if expanded.is_dir() {
+                            self.open_folder(&expanded);
+                        } else {
+                            self.warn(&format!("not a folder: {}", expanded.display()));
+                        }
+                    }
                     PromptKind::Rename => {
                         let name = prompt.input.trim().to_string();
                         if name.is_empty() {
@@ -2183,6 +2214,23 @@ impl App {
                 }
             }
             Action::ExpandSnippet => self.expand_snippet(),
+            Action::OpenFolder => {
+                let mut prompt =
+                    vex::prompt::Prompt::new(PromptKind::OpenFolder, self.state.cursor());
+                // Pre-filled with the current root and a separator, so the common case — a sibling
+                // project — is a few characters rather than a whole path.
+                prompt.input = format!("{}/", self.state.project_root.display());
+                self.state.prompt = Some(prompt);
+            }
+            Action::ToggleSettings => {
+                if self.state.settings.is_some() {
+                    self.state.settings = None;
+                } else {
+                    self.state.settings = Some(vex::settings_ui::Settings::new());
+                    self.state.tree = None;
+                    self.state.show_diagnostics = false;
+                }
+            }
             Action::Jump { forward } => {
                 let here = self.here();
                 let target = if *forward {
@@ -2587,6 +2635,122 @@ impl App {
         self.state.prompt = Some(prompt);
     }
 
+    /// Keys for the settings panel. Returns true if the key was consumed.
+    fn handle_settings_key(&mut self, key: Key) -> bool {
+        let Some(settings) = &mut self.state.settings else {
+            return false;
+        };
+        if key.ctrl || key.alt {
+            return false;
+        }
+
+        let field = settings.field();
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => settings.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up => settings.move_selection(-1),
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
+                settings.dirty = true;
+                self.adjust_setting(field, 1);
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                settings.dirty = true;
+                self.adjust_setting(field, -1);
+            }
+            // `w` writes; nothing is written without asking, because config is a file the user owns.
+            KeyCode::Char('w') => self.write_settings(),
+            KeyCode::Escape => self.state.settings = None,
+            _ => return false,
+        }
+        true
+    }
+
+    /// The panel's current values, read from the live editor rather than from a copy.
+    fn setting_values(&self) -> vex::settings_ui::Values {
+        vex::settings_ui::Values {
+            font_size: self.state.typography.code_size,
+            tab_width: self.state.display.tab_width,
+            soft_wrap: self.state.display.mode == WrapMode::Word,
+            format_on_save: self.state.format_on_save,
+            appearance: self.state.theme.appearance,
+            sticky_scroll: self.state.sticky_scroll,
+            inlay_hints: self.state.show_inlay_hints,
+        }
+    }
+
+    /// Applies a change immediately. A settings panel whose effect you cannot see is a form.
+    fn adjust_setting(&mut self, field: vex::settings_ui::Field, delta: i32) {
+        use vex::settings_ui::Field;
+
+        let mut values = self.setting_values();
+        values.adjust(field, delta);
+
+        match field {
+            Field::FontSize => {
+                self.state.typography = vex_theme::Typography::with_code_size(values.font_size);
+                if let Some(window) = &self.window {
+                    let scale = window.scale_factor() as f32;
+                    let width = window.inner_size().width as f32;
+                    fit_wrap_columns(&mut self.state, width, scale);
+                }
+            }
+            Field::TabWidth => {
+                self.state.display.tab_width = values.tab_width;
+                self.state.pairs.tab_width = values.tab_width;
+            }
+            Field::SoftWrap => {
+                self.state.display.mode = if values.soft_wrap {
+                    WrapMode::Word
+                } else {
+                    WrapMode::None
+                };
+            }
+            Field::FormatOnSave => self.state.format_on_save = values.format_on_save,
+            Field::Appearance => {
+                // Only the built-in themes: a loaded theme file has colors the panel has no business
+                // inventing a light variant of.
+                self.state.theme = Theme::for_appearance(values.appearance);
+            }
+            Field::StickyScroll => self.state.sticky_scroll = values.sticky_scroll,
+            Field::InlayHints => {
+                self.state.show_inlay_hints = values.inlay_hints;
+                self.state.inlay_hints.clear();
+                self.hinted_version = None;
+            }
+        }
+    }
+
+    /// Writes the panel's values into `init.lua`.
+    fn write_settings(&mut self) {
+        let directory = vex::config::config_dir();
+        let path = directory.join("init.lua");
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let updated = vex::settings_ui::write_back(&existing, &self.setting_values());
+
+        if let Err(error) = std::fs::create_dir_all(&directory) {
+            self.state.hover = Some(format!("could not create {}: {error}", directory.display()));
+            return;
+        }
+
+        // The editor's own write, so the watcher does not treat it as an outside edit and reload.
+        if let Ok(absolute) = path.canonicalize() {
+            self.self_written.insert(absolute);
+        }
+        match std::fs::write(&path, updated) {
+            Ok(()) => {
+                if let Ok(absolute) = path.canonicalize() {
+                    self.self_written.insert(absolute);
+                }
+                if let Some(settings) = &mut self.state.settings {
+                    settings.dirty = false;
+                }
+                self.state.hover = Some(format!("written to {}", path.display()));
+            }
+            Err(error) => {
+                self.state.hover = Some(format!("could not write {}: {error}", path.display()))
+            }
+        }
+    }
+
     /// Keys for the file tree. Returns true if the key was consumed.
     ///
     /// The tree only takes keys that mean something in it, so `ctrl-p`, `:` and the editing keys all
@@ -2925,6 +3089,9 @@ impl App {
             WrapMode::None
         };
         self.state.pairs = pair_config(self.state.file_path.as_deref(), settings.tab_width);
+        self.state.sticky_scroll = settings.sticky_scroll;
+        self.state.show_inlay_hints = settings.inlay_hints;
+        self.state.setting_sources = settings.sources.clone();
         self.grammar.set_keymap(settings.keymap);
 
         // Wrap width is in columns and follows the font size, which may just have changed.
@@ -3103,6 +3270,10 @@ impl App {
 
     /// Resets per-buffer derived state after the active document changes.
     fn after_buffer_change(&mut self) {
+        // The focused pane shows whatever is live. Without this it keeps drawing the buffer it
+        // remembers, which is how choosing a file from the tree came to display an empty one.
+        self.panes.follow(self.state.active_buffer);
+
         // Pairing rules are per-language, so they travel with the buffer.
         self.state.pairs = pair_config(
             self.state.file_path.as_deref(),

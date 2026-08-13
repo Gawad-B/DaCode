@@ -24,6 +24,12 @@ vex.set {
   -- one-dark-pro.toml — which is exactly what `vex import` writes.
   -- theme = "One Dark Pro",
 
+  -- Pin the enclosing block heads above the viewport while scrolling.
+  sticky_scroll = true,
+
+  -- Ask the language server for inferred types and parameter names, shown inline.
+  inlay_hints = false,
+
   -- What <leader> means in the bindings below.
   leader = "<space>",
 }

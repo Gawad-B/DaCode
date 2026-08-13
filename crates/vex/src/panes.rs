@@ -125,6 +125,16 @@ impl Panes {
         self.active
     }
 
+    /// Points the focused pane at the buffer that just became active.
+    ///
+    /// Opening a file changes which buffer is live, and a pane that does not follow keeps drawing the
+    /// one it remembers. That is not a subtle failure: it showed the *previous* buffer's text — an
+    /// empty `untitled` one, right after opening a folder — so choosing a file from the tree appeared
+    /// to open an empty file.
+    pub fn follow(&mut self, active: usize) {
+        self.list[self.active].buffer = active;
+    }
+
     /// Repairs pane buffer indices after a buffer is removed from the list.
     ///
     /// Buffers are addressed by position, so closing one shifts every index above it. Without this a
@@ -255,5 +265,28 @@ mod tests {
             assert!(panes.active() < panes.len());
         }
         assert_eq!(panes.len(), 1);
+    }
+
+    #[test]
+    fn only_the_focused_pane_follows_the_active_buffer() {
+        // The regression this method exists for: opening a file from the tree drew the buffer the
+        // pane still remembered, which right after opening a folder was an empty untitled one.
+        let mut panes = Panes::new();
+        panes.split(PaneLayout::Vertical);
+        panes.list[0].buffer = 0;
+        panes.list[1].buffer = 0;
+        assert_eq!(panes.active(), 1);
+
+        panes.follow(4);
+
+        assert_eq!(
+            panes.focused().buffer,
+            4,
+            "the focused pane shows what is live"
+        );
+        assert_eq!(
+            panes.list[0].buffer, 0,
+            "the other pane keeps looking at what it was looking at"
+        );
     }
 }
