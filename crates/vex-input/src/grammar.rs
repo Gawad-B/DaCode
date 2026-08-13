@@ -306,6 +306,13 @@ impl Grammar {
             Stage::Start | Stage::Target => {}
         }
 
+        // A Ctrl key the grammar does not know is *not* a character. Falling through here made
+        // `ctrl-p` paste and `ctrl-b` move a word back, which only looked harmless because the
+        // application intercepts both before the grammar sees them.
+        if key.ctrl || key.alt {
+            return Resolution::Unhandled;
+        }
+
         let KeyCode::Char(c) = key.code else {
             return Resolution::Unhandled;
         };

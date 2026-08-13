@@ -32,6 +32,8 @@ works.
 
 ## Keys
 
+Full list: **[CHEATSHEET.md](CHEATSHEET.md)**.
+
 Vim's grammar, so counts, registers and operator-motion composition work as you expect: `3dw`,
 `d2f)`, `ci"`, `"ayy`, `.` to repeat. What follows is what is bound beyond that.
 
