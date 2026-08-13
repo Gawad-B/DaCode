@@ -144,8 +144,9 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --we
 
 ## Windows
 
-Code paths exist and type-check; the editor has **never been run** on Windows. When touching anything
-platform-shaped:
+The workspace **builds and its tests pass on Windows** in CI, including a live rust-analyzer handshake.
+Nobody has *run* the editor there — the window, mouse and folder chooser are unverified. When touching
+anything platform-shaped:
 
 - Paths go through `crates/vex/src/paths.rs`. `%APPDATA%` for config (roams), `%LOCALAPPDATA%` for
   state (must not roam).

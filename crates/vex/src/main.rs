@@ -1,12 +1,15 @@
 //! `vex` — the editor binary.
 //!
-//! Wires the layers together: `vex-text` (storage), `vex-buffer` (document and undo),
-//! `vex-display` (soft wrap and viewport), `vex-theme` (appearance), `vex-render` (GPU).
-//!
-//! The key handling here is a **stand-in** for `crates/input`. It switches modes and edits, but
-//! it does not implement the real grammar: no counts, no registers, no operator-motion
-//! composition, no dot-repeat. Those need the `Action` vocabulary and a proper state machine,
-//! which is M3.
+//! Wires the layers together: `vex-text` (storage), `vex-buffer` (document and undo), `vex-display`
+//! (soft wrap, folding, viewport), `vex-input` (the grammar), `vex-syntax`, `vex-lsp`, `vex-project`,
+//! `vex-lua` and `vex-render`. What lives *here* is the event loop, the window, and the wiring: this
+//! file owns the things that cannot be tested without a window, and delegates everything that can.
+
+// A release build on Windows is a GUI application, not a console one. Without this, launching from the
+// Start Menu opens a black console window behind the editor, which looks like a fault. Debug builds
+// keep the console, because that is where `eprintln!` diagnostics go and losing them while developing
+// would be the worse trade.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
