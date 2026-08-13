@@ -503,6 +503,20 @@ inlay hints.
 > against a method call and parsing it out of a text stream. Typing a path remains the fallback when
 > nothing is installed, because a key that silently does nothing is worse than one that asks.
 
+> **First-run setup.** Three questions, in the order that decides whether someone can use the editor
+> at all: modal keys or conventional ones, which theme, and whether to import from VSCode. It exists
+> because those are decisions a new user cannot discover — an editor that opens in a modal mode with no
+> explanation has already lost the person who did not choose it.
+>
+> **Themes are shown, not named.** Each of the five is a card rendering the same six lines of code in
+> itself, and moving the highlight repaints the whole screen in that theme, so the choice is made by
+> looking. "rose-pine" tells you nothing; the card tells you everything. The selection ring is drawn in
+> the *current* theme's accent so it stays visible against the black one.
+>
+> The default answer on the first question is the *conventional* one, even though the editor's own
+> default is modal: someone being asked by a wizard is someone who has not chosen Vim. Skipping writes
+> nothing, so the wizard returns next launch rather than disappearing because of one stray `esc`.
+
 > **M8: a settings panel.** Config is a Lua file, and a panel that *replaced* it would have to write
 > the user's program for them. So the panel does something a file cannot: its third column says which
 > of default, `init.lua` or imported-from-VSCode last set each value. When a setting is not what you

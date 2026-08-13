@@ -109,6 +109,16 @@ Folds come from indentation, so they work in every language — including ones w
 ### Appearance
 `zw` toggle soft wrap · `gt` toggle light/dark · `=` `-` font size
 
+## First run
+
+With no configuration present, vex asks three questions before anything else: **how you want to type**
+(conventional keys or Vim's), **which theme** — shown as five live previews rather than named — and
+**whether to import from VSCode**. It writes the answers to `init.lua` and never appears again. `esc`
+skips it, and skipping leaves no config behind, so it returns next time rather than vanishing because
+of one stray keypress.
+
+`--no-welcome` starts without it.
+
 ## Configuration
 
 `ctrl-,` opens a **settings panel**: every option, its value, and which of default / `init.lua` /
@@ -171,6 +181,7 @@ and over SSH — and how most of the visual defects in this project were actuall
 ./target/release/vex --screenshot /tmp/vex.png --diagnostics-list  # the diagnostics list
 ./target/release/vex --screenshot /tmp/vex.png --folded            # folded blocks
 ./target/release/vex --screenshot /tmp/vex.png --settings          # the settings panel
+./target/release/vex --screenshot /tmp/vex.png --welcome theme     # first-run setup, any step
 ```
 
 ## Tests and benchmarks

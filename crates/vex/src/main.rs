@@ -158,6 +158,14 @@ fn main() -> Result<()> {
         state,
     };
 
+    // First run: no configuration means nobody has answered the two questions that decide whether
+    // this editor is usable for them at all.
+    if vex::welcome::is_first_run(&vex::config::config_dir())
+        && !args.iter().any(|arg| arg == "--no-welcome")
+    {
+        app.state.welcome = Some(vex::welcome::Welcome::new());
+    }
+
     // Opening a folder shows what is in it. Nothing else would answer the question the user just
     // asked by naming a directory.
     if folder.is_some() {
@@ -271,6 +279,7 @@ fn new_state(
         show_diagnostics: false,
         inlay_hints: Vec::new(),
         show_inlay_hints: settings.inlay_hints,
+        welcome: None,
         settings: None,
         setting_sources: settings.sources.clone(),
         tree: None,
@@ -314,7 +323,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 11] = [
+const VALUE_FLAGS: [&str; 12] = [
     "--screenshot",
     "--mode",
     "--columns",
@@ -326,6 +335,7 @@ const VALUE_FLAGS: [&str; 11] = [
     "--split",
     "--at",
     "--theme",
+    "--welcome",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -703,6 +713,20 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     } else if flag("--diagnostics-list") {
         state.show_diagnostics = true;
         chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if let Some(step) = value("--welcome") {
+        let mut welcome = vex::welcome::Welcome::new();
+        // Walk to the requested step, so each screen can be captured on its own.
+        if step != "keys" {
+            welcome.choose();
+        }
+        if step == "import" {
+            welcome.choose();
+        }
+        if step == "theme" {
+            // Highlight something other than the first, which is what makes the preview visible.
+            welcome.move_selection(2);
+        }
+        chrome::draw_welcome(&mut frame, &welcome, &state.typography, bounds, 1.0);
     } else if flag("--settings") {
         state.settings = Some(vex::settings_ui::Settings::new());
         state
@@ -1221,6 +1245,9 @@ impl App {
             return false;
         }
 
+        if self.handle_welcome_key(key) {
+            return false;
+        }
         if self.handle_settings_key(key) {
             return false;
         }
@@ -2703,6 +2730,112 @@ impl App {
         self.state.prompt = Some(prompt);
     }
 
+    /// Keys for the first-run setup. Returns true if the key was consumed — which is always, while it
+    /// is showing: it is a modal screen, and letting keys through to a document nobody can see would
+    /// be worse than ignoring them.
+    fn handle_welcome_key(&mut self, key: Key) -> bool {
+        let Some(welcome) = &mut self.state.welcome else {
+            return false;
+        };
+
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Right => welcome.move_selection(1),
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::Left
+                if key.code == KeyCode::Left && welcome.step != vex::welcome::Step::Theme =>
+            {
+                // Left goes back a step everywhere except the theme row, where it moves between cards.
+                if !welcome.back() {
+                    welcome.move_selection(-1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::Left => welcome.move_selection(-1),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                welcome.choose();
+                if welcome.is_done() {
+                    self.finish_welcome();
+                }
+            }
+            KeyCode::Backspace => {
+                welcome.back();
+            }
+            // Skipping leaves no config behind, so the wizard returns next time rather than silently
+            // never appearing again after being dismissed by accident.
+            KeyCode::Escape => {
+                self.state.welcome = None;
+                self.state.hover = Some("setup skipped — ctrl-, opens the settings".into());
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Applies the wizard's answers, writes them, and runs any import that was asked for.
+    fn finish_welcome(&mut self) {
+        let Some(welcome) = self.state.welcome.take() else {
+            return;
+        };
+        let answers = welcome.answers.clone();
+
+        // Applied first, so the editor is already the way they asked before anything else happens.
+        self.state.modal = answers.modal;
+        self.grammar.set_modal(answers.modal);
+        if !answers.modal {
+            self.state.mode = Mode::Insert;
+        }
+        if let Some(theme) = Theme::by_name(answers.theme) {
+            self.state.theme = theme;
+        }
+
+        let directory = vex::config::config_dir();
+        let path = directory.join("init.lua");
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let written = vex::welcome::config_from(&answers, &existing);
+
+        if std::fs::create_dir_all(&directory).is_ok() {
+            if let Ok(absolute) = path.canonicalize() {
+                self.self_written.insert(absolute);
+            }
+            match std::fs::write(&path, written) {
+                Ok(()) => {
+                    if let Ok(absolute) = path.canonicalize() {
+                        self.self_written.insert(absolute);
+                    }
+                    eprintln!("vex: wrote {}", path.display());
+                }
+                Err(error) => {
+                    self.state.hover = Some(format!("could not write {}: {error}", path.display()))
+                }
+            }
+        }
+
+        // The import last: it rewrites configuration too, and doing it after means the reload picks
+        // up both at once.
+        if !answers.import.is_empty() {
+            let checklist = answers
+                .import
+                .iter()
+                .fold(vex_import::Checklist::nothing(), |list, item| {
+                    list.with(item.item())
+                });
+            match vex::import_cli::import_from_installed_vscode(checklist, &directory) {
+                Ok(report) => {
+                    let rendered = report.render();
+                    eprintln!("{rendered}");
+                    self.reload_config();
+                    self.state.hover = Some(rendered);
+                }
+                Err(error) => self.state.hover = Some(format!("import failed: {error}")),
+            }
+        }
+
+        self.state
+            .setting_sources
+            .insert("vim_keys".into(), vex::settings_ui::Source::Config);
+        self.state
+            .setting_sources
+            .insert("theme".into(), vex::settings_ui::Source::Config);
+    }
+
     /// Keys for the settings panel. Returns true if the key was consumed.
     fn handle_settings_key(&mut self, key: Key) -> bool {
         let Some(settings) = &mut self.state.settings else {
@@ -3686,6 +3819,23 @@ impl App {
         self.state.worst_ms = renderer.timer.worst_ms();
 
         self.frame.clear();
+
+        // The wizard owns the window while it is up. Drawing the editor behind it would be showing
+        // someone an interface while asking them how they want it to behave.
+        if let Some(welcome) = &self.state.welcome {
+            chrome::draw_welcome(
+                &mut self.frame,
+                welcome,
+                &self.state.typography,
+                Rect::new(0.0, 0.0, width as f32, height as f32),
+                scale,
+            );
+            if let Err(err) = renderer.render(&self.frame, welcome.preview_theme().bg) {
+                eprintln!("vex: frame dropped: {err:#}");
+            }
+            return;
+        }
+
         let panes = pane_views(&self.panes, &self.state, &self.buffers);
         chrome::draw_panes(
             &mut self.frame,

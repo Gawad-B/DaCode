@@ -24,3 +24,4 @@ pub mod session;
 pub mod settings_ui;
 pub mod snippet;
 pub mod tree;
+pub mod welcome;

@@ -106,6 +106,8 @@ pub struct EditorState {
     /// Whether to ask for and draw them. Off by default: hints move the code sideways as you type,
     /// and that is a preference, not a default worth imposing.
     pub show_inlay_hints: bool,
+    /// First-run setup, when it is showing. It owns the whole window while it does.
+    pub welcome: Option<crate::welcome::Welcome>,
     /// The settings panel, when open. Shares the sidebar with the tree and the diagnostics list.
     pub settings: Option<crate::settings_ui::Settings>,
     /// Where each setting's value came from, for the panel's third column.
@@ -143,6 +145,431 @@ impl EditorState {
     /// Height of the code area, given the whole window — the chrome's vertical stack in reverse.
     pub fn code_height(&self, window_height: f32, scale: f32) -> f32 {
         (window_height - (72.0 + 34.0 + 34.0) * scale).max(0.0)
+    }
+}
+
+/// The first-run setup screen.
+///
+/// A function of the wizard's state and a theme, like the splash — it runs before there is anything
+/// else worth drawing, and it must be legible in whichever theme is being previewed.
+pub fn draw_welcome(
+    frame: &mut Frame,
+    welcome: &crate::welcome::Welcome,
+    typography: &Typography,
+    bounds: Rect,
+    scale: f32,
+) {
+    use crate::welcome::Step;
+
+    let theme = welcome.preview_theme();
+    frame.fill(bounds, theme.bg);
+
+    let px = |v: f32| v * scale;
+    let content_width = px(1000.0).min(bounds.width - px(96.0));
+    let left = (bounds.x + (bounds.width - content_width) / 2.0).round();
+
+    // Centred vertically, because a wizard pinned to the top of a tall window reads as a page that
+    // failed to load. The content's height is known per step, so this is arithmetic rather than a
+    // guess.
+    let content_height = match welcome.step {
+        Step::Keys => px(200.0),
+        Step::Theme => px(200.0),
+        Step::Import => px(230.0),
+        Step::Done => 0.0,
+    };
+    let header = px(34.0) + px(48.0) + px(26.0) + px(52.0);
+
+    let mark = px(34.0);
+    let mut y =
+        (bounds.y + ((bounds.height - header - content_height) / 2.0).max(px(56.0))).round();
+    frame.mark(Rect::new(left, y, mark, mark), theme.ink, theme.bg);
+
+    let mut wordmark = typography.spec(Role::Display);
+    wordmark.size_px = px(30.0);
+    frame.text(TextRun {
+        text: "welcome to vex".into(),
+        spec: wordmark,
+        color: theme.ink,
+        rect: Rect::new(left + mark + px(18.0), y, content_width, mark),
+        align: Align::Left,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
+    });
+
+    y += mark + px(48.0);
+
+    // Which question, and where in the sequence — three steps is short enough to be worth saying.
+    let mut heading = typography.spec(Role::Prose);
+    heading.size_px = px(19.0);
+    frame.text(TextRun {
+        text: welcome.step.title().into(),
+        spec: heading,
+        color: theme.ink,
+        rect: Rect::new(left, y, content_width * 0.7, px(26.0)),
+        align: Align::Left,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
+    });
+    frame.text(welcome_label(
+        typography,
+        format!("step {} of {}", welcome.step.number(), Step::COUNT),
+        Rect::new(left, y, content_width, px(26.0)),
+        theme.ink_faint,
+        Align::Right,
+        scale,
+    ));
+
+    y += px(52.0);
+
+    let context = WelcomeFrame {
+        welcome,
+        typography,
+        theme: &theme,
+        left,
+        top: y,
+        width: content_width,
+        scale,
+    };
+    match welcome.step {
+        Step::Keys => draw_welcome_keys(frame, &context),
+        Step::Theme => draw_theme_cards(frame, &context),
+        Step::Import => draw_welcome_import(frame, &context),
+        Step::Done => {}
+    }
+
+    // What the keys do, at the bottom. A wizard nobody can leave is a trap.
+    frame.text(welcome_label(
+        typography,
+        match welcome.step {
+            Step::Import => "↑↓ move · enter tick · → finish · esc skip setup",
+            _ => "↑↓ move · enter choose · ← back · esc skip setup",
+        },
+        Rect::new(left, bounds.bottom() - px(64.0), content_width, px(22.0)),
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+}
+
+/// Everything a welcome step needs to draw itself.
+struct WelcomeFrame<'a> {
+    welcome: &'a crate::welcome::Welcome,
+    typography: &'a Typography,
+    theme: &'a Theme,
+    left: f32,
+    top: f32,
+    width: f32,
+    scale: f32,
+}
+
+/// The two ways of typing, as cards with a sentence each.
+fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
+    let WelcomeFrame {
+        welcome,
+        typography,
+        theme,
+        left,
+        top,
+        width,
+        scale,
+    } = *context;
+    let px = |v: f32| v * scale;
+    let choices = [
+        (
+            "like every other editor",
+            "typing inserts. ctrl-c, ctrl-v, ctrl-z. the mouse selects. pick this if you are unsure.",
+        ),
+        (
+            "vim keys",
+            "modal editing: normal, insert, visual. counts, operators, text objects, macros.",
+        ),
+    ];
+
+    for (index, (name, description)) in choices.iter().enumerate() {
+        let height = px(92.0);
+        let card = Rect::new(
+            left,
+            top + index as f32 * (height + px(16.0)),
+            width,
+            height,
+        );
+        let selected = index == welcome.selected;
+        draw_welcome_card(frame, theme, card, selected, scale);
+
+        let mut title = typography.spec(Role::Prose);
+        title.size_px = px(17.0);
+        frame.text(TextRun {
+            text: (*name).into(),
+            spec: title,
+            color: if selected { theme.ink } else { theme.ink_dim },
+            rect: Rect::new(
+                card.x + px(24.0),
+                card.y + px(18.0),
+                card.width - px(48.0),
+                px(24.0),
+            ),
+            align: Align::Left,
+            center_vertically: true,
+            wrap: false,
+            layer: Layer::default(),
+        });
+
+        let mut body = typography.spec(Role::Value);
+        body.size_px = px(13.0);
+        frame.text(TextRun {
+            text: (*description).into(),
+            spec: body,
+            color: theme.ink_faint,
+            rect: Rect::new(
+                card.x + px(24.0),
+                card.y + px(46.0),
+                card.width - px(48.0),
+                px(34.0),
+            ),
+            align: Align::Left,
+            center_vertically: false,
+            wrap: true,
+            layer: Layer::default(),
+        });
+    }
+}
+
+/// The five themes, each shown as a few lines of code in itself.
+///
+/// Shown rather than named, which is the whole reason this screen exists: "rose-pine" tells you
+/// nothing, and six coloured lines tell you everything.
+fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
+    let WelcomeFrame {
+        welcome,
+        typography,
+        theme: current,
+        left,
+        top,
+        width,
+        scale,
+    } = *context;
+    let px = |v: f32| v * scale;
+    let count = Theme::BUILT_IN.len();
+    let gap = px(14.0);
+    let card_width = ((width - gap * (count as f32 - 1.0)) / count as f32).floor();
+    let card_height = px(200.0);
+
+    // A sample with one of everything the palette colours, so a card shows the whole theme rather
+    // than whichever role happens to appear in a random line.
+    /// A line of the preview: the text, and which palette role colours it.
+    type SampleLine = (&'static str, fn(&Theme) -> Oklch);
+
+    let sample: [SampleLine; 6] = [
+        ("// a comment", |theme| theme.syntax.comment),
+        ("fn main() {", |theme| theme.syntax.keyword),
+        ("  let n = 42;", |theme| theme.syntax.number),
+        ("  greet(\"hi\");", |theme| theme.syntax.string),
+        ("  Thing::new()", |theme| theme.syntax.type_),
+        ("}", |theme| theme.ink),
+    ];
+
+    for (index, (name, build)) in Theme::BUILT_IN.iter().enumerate() {
+        let theme = build();
+        let card = Rect::new(
+            left + index as f32 * (card_width + gap),
+            top,
+            card_width,
+            card_height,
+        );
+        let selected = index == welcome.selected;
+
+        // The card is painted in *its own* theme, which is what makes it a preview.
+        frame.fill(card, theme.bg);
+        frame.fill(Rect::new(card.x, card.y, card.width, px(1.0)), theme.rule);
+
+        let line = px(21.0);
+        let mut code = typography.spec(Role::Code);
+        code.size_px = px(11.5);
+        for (row, (text, color)) in sample.iter().enumerate() {
+            frame.text(TextRun {
+                text: (*text).into(),
+                spec: code,
+                color: color(&theme),
+                rect: Rect::new(
+                    card.x + px(12.0),
+                    card.y + px(14.0) + row as f32 * line,
+                    card.width - px(16.0),
+                    line,
+                ),
+                align: Align::Left,
+                center_vertically: true,
+                wrap: false,
+                layer: Layer::default(),
+            });
+        }
+
+        // The name goes on the card, in the card's own ink.
+        frame.text(welcome_label(
+            typography,
+            *name,
+            Rect::new(
+                card.x + px(12.0),
+                card.bottom() - px(30.0),
+                card.width - px(24.0),
+                px(20.0),
+            ),
+            theme.ink_dim,
+            Align::Left,
+            scale,
+        ));
+
+        // The selection ring is drawn in the *current* theme's accent so it is visible against every
+        // card, including the black one.
+        if selected {
+            let accent = current.accent(Mode::Normal);
+            for edge in [
+                Rect::new(card.x, card.y, card.width, px(2.0)),
+                Rect::new(card.x, card.bottom() - px(2.0), card.width, px(2.0)),
+                Rect::new(card.x, card.y, px(2.0), card.height),
+                Rect::new(card.right() - px(2.0), card.y, px(2.0), card.height),
+            ] {
+                frame.fill(edge, accent);
+            }
+        }
+    }
+}
+
+/// The import checklist, and the row that finishes.
+fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
+    let WelcomeFrame {
+        welcome,
+        typography,
+        theme,
+        left,
+        top,
+        width,
+        scale,
+    } = *context;
+    let px = |v: f32| v * scale;
+    let present = crate::import_cli::vscode_is_present();
+
+    frame.text(welcome_label(
+        typography,
+        if present {
+            "found a vscode installation"
+        } else {
+            "no vscode installation found — nothing to import"
+        },
+        Rect::new(left, top, width, px(22.0)),
+        if present {
+            theme.fresh()
+        } else {
+            theme.ink_faint
+        },
+        Align::Left,
+        scale,
+    ));
+
+    let mut y = top + px(40.0);
+    let line = px(34.0);
+
+    for (index, item) in crate::settings_ui::Importable::ALL.iter().enumerate() {
+        let selected = index == welcome.selected;
+        let row = Rect::new(left, y, width, line);
+        if selected {
+            frame.fill(row, theme.row_active);
+        }
+
+        let mut body = typography.spec(Role::Value);
+        body.size_px = px(14.0);
+        frame.text(TextRun {
+            text: format!(
+                "[{}] {}",
+                if welcome.is_ticked(*item) { "x" } else { " " },
+                item.name()
+            ),
+            spec: body,
+            color: match (present, welcome.is_ticked(*item)) {
+                (false, _) => theme.ink_faint,
+                (true, true) => theme.ink,
+                (true, false) => theme.ink_dim,
+            },
+            rect: Rect::new(row.x + px(16.0), row.y, row.width - px(32.0), line),
+            align: Align::Left,
+            center_vertically: true,
+            wrap: false,
+            layer: Layer::default(),
+        });
+
+        y += line;
+    }
+
+    // The finishing row, which is where the last option lands.
+    let selected = welcome.selected >= crate::settings_ui::Importable::ALL.len();
+    let row = Rect::new(left, y + px(10.0), width, line);
+    if selected {
+        frame.fill(row, theme.row_active);
+    }
+    let mut body = typography.spec(Role::Value);
+    body.size_px = px(14.0);
+    frame.text(TextRun {
+        text: if welcome.answers.import.is_empty() {
+            "start without importing".into()
+        } else {
+            format!("import {} and start", welcome.answers.import.len())
+        },
+        spec: body,
+        color: if selected {
+            theme.accent(Mode::Normal)
+        } else {
+            theme.ink_dim
+        },
+        rect: Rect::new(row.x + px(16.0), row.y, row.width - px(32.0), line),
+        align: Align::Left,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
+    });
+}
+
+/// A card background with a selection border.
+fn draw_welcome_card(frame: &mut Frame, theme: &Theme, card: Rect, selected: bool, scale: f32) {
+    frame.fill(
+        card,
+        if selected {
+            theme.bg_panel
+        } else {
+            theme.bg_alt
+        },
+    );
+    let accent = theme.accent(Mode::Normal);
+    if selected {
+        frame.fill(
+            Rect::new(card.x, card.y, border::ACCENT_BORDER * scale, card.height),
+            accent,
+        );
+    } else {
+        frame.rule_top(card, theme.rule_soft, border::BORDER);
+    }
+}
+
+/// A small uppercase label, for a screen that has no `EditorState` to read typography from.
+fn welcome_label(
+    typography: &Typography,
+    text: impl Into<String>,
+    rect: Rect,
+    color: Oklch,
+    align: Align,
+    scale: f32,
+) -> TextRun {
+    let mut spec = typography.spec(Role::Label);
+    spec.size_px *= scale;
+    TextRun {
+        text: text.into(),
+        spec,
+        color,
+        rect,
+        align,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
     }
 }
 

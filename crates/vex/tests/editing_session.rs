@@ -61,6 +61,7 @@ impl Session {
                 show_diagnostics: false,
                 inlay_hints: Vec::new(),
                 show_inlay_hints: false,
+                welcome: None,
                 settings: None,
                 setting_sources: std::collections::HashMap::new(),
                 tree: None,
