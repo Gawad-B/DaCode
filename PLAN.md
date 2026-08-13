@@ -371,8 +371,13 @@ search and replace, file watching.
 > The diagnostics list answers a question the underlines cannot: `]d` walks them one at a time, which
 > is useless for deciding whether a file is in trouble at all.
 >
-> **Still to do in M6:** one server at a time — a project mixing Rust and TypeScript gets a language
-> server for whichever file was opened first.
+> **M6 is complete.** Servers are now kept per program rather than one at a time, so a project mixing
+> Rust and TypeScript keeps both alive; switching to another file's language and back does not restart
+> anything, which would otherwise throw away minutes of rust-analyzer's indexing every time you glance
+> at a file. Only the active buffer's server is talked to — the others hold their state and their
+> index, costing memory but no work. Verified for the one-server case (switching between Rust files
+> and files with no server does not restart it); a second server was not installed to test the pair
+> live, which is stated rather than implied.
 
 ### M6 — LSP (3–4 weeks)
 Client + lifecycle, diagnostics, hover, goto-definition/references, completion,

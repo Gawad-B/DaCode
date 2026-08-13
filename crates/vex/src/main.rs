@@ -83,7 +83,8 @@ fn main() -> Result<()> {
         last_change: None,
         syntax: None,
         requested_range: None,
-        lsp: None,
+        servers: std::collections::HashMap::new(),
+        active_server: None,
         sent_version: None,
         code_actions: Vec::new(),
         hinted_version: None,
@@ -672,7 +673,10 @@ struct App {
     /// The walk that fills the index, while it is running.
     walk: Option<FileWalk>,
     /// The language server for the active buffer, when one could be started.
-    lsp: Option<vex_lsp::LspClient>,
+    /// Every language server running, keyed by program name.
+    servers: std::collections::HashMap<String, vex_lsp::LspClient>,
+    /// Which one the buffer on screen belongs to.
+    active_server: Option<String>,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
     /// Set when a save asked for formatting: the reply's edits are applied and the file written
@@ -1137,19 +1141,31 @@ impl App {
     /// Failure is reported in the statusline rather than being fatal or silent: "no diagnostics" and
     /// "no server" look identical to a user, so they must not read the same.
     fn start_language_server(&mut self) {
-        self.lsp = None;
         self.sent_version = None;
         self.state.diagnostics.clear();
 
         let Some(path) = self.state.file_path.clone() else {
+            self.active_server = None;
             self.state.server_status = "scratch buffer".into();
             return;
         };
         let Some(spec) = vex_lsp::server_for(&path) else {
+            self.active_server = None;
             self.state.server_status = "no server for this language".into();
             return;
         };
+
+        // Already running for another buffer of the same language: switching to a TypeScript file
+        // and back to Rust must not restart rust-analyzer, which would throw away minutes of
+        // indexing every time you glance at another file.
+        if self.servers.contains_key(spec.program) {
+            self.active_server = Some(spec.program.to_string());
+            self.state.server_status = spec.program.to_string();
+            return;
+        }
+
         if !vex_lsp::is_installed(spec.program) {
+            self.active_server = None;
             self.state.server_status = format!("{} not installed", spec.program);
             return;
         }
@@ -1159,13 +1175,25 @@ impl App {
             Ok(client) => {
                 eprintln!("vex: starting {} in {}", spec.program, root.display());
                 self.state.server_status = format!("{} starting", spec.program);
-                self.lsp = Some(client);
+                self.servers.insert(spec.program.to_string(), client);
+                self.active_server = Some(spec.program.to_string());
             }
             Err(error) => {
                 eprintln!("vex: {error:#}");
+                self.active_server = None;
                 self.state.server_status = format!("{} failed to start", spec.program);
             }
         }
+    }
+
+    /// The server for the buffer on screen, if there is one.
+    ///
+    /// Servers are kept per program rather than one at a time, so a project mixing Rust and
+    /// TypeScript keeps both alive. Only the active buffer's server is *talked to*: the others hold
+    /// their state and their index, costing memory but no work.
+    fn active_client(&self) -> Option<&vex_lsp::LspClient> {
+        let name = self.active_server.as_ref()?;
+        self.servers.get(name)
     }
 
     /// Sends document changes and applies whatever the server has said.
@@ -1173,7 +1201,10 @@ impl App {
     /// The same contract as the syntax worker: send, poll, and refuse anything computed against a
     /// superseded version.
     fn sync_lsp(&mut self) -> bool {
-        let Some(client) = &mut self.lsp else {
+        let Some(name) = self.active_server.clone() else {
+            return false;
+        };
+        let Some(client) = self.servers.get_mut(&name) else {
             return false;
         };
         let mut changed = false;
@@ -1460,7 +1491,8 @@ impl App {
                 vex_lsp::ServerEvent::Message { text } => eprintln!("vex: {text}"),
                 vex_lsp::ServerEvent::Stopped => {
                     self.state.server_status = "server stopped".into();
-                    self.lsp = None;
+                    self.servers.remove(&name);
+                    self.active_server = None;
                     break;
                 }
             }
@@ -1483,7 +1515,7 @@ impl App {
         if self.state.results.as_ref().is_some_and(|r| !r.finished) {
             return true;
         }
-        if let Some(client) = &self.lsp {
+        if let Some(client) = self.active_client() {
             // A live server always warrants a slow poll: replies arrive unprompted.
             return client.state() != vex_lsp::State::Stopped;
         }
@@ -2012,18 +2044,28 @@ impl App {
             self.warn("rename needs a saved file");
             return;
         };
-        let Some(client) = &self.lsp else {
-            self.warn("rename needs a language server");
-            return;
-        };
-        if client.state() != vex_lsp::State::Ready {
-            self.warn(&format!("{} is still starting", self.state.server_status));
-            return;
+        let ready = self
+            .active_client()
+            .map(|client| client.state() == vex_lsp::State::Ready);
+        match ready {
+            None => {
+                self.warn("rename needs a language server");
+                return;
+            }
+            Some(false) => {
+                self.warn(&format!("{} is still starting", self.state.server_status));
+                return;
+            }
+            Some(true) => {}
         }
 
         let position = vex_lsp::to_lsp(self.state.document.text(), self.state.cursor());
         self.edit_version = Some(self.state.document.version());
-        if let Err(error) = client.rename(std::path::Path::new(&path), position, new_name) {
+
+        let sent = self
+            .active_client()
+            .map(|client| client.rename(std::path::Path::new(&path), position, new_name));
+        if let Some(Err(error)) = sent {
             self.warn(&format!("rename failed: {error:#}"));
         }
     }
@@ -2218,8 +2260,7 @@ impl App {
                 // asked, then reformatted and saved again when the reply arrives.
                 if self.state.format_on_save
                     && self
-                        .lsp
-                        .as_ref()
+                        .active_client()
                         .is_some_and(|client| client.state() == vex_lsp::State::Ready)
                 {
                     self.save_after_format = true;
