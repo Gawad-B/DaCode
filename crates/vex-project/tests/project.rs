@@ -357,7 +357,7 @@ fn the_project_root_is_found_by_its_marker() {
     let nested = fixture.write("crates/inner/src/lib.rs", "");
 
     // Compared canonically: /tmp is a symlink on some systems.
-    let expected = fixture.path().canonicalize().unwrap();
+    let expected = vex_project::canonical(fixture.path());
     assert_eq!(find_root(&nested), expected);
     assert_eq!(find_root(fixture.path()), expected);
 }
@@ -374,7 +374,7 @@ fn a_repository_root_beats_a_member_manifest() {
 
     assert_eq!(
         find_root(&nested),
-        fixture.path().canonicalize().unwrap(),
+        vex_project::canonical(fixture.path()),
         "should find the repository root, not the member crate"
     );
 }

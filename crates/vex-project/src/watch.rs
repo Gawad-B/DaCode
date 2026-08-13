@@ -59,7 +59,7 @@ impl FileWatcher {
 
     /// Starts watching a file, by watching the directory that holds it.
     pub fn watch(&mut self, path: &Path) -> notify::Result<()> {
-        let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let absolute = crate::canonical(path);
         let Some(directory) = absolute.parent().map(Path::to_path_buf) else {
             return Ok(());
         };
@@ -73,7 +73,7 @@ impl FileWatcher {
     }
 
     pub fn forget(&mut self, path: &Path) {
-        let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let absolute = crate::canonical(path);
         self.files.remove(&absolute);
     }
 
@@ -85,7 +85,7 @@ impl FileWatcher {
     pub fn poll(&self) -> Vec<PathBuf> {
         let mut changed: Vec<PathBuf> = Vec::new();
         while let Ok(path) = self.events.try_recv() {
-            let path = path.canonicalize().unwrap_or(path);
+            let path = crate::canonical(&path);
             if self.files.contains(&path) && !changed.contains(&path) {
                 changed.push(path);
             }
@@ -105,7 +105,7 @@ mod tests {
     /// business — so this polls to a deadline rather than sleeping a fixed amount and hoping.
     fn wait_for(watcher: &FileWatcher, path: &Path, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
-        let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let target = crate::canonical(path);
         while Instant::now() < deadline {
             if watcher.poll().contains(&target) {
                 return true;

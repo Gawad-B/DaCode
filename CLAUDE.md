@@ -111,6 +111,11 @@ They are cleared on buffer change: they are line numbers and nothing more.
 - When a test asserts against a list of allowed values, adding a new value means updating the list. The
   Windows CI run's only failure was `describe()` returning `"windows shell"`, which the test's list did
   not include — a value that cannot occur on the machine the test was written on.
+- **A rule that keeps being broken becomes a test.** `crates/vex/tests/conventions.rs` greps the
+  workspace for direct `canonicalize()` calls, because that one slip caused three consecutive Windows CI
+  failures and each cost a fifteen-minute round trip to find. Verify such a guard by *injecting a
+  violation* — the first version scanned zero files (cargo runs tests with the crate as the working
+  directory, not the workspace) and passed while checking nothing.
 - **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
   thread-safe against the `getenv` other tests do in parallel, and doing it deadlocked this suite
   inside glibc for twenty minutes. Take the value as a parameter instead — see

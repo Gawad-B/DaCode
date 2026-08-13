@@ -16,6 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Without this every run recompiles nine tree-sitter grammars and Lua from C, which is most of
+      # the fifteen minutes each Windows round trip was costing.
+      - uses: Swatinem/rust-cache@v2
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -39,6 +42,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
       # The whole point of this job: everything the Linux machine cannot check.
       - run: cargo build --release
       - run: rustup component add rust-analyzer

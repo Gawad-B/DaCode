@@ -138,7 +138,11 @@ impl GitWorker {
 
 /// The committed contents of a file, via `git show HEAD:<path>`.
 fn committed(path: &Path) -> Option<String> {
-    let absolute = path.canonicalize().ok()?;
+    // Through `canonical`: `git -C \\?\C:\x` is not a directory git will accept.
+    let absolute = vex_project::canonical(path);
+    if !absolute.exists() {
+        return None;
+    }
     let directory = absolute.parent()?;
 
     // The path has to be relative to the repository root, which is what `--show-prefix` gives.
