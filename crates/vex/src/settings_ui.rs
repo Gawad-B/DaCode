@@ -84,11 +84,65 @@ impl Field {
     }
 }
 
+/// What the panel can import from VSCode, and whether each is ticked.
+///
+/// A checklist rather than one "import everything" action: an import that silently replaces your theme
+/// because you wanted your keybindings is an import nobody runs twice.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Importable {
+    Settings,
+    Theme,
+    Keybindings,
+    Snippets,
+}
+
+impl Importable {
+    pub const ALL: [Importable; 4] = [
+        Importable::Settings,
+        Importable::Theme,
+        Importable::Keybindings,
+        Importable::Snippets,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Importable::Settings => "settings.json",
+            Importable::Theme => "color theme",
+            Importable::Keybindings => "keybindings.json",
+            Importable::Snippets => "snippets",
+        }
+    }
+
+    pub fn item(self) -> vex_import::ImportItem {
+        match self {
+            Importable::Settings => vex_import::ImportItem::Settings,
+            Importable::Theme => vex_import::ImportItem::Theme,
+            Importable::Keybindings => vex_import::ImportItem::Keybindings,
+            Importable::Snippets => vex_import::ImportItem::Snippets,
+        }
+    }
+}
+
+/// Every row in the panel: the options, then the import checklist, then the action that runs it.
+///
+/// One list rather than two panes, so `j` and `k` walk the whole thing and there is no second focus
+/// to keep track of.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Line {
+    Option(Field),
+    Import(Importable),
+    RunImport,
+}
+
 /// The panel's state: which row is selected, and whether anything is unsaved.
 pub struct Settings {
     pub selected: usize,
     /// Fields changed since the panel opened, so the footer can say there is something to write.
     pub dirty: bool,
+    /// Which import items are ticked. Nothing, until asked — the same default the CLI has.
+    pub ticked: Vec<Importable>,
+    /// What the last import said, shown in place of the hint.
+    pub import_report: Option<String>,
 }
 
 impl Default for Settings {
@@ -102,19 +156,62 @@ impl Settings {
         Self {
             selected: 0,
             dirty: false,
+            ticked: Vec::new(),
+            import_report: None,
         }
     }
 
+    /// Every line, in display order.
+    pub fn lines() -> Vec<Line> {
+        Field::ALL
+            .iter()
+            .map(|field| Line::Option(*field))
+            .chain(Importable::ALL.iter().map(|item| Line::Import(*item)))
+            .chain(std::iter::once(Line::RunImport))
+            .collect()
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
-        let last = Field::ALL.len() - 1;
+        let last = Self::lines().len() - 1;
         self.selected = match delta {
             d if d < 0 => self.selected.saturating_sub(d.unsigned_abs()),
             d => (self.selected + d as usize).min(last),
         };
     }
 
-    pub fn field(&self) -> Field {
-        Field::ALL[self.selected.min(Field::ALL.len() - 1)]
+    /// The selected line.
+    pub fn line(&self) -> Line {
+        let lines = Self::lines();
+        lines[self.selected.min(lines.len() - 1)]
+    }
+
+    /// The selected option, when one is selected.
+    pub fn field(&self) -> Option<Field> {
+        match self.line() {
+            Line::Option(field) => Some(field),
+            _ => None,
+        }
+    }
+
+    pub fn is_ticked(&self, item: Importable) -> bool {
+        self.ticked.contains(&item)
+    }
+
+    pub fn tick(&mut self, item: Importable) {
+        if let Some(at) = self.ticked.iter().position(|ticked| *ticked == item) {
+            self.ticked.remove(at);
+        } else {
+            self.ticked.push(item);
+        }
+    }
+
+    /// The checklist to hand the importer.
+    pub fn checklist(&self) -> vex_import::Checklist {
+        self.ticked
+            .iter()
+            .fold(vex_import::Checklist::nothing(), |list, item| {
+                list.with(item.item())
+            })
     }
 }
 
@@ -298,8 +395,7 @@ mod tests {
         settings.move_selection(-3);
         assert_eq!(settings.selected, 0);
         settings.move_selection(99);
-        assert_eq!(settings.selected, Field::ALL.len() - 1);
-        assert_eq!(settings.field(), Field::InlayHints);
+        assert_eq!(settings.selected, Settings::lines().len() - 1);
     }
 
     #[test]
@@ -373,6 +469,46 @@ mod tests {
         assert_eq!(
             config.font_size.map(|size| format!("{size:.1}")),
             Some(original.get(Field::FontSize))
+        );
+    }
+
+    #[test]
+    fn the_panel_is_one_list_of_options_then_imports_then_the_action() {
+        let lines = Settings::lines();
+        assert_eq!(lines.len(), Field::ALL.len() + Importable::ALL.len() + 1);
+        assert_eq!(lines[0], Line::Option(Field::FontSize));
+        assert_eq!(lines[Field::ALL.len()], Line::Import(Importable::Settings));
+        assert_eq!(*lines.last().unwrap(), Line::RunImport);
+    }
+
+    #[test]
+    fn the_selection_walks_the_whole_list_and_stops() {
+        let mut settings = Settings::new();
+        settings.move_selection(99);
+        assert_eq!(settings.line(), Line::RunImport);
+        assert_eq!(settings.field(), None, "the action row is not an option");
+
+        settings.move_selection(-99);
+        assert_eq!(settings.field(), Some(Field::FontSize));
+    }
+
+    #[test]
+    fn nothing_is_ticked_until_asked() {
+        // The rule the import CLI already follows: an import that replaces your theme because you
+        // wanted your keybindings is an import nobody runs twice.
+        let mut settings = Settings::new();
+        assert!(settings.checklist().is_empty());
+
+        settings.tick(Importable::Theme);
+        assert!(settings.is_ticked(Importable::Theme));
+        assert!(!settings.is_ticked(Importable::Settings));
+        assert!(settings.checklist().wants(vex_import::ImportItem::Theme));
+        assert!(!settings.checklist().wants(vex_import::ImportItem::Settings));
+
+        settings.tick(Importable::Theme);
+        assert!(
+            !settings.is_ticked(Importable::Theme),
+            "ticking again unticks"
         );
     }
 }

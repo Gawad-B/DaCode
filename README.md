@@ -19,7 +19,9 @@ cargo build --release
 ./target/release/vex                   # nothing: reopens the last session for this directory
 ```
 
-Naming a **folder** makes it the project: `ctrl-p`, `ctrl-f` and the tree all work from there, and the
+`ctrl-k o` inside the editor opens the desktop's folder chooser (zenity, kdialog or the XDG portal —
+whichever your system has; it falls back to typing a path if none). Naming a **folder** makes it the
+project: `ctrl-p`, `ctrl-f` and the tree all work from there, and the
 folder you named is the root even if it sits inside a larger repository — asking for one crate should
 not index the whole workspace. `:e some/dir` switches project without closing what you have open.
 
@@ -104,7 +106,8 @@ Folds come from indentation, so they work in every language — including ones w
 ## Configuration
 
 `ctrl-,` opens a **settings panel**: every option, its value, and which of default / `init.lua` /
-imported last set it. `h`/`l` change a setting immediately, `w` writes the panel's values into
+imported last set it — plus a checklist for importing from VSCode, so the import is a few keys rather
+than a command line. `h`/`l` change a setting immediately, `w` writes the panel's values into
 `init.lua`. It covers the options that are safe to change blind — sizes, widths and switches; themes
 and keybindings live in the file, where a colour picker and a key capturer would otherwise have to be.
 

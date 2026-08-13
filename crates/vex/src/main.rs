@@ -117,6 +117,7 @@ fn main() -> Result<()> {
         servers: std::collections::HashMap::new(),
         active_server: None,
         sent_version: None,
+        folder_picker: None,
         snippets: load_snippets(),
         snippet: None,
         jumps: vex_input::JumpList::default(),
@@ -809,6 +810,8 @@ struct App {
     /// user typed while the server was thinking, applying them would corrupt the file, so the reply
     /// is refused — see `edits::apply_to_document`.
     edit_version: Option<vex_text::Version>,
+    /// An open folder dialog, if one is up. Polled like every other background service.
+    folder_picker: Option<vex::picker::FolderPicker>,
     /// Snippets loaded from the config directory, for `tab` expansion.
     snippets: Vec<vex_import::Snippet>,
     /// The tab stops of the snippet being filled in, if one is.
@@ -958,6 +961,7 @@ impl ApplicationHandler for App {
         changed |= self.sync_lsp();
         changed |= self.sync_git();
         changed |= self.handle_file_changes();
+        changed |= self.poll_folder_picker();
         if let Some(results) = &mut self.state.results {
             changed |= results.poll();
         }
@@ -2215,12 +2219,28 @@ impl App {
             }
             Action::ExpandSnippet => self.expand_snippet(),
             Action::OpenFolder => {
-                let mut prompt =
-                    vex::prompt::Prompt::new(PromptKind::OpenFolder, self.state.cursor());
-                // Pre-filled with the current root and a separator, so the common case — a sibling
-                // project — is a few characters rather than a whole path.
-                prompt.input = format!("{}/", self.state.project_root.display());
-                self.state.prompt = Some(prompt);
+                // The desktop's own folder chooser when there is one — that is what "open a folder"
+                // means to everyone who did not come from Vim. Typing a path is the fallback, not the
+                // interface.
+                if vex::picker::is_available() {
+                    if self.folder_picker.is_none() {
+                        let start = self
+                            .state
+                            .project_root
+                            .parent()
+                            .unwrap_or(&self.state.project_root)
+                            .to_path_buf();
+                        self.folder_picker = Some(vex::picker::FolderPicker::open(start));
+                        self.state.hover = Some("choose a folder…".into());
+                    }
+                } else {
+                    let mut prompt =
+                        vex::prompt::Prompt::new(PromptKind::OpenFolder, self.state.cursor());
+                    // Pre-filled with the current root and a separator, so the common case — a
+                    // sibling project — is a few characters rather than a whole path.
+                    prompt.input = format!("{}/", self.state.project_root.display());
+                    self.state.prompt = Some(prompt);
+                }
             }
             Action::ToggleSettings => {
                 if self.state.settings.is_some() {
@@ -2644,18 +2664,27 @@ impl App {
             return false;
         }
 
-        let field = settings.field();
+        let line = settings.line();
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => settings.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => settings.move_selection(-1),
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
-                settings.dirty = true;
-                self.adjust_setting(field, 1);
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
-                settings.dirty = true;
-                self.adjust_setting(field, -1);
-            }
+            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => match line
+            {
+                vex::settings_ui::Line::Option(field) => {
+                    settings.dirty = true;
+                    self.adjust_setting(field, 1);
+                }
+                vex::settings_ui::Line::Import(item) => settings.tick(item),
+                vex::settings_ui::Line::RunImport => self.run_import(),
+            },
+            KeyCode::Char('h') | KeyCode::Left => match line {
+                vex::settings_ui::Line::Option(field) => {
+                    settings.dirty = true;
+                    self.adjust_setting(field, -1);
+                }
+                vex::settings_ui::Line::Import(item) => settings.tick(item),
+                vex::settings_ui::Line::RunImport => {}
+            },
             // `w` writes; nothing is written without asking, because config is a file the user owns.
             KeyCode::Char('w') => self.write_settings(),
             KeyCode::Escape => self.state.settings = None,
@@ -2715,6 +2744,49 @@ impl App {
                 self.state.show_inlay_hints = values.inlay_hints;
                 self.state.inlay_hints.clear();
                 self.hinted_version = None;
+            }
+        }
+    }
+
+    /// Runs the ticked import, then reloads configuration so the result is visible at once.
+    fn run_import(&mut self) {
+        let Some(settings) = &self.state.settings else {
+            return;
+        };
+        let checklist = settings.checklist();
+        if checklist.is_empty() {
+            self.state.hover =
+                Some("tick what to import first — nothing is imported unless you ask".into());
+            return;
+        }
+
+        let directory = vex::config::config_dir();
+        match vex::import_cli::import_from_installed_vscode(checklist, &directory) {
+            Ok(report) => {
+                let rendered = report.render();
+                eprintln!("{rendered}");
+
+                // The imported files are only config; reloading is what makes them take effect, and
+                // doing it here means the panel's own values update too.
+                self.reload_config();
+
+                let summary = rendered
+                    .lines()
+                    .find(|line| line.contains("imported") || line.contains("nothing"))
+                    .unwrap_or("import finished")
+                    .trim()
+                    .to_string();
+                if let Some(settings) = &mut self.state.settings {
+                    settings.import_report = Some(summary.clone());
+                }
+                self.state.hover = Some(rendered);
+            }
+            Err(error) => {
+                let message = format!("import failed: {error}");
+                if let Some(settings) = &mut self.state.settings {
+                    settings.import_report = Some(message.clone());
+                }
+                self.state.hover = Some(message);
             }
         }
     }
@@ -3069,6 +3141,32 @@ impl App {
             Some(_) => false,
             None => false,
         }
+    }
+
+    /// Picks up the folder dialog's answer, if it has one.
+    fn poll_folder_picker(&mut self) -> bool {
+        let Some(picker) = &self.folder_picker else {
+            return false;
+        };
+        let Some(answer) = picker.poll() else {
+            return false;
+        };
+        self.folder_picker = None;
+
+        match answer {
+            Some(folder) => {
+                // The portal can hand back a *file* when the user double-clicks one in a directory
+                // chooser, so the parent is taken rather than refusing.
+                let folder = if folder.is_dir() {
+                    folder
+                } else {
+                    folder.parent().map(|p| p.to_path_buf()).unwrap_or(folder)
+                };
+                self.open_folder(&folder);
+            }
+            None => self.state.hover = None,
+        }
+        true
     }
 
     /// Re-reads configuration after `init.lua` changes.

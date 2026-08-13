@@ -98,7 +98,7 @@ Prefix `i` for inner, `a` for around.
 
 | Key | Does |
 |---|---|
-| `ctrl-k o` · `ctrl-k ctrl-o` | open a folder as the project |
+| `ctrl-k o` · `ctrl-k ctrl-o` | open a folder — the desktop's folder chooser |
 | `ctrl-p` | file palette (fuzzy) |
 | `ctrl-b` | buffer palette |
 | `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
@@ -165,6 +165,7 @@ what `vex import --snippets` writes.
 | `j` `k` | move between settings |
 | `h` `l` · `enter` | change the selected setting — applies immediately |
 | `w` | write the panel's values into `init.lua` |
+| `l` on an import row | tick what to bring over from VSCode; `import now` runs it |
 | `esc` | close |
 
 The panel's third column says where each value came from: `default`, `init.lua`, or `imported`. `w`

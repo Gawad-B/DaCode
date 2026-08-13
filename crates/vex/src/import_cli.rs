@@ -60,6 +60,35 @@ enum Source {
     OpenVsx(String),
 }
 
+/// Runs an import from a VSCode installation, for the settings panel.
+///
+/// The same code path the command line takes, driven from a checklist instead of from flags. Shared
+/// rather than reimplemented, because the interesting part — what is portable, what is refused, and
+/// what the report says about it — must not differ depending on where the import was started from.
+pub fn import_from_installed_vscode(
+    checklist: Checklist,
+    out: &Path,
+) -> Result<vex_import::ImportReport> {
+    let dir = vscode_config_dir()
+        .context("no VSCode configuration found — looked in the usual places for settings.json")?;
+
+    let args = Args {
+        source: Source::VscodeDir(dir.clone()),
+        checklist,
+        list_only: false,
+        out: out.to_path_buf(),
+    };
+
+    let mut report = vex_import::ImportReport::default();
+    import_from_vscode(&dir, &args, &mut report)?;
+    Ok(report)
+}
+
+/// Whether there is a VSCode installation to import from, for the panel to say so before offering.
+pub fn vscode_is_present() -> bool {
+    vscode_config_dir().is_some()
+}
+
 pub fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print!("{HELP}");

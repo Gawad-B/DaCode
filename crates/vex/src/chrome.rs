@@ -1030,7 +1030,7 @@ fn draw_settings(
     rect: Rect,
     scale: f32,
 ) {
-    use crate::settings_ui::{Field, Source};
+    use crate::settings_ui::Source;
 
     let theme = &state.theme;
     let accent = theme.accent(state.mode);
@@ -1060,9 +1060,29 @@ fn draw_settings(
         inlay_hints: state.show_inlay_hints,
     };
 
-    for (index, field) in Field::ALL.iter().enumerate() {
+    for (index, entry) in crate::settings_ui::Settings::lines().iter().enumerate() {
+        use crate::settings_ui::{Importable, Line};
+
         let selected = index == settings.selected;
-        let block = line * 2.0;
+
+        // A heading before the import section, so the checklist does not read as more settings.
+        if *entry == Line::Import(Importable::Settings) {
+            y += line * 0.6;
+            frame.text(label(
+                state,
+                "import from vscode",
+                Rect::new(rect.x + pad, y, width, line),
+                theme.ink_dim,
+                Align::Left,
+                scale,
+            ));
+            y += line * 1.4;
+        }
+
+        let block = match entry {
+            Line::Option(_) => line * 2.0,
+            _ => line * 1.4,
+        };
 
         if selected {
             frame.fill(
@@ -1080,48 +1100,105 @@ fn draw_settings(
             );
         }
 
-        frame.text(run(
-            state,
-            Role::Value,
-            field.name(),
-            Rect::new(rect.x + pad, y, width * 0.62, line),
-            if selected { theme.ink } else { theme.ink_dim },
-            Align::Left,
-            scale,
-        ));
+        match entry {
+            Line::Option(field) => {
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    field.name(),
+                    Rect::new(rect.x + pad, y, width * 0.62, line),
+                    if selected { theme.ink } else { theme.ink_dim },
+                    Align::Left,
+                    scale,
+                ));
 
-        // The value in the mode accent when selected: it is the thing `h`/`l` changes.
-        frame.text(run(
-            state,
-            Role::Value,
-            values.get(*field),
-            Rect::new(rect.x + pad, y, width, line),
-            if selected { accent } else { theme.ink },
-            Align::Right,
-            scale,
-        ));
+                // The value in the mode accent when selected: it is what `h`/`l` changes.
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    values.get(*field),
+                    Rect::new(rect.x + pad, y, width, line),
+                    if selected { accent } else { theme.ink },
+                    Align::Right,
+                    scale,
+                ));
 
-        // Where it came from, or what it does — the source is the more useful of the two once you are
-        // looking for why a setting is not what you expected.
-        let source = state
-            .setting_sources
-            .get(field.name())
-            .copied()
-            .unwrap_or(Source::Default);
-        frame.text(label(
-            state,
-            if selected {
-                field.help().to_string()
-            } else {
-                source.label().to_string()
-            },
-            Rect::new(rect.x + pad, y + line * 0.85, width, line),
-            theme.ink_faint,
-            Align::Left,
-            scale,
-        ));
+                // Where it came from, or what it does. The source is the more useful of the two once
+                // you are looking for why a setting is not what you expected.
+                let source = state
+                    .setting_sources
+                    .get(field.name())
+                    .copied()
+                    .unwrap_or(Source::Default);
+                frame.text(label(
+                    state,
+                    if selected {
+                        field.help().to_string()
+                    } else {
+                        source.label().to_string()
+                    },
+                    Rect::new(rect.x + pad, y + line * 0.85, width, line),
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            }
+            Line::Import(item) => {
+                // `[x]` rather than a check mark: the bundled fonts have none, and a missing glyph
+                // renders as a tofu box — which is how the file tree's chevrons first shipped.
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    format!(
+                        "[{}] {}",
+                        if settings.is_ticked(*item) { "x" } else { " " },
+                        item.name()
+                    ),
+                    Rect::new(rect.x + pad, y, width, line),
+                    if settings.is_ticked(*item) {
+                        theme.ink
+                    } else {
+                        theme.ink_dim
+                    },
+                    Align::Left,
+                    scale,
+                ));
+            }
+            Line::RunImport => {
+                let available = crate::import_cli::vscode_is_present();
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    if available {
+                        "import now".to_string()
+                    } else {
+                        "no vscode installation found".to_string()
+                    },
+                    Rect::new(rect.x + pad, y, width, line),
+                    match (available, selected) {
+                        (false, _) => theme.ink_faint,
+                        (true, true) => accent,
+                        (true, false) => theme.ink_dim,
+                    },
+                    Align::Left,
+                    scale,
+                ));
+            }
+        }
 
         y += block + 4.0 * scale;
+    }
+
+    // What the last import said, if one ran.
+    if let Some(report) = &settings.import_report {
+        frame.text(label(
+            state,
+            report.clone(),
+            Rect::new(rect.x + pad, y + line * 0.4, width, line),
+            theme.fresh(),
+            Align::Left,
+            scale,
+        ));
     }
 
     // The footer says how to change and how to keep. Nothing is written without being asked: this is

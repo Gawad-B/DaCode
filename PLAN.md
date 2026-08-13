@@ -493,6 +493,16 @@ inlay hints.
 > this milestone sets. Blame is a smaller gap: the gutter machinery is there and `git blame --porcelain`
 > would feed it, but per-line authorship earns its screen space far less often than per-line change.
 
+> **The folder chooser shells out.** vex draws its own interface with `wgpu` and has no GTK or Qt in
+> it; linking one — or `rfd`, which links one for you — to show a single dialog would add a second UI
+> stack, theme engine and event loop to an editor premised on staying light. So it runs `zenity`,
+> `kdialog` or the XDG portal, whichever exists, **on a thread**: a dialog is a subprocess someone may
+> leave open for a minute, and waiting on the UI thread would freeze the editor behind it. `zenity` and
+> `kdialog` are preferred over the portal deliberately — both are one command that prints a path,
+> a contract easy to be sure of, while driving the portal without a D-Bus library means racing a signal
+> against a method call and parsing it out of a text stream. Typing a path remains the fallback when
+> nothing is installed, because a key that silently does nothing is worse than one that asks.
+
 > **M8: a settings panel.** Config is a Lua file, and a panel that *replaced* it would have to write
 > the user's program for them. So the panel does something a file cannot: its third column says which
 > of default, `init.lua` or imported-from-VSCode last set each value. When a setting is not what you
