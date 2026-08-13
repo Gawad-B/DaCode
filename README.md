@@ -73,8 +73,13 @@ machinery for them exists.
 `]d` `[d` next/previous diagnostic · `gD` diagnostics list · `gi` toggle inlay hints
 `ctrl-space` completion (also in insert mode) · `esc` dismisses an info box
 
+### Folding
+`za` fold or unfold the block at the cursor · `zR` open all · `zM` fold every top-level block
+
+Folds come from indentation, so they work in every language — including ones with no grammar.
+
 ### Appearance
-`z` toggle soft wrap · `gt` toggle light/dark · `=` `-` font size
+`zw` toggle soft wrap · `gt` toggle light/dark · `=` `-` font size
 
 ## Configuration
 
@@ -127,6 +132,7 @@ and over SSH — and how most of the visual defects in this project were actuall
 ./target/release/vex --screenshot /tmp/vex.png --split 3h          # three stacked
 ./target/release/vex --screenshot /tmp/vex.png --tree              # the file tree
 ./target/release/vex --screenshot /tmp/vex.png --diagnostics-list  # the diagnostics list
+./target/release/vex --screenshot /tmp/vex.png --folded            # folded blocks
 ```
 
 ## Tests and benchmarks

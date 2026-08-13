@@ -1510,6 +1510,25 @@ fn draw_code(
             );
         }
 
+        // A folded head says what it hides, at the end of its own text. Not a `…` glyph in the
+        // gutter: the count is the useful part, and the gutter figure is already spoken for.
+        if row.folded > 0 {
+            let columns = columns_between(state, text, row.range.start, row.range.end);
+            let x = text_left + (columns + row.indent) as f32 * advance + advance;
+            frame.text(label(
+                state,
+                format!("{} lines", row.folded),
+                Rect::new(x, y, (code.right() - x).max(0.0), row_height),
+                theme.ink_faint,
+                Align::Left,
+                scale,
+            ));
+            frame.fill_linear(
+                Rect::new(code.x, y, code.width, row_height),
+                theme.ink_faint.with_alpha(0.06).over(theme.bg),
+            );
+        }
+
         // Gutter figure only on a line's first row: that blankness is how a wrap is told apart
         // from a new line at a glance.
         if row.is_first() {

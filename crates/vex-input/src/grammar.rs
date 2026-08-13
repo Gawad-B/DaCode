@@ -53,6 +53,8 @@ enum Stage {
     BracketPrefix { forward: bool },
     /// Saw `ctrl-w`, waiting for a window command.
     WindowPrefix,
+    /// Saw `z`, waiting for a fold command.
+    FoldPrefix,
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +292,7 @@ impl Grammar {
             Stage::GPrefix => return self.take_g_prefix(key, extend),
             Stage::BracketPrefix { forward } => return self.take_bracket_prefix(key, forward),
             Stage::WindowPrefix => return self.take_window_prefix(key),
+            Stage::FoldPrefix => return self.take_fold_prefix(key),
             Stage::Start | Stage::Target => {}
         }
 
@@ -455,7 +458,12 @@ impl Grammar {
                 self.emit(Action::SelectLine { count })
             }
 
-            'z' => self.emit(Action::ToggleSoftWrap),
+            'z' => {
+                // A prefix, as in Vim. Soft wrap moves to `zw`: `za`/`zR`/`zM` are muscle memory
+                // worth matching, and a single-key `z` would make them unreachable.
+                self.stage = Stage::FoldPrefix;
+                Resolution::Pending(self.display.clone())
+            }
             '=' | '+' => self.emit(Action::IncreaseFontSize),
             '-' => self.emit(Action::DecreaseFontSize),
 
@@ -619,6 +627,26 @@ impl Grammar {
             target: Target::Object(object),
             register,
         })
+    }
+
+    /// `z` and then a fold command.
+    fn take_fold_prefix(&mut self, key: Key) -> Resolution {
+        let KeyCode::Char(c) = key.code else {
+            self.clear();
+            return Resolution::Unhandled;
+        };
+
+        match c {
+            'a' | 'c' | 'o' => self.emit(Action::ToggleFold),
+            'R' => self.emit(Action::FoldAll { close: false }),
+            'M' => self.emit(Action::FoldAll { close: true }),
+            // vex's own: soft wrap has no Vim spelling to collide with.
+            'w' => self.emit(Action::ToggleSoftWrap),
+            _ => {
+                self.clear();
+                Resolution::Unhandled
+            }
+        }
     }
 
     /// `ctrl-w` and then a window command, as Vim spells it.

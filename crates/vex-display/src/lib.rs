@@ -50,6 +50,8 @@ impl ScrollAnchor {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub line: usize,
+    /// How many lines this row hides beneath it, when it is the head of a closed fold.
+    pub folded: usize,
     /// Index of this row within its buffer line. 0 for the first.
     pub sub_row: usize,
     /// Char range of the text on this row, excluding the line break.
@@ -77,9 +79,154 @@ impl Row {
 /// Widths are in **columns**, not pixels: correct for the monospaced code face, and the seam
 /// where measured advances will be substituted once proportional fallback glyphs matter. Kept
 /// explicit so that substitution is a change of one function, not of every caller.
+/// Which line ranges are folded away.
+///
+/// Folds are computed from *indentation* rather than from the syntax tree. Indentation is available
+/// synchronously, works in every language the editor supports and several it does not, and matches
+/// what the code looks like — which is what someone folding a block is actually pointing at. A
+/// tree-sitter fold query would be more precise about a few constructs and would arrive one frame
+/// late, from a worker, for a document version that may already have moved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Folds {
+    /// Sorted, non-overlapping, and never empty ranges. The first line of each stays visible: a fold
+    /// you cannot see is a fold you cannot open.
+    closed: Vec<Range<usize>>,
+}
+
+impl Folds {
+    pub fn is_empty(&self) -> bool {
+        self.closed.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.closed.clear();
+    }
+
+    /// Whether a line is hidden inside a closed fold.
+    pub fn is_hidden(&self, line: usize) -> bool {
+        self.closed
+            .iter()
+            .any(|fold| line > fold.start && line <= fold.end)
+    }
+
+    /// The fold headed by this line, if it is closed.
+    pub fn closed_at(&self, line: usize) -> Option<Range<usize>> {
+        self.closed.iter().find(|fold| fold.start == line).cloned()
+    }
+
+    /// Closes a range. Ranges that would nest inside it are absorbed.
+    pub fn close(&mut self, range: Range<usize>) {
+        if range.end <= range.start {
+            return;
+        }
+        self.closed
+            .retain(|fold| !(fold.start >= range.start && fold.end <= range.end));
+        self.closed.push(range);
+        self.closed.sort_by_key(|fold| fold.start);
+    }
+
+    pub fn open(&mut self, line: usize) -> bool {
+        let before = self.closed.len();
+        self.closed.retain(|fold| fold.start != line);
+        self.closed.len() != before
+    }
+
+    /// The first line at or after `line` that is not hidden.
+    pub fn next_visible(&self, line: usize) -> usize {
+        let mut line = line;
+        // Folds are sorted and disjoint, so one pass over them settles it; the loop repeats only
+        // when skipping one fold lands inside the next.
+        loop {
+            match self
+                .closed
+                .iter()
+                .find(|fold| line > fold.start && line <= fold.end)
+            {
+                Some(fold) => line = fold.end + 1,
+                None => return line,
+            }
+        }
+    }
+}
+
+/// The line range a fold at `line` would cover, from indentation.
+///
+/// The block is the run of following lines indented deeper than `line`, with blank lines carried
+/// along rather than ending it — a blank line inside a function body does not end the function.
+pub fn fold_range(text: &Text, line: usize, tab_width: usize) -> Option<Range<usize>> {
+    let indent_of = |line: usize| -> Option<usize> {
+        let range = text.line_range(line);
+        let mut columns = 0;
+        for c in text
+            .rope()
+            .slice(range.start.get()..range.end.get())
+            .chars()
+        {
+            match c {
+                ' ' => columns += 1,
+                '\t' => columns += tab_width - (columns % tab_width),
+                // A blank line has no indentation to speak of, so it reports none.
+                '\n' | '\r' => return None,
+                _ => return Some(columns),
+            }
+        }
+        None
+    };
+
+    let head = indent_of(line)?;
+    let last = text.last_line();
+    let mut end = line;
+    let mut candidate = line;
+
+    while candidate < last {
+        candidate += 1;
+        match indent_of(candidate) {
+            // Deeper: part of the block.
+            Some(indent) if indent > head => end = candidate,
+            // Blank: might be inside the block, so it is only taken if something deeper follows.
+            None => continue,
+            // Same or shallower: the block is over.
+            Some(_) => break,
+        }
+    }
+
+    if end == line {
+        return None;
+    }
+
+    // A closing brace sits at the *head's* indentation, so pure indent folding leaves it dangling
+    // below the fold — the block hides and `}` stays behind on a line of its own. Vim does exactly
+    // that, and it reads as a bug in every brace language. If the line after the block is nothing but
+    // closing delimiters at the head's indent, it belongs to the fold.
+    if end < last {
+        let after = end + 1;
+        if indent_of(after) == Some(head) {
+            let range = text.line_range(after);
+            let content: String = text
+                .rope()
+                .slice(range.start.get()..range.end.get())
+                .chars()
+                .collect();
+            let trimmed = content.trim();
+            if !trimmed.is_empty()
+                && trimmed
+                    .chars()
+                    .all(|c| matches!(c, '}' | ')' | ']' | ',' | ';'))
+            {
+                end = after;
+            }
+        }
+    }
+
+    Some(line..end)
+}
+
 #[derive(Debug, Clone)]
 pub struct DisplayMap {
     pub mode: WrapMode,
+    /// Lines folded away. Part of the display map because folding *is* a mapping from buffer lines
+    /// to display rows, which is what this type is.
+    pub folds: Folds,
     /// Usable width in columns.
     pub columns: usize,
     /// Tab stop width, used when measuring a line's columns.
@@ -92,6 +239,7 @@ impl Default for DisplayMap {
     fn default() -> Self {
         Self {
             mode: WrapMode::Word,
+            folds: Folds::default(),
             columns: 100,
             tab_width: 4,
             preserve_indent: true,
@@ -117,6 +265,7 @@ impl DisplayMap {
 
         if self.mode == WrapMode::None || length == 0 {
             return vec![Row {
+                folded: 0,
                 line,
                 sub_row: 0,
                 range,
@@ -190,6 +339,7 @@ impl DisplayMap {
 
         if rows.is_empty() {
             rows.push(Row {
+                folded: 0,
                 line,
                 sub_row: 0,
                 range,
@@ -209,6 +359,7 @@ impl DisplayMap {
         indent: usize,
     ) -> Row {
         Row {
+            folded: 0,
             line,
             sub_row,
             range: CharOffset(line_start.get() + from)..CharOffset(line_start.get() + to),
@@ -243,7 +394,28 @@ impl DisplayMap {
         let mut line = anchor.line.min(text.last_line());
         let mut skip = anchor.sub_row;
 
+        // An anchor can land inside a fold — the fold was closed while scrolled into it — so the
+        // first line is nudged out rather than drawing hidden text.
+        line = self.folds.next_visible(line);
+
         while out.len() < count {
+            // A closed fold contributes one row: its first line, marked with what it hides.
+            if let Some(fold) = self.folds.closed_at(line) {
+                let mut row = self.wrap_line(text, line).into_iter().next();
+                if let Some(row) = row.take() {
+                    out.push(Row {
+                        folded: fold.end - fold.start,
+                        ..row
+                    });
+                }
+                if fold.end >= text.last_line() {
+                    break;
+                }
+                line = fold.end + 1;
+                skip = 0;
+                continue;
+            }
+
             let rows = self.wrap_line(text, line);
             for row in rows.into_iter().skip(skip) {
                 if out.len() == count {

@@ -152,6 +152,69 @@ pub fn execute(
         | Action::Format
         | Action::CodeAction
         | Action::FindReferences => state.pending_request = Some(action.clone()),
+        Action::ToggleFold => {
+            let line = state.cursor_point().line;
+            if state.display.folds.open(line) {
+                // Already folded here: opening it is the toggle.
+            } else if let Some(range) =
+                vex_display::fold_range(state.document.text(), line, state.display.tab_width)
+            {
+                state.display.folds.close(range);
+            } else {
+                // Not a block head. Fold the block this line is *inside*, which is what someone
+                // pressing `za` in the middle of a function means by it.
+                let mut candidate = line;
+                while candidate > 0 {
+                    candidate -= 1;
+                    if let Some(range) = vex_display::fold_range(
+                        state.document.text(),
+                        candidate,
+                        state.display.tab_width,
+                    ) {
+                        if range.end >= line {
+                            state.display.folds.close(range);
+                            // The cursor cannot stay on a hidden line.
+                            let head = state
+                                .document
+                                .text()
+                                .point_to_char(Point::new(candidate, 0));
+                            state.document.set_primary_caret(head);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Action::FoldAll { close } => {
+            state.display.folds.clear();
+            if *close {
+                let text = state.document.text();
+                let mut line = 0;
+                while line <= text.last_line() {
+                    match vex_display::fold_range(text, line, state.display.tab_width) {
+                        // Top-level blocks only: closing nested ones too would hide nothing extra,
+                        // since the outer fold already covers them.
+                        Some(range) => {
+                            let end = range.end;
+                            state.display.folds.close(range);
+                            line = end + 1;
+                        }
+                        None => line += 1,
+                    }
+                }
+
+                let line = state.cursor_point().line;
+                if state.display.folds.is_hidden(line) {
+                    // Land on the head of whatever now hides the cursor.
+                    let mut head = line;
+                    while head > 0 && state.display.folds.is_hidden(head) {
+                        head -= 1;
+                    }
+                    let offset = state.document.text().point_to_char(Point::new(head, 0));
+                    state.document.set_primary_caret(offset);
+                }
+            }
+        }
         Action::ToggleDiagnosticsList => {
             state.show_diagnostics = !state.show_diagnostics;
             // The tree and the diagnostics list share the sidebar; showing one hides the other

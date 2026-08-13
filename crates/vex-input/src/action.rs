@@ -247,6 +247,13 @@ pub enum Action {
     ToggleInlayHints,
     /// `gD` — list every diagnostic in the file, rather than walking them one at a time.
     ToggleDiagnosticsList,
+
+    /// `za` — fold or unfold the block at the cursor.
+    ToggleFold,
+    /// `zR` / `zM` — open every fold, or close every foldable block.
+    FoldAll {
+        close: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +381,9 @@ impl Action {
             "find_references" => Action::FindReferences,
             "toggle_inlay_hints" => Action::ToggleInlayHints,
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
+            "toggle_fold" => Action::ToggleFold,
+            "fold_all" => Action::FoldAll { close: true },
+            "unfold_all" => Action::FoldAll { close: false },
 
             _ => return None,
         })

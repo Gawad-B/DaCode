@@ -308,3 +308,146 @@ proptest! {
         );
     }
 }
+
+// ---- folding ---------------------------------------------------------------------------------
+
+use vex_display::{Folds, fold_range};
+
+fn source() -> Text {
+    Text::from_str(
+        "fn main() {\n    let a = 1;\n\n    let b = 2;\n}\n\nfn other() {\n    body();\n}\n",
+    )
+}
+
+#[test]
+fn a_fold_covers_the_indented_block_below_its_head() {
+    let text = source();
+    assert_eq!(
+        fold_range(&text, 0, 4),
+        Some(0..4),
+        "a function head folds through its closing brace"
+    );
+}
+
+#[test]
+fn a_blank_line_inside_a_block_does_not_end_it() {
+    // The blank line between `let a` and `let b` is inside the function, and a fold that stopped
+    // there would fold one statement instead of a body.
+    let text = source();
+    let fold = fold_range(&text, 0, 4).expect("folds");
+    assert!(
+        fold.contains(&3),
+        "the line after the blank is still inside"
+    );
+}
+
+#[test]
+fn a_line_with_nothing_indented_under_it_does_not_fold() {
+    let text = source();
+    assert_eq!(fold_range(&text, 1, 4), None, "a statement is not a block");
+    assert_eq!(fold_range(&text, 4, 4), None, "nor is a closing brace");
+}
+
+#[test]
+fn a_trailing_closing_brace_is_folded_with_its_block() {
+    // Pure indent folding leaves `}` behind on a line of its own, because it sits at the *head's*
+    // indentation. Vim does that, and it reads as a bug in every brace language.
+    let text = source();
+    assert_eq!(
+        fold_range(&text, 6, 4),
+        Some(6..8),
+        "`fn other` through its brace"
+    );
+
+    // Python has no such line, and nothing should be swept in that does not belong.
+    let python = Text::from_str("def f():\n    body()\n\ndef g():\n    other()\n");
+    assert_eq!(fold_range(&python, 0, 4), Some(0..1));
+}
+
+#[test]
+fn folded_lines_are_skipped_and_the_head_reports_what_it_hides() {
+    let text = source();
+    let mut map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    map.folds.close(0..4);
+
+    let rows = map.rows_from(&text, ScrollAnchor::default(), 10);
+    let lines: Vec<usize> = rows.iter().map(|row| row.line).collect();
+
+    assert_eq!(
+        lines,
+        vec![0, 5, 6, 7, 8, 9],
+        "the body is hidden, its head and everything after it stay"
+    );
+    assert_eq!(rows[0].folded, 4, "the head says how many lines it hides");
+    assert_eq!(rows[1].folded, 0);
+}
+
+#[test]
+fn an_anchor_inside_a_fold_is_nudged_out_rather_than_drawing_hidden_text() {
+    // Reachable by folding while scrolled into the block. Drawing from inside would show text the
+    // fold says is not there.
+    let text = source();
+    let mut map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    map.folds.close(0..4);
+
+    let rows = map.rows_from(
+        &text,
+        ScrollAnchor {
+            line: 2,
+            sub_row: 0,
+        },
+        3,
+    );
+    assert_eq!(rows[0].line, 5, "the first visible line after the fold");
+}
+
+#[test]
+fn closing_a_fold_absorbs_the_ones_nested_inside_it() {
+    let mut folds = Folds::default();
+    folds.close(2..4);
+    folds.close(1..8);
+
+    assert!(folds.closed_at(1).is_some());
+    assert!(
+        folds.closed_at(2).is_none(),
+        "the inner fold is part of the outer one now, not a second entry"
+    );
+}
+
+#[test]
+fn hidden_lines_are_reported_and_the_head_is_not() {
+    let mut folds = Folds::default();
+    folds.close(3..6);
+
+    assert!(
+        !folds.is_hidden(3),
+        "a fold you cannot see cannot be opened"
+    );
+    assert!(folds.is_hidden(4) && folds.is_hidden(6));
+    assert!(!folds.is_hidden(7));
+    assert_eq!(folds.next_visible(4), 7);
+}
+
+#[test]
+fn opening_a_fold_restores_the_rows() {
+    let text = source();
+    let mut map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    map.folds.close(0..4);
+    assert_eq!(map.rows_from(&text, ScrollAnchor::default(), 10).len(), 6);
+
+    assert!(map.folds.open(0));
+    assert_eq!(map.rows_from(&text, ScrollAnchor::default(), 10).len(), 10);
+    assert!(
+        !map.folds.open(0),
+        "opening what is already open changes nothing"
+    );
+}

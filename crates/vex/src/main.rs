@@ -569,6 +569,21 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let mut frame = Frame::default();
     if flag("--splash") {
         chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+    } else if flag("--folded") {
+        // Fold every top-level block, so the marker and the hidden-line count are inspectable.
+        let mut line = 0;
+        let text = state.document.text();
+        while line <= text.last_line() {
+            match vex_display::fold_range(text, line, state.display.tab_width) {
+                Some(range) => {
+                    let end = range.end;
+                    state.display.folds.close(range);
+                    line = end + 1;
+                }
+                None => line += 1,
+            }
+        }
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--diagnostics-list") {
         state.show_diagnostics = true;
         chrome::draw(&mut frame, &state, bounds, 1.0);
@@ -2584,6 +2599,10 @@ impl App {
                 Err(err) => eprintln!("vex: syntax unavailable: {err}"),
             }
         }
+
+        // Folds describe the document that just left. Keeping them would hide unrelated lines in
+        // the new one, since they are line numbers and nothing more.
+        self.state.display.folds.clear();
 
         self.reveal_in_tree();
         self.watch_active();
