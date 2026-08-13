@@ -270,7 +270,9 @@ fn path_for(uri: &Uri) -> Option<PathBuf> {
 
 /// Unwraps the annotated form of a text edit. Annotations describe changes for a user to approve
 /// individually, which vex does not offer, so the edit itself is what matters.
-fn text_edit_of(edit: &vex_lsp::lsp_types::OneOf<TextEdit, vex_lsp::lsp_types::AnnotatedTextEdit>) -> TextEdit {
+fn text_edit_of(
+    edit: &vex_lsp::lsp_types::OneOf<TextEdit, vex_lsp::lsp_types::AnnotatedTextEdit>,
+) -> TextEdit {
     match edit {
         vex_lsp::lsp_types::OneOf::Left(edit) => edit.clone(),
         vex_lsp::lsp_types::OneOf::Right(annotated) => annotated.text_edit.clone(),
@@ -422,8 +424,7 @@ mod tests {
         let mut document = Document::from_str("fine\n");
         let version = document.version();
 
-        let count =
-            apply_to_document(&mut document, &[edit(0, 0, 0, "")], Some(version)).unwrap();
+        let count = apply_to_document(&mut document, &[edit(0, 0, 0, "")], Some(version)).unwrap();
 
         assert_eq!(count, 0);
         assert!(!document.is_dirty(), "an empty replacement is not a change");
@@ -459,7 +460,10 @@ mod tests {
         )
         .expect("applies");
 
-        assert_eq!(applied.in_buffer, 1, "the open file went through the buffer");
+        assert_eq!(
+            applied.in_buffer, 1,
+            "the open file went through the buffer"
+        );
         assert_eq!(applied.files.len(), 1, "and the other one through the disk");
         assert_eq!(applied.total(), 2);
         assert_eq!(document.text().to_string(), "let total = 1;\n");

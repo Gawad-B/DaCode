@@ -21,6 +21,9 @@ use vex_theme::Mode;
 pub enum Outcome {
     Continue,
     Quit,
+    /// A window-management action the caller has to carry out, because it needs the pane and buffer
+    /// lists that the executor deliberately does not have.
+    Window(Action),
 }
 
 /// Applies one action. `rows` is the viewport height, needed for display-aware vertical motion.
@@ -166,6 +169,12 @@ pub fn execute(
         }
         Action::NextDiagnostic { forward } => next_diagnostic(state, *forward),
         Action::DismissInfo => state.hover = None,
+
+        // Window management belongs to the caller: the executor has no idea how many panes exist,
+        // and giving it one would mean giving it the buffer list too.
+        Action::SplitPane { .. } | Action::ClosePane | Action::FocusPane { .. } => {
+            return Outcome::Window(action.clone());
+        }
 
         Action::SearchProject => {
             // The word under the cursor is the query people actually want from a bare invocation.

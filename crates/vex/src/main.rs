@@ -14,6 +14,7 @@ use vex::chrome::{self, EditorState};
 use vex::config;
 use vex::execute::{Outcome, execute};
 use vex::palette::{Palette, PaletteKind, Target};
+use vex::panes::Panes;
 use vex::prompt::{Command, PromptKind, parse_command};
 use vex::recovery::Recovery;
 use vex_buffer::Document;
@@ -85,6 +86,7 @@ fn main() -> Result<()> {
         lsp: None,
         sent_version: None,
         recovery: Recovery::new(),
+        panes: Panes::new(),
         edit_version: None,
         save_after_format: false,
         wakes: 0,
@@ -211,7 +213,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 8] = [
+const VALUE_FLAGS: [&str; 9] = [
     "--screenshot",
     "--mode",
     "--columns",
@@ -220,6 +222,7 @@ const VALUE_FLAGS: [&str; 8] = [
     "--grep",
     "--diagnostic",
     "--complete",
+    "--split",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -496,6 +499,42 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let mut frame = Frame::default();
     if flag("--splash") {
         chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+    } else if let Some(split) = value("--split") {
+        // `--split N[h]` renders N panes on one buffer, so the layout is inspectable without a
+        // window. The panes look at different places in the file, which is the case worth seeing:
+        // identical panes would hide a scroll bug.
+        let horizontal = split.ends_with('h');
+        let count = split
+            .trim_end_matches(['h', 'v'])
+            .parse::<usize>()
+            .unwrap_or(2)
+            .clamp(1, 4);
+
+        let panes: Vec<chrome::PaneView<'_>> = (0..count)
+            .map(|index| chrome::PaneView {
+                document: &state.document,
+                scroll: ScrollAnchor {
+                    line: index * 14,
+                    sub_row: 0,
+                },
+                path: &state.path,
+                focused: index == 0,
+                highlights: &state.highlights,
+            })
+            .collect();
+
+        chrome::draw_panes(
+            &mut frame,
+            &state,
+            &panes,
+            if horizontal {
+                chrome::PaneLayout::Horizontal
+            } else {
+                chrome::PaneLayout::Vertical
+            },
+            bounds,
+            1.0,
+        );
     } else {
         chrome::draw(&mut frame, &state, bounds, 1.0);
     }
@@ -561,6 +600,8 @@ struct App {
     recovery: Recovery,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
+    /// Open panes, and which has focus. Always at least one — see `vex::panes`.
+    panes: Panes,
     /// Buffers other than the active one. The active document lives in `state`, and switching swaps
     /// it with an entry here — one document is always the live one, which keeps the editing path
     /// free of "which buffer am I in?" checks.
@@ -573,6 +614,12 @@ struct Buffer {
     path: Vec<String>,
     file_path: Option<String>,
     scroll: ScrollAnchor,
+    /// The highlights this buffer had when it was last live.
+    ///
+    /// Kept so a pane showing this buffer can be drawn with its colors while another pane has focus.
+    /// They stay correct because an unfocused buffer cannot be edited — keys only reach the focused
+    /// pane — and the moment it is edited it is the live buffer again.
+    highlights: Vec<vex_syntax::HighlightSpan>,
 }
 
 impl ApplicationHandler for App {
@@ -932,6 +979,9 @@ impl App {
 
         let rows = self.code_rows();
         let outcome = execute(&mut self.state, &mut self.registers, &action, rows);
+        if let Outcome::Window(action) = &outcome {
+            self.window_action(action);
+        }
 
         // Font size changes the column advance, so the wrap width has to be recomputed or text
         // keeps wrapping at the old width.
@@ -1155,10 +1205,7 @@ impl App {
                     self.apply_server_edit(
                         &format!("renamed to `{new_name}`"),
                         |state, version| {
-                            let path = state
-                                .file_path
-                                .clone()
-                                .map(std::path::PathBuf::from);
+                            let path = state.file_path.clone().map(std::path::PathBuf::from);
                             vex::edits::apply_workspace_edit(
                                 &mut state.document,
                                 path.as_deref(),
@@ -1178,7 +1225,11 @@ impl App {
                         )
                     });
                 }
-                vex_lsp::ServerEvent::RequestFailed { what, reason, retry } => {
+                vex_lsp::ServerEvent::RequestFailed {
+                    what,
+                    reason,
+                    retry,
+                } => {
                     // On screen, not just on stderr: this is something the user asked for and did not
                     // get. Retryable failures say so — a language server that is still indexing will
                     // answer the same question happily a second later, and "try again" is the whole
@@ -1603,6 +1654,114 @@ impl App {
         }
         false
     }
+}
+
+/// Borrows each pane's buffer for drawing.
+///
+/// A free function over the individual fields rather than a method, because the caller holds
+/// `&mut self.frame` and `&mut self.renderer` at the same time — borrowing fields separately is what
+/// lets those coexist.
+fn pane_views<'a>(
+    panes: &'a Panes,
+    state: &'a EditorState,
+    buffers: &'a [Buffer],
+) -> Vec<chrome::PaneView<'a>> {
+    let active_pane = panes.active();
+    panes
+        .iter()
+        .enumerate()
+        .map(|(index, pane)| {
+            let focused = index == active_pane;
+            let live = pane.buffer == state.active_buffer;
+            if live {
+                chrome::PaneView {
+                    document: &state.document,
+                    // The focused pane's scroll is the live one; another pane on the same buffer
+                    // keeps its own place in it.
+                    scroll: if focused { state.scroll } else { pane.scroll },
+                    path: &state.path,
+                    focused,
+                    highlights: &state.highlights,
+                }
+            } else {
+                let stored = stored_index(pane.buffer, state.active_buffer);
+                match stored.and_then(|index| buffers.get(index)) {
+                    Some(buffer) => chrome::PaneView {
+                        document: &buffer.document,
+                        scroll: pane.scroll,
+                        path: &buffer.path,
+                        focused,
+                        highlights: &buffer.highlights,
+                    },
+                    // The buffer went away — a pane pointing at nothing draws the live one
+                    // rather than vanishing.
+                    None => chrome::PaneView {
+                        document: &state.document,
+                        scroll: pane.scroll,
+                        path: &state.path,
+                        focused,
+                        highlights: &state.highlights,
+                    },
+                }
+            }
+        })
+        .collect()
+}
+
+/// Where a buffer index lives in `buffers`, which excludes the active one.
+fn stored_index(buffer: usize, active: usize) -> Option<usize> {
+    if buffer == active {
+        return None;
+    }
+    Some(if buffer < active { buffer } else { buffer - 1 })
+}
+
+impl App {
+    /// Carries out a window action.
+    fn window_action(&mut self, action: &Action) {
+        match action {
+            Action::SplitPane { vertical } => {
+                self.save_pane();
+                self.panes.split(if *vertical {
+                    chrome::PaneLayout::Vertical
+                } else {
+                    chrome::PaneLayout::Horizontal
+                });
+            }
+            Action::ClosePane => {
+                if self.panes.close() {
+                    self.restore_pane();
+                }
+            }
+            Action::FocusPane { forward } if self.panes.is_split() => {
+                self.save_pane();
+                self.panes.cycle(*forward);
+                self.restore_pane();
+            }
+            _ => {}
+        }
+    }
+
+    /// Records where the focused pane is looking, before focus moves away from it.
+    fn save_pane(&mut self) {
+        let buffer = self.state.active_buffer;
+        let scroll = self.state.scroll;
+        let selections = self.state.document.selections().clone();
+        let pane = self.panes.focused_mut();
+        pane.buffer = buffer;
+        pane.scroll = scroll;
+        pane.selections = selections;
+    }
+
+    /// Brings the newly focused pane's buffer, scroll and selections back to the live state.
+    fn restore_pane(&mut self) {
+        let pane = self.panes.focused().clone();
+        if pane.buffer != self.state.active_buffer {
+            self.switch_to(pane.buffer);
+        }
+        self.state.scroll = pane.scroll;
+        self.state.document.set_selections(pane.selections);
+    }
 
     /// Sends a rename request for the symbol under the cursor.
     fn request_rename(&mut self, new_name: &str) {
@@ -1866,6 +2025,7 @@ impl App {
             path: std::mem::replace(&mut self.state.path, path),
             file_path: std::mem::replace(&mut self.state.file_path, file_path),
             scroll: std::mem::take(&mut self.state.scroll),
+            highlights: std::mem::take(&mut self.state.highlights),
         };
         self.buffers.insert(self.state.active_buffer, previous);
         self.state.active_buffer = self.buffers.len();
@@ -1895,6 +2055,8 @@ impl App {
         std::mem::swap(&mut self.state.path, &mut target.path);
         std::mem::swap(&mut self.state.file_path, &mut target.file_path);
         std::mem::swap(&mut self.state.scroll, &mut target.scroll);
+        // Highlights travel with the buffer so an unfocused pane keeps its colors.
+        std::mem::swap(&mut self.state.highlights, &mut target.highlights);
 
         self.state.active_buffer = index;
         self.after_buffer_change();
@@ -1908,9 +2070,8 @@ impl App {
             self.state.display.tab_width,
         );
 
-        // Highlights belong to the old document; keeping them would paint one file's colors over
-        // another's text until the next parse landed.
-        self.state.highlights.clear();
+        // The node path belongs to the old document. Highlights do not need clearing here: they are
+        // swapped with the buffer, so what is in `state` already belongs to the document in `state`.
         self.state.node_path.clear();
         self.state.syntax_error = false;
         self.state.syntax_version = Version(0);
@@ -1961,12 +2122,16 @@ impl App {
         self.state.worst_ms = renderer.timer.worst_ms();
 
         self.frame.clear();
-        chrome::draw(
+        let panes = pane_views(&self.panes, &self.state, &self.buffers);
+        chrome::draw_panes(
             &mut self.frame,
             &self.state,
+            &panes,
+            self.panes.layout,
             Rect::new(0.0, 0.0, width as f32, height as f32),
             scale,
         );
+        drop(panes);
 
         if let Err(err) = renderer.render(&self.frame, self.state.theme.bg) {
             eprintln!("vex: frame dropped: {err:#}");

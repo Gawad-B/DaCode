@@ -12,6 +12,7 @@ pub mod execute;
 pub mod icon;
 pub mod import_cli;
 pub mod palette;
+pub mod panes;
 pub mod prompt;
 pub mod recovery;
 pub mod results;

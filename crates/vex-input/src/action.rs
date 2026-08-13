@@ -226,6 +226,17 @@ pub enum Action {
     Rename,
     /// Reformat the buffer through the language server.
     Format,
+
+    /// `ctrl-w v` / `ctrl-w s` — show the current buffer in a second pane.
+    SplitPane {
+        vertical: bool,
+    },
+    /// `ctrl-w c` — close the focused pane. The last pane never closes.
+    ClosePane,
+    /// `ctrl-w w` and the directional keys — move focus between panes.
+    FocusPane {
+        forward: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,6 +354,11 @@ impl Action {
             "completion" => Action::RequestCompletion,
             "rename" => Action::Rename,
             "format" => Action::Format,
+            "split_vertical" => Action::SplitPane { vertical: true },
+            "split_horizontal" => Action::SplitPane { vertical: false },
+            "close_pane" => Action::ClosePane,
+            "next_pane" => Action::FocusPane { forward: true },
+            "previous_pane" => Action::FocusPane { forward: false },
 
             _ => return None,
         })

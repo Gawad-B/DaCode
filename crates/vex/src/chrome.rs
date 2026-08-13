@@ -17,6 +17,24 @@ use vex_syntax::{Highlight, HighlightSpan};
 use vex_text::{CharOffset, Point, Text, Version};
 use vex_theme::{CursorShape, Mode, Oklch, Role, Theme, Typography, frame as border, space};
 
+/// One pane's view of a buffer, for drawing.
+///
+/// Only the focused pane's document is the live one in [`EditorState`]; the rest are borrowed from
+/// the buffer list. Passing them in as views rather than reaching for them here keeps the chrome a
+/// pure function of what it is given, which is what makes it testable without an editor around it.
+pub struct PaneView<'a> {
+    pub document: &'a Document,
+    pub scroll: ScrollAnchor,
+    pub path: &'a [String],
+    pub focused: bool,
+    /// Highlight spans for this buffer.
+    ///
+    /// An unfocused pane cannot be edited — keys only reach the focused one — so the spans computed
+    /// when it was last focused are still correct for its text. Missing spans render as plain text,
+    /// which degrades honestly rather than painting one file's colors onto another's.
+    pub highlights: &'a [HighlightSpan],
+}
+
 pub struct EditorState {
     pub mode: Mode,
     pub theme: Theme,
@@ -154,7 +172,36 @@ pub fn draw_splash(
     });
 }
 
+/// How panes divide the editor area.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum PaneLayout {
+    /// Side by side.
+    #[default]
+    Vertical,
+    /// Stacked.
+    Horizontal,
+}
+
 pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
+    // The single-pane case, which is what the tests and the screenshot path use.
+    let pane = PaneView {
+        document: &state.document,
+        scroll: state.scroll,
+        path: &state.path,
+        focused: true,
+        highlights: &state.highlights,
+    };
+    draw_panes(frame, state, &[pane], PaneLayout::Vertical, bounds, scale);
+}
+
+pub fn draw_panes(
+    frame: &mut Frame,
+    state: &EditorState,
+    panes: &[PaneView<'_>],
+    layout: PaneLayout,
+    bounds: Rect,
+    scale: f32,
+) {
     let theme = &state.theme;
     frame.fill(bounds, theme.bg);
 
@@ -182,10 +229,122 @@ pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
 
     let sidebar_width = px(292.0).min(body_area.width * 0.32);
     let (sidebar, editor) = body_area.split_right(sidebar_width);
-    let (gutter, code) = editor.split_left(px(78.0));
 
+    // Panes divide the editor area evenly along one axis. A flat row or column rather than a tree:
+    // a tree buys arbitrary nesting that almost nobody arranges deliberately, at the cost of every
+    // layout question becoming recursive.
+    let count = panes.len().max(1);
+    let mut focused_code = editor;
+    for (index, pane) in panes.iter().enumerate() {
+        let slot = match layout {
+            PaneLayout::Vertical => {
+                let width = (editor.width / count as f32).floor();
+                Rect::new(
+                    editor.x + width * index as f32,
+                    editor.y,
+                    if index + 1 == count {
+                        editor.right() - (editor.x + width * index as f32)
+                    } else {
+                        width
+                    },
+                    editor.height,
+                )
+            }
+            PaneLayout::Horizontal => {
+                let height = (editor.height / count as f32).floor();
+                Rect::new(
+                    editor.x,
+                    editor.y + height * index as f32,
+                    editor.width,
+                    if index + 1 == count {
+                        editor.bottom() - (editor.y + height * index as f32)
+                    } else {
+                        height
+                    },
+                )
+            }
+        };
+
+        // A hairline between panes, on the leading edge of every pane after the first. Without it
+        // two files sitting side by side read as one document with a strange gap in it.
+        let slot = if index == 0 {
+            slot
+        } else {
+            match layout {
+                PaneLayout::Vertical => {
+                    frame.fill(
+                        Rect::new(slot.x, slot.y, border::BORDER * scale, slot.height),
+                        theme.rule,
+                    );
+                    Rect::new(
+                        slot.x + border::BORDER * scale,
+                        slot.y,
+                        slot.width - border::BORDER * scale,
+                        slot.height,
+                    )
+                }
+                PaneLayout::Horizontal => {
+                    frame.fill(
+                        Rect::new(slot.x, slot.y, slot.width, border::BORDER * scale),
+                        theme.rule,
+                    );
+                    Rect::new(
+                        slot.x,
+                        slot.y + border::BORDER * scale,
+                        slot.width,
+                        slot.height - border::BORDER * scale,
+                    )
+                }
+            }
+        };
+
+        // With more than one pane, each takes a footer naming its file. A reserved strip rather than
+        // a label floating over the text: an overlay would sit on top of the last row of code, which
+        // is exactly where the eye goes when reading down.
+        let (footer, slot) = if count > 1 {
+            let (footer, rest) = slot.split_bottom(22.0 * scale);
+            (Some(footer), rest)
+        } else {
+            (None, slot)
+        };
+
+        // The gutter narrows with the pane, so a three-way split does not spend most of its width
+        // on line numbers.
+        let gutter_width = px(78.0).min(slot.width * 0.22);
+        let (gutter, code) = slot.split_left(gutter_width);
+        draw_code(frame, state, pane, gutter, code, row_height, scale);
+
+        if let Some(footer) = footer {
+            frame.fill(footer, if pane.focused { theme.bg_alt } else { theme.bg });
+            frame.rule_top(footer, theme.rule_soft, border::BORDER);
+            frame.text(label(
+                state,
+                pane.path.last().cloned().unwrap_or_default(),
+                Rect::new(
+                    footer.x + space::MD * scale,
+                    footer.y,
+                    footer.width - space::MD * 2.0 * scale,
+                    footer.height,
+                ),
+                // The focused pane's name takes the mode accent: with two files open it is the
+                // fastest way to see where typing will land.
+                if pane.focused {
+                    theme.accent(state.mode)
+                } else {
+                    theme.ink_faint
+                },
+                Align::Left,
+                scale,
+            ));
+        }
+
+        if pane.focused {
+            focused_code = code;
+        }
+    }
+
+    let code = focused_code;
     let visible = state.visible_rows(code.height, row_height);
-    draw_code(frame, state, gutter, code, row_height, scale);
     draw_sidebar(frame, state, sidebar, visible, scale);
     if let (Some(results), Some(area)) = (&state.results, results_area) {
         draw_results(frame, state, results, area, scale);
@@ -994,27 +1153,38 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
 fn draw_code(
     frame: &mut Frame,
     state: &EditorState,
+    pane: &PaneView<'_>,
     gutter: Rect,
     code: Rect,
     row_height: f32,
     scale: f32,
 ) {
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    let text = state.document.text();
-    let cursor = state.cursor();
-    let cursor_line = state.cursor_point().line;
+    // The mode belongs to the focused pane. An unfocused one is not in insert mode just because the
+    // pane beside it is, and tinting it as though it were would be a lie about where typing goes.
+    let accent = if pane.focused {
+        theme.accent(state.mode)
+    } else {
+        theme.ink_faint
+    };
+    let text = pane.document.text();
+    let cursor = pane.document.selections().primary().head;
+    let cursor_line = text.char_to_point(cursor).line;
 
     let (from, to) = theme.gutter_tint(state.mode);
-    frame.fill_gradient_x(gutter, from, to, 24);
+    if pane.focused {
+        frame.fill_gradient_x(gutter, from, to, 24);
+    } else {
+        frame.fill(gutter, theme.bg_alt);
+    }
 
-    if state.is_empty() {
+    if pane.focused && state.is_empty() {
         draw_empty_state(frame, state, code, scale);
         return;
     }
 
     let height = state.visible_rows(code.height, row_height);
-    let rows = state.display.rows_from(text, state.scroll, height);
+    let rows = state.display.rows_from(text, pane.scroll, height);
     let advance = column_advance(state, scale);
     let text_left = code.x + space::SM * scale;
     let em = state.typography.code_size * scale;
@@ -1023,7 +1193,7 @@ fn draw_code(
         let y = code.y + index as f32 * row_height;
         let on_cursor_line = row.line == cursor_line;
 
-        if on_cursor_line {
+        if on_cursor_line && pane.focused {
             frame.fill_linear(
                 Rect::new(code.x, y, code.width, row_height),
                 theme.line_tint(state.mode),
@@ -1037,7 +1207,7 @@ fn draw_code(
         // Diagnostic underlines. Drawn as a 2px rule beneath the offending span rather than as a
         // fill, so the code stays readable — a wash over an error makes it *harder* to read the
         // thing you are being told about.
-        for diagnostic in state.diagnostics.items() {
+        for diagnostic in state.diagnostics.items().iter().filter(|_| pane.focused) {
             let range = vex_lsp::range_from_lsp(text, diagnostic.range);
             let start = range.start.max(row.range.start);
             let end = range.end.min(row.range.end);
@@ -1069,7 +1239,7 @@ fn draw_code(
 
         // Search matches, under the selection fills: a match you have also selected should read as
         // selected.
-        for range in &state.search_matches {
+        for range in state.search_matches.iter().filter(|_| pane.focused) {
             let start = range.start.max(row.range.start);
             let end = range.end.min(row.range.end);
             if start >= end {
@@ -1095,7 +1265,7 @@ fn draw_code(
 
         // Selection fills, clipped to this row. In visual mode the *range* carries the signal,
         // so this is what communicates the mode.
-        for selection in state.document.selections().iter() {
+        for selection in pane.document.selections().iter() {
             if selection.is_caret() {
                 continue;
             }
@@ -1113,7 +1283,11 @@ fn draw_code(
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
                 ),
-                theme.selection_fill(state.mode),
+                theme.selection_fill(if pane.focused {
+                    state.mode
+                } else {
+                    Mode::Normal
+                }),
             );
         }
 
@@ -1149,7 +1323,7 @@ fn draw_code(
         // syntax-highlighted row has many segments.
         let mut column = 0usize;
 
-        for segment in segments(state, row.range.clone()) {
+        for segment in segments(pane.highlights, row.range.clone()) {
             let x = text_left + indent_px + column as f32 * advance;
             let raw = text.slice_to_string(segment.range.clone());
             let content = expand_tabs(state, &raw);
@@ -1176,10 +1350,16 @@ fn draw_code(
         }
     }
 
+    // The cursor is drawn only where typing would go. A second blinking cursor in an unfocused pane
+    // is the single most confusing thing a split view can do.
+    if !pane.focused {
+        return;
+    }
+
     // The cursor comes from the display map, so it lands correctly on a wrapped row.
     if let Some(point) = state
         .display
-        .display_point(text, state.scroll, height, cursor)
+        .display_point(text, pane.scroll, height, cursor)
     {
         draw_cursor(
             frame,
@@ -1269,11 +1449,11 @@ struct Segment {
 /// no highlights are available yet — before the first parse lands, or for a language without a
 /// grammar — the row is one plain segment, which is why text is legible immediately rather than
 /// waiting on the parser.
-fn segments(state: &EditorState, row: std::ops::Range<CharOffset>) -> Vec<Segment> {
+fn segments(highlights: &[HighlightSpan], row: std::ops::Range<CharOffset>) -> Vec<Segment> {
     let mut out: Vec<Segment> = Vec::new();
     let mut at = row.start;
 
-    for span in &state.highlights {
+    for span in highlights {
         if span.range.end <= row.start {
             continue;
         }

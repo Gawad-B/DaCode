@@ -7,8 +7,8 @@ with Helix's selection model, and VSCode's features earned one at a time rather 
 `PLAN.md` for the architecture and the decisions behind it — including the ones that turned out
 wrong.
 
-Status: usable for real editing, with gaps. No window splits, no folding, no file tree. See the
-"what is left" notes at the end of each milestone in `PLAN.md`.
+Status: usable for real editing, with gaps. No folding, no file tree yet. See the "what is left"
+notes at the end of each milestone in `PLAN.md`.
 
 ## Build and run
 
@@ -63,8 +63,9 @@ machinery for them exists.
 `:` command line — `:w` `:w path` `:q` `:q!` `:wq` `:42` `:e path` `:grep pattern`
 `:set wrap` / `:set nowrap` · `:format` · `:rename [name]`
 
-### Files and buffers
+### Files, buffers and panes
 `ctrl-p` file palette · `ctrl-b` buffer palette · `ctrl-s` save · `ctrl-q` quit
+`ctrl-w v` split beside · `ctrl-w s` split below · `ctrl-w c` close pane · `ctrl-w w` next pane
 
 ### Language server
 `K` hover · `gd` go to definition · `gr` rename · `gf` format · `]d` `[d` next/previous diagnostic
@@ -120,6 +121,8 @@ and over SSH — and how most of the visual defects in this project were actuall
 ./target/release/vex --screenshot /tmp/vex.png --diagnostic 12     # a diagnostic message
 ./target/release/vex --screenshot /tmp/vex.png --splash            # cold-start lockup
 ./target/release/vex --screenshot /tmp/vex.png --empty             # empty state
+./target/release/vex --screenshot /tmp/vex.png --split 2           # two panes side by side
+./target/release/vex --screenshot /tmp/vex.png --split 3h          # three stacked
 ```
 
 ## Tests and benchmarks

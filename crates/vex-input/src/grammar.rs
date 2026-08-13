@@ -51,6 +51,8 @@ enum Stage {
     GPrefix,
     /// Saw `]` or `[`, waiting for what to jump to.
     BracketPrefix { forward: bool },
+    /// Saw `ctrl-w`, waiting for a window command.
+    WindowPrefix,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +263,13 @@ impl Grammar {
     fn feed_builtin(&mut self, mode: Mode, key: Key) -> Resolution {
         let extend = mode == Mode::Visual;
 
+        // `ctrl-w` is a prefix, so it is claimed before the single-key Ctrl bindings below.
+        if key.ctrl && key.code == KeyCode::Char('w') && self.stage == Stage::Start {
+            self.stage = Stage::WindowPrefix;
+            self.push_display(&key);
+            return Resolution::Pending(self.display.clone());
+        }
+
         // Arrow keys and Ctrl bindings bypass the grammar, but must respect visual mode.
         if let Some(action) = self.editing_key(key) {
             let action = match (action, extend) {
@@ -279,6 +288,7 @@ impl Grammar {
             Stage::ObjectKind { around } => return self.take_object_kind(key, around),
             Stage::GPrefix => return self.take_g_prefix(key, extend),
             Stage::BracketPrefix { forward } => return self.take_bracket_prefix(key, forward),
+            Stage::WindowPrefix => return self.take_window_prefix(key),
             Stage::Start | Stage::Target => {}
         }
 
@@ -608,6 +618,29 @@ impl Grammar {
             target: Target::Object(object),
             register,
         })
+    }
+
+    /// `ctrl-w` and then a window command, as Vim spells it.
+    ///
+    /// Panes are a flat row or column rather than a tree, so `h`/`l` and `j`/`k` both mean "the
+    /// neighbour that way" — which in a single-axis layout is simply the previous or next pane.
+    fn take_window_prefix(&mut self, key: Key) -> Resolution {
+        let KeyCode::Char(c) = key.code else {
+            self.clear();
+            return Resolution::Unhandled;
+        };
+
+        match c {
+            'v' => self.emit(Action::SplitPane { vertical: true }),
+            's' => self.emit(Action::SplitPane { vertical: false }),
+            'c' | 'q' => self.emit(Action::ClosePane),
+            'w' | 'l' | 'j' => self.emit(Action::FocusPane { forward: true }),
+            'W' | 'h' | 'k' => self.emit(Action::FocusPane { forward: false }),
+            _ => {
+                self.clear();
+                Resolution::Unhandled
+            }
+        }
     }
 
     fn take_g_prefix(&mut self, key: Key, extend: bool) -> Resolution {

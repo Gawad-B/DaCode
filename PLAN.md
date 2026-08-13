@@ -288,8 +288,23 @@ highlight queries; theme file; tree-sitter-driven indent.
 > now wins, so the palette indexes the project rather than one crate; and the file walk was
 > collected *after* key handling, so the first `ctrl-p` would have opened onto an empty list.
 >
-> **Still to do in M5:** splits and panes, a file tree, file watching, and project-wide *replace* —
-> search has an engine and a results panel, but nothing edits across the matches yet.
+> **M5: splits and panes.** A flat list divided along one axis, not a tree — nesting is a cost every
+> layout and focus question pays, for an arrangement few people build deliberately. `ctrl-w v` / `s`
+> split, `ctrl-w c` closes, `ctrl-w w` cycles. Each pane keeps its own buffer, scroll position and
+> selections, so moving between them is returning rather than reopening.
+>
+> Two decisions worth recording. **Highlights travel with the buffer**, not with the live document:
+> an unfocused pane cannot be edited, since keys only reach the focused one, so the spans computed
+> when it was last focused are still correct for its text. That is what lets a split show two
+> *highlighted* files with a single syntax worker. And **only the focused pane draws a cursor, a
+> cursor line and a mode-tinted gutter** — a second blinking cursor is the most confusing thing a
+> split view can do, and an unfocused pane is not in insert mode just because its neighbour is.
+>
+> The index arithmetic lives in `crates/vex/src/panes.rs` rather than the event loop, because
+> arithmetic only reachable by pressing keys in a window is arithmetic that never gets tested.
+>
+> **Still to do in M5:** a file tree, file watching, and project-wide *replace* — search has an
+> engine and a results panel, but nothing edits across the matches yet.
 
 ### M5 — Project layer (2 weeks)
 Multiple buffers, splits/panes, file tree, fuzzy file palette, command palette, project-wide
