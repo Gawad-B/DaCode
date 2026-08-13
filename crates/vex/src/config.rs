@@ -25,6 +25,12 @@ impl Config {
         let mut values = HashMap::new();
         let mut section = String::new();
 
+        // The same byte-order mark `vex_lua::eval` strips, for the same reason: an editor on Windows
+        // writes one without saying so, and it would otherwise become part of the first section's
+        // name — which fails silently here rather than loudly, since a section nobody asked for is
+        // simply never read.
+        let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+
         for line in source.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -394,6 +400,15 @@ mod tests {
         assert_eq!(config.string("editor.font_family"), Some("JetBrains Mono"));
         assert_eq!(config.string("theme.name"), Some("One Dark Pro"));
         assert_eq!(config.string("missing.key"), None);
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_hide_the_first_section() {
+        // Without stripping it the first section is named "\u{feff}editor", which nothing ever asks
+        // for — so an imported config edited on Windows loses everything above its second heading and
+        // says nothing about it.
+        let config = Config::parse("\u{feff}[editor]\ntab_width = 2\n");
+        assert_eq!(config.usize("editor.tab_width"), Some(2));
     }
 
     #[test]

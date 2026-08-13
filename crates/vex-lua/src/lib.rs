@@ -83,7 +83,15 @@ pub fn load(path: &Path) -> Config {
 }
 
 /// Evaluates config source. Separated from [`load`] so the API is testable without touching a disk.
+///
+/// A leading byte-order mark is dropped first. Notepad and PowerShell's `Set-Content` both write one
+/// by default, so on Windows it is the *likely* state of a file someone edited without thinking about
+/// encodings — and Lua sees it as a stray character on line 1 and refuses the whole file. Config that
+/// fails because of an invisible byte the editor of choice inserted is the worst kind of error to be
+/// handed at startup.
 pub fn eval(source: &str, name: &str) -> Config {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+
     // `Lua::new()` is the sandboxed-by-omission choice: the standard library is present (a config
     // that cannot use `string.format` or `pairs` is a worse language than TOML), but nothing of
     // vex's is exposed beyond the `vex` table built below.
@@ -413,6 +421,17 @@ mod tests {
 
     fn run(source: &str) -> Config {
         eval(source, "test.lua")
+    }
+
+    #[test]
+    fn a_byte_order_mark_does_not_reject_the_whole_file() {
+        // Notepad and `Set-Content` both write one, so on Windows this is what an init.lua someone
+        // edited normally actually looks like. Lua reports it as `unexpected symbol near '<\239>'`,
+        // naming a byte the user cannot see in a file they will swear is correct — found by writing
+        // a config from PowerShell and watching the editor refuse it.
+        let config = run("\u{feff}vex.set { tab_width = 3 }");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(config.tab_width, Some(3));
     }
 
     #[test]
