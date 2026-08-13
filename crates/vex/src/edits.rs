@@ -242,7 +242,7 @@ pub fn apply_workspace_edit(
         }
     }
 
-    let open = open_path.map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    let open = open_path.map(vex_project::canonical);
 
     // The open buffer first: if its version is stale, nothing at all should have been written.
     let mut applied = Applied::default();
@@ -265,7 +265,7 @@ pub fn apply_workspace_edit(
 /// The path a URI names, canonicalized so the open buffer is recognized however it was spelled.
 fn path_for(uri: &Uri) -> Option<PathBuf> {
     let path = vex_lsp::position::uri_to_path(uri.as_str())?;
-    Some(path.canonicalize().unwrap_or(path))
+    Some(vex_project::canonical(&path))
 }
 
 /// Unwraps the annotated form of a text edit. Annotations describe changes for a user to approve
@@ -587,13 +587,10 @@ pub fn replace_in_hits(
     // by applying them blindly.
     let mut by_file: BTreeMap<PathBuf, ()> = BTreeMap::new();
     for hit in hits {
-        by_file.insert(
-            hit.path.canonicalize().unwrap_or_else(|_| hit.path.clone()),
-            (),
-        );
+        by_file.insert(vex_project::canonical(&hit.path), ());
     }
 
-    let open = open_path.map(|path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()));
+    let open = open_path.map(vex_project::canonical);
     let mut applied = Applied::default();
 
     for (path, ()) in by_file {

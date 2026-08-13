@@ -386,8 +386,35 @@ fn a_directory_with_no_marker_is_its_own_root() {
     let file = fixture.write("notes.txt", "");
     let root = find_root(&file);
 
+    // Both sides canonicalized: on Windows `temp_dir()` can be an 8.3 short name while a resolved path
+    // is the long one, and comparing the two forms fails for a reason that has nothing to do with
+    // finding roots. This test failed on Windows CI on exactly that.
+    let temp = vex_project::canonical(&std::env::temp_dir());
     assert!(
-        root.starts_with(std::env::temp_dir()),
-        "should not walk above the temp dir: {root:?}"
+        root.starts_with(&temp),
+        "should not walk above the temp dir: {root:?} is not under {temp:?}"
+    );
+}
+
+#[test]
+fn windows_extended_length_prefixes_are_not_part_of_a_path() {
+    use vex_project::strip_extended_prefix;
+
+    // What `canonicalize` returns on Windows. Correct for the filesystem API, wrong everywhere else —
+    // it reaches the statusline, path comparisons and URIs.
+    assert_eq!(
+        strip_extended_prefix(r"\\?\C:\Users\someone"),
+        r"C:\Users\someone"
+    );
+    // A network path keeps one slash, because `\\server\share` is its real form.
+    assert_eq!(
+        strip_extended_prefix(r"\\?\UNC\server\share"),
+        r"\server\share"
+    );
+    // Anything else is left exactly as it is, including every Unix path.
+    assert_eq!(strip_extended_prefix("/home/someone"), "/home/someone");
+    assert_eq!(
+        strip_extended_prefix(r"C:\already\plain"),
+        r"C:\already\plain"
     );
 }

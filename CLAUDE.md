@@ -58,6 +58,12 @@ vex          the binary: chrome, execute, panes, layout, settings, session, welc
 
 ### Non-obvious invariants
 
+**Resolve paths through `vex_project::canonical`, never `canonicalize` directly.** On Windows the
+latter returns `\\?\C:\x`, which is correct for the filesystem API and wrong for displaying,
+comparing and URI-building. Two separate CI failures came from this one difference: a URI a language
+server refused, and a root compared against `temp_dir()`. There are now zero bare `canonicalize()`
+calls in `crates/vex`; keep it that way.
+
 **URIs are not paths.** LSP wants `file:///C:/x/y.rs` on Windows — three slashes, forward separators,
 no `\\?\` prefix from `canonicalize`. `file://C:/x` names a *host* called `C:`. Go through
 `position::encode_uri` / `decode_uri`, never build one by hand.

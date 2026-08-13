@@ -64,7 +64,7 @@ fn main() -> Result<()> {
         .as_ref()
         .map(std::path::PathBuf::from)
         .filter(|path| path.is_dir())
-        .map(|path| path.canonicalize().unwrap_or(path));
+        .map(|path| vex_project::canonical(&path));
     let path = if folder.is_some() { None } else { argument };
 
     // With no file named — including when a folder was — the last session for that project is what
@@ -1562,7 +1562,7 @@ impl App {
             .state
             .file_path
             .as_ref()
-            .and_then(|path| std::path::Path::new(path).canonicalize().ok());
+            .map(|path| vex_project::canonical(std::path::Path::new(path)));
 
         let polled = client.poll();
         if !polled.is_empty() && std::env::var_os("VEX_LSP_TRACE").is_some() {
@@ -1850,8 +1850,8 @@ impl App {
             .file_path
             .as_deref()
             .map(std::path::Path::new)
-            .and_then(|current| current.canonicalize().ok())
-            == path.canonicalize().ok();
+            .map(vex_project::canonical)
+            == Some(vex_project::canonical(&path));
 
         if !already_here {
             self.activate(Target::File(path));
@@ -2394,10 +2394,9 @@ impl App {
                     // Open onto the file being edited rather than a collapsed root: the tree is a
                     // way to look around from where you are, not a fresh start.
                     if let Some(path) = &self.state.file_path {
-                        if let Ok(absolute) = std::path::Path::new(path).canonicalize() {
-                            if let Ok(relative) = absolute.strip_prefix(self.index.root()) {
-                                tree.reveal(&relative.to_string_lossy());
-                            }
+                        let absolute = vex_project::canonical(std::path::Path::new(path));
+                        if let Ok(relative) = absolute.strip_prefix(self.index.root()) {
+                            tree.reveal(&relative.to_string_lossy());
                         }
                     }
                     self.state.tree = Some(tree);
@@ -2803,14 +2802,10 @@ impl App {
         let written = vex::welcome::config_from(&answers, &existing);
 
         if std::fs::create_dir_all(&directory).is_ok() {
-            if let Ok(absolute) = path.canonicalize() {
-                self.self_written.insert(absolute);
-            }
+            self.self_written.insert(vex_project::canonical(&path));
             match std::fs::write(&path, written) {
                 Ok(()) => {
-                    if let Ok(absolute) = path.canonicalize() {
-                        self.self_written.insert(absolute);
-                    }
+                    self.self_written.insert(vex_project::canonical(&path));
                     eprintln!("vex: wrote {}", path.display());
                 }
                 Err(error) => {
@@ -3083,14 +3078,10 @@ impl App {
         }
 
         // The editor's own write, so the watcher does not treat it as an outside edit and reload.
-        if let Ok(absolute) = path.canonicalize() {
-            self.self_written.insert(absolute);
-        }
+        self.self_written.insert(vex_project::canonical(&path));
         match std::fs::write(&path, updated) {
             Ok(()) => {
-                if let Ok(absolute) = path.canonicalize() {
-                    self.self_written.insert(absolute);
-                }
+                self.self_written.insert(vex_project::canonical(&path));
                 if let Some(settings) = &mut self.state.settings {
                     settings.dirty = false;
                 }
@@ -3165,16 +3156,14 @@ impl App {
         };
         let text = self.state.document.text().to_string();
 
-        if let Ok(absolute) = std::path::Path::new(&path).canonicalize() {
-            self.self_written.insert(absolute);
-        }
+        self.self_written
+            .insert(vex_project::canonical(std::path::Path::new(&path)));
 
         match std::fs::write(&path, &text) {
             Ok(()) => {
                 // Canonicalization only works once the file exists, so a first save records it here.
-                if let Ok(absolute) = std::path::Path::new(&path).canonicalize() {
-                    self.self_written.insert(absolute);
-                }
+                self.self_written
+                    .insert(vex_project::canonical(std::path::Path::new(&path)));
                 self.state.document.mark_saved();
                 // The file on disk is authoritative now, so the recovery copy must go — otherwise it
                 // would be offered again on the next open.
@@ -3709,12 +3698,7 @@ impl App {
 
         for path in changed {
             // Config first: it is not a buffer, and reloading it is not reloading text.
-            if path
-                .canonicalize()
-                .ok()
-                .zip(config_file.canonicalize().ok())
-                .is_some_and(|(a, b)| a == b)
-            {
+            if vex_project::canonical(&path) == vex_project::canonical(&config_file) {
                 self.reload_config();
                 redraw = true;
                 continue;
@@ -3730,7 +3714,7 @@ impl App {
                 .state
                 .file_path
                 .as_ref()
-                .and_then(|open| std::path::Path::new(open).canonicalize().ok());
+                .map(|open| vex_project::canonical(std::path::Path::new(open)));
             if active.as_deref() != Some(path.as_path()) {
                 continue;
             }
@@ -3786,10 +3770,9 @@ impl App {
         let mut tree =
             vex::tree::FileTree::new(self.index.root().to_path_buf(), self.index.files());
         if let Some(path) = &self.state.file_path {
-            if let Ok(absolute) = std::path::Path::new(path).canonicalize() {
-                if let Ok(relative) = absolute.strip_prefix(self.index.root()) {
-                    tree.reveal(&relative.to_string_lossy());
-                }
+            let absolute = vex_project::canonical(std::path::Path::new(path));
+            if let Ok(relative) = absolute.strip_prefix(self.index.root()) {
+                tree.reveal(&relative.to_string_lossy());
             }
         }
         self.state.tree = Some(tree);
@@ -3801,9 +3784,9 @@ impl App {
     /// The open buffers stay open. Changing what `ctrl-p` searches should not close the file you were
     /// reading when you decided to go looking for another one.
     fn open_folder(&mut self, folder: &std::path::Path) {
-        let root = folder
-            .canonicalize()
-            .unwrap_or_else(|_| folder.to_path_buf());
+        // Through `canonical`, so what the statusline shows is a path a person recognises rather than
+        // Windows' `\\?\C:\...` form.
+        let root = vex_project::canonical(folder);
         eprintln!("vex: project root {}", root.display());
 
         self.index = FileIndex::new(root.clone());
@@ -3823,10 +3806,9 @@ impl App {
         let Some(tree) = &mut self.state.tree else {
             return;
         };
-        if let Ok(absolute) = std::path::Path::new(&path).canonicalize() {
-            if let Ok(relative) = absolute.strip_prefix(&root) {
-                tree.reveal(&relative.to_string_lossy());
-            }
+        let absolute = vex_project::canonical(std::path::Path::new(&path));
+        if let Ok(relative) = absolute.strip_prefix(&root) {
+            tree.reveal(&relative.to_string_lossy());
         }
     }
 

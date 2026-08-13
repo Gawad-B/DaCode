@@ -26,13 +26,43 @@ pub use watch::FileWatcher;
 ///
 /// Falls back to the starting directory rather than `$HOME`: opening a stray file should not index a
 /// whole home directory.
+/// Removes Windows' extended-length prefix from a canonicalized path.
+///
+/// `canonicalize` returns `\\?\C:\x` on Windows — correct for the filesystem API and wrong for
+/// everything else. It reaches the statusline, gets compared against paths that do not have it, and
+/// gets turned into URIs. A Windows CI run caught it as a test comparing a canonicalized root against
+/// `temp_dir()`, but the visible symptom would have been a project root reading `\\?\C:\Users\...` in
+/// the editor's own chrome.
+///
+/// Takes the text rather than a `Path` so both platforms' behaviour is testable from either.
+pub fn strip_extended_prefix(path: &str) -> &str {
+    // `\\?\UNC\server\share` is a network path whose real form starts with two slashes, so it keeps one
+    // of them; `\\?\C:\x` simply loses the prefix.
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC") {
+        return rest;
+    }
+    path.strip_prefix(r"\\?\").unwrap_or(path)
+}
+
+/// Canonicalizes a path and removes the prefix Windows adds while doing it.
+pub fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    match path.canonicalize() {
+        Ok(resolved) => {
+            let text = resolved.to_string_lossy();
+            std::path::PathBuf::from(strip_extended_prefix(&text))
+        }
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 pub fn find_root(from: &std::path::Path) -> std::path::PathBuf {
     const MANIFESTS: [&str; 4] = ["Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
 
     // Relative paths cannot be walked upward, so resolve first.
-    let resolved = from
-        .canonicalize()
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(from));
+    let resolved = match from.canonicalize() {
+        Ok(_) => canonical(from),
+        Err(_) => std::env::current_dir().unwrap_or_default().join(from),
+    };
     let start = if resolved.is_file() {
         resolved.parent().unwrap_or(&resolved).to_path_buf()
     } else {
