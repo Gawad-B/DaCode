@@ -59,18 +59,54 @@ pub fn point_from_lsp(text: &Text, position: Position) -> Point {
 
 /// A `file://` URI for a path.
 ///
-/// Hand-built rather than pulled from a URL crate: the editor needs exactly this one conversion,
-/// and percent-encoding the handful of characters that matter is smaller than the dependency.
+/// Hand-built rather than pulled from a URL crate: the editor needs exactly this one conversion, and
+/// percent-encoding the handful of characters that matter is smaller than the dependency.
 pub fn path_to_uri(path: &std::path::Path) -> String {
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let text = absolute.to_string_lossy();
+    encode_uri(&absolute.to_string_lossy(), cfg!(windows))
+}
 
+/// The URI form of a path string, for a given platform.
+///
+/// Split out with `windows` as a parameter so both platforms' rules are testable from either. The
+/// alternative is what happened here: a Windows build sent `file://%5C%5C%3F%5CC%3A%5CUsers%5C...` —
+/// an extended-length Windows path percent-encoded whole — and rust-analyzer rejected every request
+/// with "invalid international domain name", because `file://` followed by anything but a slash is
+/// parsed as a *host*. Every language-server feature was broken on Windows, and no test running on
+/// Linux could have noticed.
+///
+/// Three things have to happen on Windows and none of them on Unix: strip the extended-length prefix
+/// that `canonicalize` adds, turn separators into forward slashes, and put a slash before the drive
+/// letter so that the authority component is empty.
+pub fn encode_uri(path: &str, windows: bool) -> String {
+    let mut text = path.to_string();
+
+    if windows {
+        // What `canonicalize` returns on Windows: `\\?\C:\x`, or `\\?\UNC\server\share` for a network
+        // path. Neither prefix belongs in a URI.
+        if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+            text = format!("\\\\{rest}");
+        } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+            text = rest.to_string();
+        }
+        text = text.replace('\\', "/");
+    }
+
+    // `file://`, an empty authority, then an absolute path. A drive letter is not absolute by itself,
+    // so it needs the slash.
     let mut out = String::from("file://");
+    if !text.starts_with('/') {
+        out.push('/');
+    }
+
     for byte in text.bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 out.push(byte as char)
             }
+            // Left literal so a drive letter reads as `C:` rather than `C%3A`. Every language server
+            // accepts it, and several print URIs back to the user.
+            b':' => out.push(':'),
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -79,6 +115,11 @@ pub fn path_to_uri(path: &std::path::Path) -> String {
 
 /// The path a `file://` URI names.
 pub fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    decode_uri(uri, cfg!(windows)).map(std::path::PathBuf::from)
+}
+
+/// The path form of a URI, for a given platform. The inverse of [`encode_uri`].
+pub fn decode_uri(uri: &str, windows: bool) -> Option<String> {
     let rest = uri.strip_prefix("file://")?;
     let mut bytes = Vec::with_capacity(rest.len());
     let raw = rest.as_bytes();
@@ -97,5 +138,18 @@ pub fn uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
         index += 1;
     }
 
-    Some(std::path::PathBuf::from(String::from_utf8(bytes).ok()?))
+    let mut text = String::from_utf8(bytes).ok()?;
+
+    if windows {
+        // A leading slash before a drive letter was ours to add and is ours to remove. A UNC path
+        // (`//server/share`) keeps both of its slashes.
+        let looks_like_drive = text.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic)
+            && text.as_bytes().get(2) == Some(&b':');
+        if !text.starts_with("//") && text.starts_with('/') && looks_like_drive {
+            text.remove(0);
+        }
+        text = text.replace('/', "\\");
+    }
+
+    Some(text)
 }

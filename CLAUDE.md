@@ -58,6 +58,10 @@ vex          the binary: chrome, execute, panes, layout, settings, session, welc
 
 ### Non-obvious invariants
 
+**URIs are not paths.** LSP wants `file:///C:/x/y.rs` on Windows — three slashes, forward separators,
+no `\\?\` prefix from `canonicalize`. `file://C:/x` names a *host* called `C:`. Go through
+`position::encode_uri` / `decode_uri`, never build one by hand.
+
 **Typed coordinates.** `ByteOffset`, `CharOffset`, `Utf16Column`, `Point`, `DisplayPoint` are distinct
 types and never interchangeable. LSP speaks UTF-16; the rope speaks chars; the screen speaks display
 rows. Bare integers for positions are how editors get their worst bugs — do not add one.
@@ -140,7 +144,14 @@ platform-shaped:
   `cfg!(windows)`. A `#[cfg(windows)]` body is never type-checked on Linux, and that is exactly the
   code that cannot be tested here.
 - Only 7 of 9 crates type-check for the MSVC target from Linux; `vex-syntax` and `vex-lua` need a
-  Windows C toolchain. `.github/workflows/build.yml` has a Windows job for that reason.
+  Windows C toolchain. `.github/workflows/build.yml` has a Windows job for that reason — and it earned
+  its keep immediately: it caught `file://` URIs being built by percent-encoding a whole Windows path,
+  which made rust-analyzer reject every request as an "invalid international domain name" and broke
+  every language-server feature on Windows. Nothing on Linux could have seen it.
+- **Anything platform-shaped gets the platform as a parameter**, like `paths::resolve` and
+  `position::encode_uri(path, windows)`. Then the Windows rules have tests that run here. A
+  `cfg!(windows)` branch inside the function is untestable from Linux, which is how the URI bug
+  survived to CI.
 
 ## Where things are
 

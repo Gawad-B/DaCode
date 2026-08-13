@@ -444,3 +444,73 @@ fn a_real_server_renames_a_symbol() {
         "every edit inserts the new name: {edits:?}"
     );
 }
+
+// ---- URIs on both platforms --------------------------------------------------------------------
+
+use vex_lsp::position::{decode_uri, encode_uri};
+
+#[test]
+fn a_windows_path_becomes_a_uri_a_language_server_accepts() {
+    // The bug this exists for: vex sent `file://` followed by a percent-encoded backslash, so every
+    // server read the path as a *host* and rejected the request. Every LSP feature was broken on
+    // Windows, and only a Windows CI run found it — hence the platform being a parameter here.
+    assert_eq!(
+        encode_uri(r"C:\Users\someone\project\main.rs", true),
+        "file:///C:/Users/someone/project/main.rs"
+    );
+
+    // `canonicalize` returns an extended-length path. The prefix is not part of the file's name.
+    assert_eq!(
+        encode_uri(r"\\?\C:\Users\someone\main.rs", true),
+        "file:///C:/Users/someone/main.rs"
+    );
+
+    // A network share keeps its double slash, which is the authority this time.
+    assert_eq!(
+        encode_uri(r"\\?\UNC\server\share\main.rs", true),
+        "file:////server/share/main.rs"
+    );
+}
+
+#[test]
+fn a_unix_path_is_untouched_apart_from_escaping() {
+    assert_eq!(
+        encode_uri("/home/someone/project/main.rs", false),
+        "file:///home/someone/project/main.rs"
+    );
+    assert_eq!(
+        encode_uri("/home/someone/my project/main.rs", false),
+        "file:///home/someone/my%20project/main.rs",
+        "a space is escaped; a slash is not"
+    );
+}
+
+#[test]
+fn uris_round_trip_on_both_platforms() {
+    for (path, windows) in [
+        (r"C:\Users\someone\main.rs", true),
+        (r"C:\Users\some one\a+b.rs", true),
+        ("/home/someone/main.rs", false),
+        ("/home/someone/my project/main.rs", false),
+        ("/tmp/vex-lsp-test-3284/src/main.rs", false),
+    ] {
+        let uri = encode_uri(path, windows);
+        assert_eq!(
+            decode_uri(&uri, windows).as_deref(),
+            Some(path),
+            "{path} did not survive the round trip through {uri}"
+        );
+    }
+}
+
+#[test]
+fn a_uri_has_an_empty_authority_so_the_path_is_never_read_as_a_host() {
+    // `file://C:/x` names a *host* called `C:`. This is the exact shape rust-analyzer refused.
+    for (path, windows) in [(r"C:\x\y.rs", true), ("/x/y.rs", false)] {
+        let uri = encode_uri(path, windows);
+        assert!(
+            uri.starts_with("file:///"),
+            "{uri} must have three slashes, or the path is parsed as a host"
+        );
+    }
+}
