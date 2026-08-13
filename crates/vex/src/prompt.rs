@@ -16,6 +16,8 @@ pub enum PromptKind {
     Command,
     /// A folder to open as the project, pre-filled with the current root.
     OpenFolder,
+    /// A colour-scheme file to read, in any format the importer understands.
+    LoadTheme,
     /// A rename, pre-filled with the symbol under the cursor.
     ///
     /// A prompt rather than a modal dialog, and pre-filled rather than empty, because a rename is
@@ -33,6 +35,7 @@ impl PromptKind {
             PromptKind::Command => ":",
             PromptKind::Rename => "rename to ",
             PromptKind::OpenFolder => "open folder ",
+            PromptKind::LoadTheme => "theme file ",
         }
     }
 }
@@ -70,7 +73,10 @@ impl Prompt {
     pub fn forward(&self) -> bool {
         match self.kind {
             PromptKind::Search { forward } => forward,
-            PromptKind::Command | PromptKind::Rename | PromptKind::OpenFolder => true,
+            PromptKind::Command
+            | PromptKind::Rename
+            | PromptKind::OpenFolder
+            | PromptKind::LoadTheme => true,
         }
     }
 

@@ -2047,6 +2047,10 @@ impl App {
                             self.warn(&format!("not a folder: {}", expanded.display()));
                         }
                     }
+                    PromptKind::LoadTheme => {
+                        let raw = prompt.input.trim().to_string();
+                        self.load_theme_file(&raw);
+                    }
                     PromptKind::Rename => {
                         let name = prompt.input.trim().to_string();
                         if name.is_empty() {
@@ -2857,6 +2861,7 @@ impl App {
                 }
                 vex::settings_ui::Line::Import(item) => settings.tick(item),
                 vex::settings_ui::Line::RunImport => self.run_import(),
+                vex::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
             },
             KeyCode::Char('h') | KeyCode::Left => match line {
                 vex::settings_ui::Line::Option(field) => {
@@ -2864,7 +2869,7 @@ impl App {
                     self.adjust_setting(field, -1);
                 }
                 vex::settings_ui::Line::Import(item) => settings.tick(item),
-                vex::settings_ui::Line::RunImport => {}
+                vex::settings_ui::Line::RunImport | vex::settings_ui::Line::LoadTheme => {}
             },
             // `w` writes; nothing is written without asking, because config is a file the user owns.
             KeyCode::Char('w') => self.write_settings(),
@@ -2938,6 +2943,80 @@ impl App {
                 self.state.inlay_hints.clear();
                 self.hinted_version = None;
             }
+        }
+    }
+
+    /// Asks for a colour-scheme file.
+    fn prompt_for_theme_file(&mut self) {
+        let mut prompt = vex::prompt::Prompt::new(PromptKind::LoadTheme, self.state.cursor());
+        // Pre-filled with the home directory, since a downloaded theme is usually in Downloads.
+        prompt.input = format!("{}/", vex::paths::home().display());
+        self.state.prompt = Some(prompt);
+    }
+
+    /// Reads a colour scheme in any supported format, applies it, and keeps it.
+    ///
+    /// Converted to vex's own TOML and stored under `themes/`, so it survives a restart and can be
+    /// named in `init.lua` — a theme that only lasted for one session would be a demo, not an import.
+    fn load_theme_file(&mut self, raw: &str) {
+        let expanded = match raw.strip_prefix("~/") {
+            Some(rest) => vex::paths::home().join(rest),
+            None => std::path::PathBuf::from(raw),
+        };
+
+        let Ok(text) = std::fs::read_to_string(&expanded) else {
+            self.warn(&format!("could not read {}", expanded.display()));
+            return;
+        };
+        let name = expanded
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        let mut report = vex_import::ImportReport::default();
+        let Some((theme, recognised)) = vex_import::read_palette(&name, &text, &mut report) else {
+            self.warn(&format!(
+                "not a colour scheme vex can read ({}): {}",
+                vex_import::Format::EXTENSIONS,
+                report.notes().first().cloned().unwrap_or_default()
+            ));
+            return;
+        };
+
+        self.state.theme = theme;
+
+        // Kept as vex's own format, under a slug of the file's name.
+        let slug: String = name
+            .trim_end_matches(".json")
+            .trim_end_matches(".tmTheme")
+            .trim_end_matches(".yaml")
+            .trim_end_matches(".yml")
+            .trim_end_matches(".toml")
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
+        let slug = slug.trim_matches('-').to_string();
+
+        let directory = vex::config::config_dir().join("themes");
+        let path = directory.join(format!("{slug}.toml"));
+        if std::fs::create_dir_all(&directory).is_ok()
+            && std::fs::write(&path, vex::import_cli::render_theme(&slug, &theme)).is_ok()
+        {
+            self.state.hover = Some(format!(
+                "read {recognised} colours from {name} — kept as `{slug}`, so `theme = \"{slug}\"` \
+                 in init.lua makes it stick"
+            ));
+        } else {
+            self.state.hover = Some(format!(
+                "read {recognised} colours from {name}, but could not save it to {}",
+                path.display()
+            ));
         }
     }
 

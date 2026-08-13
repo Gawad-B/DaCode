@@ -24,6 +24,7 @@ SOURCE
     --from-vscode [DIR]   read a VSCode user directory (found automatically if omitted)
     --vsix FILE           read a .vsix extension package from disk
     --openvsx ID          download publisher.name from Open VSX, then read it
+    --palette FILE        read a colour scheme: .json, .tmTheme, .plist, .yaml, .yml or .toml
 
 WHAT (nothing is imported unless listed)
     --settings            editor preferences from settings.json
@@ -60,6 +61,42 @@ enum Source {
     OpenVsx(String),
 }
 
+/// Reads a colour scheme in any supported format and stores it as vex's own.
+fn import_palette(path: &Path) -> Result<()> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let mut report = vex_import::ImportReport::default();
+    let Some((theme, recognised)) = vex_import::read_palette(&name, &text, &mut report) else {
+        anyhow::bail!(
+            "not a colour scheme vex can read. Supported: {}{}",
+            vex_import::Format::EXTENSIONS,
+            report
+                .notes()
+                .first()
+                .map(|note| format!(" — {note}"))
+                .unwrap_or_default()
+        );
+    };
+
+    let slug = slug(name.split('.').next().unwrap_or(&name));
+    let directory = default_config_dir().join("themes");
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("creating {}", directory.display()))?;
+    let destination = directory.join(format!("{slug}.toml"));
+    std::fs::write(&destination, render_theme(&slug, &theme))
+        .with_context(|| format!("writing {}", destination.display()))?;
+
+    println!("read {recognised} colours from {name}");
+    println!("wrote {}", destination.display());
+    println!("\nuse it with:\n    vex.set {{ theme = \"{slug}\" }}");
+    Ok(())
+}
+
 /// Runs an import from a VSCode installation, for the settings panel.
 ///
 /// The same code path the command line takes, driven from a checklist instead of from flags. Shared
@@ -93,6 +130,15 @@ pub fn run(args: &[String]) -> Result<()> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print!("{HELP}");
         return Ok(());
+    }
+
+    // `--palette FILE` is its own path: it takes a file in any of four formats and needs no checklist,
+    // because a colour scheme is one thing rather than a set of things to choose between.
+    if let Some(index) = args.iter().position(|arg| arg == "--palette") {
+        let path = args
+            .get(index + 1)
+            .context("--palette needs a file (try `vex import --help`)")?;
+        return import_palette(std::path::Path::new(path));
     }
 
     let parsed = parse_args(args)?;
@@ -509,7 +555,10 @@ fn slug(label: &str) -> String {
 }
 
 /// Writes a theme as vex config, in OKLCH so it stays inspectable and adjustable.
-fn render_theme(label: &str, theme: &vex_theme::Theme) -> String {
+///
+/// Public because the settings panel's "load a theme file" writes with it too: one renderer means a
+/// theme read from any format is stored in exactly the shape the importer's own output has.
+pub fn render_theme(label: &str, theme: &vex_theme::Theme) -> String {
     let color = |c: &vex_theme::Oklch| format!("\"oklch({:.3} {:.3} {:.1})\"", c.l, c.c, c.h);
 
     format!(

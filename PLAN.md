@@ -503,6 +503,17 @@ inlay hints.
 > against a method call and parsing it out of a text stream. Typing a path remains the fallback when
 > nothing is installed, because a key that silently does nothing is worse than one that asks.
 
+> **Colour schemes in four formats.** People do not have "a VSCode theme"; they have a theme, in
+> whichever format the page they found it on serves. VSCode JSON, TextMate `.tmTheme` plists, base16
+> YAML and vex's own TOML are all read, by hand rather than with a plist crate and a YAML crate: both
+> are used here in one narrow shape — a flat map of names to hex — and two dependencies with their own
+> error types to read that would cost more than the fifty lines it took. What is deliberately *not*
+> attempted is the general case; a scope selector that does not map cleanly is ignored rather than
+> guessed at, because a wrong guess is worse than the default it would replace.
+>
+> A scheme that yields fewer than four recognised colours is **refused with a reason**, rather than
+> presented as an import that happens to look almost exactly like the built-in theme.
+
 > **First-run setup.** Three questions, in the order that decides whether someone can use the editor
 > at all: modal keys or conventional ones, which theme, and whether to import from VSCode. It exists
 > because those are decisions a new user cannot discover — an editor that opens in a modal mode with no

@@ -137,6 +137,8 @@ pub enum Line {
     Option(Field),
     Import(Importable),
     RunImport,
+    /// Load a colour scheme from a file, in any format the importer reads.
+    LoadTheme,
 }
 
 /// The panel's state: which row is selected, and whether anything is unsaved.
@@ -172,7 +174,7 @@ impl Settings {
             .iter()
             .map(|field| Line::Option(*field))
             .chain(Importable::ALL.iter().map(|item| Line::Import(*item)))
-            .chain(std::iter::once(Line::RunImport))
+            .chain([Line::RunImport, Line::LoadTheme])
             .collect()
     }
 
@@ -513,21 +515,23 @@ mod tests {
     #[test]
     fn the_panel_is_one_list_of_options_then_imports_then_the_action() {
         let lines = Settings::lines();
-        assert_eq!(lines.len(), Field::ALL.len() + Importable::ALL.len() + 1);
+        // Options, then the import checklist, then the two actions.
+        assert_eq!(lines.len(), Field::ALL.len() + Importable::ALL.len() + 2);
         assert_eq!(
             lines[0],
             Line::Option(Field::VimKeys),
             "the modal switch comes first: it changes what every other key does"
         );
         assert_eq!(lines[Field::ALL.len()], Line::Import(Importable::Settings));
-        assert_eq!(*lines.last().unwrap(), Line::RunImport);
+        assert_eq!(*lines.last().unwrap(), Line::LoadTheme);
+        assert!(lines.contains(&Line::RunImport));
     }
 
     #[test]
     fn the_selection_walks_the_whole_list_and_stops() {
         let mut settings = Settings::new();
         settings.move_selection(99);
-        assert_eq!(settings.line(), Line::RunImport);
+        assert_eq!(settings.line(), Line::LoadTheme);
         assert_eq!(settings.field(), None, "the action row is not an option");
 
         settings.move_selection(-99);

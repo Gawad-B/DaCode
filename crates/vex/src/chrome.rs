@@ -1595,6 +1595,17 @@ fn draw_settings(
                     scale,
                 ));
             }
+            Line::LoadTheme => {
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    "load a theme file…",
+                    Rect::new(rect.x + pad, y, width, line),
+                    if selected { accent } else { theme.ink_dim },
+                    Align::Left,
+                    scale,
+                ));
+            }
             Line::RunImport => {
                 let available = crate::import_cli::vscode_is_present();
                 frame.text(run(

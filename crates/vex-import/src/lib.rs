@@ -26,6 +26,7 @@
 //! no importer, so the default is to take nothing.
 
 pub mod keys;
+pub mod palette;
 pub mod plan;
 pub mod settings;
 pub mod snippets;
@@ -33,6 +34,7 @@ pub mod theme;
 pub mod vsix;
 
 pub use keys::{ImportedKeybinding, import_keybindings};
+pub use palette::{Format, read as read_palette};
 pub use plan::{Checklist, ImportItem, ImportReport, Outcome};
 pub use settings::{ImportedSettings, import_settings};
 pub use snippets::{Snippet, import_snippets};

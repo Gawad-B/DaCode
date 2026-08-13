@@ -186,6 +186,7 @@ what `vex import --snippets` writes.
 | `h` `l` · `enter` | change the selected setting — applies immediately |
 | `w` | write the panel's values into `init.lua` |
 | `l` on an import row | tick what to bring over from VSCode; `import now` runs it |
+| `enter` on the last row | load a colour scheme file — `.json`, `.tmTheme`, `.yaml`, `.toml` |
 | `esc` | close |
 
 The panel's third column says where each value came from: `default`, `init.lua`, or `imported`. `w`
