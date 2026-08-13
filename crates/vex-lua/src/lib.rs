@@ -34,6 +34,8 @@ pub struct Config {
     pub tab_width: Option<usize>,
     pub soft_wrap: Option<bool>,
     pub format_on_save: Option<bool>,
+    /// Vim's modal grammar. Off means letters insert and the shortcuts are the usual ones.
+    pub modal: Option<bool>,
     pub sticky_scroll: Option<bool>,
     pub inlay_hints: Option<bool>,
     pub appearance: Option<Appearance>,
@@ -60,6 +62,7 @@ impl Config {
             && self.tab_width.is_none()
             && self.soft_wrap.is_none()
             && self.format_on_save.is_none()
+            && self.modal.is_none()
             && self.sticky_scroll.is_none()
             && self.inlay_hints.is_none()
             && self.appearance.is_none()
@@ -130,6 +133,9 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(format) = boolean(&options, "format_on_save") {
                 config.format_on_save = Some(format);
+            }
+            if let Some(modal) = boolean(&options, "vim_keys") {
+                config.modal = Some(modal);
             }
             if let Some(sticky) = boolean(&options, "sticky_scroll") {
                 config.sticky_scroll = Some(sticky);

@@ -54,6 +54,7 @@ impl Session {
                 project_root: std::path::PathBuf::from("."),
                 buffer_count: 1,
                 active_buffer: 0,
+                modal: true,
                 sticky_scroll: true,
                 recording: None,
                 diff: vex::git::Diff::default(),
@@ -72,6 +73,14 @@ impl Session {
 
     fn at(mut self, offset: usize) -> Self {
         self.state.document.set_primary_caret(CharOffset(offset));
+        self
+    }
+
+    /// Feeds one key, for the cases that need a modifier held.
+    fn press(&mut self, key: Key) -> &mut Self {
+        if let Resolution::Action(action) = self.grammar.feed(self.state.mode, key) {
+            execute(&mut self.state, &mut self.registers, &action, 40);
+        }
         self
     }
 
@@ -631,5 +640,54 @@ fn applied_server_edits_are_a_single_undo_step_in_a_session() {
     assert_eq!(
         session.state.document.text().to_string(),
         "let value = value + value;\n"
+    );
+}
+
+/// With Vim keys off, typing types — through the whole editor, not just the grammar.
+#[test]
+fn a_non_modal_session_types_letters_instead_of_running_commands() {
+    let mut session = Session::new("");
+    session.grammar.set_modal(false);
+    session.state.mode = Mode::Insert;
+    session.state.modal = false;
+
+    // `dw` would delete a word with the grammar on. Here it is two letters.
+    session.keys("dw");
+    assert_eq!(session.state.document.text().to_string(), "dw");
+
+    // And the usual shortcuts still reach the same actions.
+    session.press(Key::ctrl('a'));
+    assert!(
+        !session.state.document.selections().primary().is_caret(),
+        "ctrl-a selects everything"
+    );
+    session.press(Key::ctrl('z'));
+    assert_eq!(
+        session.state.document.text().to_string(),
+        "",
+        "ctrl-z undoes"
+    );
+}
+
+/// Shift with an arrow selects, which is the one gesture every editor shares.
+#[test]
+fn shift_arrow_extends_a_selection_without_modes() {
+    let mut session = Session::new("hello world\n");
+    session.grammar.set_modal(false);
+    session.state.mode = Mode::Insert;
+
+    for _ in 0..5 {
+        session.press(Key::named(vex_input::KeyCode::Right).with_shift());
+    }
+
+    let selection = session.state.document.selections().primary();
+    assert!(!selection.is_caret());
+    assert_eq!(
+        session
+            .state
+            .document
+            .text()
+            .slice_to_string(selection.start()..selection.end()),
+        "hello"
     );
 }

@@ -42,6 +42,12 @@ works.
 
 Full list: **[CHEATSHEET.md](CHEATSHEET.md)**.
 
+**Not a Vim user?** Turn modal editing off in the settings panel (`ctrl-,`, first row) or with
+`vim_keys = false`. Typing then always inserts, the shortcuts are the familiar ones — `ctrl-c`,
+`ctrl-v`, `ctrl-x`, `ctrl-z`, `ctrl-y`, `ctrl-a`, `ctrl-f`, shift-arrow to select — and the mouse
+places the cursor and selects by dragging. vex's own chords (`ctrl-e`, `ctrl-p`, `ctrl-w`, `ctrl-,`)
+keep working either way, because they are not Vim's.
+
 Vim's grammar, so counts, registers and operator-motion composition work as you expect: `3dw`,
 `d2f)`, `ci"`, `"ayy`, `.` to repeat. What follows is what is bound beyond that.
 

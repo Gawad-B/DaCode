@@ -2,7 +2,8 @@
 
 use proptest::prelude::*;
 use vex_input::{
-    Action, Grammar, InsertPosition, Key, Keymap, Motion, Operator, Resolution, Target, TextObject,
+    Action, Grammar, InsertPosition, Key, KeyCode, Keymap, Motion, Operator, Resolution, Target,
+    TextObject,
 };
 use vex_theme::Mode;
 
@@ -699,5 +700,153 @@ fn resolving_a_command_does_not_discard_the_keymap() {
         feed(&mut grammar, Mode::Normal, "U"),
         vec![Action::Redo],
         "still bound after the first command resolved"
+    );
+}
+
+// ---- with the modal grammar switched off ------------------------------------------------------
+
+fn flat() -> Grammar {
+    let mut grammar = Grammar::new();
+    grammar.set_modal(false);
+    grammar
+}
+
+#[test]
+fn letters_always_insert_when_the_grammar_is_off() {
+    // The whole point of the switch: someone who turns Vim off expects typing to type.
+    let mut grammar = flat();
+    for (keys, expected) in [("d", "d"), ("w", "w"), ("i", "i"), (":", ":"), ("0", "0")] {
+        assert_eq!(
+            feed(&mut grammar, Mode::Normal, keys),
+            vec![Action::InsertText(expected.into())],
+            "{keys} should insert itself"
+        );
+    }
+}
+
+#[test]
+fn the_shortcuts_are_the_ones_every_other_editor_has() {
+    let mut grammar = flat();
+
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('z')),
+        Resolution::Action(Action::Undo)
+    );
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('y')),
+        Resolution::Action(Action::Redo)
+    );
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('a')),
+        Resolution::Action(Action::SelectAll)
+    );
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('v')),
+        Resolution::Action(Action::Paste {
+            register: None,
+            before: false,
+            count: 1
+        })
+    );
+    // Copy and cut act on the selection, which exists whether or not there are modes.
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('c')),
+        Resolution::Action(Action::Apply {
+            operator: Operator::Yank,
+            target: Target::Selection,
+            register: None
+        })
+    );
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('f')),
+        Resolution::Action(Action::StartSearch { forward: true })
+    );
+}
+
+#[test]
+fn shift_and_an_arrow_extends_the_selection() {
+    let mut grammar = flat();
+
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::named(KeyCode::Right)),
+        Resolution::Action(Action::Move {
+            motion: Motion::Right,
+            count: 1
+        })
+    );
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::named(KeyCode::Right).with_shift()),
+        Resolution::Action(Action::Extend {
+            motion: Motion::Right,
+            count: 1
+        }),
+        "shift extends rather than moving"
+    );
+}
+
+#[test]
+fn the_editors_own_chords_survive_the_grammar_being_off() {
+    // ctrl-e, ctrl-w and ctrl-k are vex's, not Vim's. Turning the modal grammar off should not cost
+    // someone the file tree or the ability to split a window.
+    let mut grammar = flat();
+
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('e')),
+        Resolution::Action(Action::ToggleTree)
+    );
+
+    assert!(matches!(
+        grammar.feed(Mode::Normal, Key::ctrl('w')),
+        Resolution::Pending(_)
+    ));
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::char('v')),
+        Resolution::Action(Action::SplitPane { vertical: true })
+    );
+
+    assert!(matches!(
+        grammar.feed(Mode::Normal, Key::ctrl('k')),
+        Resolution::Pending(_)
+    ));
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::char('o')),
+        Resolution::Action(Action::OpenFolder)
+    );
+}
+
+#[test]
+fn switching_the_grammar_off_abandons_any_half_typed_command() {
+    // Otherwise a pending `d` would apply itself to the next letter typed as text.
+    let mut grammar = Grammar::new();
+    assert!(matches!(
+        grammar.feed(Mode::Normal, Key::char('d')),
+        Resolution::Pending(_)
+    ));
+
+    grammar.set_modal(false);
+    assert!(grammar.is_idle(), "the pending operator is gone");
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::char('w')),
+        Resolution::Action(Action::InsertText("w".into()))
+    );
+}
+
+#[test]
+fn the_modal_grammar_is_unchanged_when_it_is_on() {
+    // The switch bypasses the grammar rather than altering it, so everything Vim keeps working.
+    let mut grammar = Grammar::new();
+    grammar.set_modal(false);
+    grammar.set_modal(true);
+
+    assert_eq!(
+        feed(&mut grammar, Mode::Normal, "dw"),
+        vec![Action::Apply {
+            operator: Operator::Delete,
+            target: Target::Motion {
+                motion: Motion::WordForward,
+                count: 1
+            },
+            register: None
+        }]
     );
 }

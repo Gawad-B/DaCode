@@ -8,6 +8,11 @@
 -- before the error still applies.
 
 vex.set {
+  -- Vim's modal editing. Turn it off and vex behaves like any other editor: typing always inserts,
+  -- and the shortcuts are the familiar ones — ctrl-c, ctrl-v, ctrl-z, shift-arrow to select. The
+  -- editor's own chords (ctrl-e, ctrl-p, ctrl-w, ctrl-,) keep working either way.
+  vim_keys = true,
+
   font_size = 13.5,
   tab_width = 4,
   soft_wrap = true,

@@ -104,6 +104,8 @@ pub struct Settings {
     pub soft_wrap: bool,
     /// Reformat through the language server after every save.
     pub format_on_save: bool,
+    /// Whether Vim's modal grammar is in force.
+    pub modal: bool,
     /// Pin enclosing block heads above the viewport.
     pub sticky_scroll: bool,
     /// Ask the language server for inlay hints.
@@ -134,6 +136,7 @@ impl Default for Settings {
             // Off by default: a formatter reflowing a file you did not ask it to is worse than no
             // formatter, and it is the kind of default that loses trust the first time it fires.
             format_on_save: false,
+            modal: true,
             sticky_scroll: true,
             inlay_hints: false,
             theme_source: None,
@@ -244,6 +247,10 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
         settings
             .sources
             .insert("format_on_save".into(), from_config);
+    }
+    if let Some(modal) = config.modal {
+        settings.modal = modal;
+        settings.sources.insert("vim_keys".into(), from_config);
     }
     if let Some(sticky) = config.sticky_scroll {
         settings.sticky_scroll = sticky;

@@ -39,6 +39,8 @@ impl Source {
 /// mean building a colour picker and a key capturer into a panel that has neither.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Field {
+    /// Vim's modal grammar. First in the list because it changes what every other key does.
+    VimKeys,
     FontSize,
     TabWidth,
     SoftWrap,
@@ -49,7 +51,8 @@ pub enum Field {
 }
 
 impl Field {
-    pub const ALL: [Field; 7] = [
+    pub const ALL: [Field; 8] = [
+        Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
         Field::SoftWrap,
@@ -61,6 +64,7 @@ impl Field {
 
     pub fn name(self) -> &'static str {
         match self {
+            Field::VimKeys => "vim_keys",
             Field::FontSize => "font_size",
             Field::TabWidth => "tab_width",
             Field::SoftWrap => "soft_wrap",
@@ -73,6 +77,7 @@ impl Field {
 
     pub fn help(self) -> &'static str {
         match self {
+            Field::VimKeys => "modal editing; off means typing always inserts",
             Field::FontSize => "size of the code face, in pixels",
             Field::TabWidth => "columns a tab stands for",
             Field::SoftWrap => "wrap long lines instead of scrolling sideways",
@@ -221,6 +226,7 @@ impl Settings {
 /// it back is one function over one value.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Values {
+    pub modal: bool,
     pub font_size: f32,
     pub tab_width: usize,
     pub soft_wrap: bool,
@@ -235,6 +241,7 @@ pub struct Values {
 impl Values {
     pub fn get(&self, field: Field) -> String {
         match field {
+            Field::VimKeys => on_off(self.modal),
             Field::FontSize => format!("{:.1}", self.font_size),
             Field::TabWidth => self.tab_width.to_string(),
             Field::SoftWrap => on_off(self.soft_wrap),
@@ -250,6 +257,7 @@ impl Values {
         match field {
             // Bounds match `Typography::with_code_size`, which clamps anyway — but a panel that lets
             // you set 400 and then silently shows 99 is lying about what it did.
+            Field::VimKeys => self.modal = !self.modal,
             Field::FontSize => {
                 self.font_size = (self.font_size + delta as f32).clamp(8.0, 32.0);
             }
@@ -296,6 +304,7 @@ const MARKER: &str =
 pub fn write_back(existing: &str, values: &Values) -> String {
     let block = format!(
         "{MARKER}\nvex.set {{\n  \
+         vim_keys = {},\n  \
          font_size = {:.1},\n  \
          tab_width = {},\n  \
          soft_wrap = {},\n  \
@@ -303,6 +312,7 @@ pub fn write_back(existing: &str, values: &Values) -> String {
          theme = \"{}\",\n  \
          sticky_scroll = {},\n  \
          inlay_hints = {},\n}}\n",
+        values.modal,
         values.font_size,
         values.tab_width,
         values.soft_wrap,
@@ -344,6 +354,7 @@ mod tests {
 
     fn values() -> Values {
         Values {
+            modal: true,
             font_size: 13.5,
             tab_width: 4,
             soft_wrap: true,
@@ -503,7 +514,11 @@ mod tests {
     fn the_panel_is_one_list_of_options_then_imports_then_the_action() {
         let lines = Settings::lines();
         assert_eq!(lines.len(), Field::ALL.len() + Importable::ALL.len() + 1);
-        assert_eq!(lines[0], Line::Option(Field::FontSize));
+        assert_eq!(
+            lines[0],
+            Line::Option(Field::VimKeys),
+            "the modal switch comes first: it changes what every other key does"
+        );
         assert_eq!(lines[Field::ALL.len()], Line::Import(Importable::Settings));
         assert_eq!(*lines.last().unwrap(), Line::RunImport);
     }
@@ -516,7 +531,7 @@ mod tests {
         assert_eq!(settings.field(), None, "the action row is not an option");
 
         settings.move_selection(-99);
-        assert_eq!(settings.field(), Some(Field::FontSize));
+        assert_eq!(settings.field(), Some(Field::VimKeys));
     }
 
     #[test]
@@ -537,5 +552,21 @@ mod tests {
             !settings.is_ticked(Importable::Theme),
             "ticking again unticks"
         );
+    }
+
+    #[test]
+    fn the_modal_switch_is_a_toggle_and_reaches_the_config_file() {
+        let mut values = values();
+        assert!(values.modal, "modal editing is the default");
+
+        values.adjust(Field::VimKeys, 1);
+        assert!(!values.modal);
+        assert_eq!(values.get(Field::VimKeys), "off");
+
+        // And it survives the round trip through the file, or turning Vim off would not stick.
+        let source = write_back("", &values);
+        let config = vex_lua::eval(&source, "settings.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(config.modal, Some(false));
     }
 }

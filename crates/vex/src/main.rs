@@ -24,7 +24,7 @@ use vex_project::{FileIndex, FileWalk, find_root};
 use vex_render::{Frame, Rect, Renderer};
 use vex_syntax::{Language, SyntaxRequest, SyntaxWorker};
 use vex_text::{CharOffset, Selection, SelectionSet, Text, Version};
-use vex_theme::{Mode, Theme};
+use vex_theme::{Mode, Theme, space};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -100,9 +100,19 @@ fn main() -> Result<()> {
     // spin the GPU and the fan for a screen that is not changing.
     event_loop.set_control_flow(ControlFlow::Wait);
 
-    let (state, keymap) = new_state(text, crumbs, file_path, Mode::Normal, None, root.clone());
+    // The mode the editor starts in depends on the setting: with modal editing off there is only
+    // one behaviour, and starting in "normal" would swallow the first thing typed.
+    let starting_settings = config::load();
+    let starting_mode = if starting_settings.modal {
+        Mode::Normal
+    } else {
+        Mode::Insert
+    };
+
+    let (state, keymap) = new_state(text, crumbs, file_path, starting_mode, None, root.clone());
     let mut grammar = Grammar::new();
     grammar.set_keymap(keymap);
+    grammar.set_modal(starting_settings.modal);
 
     let mut app = App {
         window: None,
@@ -139,6 +149,8 @@ fn main() -> Result<()> {
         panes: Panes::new(),
         edit_version: None,
         save_after_format: false,
+        pointer: (0.0, 0.0),
+        dragging: false,
         wakes: 0,
         index: FileIndex::new(root.clone()),
         walk: Some(FileWalk::start(root.clone())),
@@ -252,6 +264,7 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
+        modal: settings.modal,
         sticky_scroll: settings.sticky_scroll,
         recording: None,
         diff: vex::git::Diff::default(),
@@ -535,6 +548,11 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
 
     // `--at LINE` parks the cursor on a line, for captures that need a particular part of the file
     // on screen — sticky scroll only appears when a block head has actually scrolled off.
+    if flag("--no-vim") {
+        state.modal = false;
+        state.mode = Mode::Insert;
+    }
+
     if let Some(line) = value("--at").and_then(|v| v.parse::<usize>().ok()) {
         let text = state.document.text();
         let line = line.min(text.last_line());
@@ -836,6 +854,10 @@ struct App {
     /// Paths this editor is about to write, so its own saves are not mistaken for someone else's
     /// edit. Without this, every save would come straight back as "changed on disk".
     self_written: std::collections::HashSet<std::path::PathBuf>,
+    /// Where the pointer is, in physical pixels.
+    pointer: (f32, f32),
+    /// Whether the left button is held, so a move extends the selection.
+    dragging: bool,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Open panes, and which has focus. Always at least one — see `vex::panes`.
@@ -1003,6 +1025,30 @@ impl ApplicationHandler for App {
                 self.request_redraw();
             }
 
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = (position.x as f32, position.y as f32);
+                // Dragging extends the selection, which is how every editor spells "select this".
+                if self.dragging {
+                    self.click(true);
+                    self.request_redraw();
+                }
+            }
+
+            WindowEvent::MouseInput {
+                state,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                match state {
+                    ElementState::Pressed => {
+                        self.dragging = true;
+                        self.click(false);
+                    }
+                    ElementState::Released => self.dragging = false,
+                }
+                self.request_redraw();
+            }
+
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -y as isize * 3,
@@ -1143,6 +1189,7 @@ impl App {
             code,
             ctrl: self.modifiers.control_key(),
             alt: self.modifiers.alt_key(),
+            shift: self.modifiers.shift_key(),
         })
     }
 
@@ -2701,6 +2748,7 @@ impl App {
             tab_width: self.state.display.tab_width,
             soft_wrap: self.state.display.mode == WrapMode::Word,
             format_on_save: self.state.format_on_save,
+            modal: self.state.modal,
             theme: self.state.theme.name(),
             sticky_scroll: self.state.sticky_scroll,
             inlay_hints: self.state.show_inlay_hints,
@@ -2715,6 +2763,15 @@ impl App {
         values.adjust(field, delta);
 
         match field {
+            Field::VimKeys => {
+                self.state.modal = values.modal;
+                self.grammar.set_modal(values.modal);
+                // Modes only exist with the grammar on; leaving the editor in "visual" with no way to
+                // leave it would be a trap.
+                if !values.modal {
+                    self.state.mode = Mode::Insert;
+                }
+            }
             Field::FontSize => {
                 self.state.typography = vex_theme::Typography::with_code_size(values.font_size);
                 if let Some(window) = &self.window {
@@ -2864,18 +2921,7 @@ impl App {
                 true
             }
             KeyCode::Enter => {
-                let chosen = results
-                    .selection()
-                    .map(|hit| (hit.path.clone(), hit.line_number));
-                self.state.results = None;
-                if let Some((path, line)) = chosen {
-                    self.activate(Target::File(path));
-                    let text = self.state.document.text();
-                    let target = (line.saturating_sub(1) as usize).min(text.last_line());
-                    let offset = text.point_to_char(vex_text::Point::new(target, 0));
-                    self.state.document.set_primary_caret(offset);
-                    self.reveal_cursor();
-                }
+                self.open_hit();
                 true
             }
             // Only the navigation keys are consumed, so editing continues to work with the panel
@@ -3146,6 +3192,197 @@ impl App {
         }
     }
 
+    /// Opens the selected search hit, at its line. Shared by the keyboard and the mouse.
+    fn open_hit(&mut self) {
+        let chosen = self
+            .state
+            .results
+            .as_ref()
+            .and_then(|results| results.selection())
+            .map(|hit| (hit.path.clone(), hit.line_number));
+
+        self.state.results = None;
+        if let Some((path, line)) = chosen {
+            self.activate(Target::File(path));
+            let text = self.state.document.text();
+            let target = (line.saturating_sub(1) as usize).min(text.last_line());
+            let offset = text.point_to_char(vex_text::Point::new(target, 0));
+            self.state.document.set_primary_caret(offset);
+            self.reveal_cursor();
+        }
+    }
+
+    /// The chrome's geometry for the current window.
+    fn layout(&self) -> vex::layout::Layout {
+        let (width, height) = self
+            .renderer
+            .as_ref()
+            .map(|renderer| renderer.size())
+            .unwrap_or((1280, 820));
+        vex::layout::Layout::of(
+            Rect::new(0.0, 0.0, width as f32, height as f32),
+            self.scale(),
+            self.state
+                .results
+                .as_ref()
+                .map(|results| results.visible().0.len()),
+        )
+    }
+
+    /// Handles a click, or a drag when `extend` is set.
+    ///
+    /// Reads the same geometry the chrome draws from, so a click lands where it looks like it should
+    /// even in a three-way split.
+    fn click(&mut self, extend: bool) {
+        let (x, y) = self.pointer;
+        let scale = self.scale();
+        let layout = self.layout();
+
+        // The sidebar owns its own clicks: choosing a file in the tree is the whole reason someone
+        // reaches for the mouse there.
+        if vex::layout::contains(layout.sidebar, x, y) && !extend {
+            self.click_sidebar(layout.sidebar, y, scale);
+            return;
+        }
+
+        if let Some(panel) = layout.results {
+            if vex::layout::contains(panel, x, y) && !extend {
+                self.click_results(panel, y, scale);
+                return;
+            }
+        }
+
+        let count = self.panes.len();
+        let vertical = self.panes.layout == chrome::PaneLayout::Vertical;
+        let Some(index) = layout.pane_at(x, y, count, vertical, scale) else {
+            return;
+        };
+
+        // Clicking another pane focuses it first, so the click lands in the buffer it looks like it
+        // landed in rather than in whichever pane had focus.
+        if index != self.panes.active() {
+            self.save_pane();
+            self.panes.follow(self.state.active_buffer);
+            let target = index;
+            self.panes.cycle(false);
+            while self.panes.active() != target {
+                self.panes.cycle(true);
+            }
+            self.restore_pane();
+        }
+
+        let rects = layout.pane(index, count, vertical, scale);
+        let row_height = self.state.typography.row_height() * scale;
+        let advance = self.state.typography.code_size * 0.6 * scale;
+
+        // Rows and columns from the position, clamped: a click below the last line means the last
+        // line, not nothing.
+        let row = ((y - rects.code.y) / row_height).floor().max(0.0) as usize;
+        let column = (((x - rects.code.x - 8.0 * scale) / advance).round()).max(0.0) as usize;
+
+        let height = self
+            .state
+            .visible_rows(rects.code.height, row_height)
+            .max(1);
+        let offset = self.state.display.offset_at_display_point(
+            self.state.document.text(),
+            self.state.scroll,
+            height,
+            vex_text::DisplayPoint { row, column },
+        );
+
+        if extend {
+            let anchor = self.state.document.selections().primary().anchor;
+            self.state
+                .document
+                .set_selections(vex_text::SelectionSet::single(Selection::new(
+                    anchor, offset,
+                )));
+        } else {
+            self.state.document.set_primary_caret(offset);
+        }
+        self.sync_syntax();
+    }
+
+    /// A click in the sidebar: the tree, the settings panel, or nothing.
+    fn click_sidebar(&mut self, sidebar: Rect, y: f32, scale: f32) {
+        // The row heights each panel draws with. Kept beside the drawing code's own constants; a
+        // mismatch here shows up as clicking one row and selecting its neighbour.
+        if self.state.tree.is_some() {
+            let top = sidebar.y + space::LG * scale + 22.0 * scale * 1.6;
+            let row = ((y - top) / (22.0 * scale)).floor();
+            if row < 0.0 {
+                return;
+            }
+            let Some(tree) = &mut self.state.tree else {
+                return;
+            };
+            let height = ((sidebar.bottom() - top) / (22.0 * scale)).floor().max(1.0) as usize;
+            let (rows, _) = tree.visible(height);
+            let Some(target) = rows.get(row as usize).map(|row| row.relative.clone()) else {
+                return;
+            };
+
+            // Selecting by path rather than by index, because the window may be scrolled.
+            tree.reveal(&target);
+            if let Some(path) = tree.activate() {
+                self.activate(Target::File(path));
+            }
+            return;
+        }
+
+        if self.state.settings.is_some() {
+            let top = sidebar.y + space::LG * scale + 20.0 * scale * 1.7;
+            let Some(settings) = &mut self.state.settings else {
+                return;
+            };
+            // Option rows are two lines tall, import rows one and a bit; walking the list is more
+            // honest than a formula that would drift from the drawing code.
+            let mut cursor = top;
+            for (index, entry) in vex::settings_ui::Settings::lines().iter().enumerate() {
+                let block = match entry {
+                    vex::settings_ui::Line::Option(_) => 20.0 * scale * 2.0,
+                    _ => 20.0 * scale * 1.4,
+                };
+                let heading = if *entry
+                    == vex::settings_ui::Line::Import(vex::settings_ui::Importable::Settings)
+                {
+                    20.0 * scale * 2.0
+                } else {
+                    0.0
+                };
+                cursor += heading;
+                if y >= cursor && y < cursor + block {
+                    settings.selected = index;
+                    return;
+                }
+                cursor += block + 4.0 * scale;
+            }
+        }
+    }
+
+    /// A click in the results panel selects and opens that hit.
+    fn click_results(&mut self, panel: Rect, y: f32, scale: f32) {
+        let row = ((y - panel.y - 22.0 * scale) / (22.0 * scale)).floor();
+        if row < 0.0 {
+            return;
+        }
+        let Some(results) = &mut self.state.results else {
+            return;
+        };
+        let (rows, _) = results.visible();
+        if let Some(hit) = rows.get(row as usize).cloned() {
+            results.selected = results
+                .hits
+                .iter()
+                .position(|candidate| {
+                    candidate.path == hit.path && candidate.line_number == hit.line_number
+                })
+                .unwrap_or(results.selected);
+            self.open_hit();
+        }
+    }
+
     /// Picks up the folder dialog's answer, if it has one.
     fn poll_folder_picker(&mut self) -> bool {
         let Some(picker) = &self.folder_picker else {
@@ -3190,6 +3427,11 @@ impl App {
             WrapMode::None
         };
         self.state.pairs = pair_config(self.state.file_path.as_deref(), settings.tab_width);
+        self.state.modal = settings.modal;
+        self.grammar.set_modal(settings.modal);
+        if !settings.modal {
+            self.state.mode = Mode::Insert;
+        }
         self.state.sticky_scroll = settings.sticky_scroll;
         self.state.show_inlay_hints = settings.inlay_hints;
         self.state.setting_sources = settings.sources.clone();

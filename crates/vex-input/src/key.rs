@@ -28,6 +28,9 @@ pub struct Key {
     pub code: KeyCode,
     pub ctrl: bool,
     pub alt: bool,
+    /// Held shift. Only consulted where it changes meaning rather than the character produced —
+    /// non-modal selection with the arrow keys, which is the one gesture every editor shares.
+    pub shift: bool,
 }
 
 impl Key {
@@ -36,6 +39,7 @@ impl Key {
             code: KeyCode::Char(c),
             ctrl: false,
             alt: false,
+            shift: false,
         }
     }
 
@@ -44,6 +48,7 @@ impl Key {
             code,
             ctrl: false,
             alt: false,
+            shift: false,
         }
     }
 
@@ -52,7 +57,14 @@ impl Key {
             code: KeyCode::Char(c),
             ctrl: true,
             alt: false,
+            shift: false,
         }
+    }
+
+    /// The same key with shift held.
+    pub fn with_shift(mut self) -> Self {
+        self.shift = true;
+        self
     }
 
     /// Parses a key sequence for tests and config: `"3dw"`, `"<esc>"`, `"<c-r>"`.
@@ -94,6 +106,7 @@ impl Key {
                 code: KeyCode::Char(c),
                 ctrl: false,
                 alt: true,
+                shift: false,
             });
         }
 

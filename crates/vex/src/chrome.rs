@@ -90,6 +90,9 @@ pub struct EditorState {
     pub buffer_count: usize,
     /// Index of the active buffer.
     pub active_buffer: usize,
+    /// Whether Vim's modal grammar is in force. Shown in the statusline, since with it off there is
+    /// no mode to report and saying "NORMAL" would be a lie.
+    pub modal: bool,
     /// Whether to pin enclosing block heads above the viewport.
     pub sticky_scroll: bool,
     /// The macro register being recorded into, if any.
@@ -1051,6 +1054,7 @@ fn draw_settings(
     y += line * 1.7;
 
     let values = crate::settings_ui::Values {
+        modal: state.modal,
         font_size: state.typography.code_size,
         tab_width: state.display.tab_width,
         soft_wrap: state.display.mode == WrapMode::Word,
@@ -2455,9 +2459,11 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         state,
         // Recording replaces the mode word, in the mode's own accent. An editor that is silently
         // recording is an editor that surprises you ten minutes later.
-        match state.recording {
-            Some(register) => format!("rec @{register}"),
-            None => state.mode.label().to_string(),
+        match (state.recording, state.modal) {
+            (Some(register), _) => format!("rec @{register}"),
+            (None, true) => state.mode.label().to_string(),
+            // With modal editing off there is no mode to report, and "NORMAL" would be a lie.
+            (None, false) => "editing".to_string(),
         },
         mode_cell,
         accent,

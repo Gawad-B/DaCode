@@ -68,6 +68,13 @@ enum Stage {
 
 #[derive(Debug, Clone)]
 pub struct Grammar {
+    /// Whether Vim's modal grammar is in force.
+    ///
+    /// With it off the editor behaves the way every non-modal editor does: letters always insert, and
+    /// the shortcuts are the ones on the menus everywhere else — `ctrl-c`, `ctrl-v`, `ctrl-z`. The
+    /// grammar is not *removed*, it is bypassed: everything still resolves to the same `Action`
+    /// vocabulary, so a command works identically whichever way it was reached.
+    modal: bool,
     /// User bindings, consulted before the built-ins while idle. Empty unless config sets any.
     keymap: Keymap,
     /// Keys collected while a user binding is still only a prefix.
@@ -91,6 +98,7 @@ impl Default for Grammar {
 impl Grammar {
     pub fn new() -> Self {
         Self {
+            modal: true,
             keymap: Keymap::new(),
             user_keys: Vec::new(),
             stage: Stage::Start,
@@ -100,6 +108,16 @@ impl Grammar {
             operator: None,
             display: String::new(),
         }
+    }
+
+    /// Turns Vim's grammar on or off. Off means letters insert and modes do not apply.
+    pub fn set_modal(&mut self, modal: bool) {
+        self.modal = modal;
+        self.clear();
+    }
+
+    pub fn is_modal(&self) -> bool {
+        self.modal
     }
 
     /// Installs user bindings. Replaces any previously set, so a config reload cannot leave a
@@ -162,9 +180,132 @@ impl Grammar {
             };
         }
 
+        // Without the modal grammar there is one behavior, not four: text goes in, and the
+        // non-modal shortcuts do the rest. `Mode::Insert` is passed along because that is what the
+        // rest of the editor reads to mean "typing inserts".
+        if !self.modal {
+            return self.feed_flat(key);
+        }
+
         match mode {
             Mode::Insert | Mode::Replace => self.feed_insert(mode, key),
             Mode::Normal | Mode::Visual => self.feed_normal(mode, key),
+        }
+    }
+
+    /// Key handling with the modal grammar switched off.
+    ///
+    /// The shortcuts are the ones every other editor has, because that is the entire point of the
+    /// switch: someone who turns Vim off is telling you they expect `ctrl-c` to copy. Selection is
+    /// still a set and the actions are still the same actions — only the way in differs.
+    fn feed_flat(&mut self, key: Key) -> Resolution {
+        // A chord already in progress owns the key. Without this the second press of `ctrl-w v` is
+        // taken as text and types a `v` into the document.
+        match self.stage {
+            Stage::WindowPrefix => return self.take_window_prefix(key),
+            Stage::ChordPrefix => return self.take_chord(key),
+            _ => {}
+        }
+
+        if key.ctrl {
+            let action = match key.code {
+                KeyCode::Char('c') => Some(Action::Apply {
+                    operator: Operator::Yank,
+                    target: Target::Selection,
+                    register: None,
+                }),
+                KeyCode::Char('x') => Some(Action::Apply {
+                    operator: Operator::Delete,
+                    target: Target::Selection,
+                    register: None,
+                }),
+                KeyCode::Char('v') => Some(Action::Paste {
+                    register: None,
+                    before: false,
+                    count: 1,
+                }),
+                KeyCode::Char('z') => Some(Action::Undo),
+                KeyCode::Char('y') => Some(Action::Redo),
+                KeyCode::Char('a') => Some(Action::SelectAll),
+                KeyCode::Char('s') => Some(Action::Save),
+                KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
+                KeyCode::Char('g') => Some(Action::StartCommand),
+                KeyCode::Char('d') => Some(Action::AddCaretBelow),
+                KeyCode::Char(' ') => Some(Action::RequestCompletion),
+                // Word-wise motion, as ctrl-arrow does everywhere.
+                KeyCode::Left => Some(Action::Move {
+                    motion: Motion::WordBackward,
+                    count: 1,
+                }),
+                KeyCode::Right => Some(Action::Move {
+                    motion: Motion::WordForward,
+                    count: 1,
+                }),
+                KeyCode::Home => Some(Action::Move {
+                    motion: Motion::FileStart,
+                    count: 1,
+                }),
+                KeyCode::End => Some(Action::Move {
+                    motion: Motion::FileEnd,
+                    count: 1,
+                }),
+                _ => None,
+            };
+            if let Some(action) = action {
+                return self.emit(action);
+            }
+            // `ctrl-w`, `ctrl-k`, `ctrl-p` and the rest keep working: they are editor commands, not
+            // Vim ones, and turning the grammar off should not cost you the file tree.
+            return self.feed_editor_chords(key);
+        }
+
+        // Shift with an arrow extends the selection, which is the one gesture every editor shares.
+        let motion = match key.code {
+            KeyCode::Left => Some(Motion::Left),
+            KeyCode::Right => Some(Motion::Right),
+            KeyCode::Up => Some(Motion::Up),
+            KeyCode::Down => Some(Motion::Down),
+            KeyCode::Home => Some(Motion::LineStart),
+            KeyCode::End => Some(Motion::LineEnd),
+            _ => None,
+        };
+        if let Some(motion) = motion {
+            return self.emit(if key.shift {
+                Action::Extend { motion, count: 1 }
+            } else {
+                Action::Move { motion, count: 1 }
+            });
+        }
+
+        match key.code {
+            KeyCode::Char(c) => self.emit(Action::InsertText(c.to_string())),
+            KeyCode::Enter => self.emit(Action::Newline),
+            KeyCode::Tab => self.emit(Action::ExpandSnippet),
+            KeyCode::Backspace => self.emit(Action::DeleteBackward),
+            KeyCode::Delete => self.emit(Action::DeleteForward),
+            KeyCode::Escape => self.emit(Action::DismissInfo),
+            // Paging and the arrows are handled above; anything left is for the application.
+            _ => Resolution::Unhandled,
+        }
+    }
+
+    /// The editor's own Ctrl chords, which are not Vim's and survive the grammar being off.
+    fn feed_editor_chords(&mut self, key: Key) -> Resolution {
+        match key.code {
+            KeyCode::Char('w') => {
+                self.stage = Stage::WindowPrefix;
+                Resolution::Pending(self.display.clone())
+            }
+            KeyCode::Char('k') => {
+                self.stage = Stage::ChordPrefix;
+                Resolution::Pending(self.display.clone())
+            }
+            KeyCode::Char('e') => self.emit(Action::ToggleTree),
+            KeyCode::Char('o') => self.emit(Action::Jump { forward: false }),
+            KeyCode::Char('i') => self.emit(Action::Jump { forward: true }),
+            KeyCode::Char(',') => self.emit(Action::ToggleSettings),
+            _ => Resolution::Unhandled,
         }
     }
 

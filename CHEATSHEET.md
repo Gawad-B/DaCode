@@ -9,6 +9,26 @@ one stops resolving. That check found `ctrl-p` falling through to `p` and pastin
 
 ---
 
+## With Vim keys off
+
+Set `vim_keys = false` (settings panel, first row). There are no modes: typing inserts, and these are
+the keys.
+
+| Key | Does |
+|---|---|
+| `ctrl-c` `ctrl-x` `ctrl-v` | copy · cut · paste |
+| `ctrl-z` `ctrl-y` | undo · redo |
+| `ctrl-a` | select all |
+| `ctrl-f` | search · `ctrl-g` command line |
+| `ctrl-s` `ctrl-q` | save · quit |
+| `ctrl-d` | add a cursor below |
+| shift + arrows | extend the selection |
+| `ctrl-←` `ctrl-→` | by word · `ctrl-home` `ctrl-end` to the file's ends |
+| click · drag | place the cursor · select |
+
+`ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …` and `ctrl-,` are vex's own and work in both
+modes. Everything below this line describes the Vim grammar, which is on by default.
+
 ## Modes
 
 | Key | Does |
