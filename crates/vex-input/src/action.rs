@@ -239,6 +239,14 @@ pub enum Action {
     },
     /// `ctrl-e` — show or hide the file tree.
     ToggleTree,
+    /// `ga` in Neovim's spelling — what the server offers to do about the code under the cursor.
+    CodeAction,
+    /// `gu` — every use of the symbol under the cursor.
+    FindReferences,
+    /// Show or hide inlay hints.
+    ToggleInlayHints,
+    /// `gD` — list every diagnostic in the file, rather than walking them one at a time.
+    ToggleDiagnosticsList,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -362,6 +370,10 @@ impl Action {
             "next_pane" => Action::FocusPane { forward: true },
             "previous_pane" => Action::FocusPane { forward: false },
             "toggle_tree" => Action::ToggleTree,
+            "code_action" => Action::CodeAction,
+            "find_references" => Action::FindReferences,
+            "toggle_inlay_hints" => Action::ToggleInlayHints,
+            "toggle_diagnostics" => Action::ToggleDiagnosticsList,
 
             _ => return None,
         })

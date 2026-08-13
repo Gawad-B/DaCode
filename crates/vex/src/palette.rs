@@ -17,11 +17,18 @@ pub enum PaletteKind {
     Files,
     /// Buffers already open, so switching back is not a re-search.
     Buffers,
+    /// What the language server offers to do about the code under the cursor.
+    ///
+    /// The same card rather than a menu of its own: it is a list you filter and choose from, which
+    /// is exactly what the palette already is, and a second overlay with its own keys would be one
+    /// more thing to learn for no gain.
+    CodeActions,
 }
 
 impl PaletteKind {
     pub fn prompt(self) -> &'static str {
         match self {
+            PaletteKind::CodeActions => "code action",
             PaletteKind::Files => "open file",
             PaletteKind::Buffers => "switch buffer",
         }
@@ -47,6 +54,8 @@ pub struct Row {
 pub enum Target {
     File(std::path::PathBuf),
     Buffer(usize),
+    /// The index of a code action in the list the server sent.
+    CodeAction(usize),
 }
 
 /// How many rows the palette shows. The design's card is a fixed height, and a palette that scrolls
@@ -91,6 +100,25 @@ impl Palette {
 
     /// Re-ranks the open buffers. Substring matching is enough here: there are tens of buffers, not
     /// thousands of files, and the ranking machinery would add nothing.
+    /// Fills the palette with the server's offers.
+    pub fn refresh_code_actions(&mut self, actions: &[(String, String)]) {
+        let query = self.query.to_lowercase();
+        self.total = actions.len();
+        self.rows = actions
+            .iter()
+            .enumerate()
+            .filter(|(_, (title, _))| query.is_empty() || title.to_lowercase().contains(&query))
+            .map(|(index, (title, kind))| Row {
+                name: title.clone(),
+                context: kind.clone(),
+                score: 0,
+                highlights: highlight_substring(title, &query),
+                target: Target::CodeAction(index),
+            })
+            .collect();
+        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    }
+
     pub fn refresh_buffers(&mut self, names: &[(String, String)]) {
         let query = self.query.to_lowercase();
         self.total = names.len();

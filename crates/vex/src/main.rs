@@ -85,6 +85,8 @@ fn main() -> Result<()> {
         requested_range: None,
         lsp: None,
         sent_version: None,
+        code_actions: Vec::new(),
+        hinted_version: None,
         recovery: Recovery::new(),
         watcher: match vex_project::FileWatcher::new() {
             Ok(watcher) => Some(watcher),
@@ -182,6 +184,9 @@ fn new_state(
         project_root,
         buffer_count: 1,
         active_buffer: 0,
+        show_diagnostics: false,
+        inlay_hints: Vec::new(),
+        show_inlay_hints: false,
         tree: None,
     };
 
@@ -453,6 +458,60 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         }
     }
 
+    // `--diagnostics-list` fills the file with a spread of diagnostics so the sidebar list can be
+    // checked. Several, of both severities: a list of one proves nothing about how a list reads.
+    if flag("--diagnostics-list") {
+        let sample = [
+            (
+                3u32,
+                4u32,
+                "mismatched types: expected `u32`, found `&str`",
+                true,
+            ),
+            (11, 8, "unused variable: `offset`", false),
+            (24, 0, "cannot find value `bias` in this scope", true),
+            (
+                37,
+                12,
+                "unnecessary parentheses around block return value",
+                false,
+            ),
+            (
+                52,
+                6,
+                "this function takes 2 arguments but 3 were supplied",
+                true,
+            ),
+        ];
+        let items = sample
+            .iter()
+            .map(
+                |(line, column, message, is_error)| vex_lsp::lsp_types::Diagnostic {
+                    range: vex_lsp::lsp_types::Range {
+                        start: vex_lsp::lsp_types::Position {
+                            line: *line,
+                            character: *column,
+                        },
+                        end: vex_lsp::lsp_types::Position {
+                            line: *line,
+                            character: column + 10,
+                        },
+                    },
+                    severity: Some(if *is_error {
+                        vex_lsp::lsp_types::DiagnosticSeverity::ERROR
+                    } else {
+                        vex_lsp::lsp_types::DiagnosticSeverity::WARNING
+                    }),
+                    message: message.to_string(),
+                    ..Default::default()
+                },
+            )
+            .collect();
+        state
+            .diagnostics
+            .apply(items, None, state.document.version());
+    }
+
     // `--complete PREFIX` opens a completion popup with a canned list, so the popup is inspectable
     // without a language server.
     if let Some(prefix) = value("--complete") {
@@ -509,6 +568,9 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let mut frame = Frame::default();
     if flag("--splash") {
         chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+    } else if flag("--diagnostics-list") {
+        state.show_diagnostics = true;
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--tree") {
         // The tree needs a file list; the screenshot path has no background walk, so index inline.
         let root = find_root(&std::path::PathBuf::from("."));
@@ -623,6 +685,10 @@ struct App {
     /// user typed while the server was thinking, applying them would corrupt the file, so the reply
     /// is refused — see `edits::apply_to_document`.
     edit_version: Option<vex_text::Version>,
+    /// The code actions the server last offered, indexed by the palette.
+    code_actions: Vec<vex_lsp::CodeActionItem>,
+    /// The version inlay hints were last requested for, so typing does not queue one per keystroke.
+    hinted_version: Option<vex_text::Version>,
     /// Persists dirty buffers so a crash loses seconds, not work.
     recovery: Recovery,
     /// Watches open files for changes made outside the editor.
@@ -1144,6 +1210,35 @@ impl App {
             }
         }
 
+        // Inlay hints are asked for once per document version, and only when they are on. Tying
+        // them to the version rather than to a timer means typing does not queue a request per
+        // keystroke, and the reply is never for text that has moved.
+        if client.state() == vex_lsp::State::Ready
+            && self.state.show_inlay_hints
+            && self.hinted_version != Some(buffer_version)
+        {
+            if let Some(path) = self.state.file_path.clone() {
+                let text = self.state.document.text();
+                let last = text.last_line();
+                let range = vex_lsp::lsp_types::Range {
+                    start: vex_lsp::lsp_types::Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: vex_lsp::lsp_types::Position {
+                        line: last as u32,
+                        character: 0,
+                    },
+                };
+                if client
+                    .inlay_hints(std::path::Path::new(&path), range)
+                    .is_ok()
+                {
+                    self.hinted_version = Some(buffer_version);
+                }
+            }
+        }
+
         // Requests the executor recorded: sent here, where the client lives.
         if let Some(request) = self.state.pending_request.take() {
             if client.state() == vex_lsp::State::Ready {
@@ -1160,6 +1255,28 @@ impl App {
                             self.edit_version = Some(self.state.document.version());
                             client.formatting(&path, self.state.display.tab_width)
                         }
+                        Action::CodeAction => {
+                            self.edit_version = Some(self.state.document.version());
+                            let range = vex_lsp::lsp_types::Range {
+                                start: position,
+                                end: position,
+                            };
+                            // The diagnostics on the cursor's line are the context: without them a
+                            // server has no reason to offer the fix for the error you are sitting on.
+                            let here: Vec<_> = self
+                                .state
+                                .diagnostics
+                                .items()
+                                .iter()
+                                .filter(|d| {
+                                    d.range.start.line <= position.line
+                                        && position.line <= d.range.end.line
+                                })
+                                .cloned()
+                                .collect();
+                            client.code_action(&path, range, &here)
+                        }
+                        Action::FindReferences => client.references(&path, position),
                         Action::Rename => Ok(0),
                         _ => Ok(0),
                     };
@@ -1266,6 +1383,59 @@ impl App {
                             },
                         )
                     });
+                }
+                vex_lsp::ServerEvent::CodeActions { actions } => {
+                    if actions.is_empty() {
+                        self.state.hover = Some("no code actions here".into());
+                    } else {
+                        let rows: Vec<(String, String)> = actions
+                            .iter()
+                            .map(|action| (action.title.clone(), action.kind.clone()))
+                            .collect();
+                        self.code_actions = actions;
+                        // The palette, not a menu of its own: this is a list you filter and choose
+                        // from, which is exactly what the palette already is.
+                        let mut palette = Palette::new(PaletteKind::CodeActions);
+                        palette.refresh_code_actions(&rows);
+                        self.state.palette = Some(palette);
+                    }
+                }
+                vex_lsp::ServerEvent::References { locations } => {
+                    // Into the results panel rather than a list of its own: references are
+                    // `path:line` entries you move through and open, which that panel already is.
+                    let hits: Vec<vex_project::SearchHit> = locations
+                        .iter()
+                        .filter_map(|location| {
+                            let path = vex_lsp::uri_to_path(location.uri.as_str())?;
+                            let line = std::fs::read_to_string(&path)
+                                .ok()
+                                .and_then(|text| {
+                                    text.lines()
+                                        .nth(location.range.start.line as usize)
+                                        .map(str::to_string)
+                                })
+                                .unwrap_or_default();
+                            Some(vex_project::SearchHit {
+                                path,
+                                line_number: location.range.start.line as u64 + 1,
+                                line: line.trim_end().to_string(),
+                                range: 0..0,
+                            })
+                        })
+                        .collect();
+
+                    if hits.is_empty() {
+                        self.state.hover = Some("no references found".into());
+                    } else {
+                        self.state.results = Some(vex::results::Results::from_hits(
+                            &self.state.project_root,
+                            "references",
+                            hits,
+                        ));
+                    }
+                }
+                vex_lsp::ServerEvent::InlayHints { hints } => {
+                    self.state.inlay_hints = hints;
                 }
                 vex_lsp::ServerEvent::RequestFailed {
                     what,
@@ -1803,6 +1973,7 @@ impl App {
                         }
                     }
                     self.state.tree = Some(tree);
+                    self.state.show_diagnostics = false;
                 }
             }
             Action::FocusPane { forward } if self.panes.is_split() => {
@@ -2064,6 +2235,7 @@ impl App {
         match kind {
             PaletteKind::Files => palette.refresh_files(&mut self.index),
             PaletteKind::Buffers => palette.refresh_buffers(&self.buffer_names()),
+            PaletteKind::CodeActions => {}
         }
         self.state.palette = Some(palette);
     }
@@ -2135,6 +2307,16 @@ impl App {
             match palette.kind {
                 PaletteKind::Files => palette.refresh_files(&mut self.index),
                 PaletteKind::Buffers => palette.refresh_buffers(&names),
+                // Filtered against the list already fetched: the server is asked once per
+                // invocation, and typing narrows what it offered.
+                PaletteKind::CodeActions => {
+                    let rows: Vec<(String, String)> = self
+                        .code_actions
+                        .iter()
+                        .map(|action| (action.title.clone(), action.kind.clone()))
+                        .collect();
+                    palette.refresh_code_actions(&rows);
+                }
             }
         }
     }
@@ -2164,7 +2346,26 @@ impl App {
                 }
             }
             Target::Buffer(index) => self.switch_to(index),
+            Target::CodeAction(index) => self.apply_code_action(index),
         }
+    }
+
+    /// Applies the code action the user picked.
+    fn apply_code_action(&mut self, index: usize) {
+        let Some(action) = self.code_actions.get(index).cloned() else {
+            return;
+        };
+        let title = action.title.clone();
+        self.apply_server_edit(&title, move |state, version| {
+            let path = state.file_path.clone().map(std::path::PathBuf::from);
+            vex::edits::apply_workspace_edit(
+                &mut state.document,
+                path.as_deref(),
+                &action.edit,
+                version,
+            )
+        });
+        self.code_actions.clear();
     }
 
     /// Makes a new document the active one, keeping the previous buffer.

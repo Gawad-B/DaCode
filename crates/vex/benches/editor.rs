@@ -67,6 +67,9 @@ fn state(lines: usize) -> EditorState {
         project_root: std::path::PathBuf::from("."),
         buffer_count: 1,
         active_buffer: 0,
+        show_diagnostics: false,
+        inlay_hints: Vec::new(),
+        show_inlay_hints: false,
         tree: None,
     }
 }

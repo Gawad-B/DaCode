@@ -11,7 +11,7 @@
 use crate::position;
 use crate::transport::{read_message, write_message};
 use anyhow::{Context, Result};
-use lsp_types::{Diagnostic, Position, TextEdit, WorkspaceEdit};
+use lsp_types::{Diagnostic, InlayHint, Location, Position, Range, TextEdit, WorkspaceEdit};
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -45,6 +45,9 @@ pub enum Pending {
         new_name: String,
     },
     Formatting,
+    CodeAction,
+    References,
+    InlayHints,
     Shutdown,
 }
 
@@ -81,6 +84,18 @@ pub enum ServerEvent {
     Formatting {
         edits: Vec<TextEdit>,
     },
+    /// What the server offers to do about the code under the cursor.
+    CodeActions {
+        actions: Vec<CodeActionItem>,
+    },
+    /// Everywhere a symbol is used.
+    References {
+        locations: Vec<Location>,
+    },
+    /// Types and parameter names to show inline.
+    InlayHints {
+        hints: Vec<InlayHint>,
+    },
     /// The server reported a problem, or logged one.
     Message {
         text: String,
@@ -99,6 +114,18 @@ pub enum ServerEvent {
     Stopped,
 }
 
+/// One thing a server offers to do about the code under the cursor.
+///
+/// Only actions carrying edits survive the parse: an action whose work is a server-side `command` is
+/// something vex cannot perform, and listing it would offer the user a menu entry that does nothing.
+#[derive(Debug, Clone)]
+pub struct CodeActionItem {
+    pub title: String,
+    /// `quickfix`, `refactor.extract`, and so on. Shown so a list of six is readable at a glance.
+    pub kind: String,
+    pub edit: WorkspaceEdit,
+}
+
 /// What a request was, in the user's terms rather than the protocol's.
 fn describe_request(kind: &Pending) -> String {
     match kind {
@@ -108,6 +135,9 @@ fn describe_request(kind: &Pending) -> String {
         Pending::Completion => "completion".into(),
         Pending::Rename { new_name } => format!("rename to `{new_name}`"),
         Pending::Formatting => "formatting".into(),
+        Pending::CodeAction => "code actions".into(),
+        Pending::References => "find references".into(),
+        Pending::InlayHints => "inlay hints".into(),
         Pending::Shutdown => "shutdown".into(),
     }
 }
@@ -286,7 +316,15 @@ impl LspClient {
                         "dynamicRegistration": false
                     },
                     "rename": { "dynamicRegistration": false, "prepareSupport": false },
-                    "formatting": { "dynamicRegistration": false }
+                    "formatting": { "dynamicRegistration": false },
+                    "references": { "dynamicRegistration": false },
+                    "inlayHint": { "dynamicRegistration": false },
+                    "codeAction": {
+                        "dynamicRegistration": false,
+                        // No `codeActionLiteralSupport`: vex takes the plain command-or-edit form.
+                        // Claiming literal support invites kinds the editor would then drop.
+                        "resolveSupport": { "properties": [] }
+                    }
                 },
                 "workspace": {
                     "workspaceFolders": true,
@@ -417,6 +455,45 @@ impl LspClient {
                 },
             }),
             Pending::Formatting,
+        )
+    }
+
+    /// Asks what can be done about the code in `range` — quick fixes, refactors, imports.
+    pub fn code_action(
+        &self,
+        path: &Path,
+        range: Range,
+        diagnostics: &[Diagnostic],
+    ) -> Result<i64> {
+        self.request(
+            "textDocument/codeAction",
+            serde_json::json!({
+                "textDocument": { "uri": position::path_to_uri(path) },
+                "range": range,
+                // The diagnostics under the cursor are the context: without them a server has no
+                // reason to offer the fix for the error you are sitting on.
+                "context": { "diagnostics": diagnostics },
+            }),
+            Pending::CodeAction,
+        )
+    }
+
+    /// Asks where a symbol is used.
+    pub fn references(&self, path: &Path, position: Position) -> Result<i64> {
+        let mut params = document_position(path, position);
+        params["context"] = serde_json::json!({ "includeDeclaration": true });
+        self.request("textDocument/references", params, Pending::References)
+    }
+
+    /// Asks for inlay hints over a range of the document.
+    pub fn inlay_hints(&self, path: &Path, range: Range) -> Result<i64> {
+        self.request(
+            "textDocument/inlayHint",
+            serde_json::json!({
+                "textDocument": { "uri": position::path_to_uri(path) },
+                "range": range,
+            }),
+            Pending::InlayHints,
         )
     }
 
@@ -615,6 +692,39 @@ fn interpret(
                     text: format!("rename to `{new_name}` was refused: {error}"),
                 }),
             }
+        }
+        Pending::CodeAction => {
+            // The reply mixes `Command` and `CodeAction` objects freely, and a `CodeAction` may
+            // carry edits, a command, or neither until resolved. Only the ones vex can actually
+            // carry out are kept — an offer the editor would silently drop is worse than no offer.
+            let items = result.as_array()?;
+            let actions = items
+                .iter()
+                .filter_map(|item| {
+                    let title = item.get("title")?.as_str()?.to_string();
+                    let edit = item.get("edit").and_then(|edit| {
+                        serde_json::from_value::<WorkspaceEdit>(edit.clone()).ok()
+                    });
+                    edit.map(|edit| CodeActionItem {
+                        title,
+                        kind: item
+                            .get("kind")
+                            .and_then(|kind| kind.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        edit,
+                    })
+                })
+                .collect();
+            Some(ServerEvent::CodeActions { actions })
+        }
+        Pending::References => {
+            let locations: Vec<Location> = serde_json::from_value(result.clone()).ok()?;
+            Some(ServerEvent::References { locations })
+        }
+        Pending::InlayHints => {
+            let hints: Vec<InlayHint> = serde_json::from_value(result.clone()).unwrap_or_default();
+            Some(ServerEvent::InlayHints { hints })
         }
         Pending::Formatting => match serde_json::from_value::<Vec<TextEdit>>(result.clone()) {
             Ok(edits) => Some(ServerEvent::Formatting { edits }),

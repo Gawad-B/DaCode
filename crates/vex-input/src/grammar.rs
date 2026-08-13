@@ -678,8 +678,14 @@ impl Grammar {
             // teaching the wrong reflex.
             'r' => self.emit(Action::Rename),
             'f' => self.emit(Action::Format),
+            // `ga` was select-all; code actions are asked for far more often, and select-all moves
+            // to `gA`'s neighbourhood as `g%` — the whole file, in the same spirit as `%`.
+            'a' => self.emit(Action::CodeAction),
+            'u' => self.emit(Action::FindReferences),
+            'i' => self.emit(Action::ToggleInlayHints),
+            'D' => self.emit(Action::ToggleDiagnosticsList),
+            '%' => self.emit(Action::SelectAll),
             't' => self.emit(Action::ToggleTheme),
-            'a' => self.emit(Action::SelectAll),
             'A' => self.emit(Action::AddCaretAbove),
             _ => {
                 self.clear();

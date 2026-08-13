@@ -26,6 +26,22 @@ pub struct Results {
 }
 
 impl Results {
+    /// A finished panel built from hits someone else found — language-server references, say.
+    ///
+    /// Sharing the panel rather than growing a second list view: both are `path:line` plus a line of
+    /// context that you move through and open, and two implementations of that would drift.
+    pub fn from_hits(root: &std::path::Path, query: &str, hits: Vec<SearchHit>) -> Self {
+        let _ = root;
+        Self {
+            query: query.to_string(),
+            hits,
+            selected: 0,
+            search: None,
+            finished: true,
+            truncated: false,
+        }
+    }
+
     /// Starts a search. Literal, matching `/` in a buffer; `:grep` is where regex would go.
     pub fn start(root: &std::path::Path, query: &str) -> Self {
         let search = ProjectSearch::start(

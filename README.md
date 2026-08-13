@@ -55,7 +55,7 @@ machinery for them exists.
 `esc` in normal mode collapses multiple cursors.
 
 ### Multiple cursors
-`gA` above · `C` below · `S` one caret per selected line · `,` keep only the primary · `ga` select all
+`gA` above · `C` below · `S` one caret per selected line · `,` keep only the primary · `g%` select all
 · `V` select line · `x` delete character
 
 ### Search and commands
@@ -69,7 +69,8 @@ machinery for them exists.
 `ctrl-e` file tree — `j`/`k` move, `enter` opens a file or a directory, `esc` closes
 
 ### Language server
-`K` hover · `gd` go to definition · `gr` rename · `gf` format · `]d` `[d` next/previous diagnostic
+`K` hover · `gd` go to definition · `gr` rename · `gf` format · `ga` code actions · `gu` references
+`]d` `[d` next/previous diagnostic · `gD` diagnostics list · `gi` toggle inlay hints
 `ctrl-space` completion (also in insert mode) · `esc` dismisses an info box
 
 ### Appearance
@@ -125,6 +126,7 @@ and over SSH — and how most of the visual defects in this project were actuall
 ./target/release/vex --screenshot /tmp/vex.png --split 2           # two panes side by side
 ./target/release/vex --screenshot /tmp/vex.png --split 3h          # three stacked
 ./target/release/vex --screenshot /tmp/vex.png --tree              # the file tree
+./target/release/vex --screenshot /tmp/vex.png --diagnostics-list  # the diagnostics list
 ```
 
 ## Tests and benchmarks

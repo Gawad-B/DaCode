@@ -90,6 +90,13 @@ pub struct EditorState {
     pub buffer_count: usize,
     /// Index of the active buffer.
     pub active_buffer: usize,
+    /// Whether the sidebar shows the diagnostics list instead of the structure panel.
+    pub show_diagnostics: bool,
+    /// Inlay hints for the visible range, when they are on.
+    pub inlay_hints: Vec<vex_lsp::lsp_types::InlayHint>,
+    /// Whether to ask for and draw them. Off by default: hints move the code sideways as you type,
+    /// and that is a preference, not a default worth imposing.
+    pub show_inlay_hints: bool,
     /// The file tree, when open. It takes the sidebar over rather than adding a third column: the
     /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
     /// a path in.
@@ -1005,6 +1012,130 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     ));
 }
 
+/// Every diagnostic in the file, as a list.
+///
+/// The underlines say *where*; this says *what, and how many*. Both are needed: `]d` walks them one
+/// at a time, which is useless for deciding whether a file is in trouble at all.
+fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
+    let theme = &state.theme;
+    let pad = space::LG * scale;
+    let line = 20.0 * scale;
+    let width = rect.width - pad * 2.0;
+    let mut y = rect.y + pad;
+
+    let (errors, warnings) = state.diagnostics.counts();
+    frame.text(run(
+        state,
+        Role::Prose,
+        "Diagnostics",
+        Rect::new(rect.x + pad, y, width, line),
+        theme.ink,
+        Align::Left,
+        scale,
+    ));
+    y += line * 1.4;
+
+    frame.text(label(
+        state,
+        format!("{errors} errors · {warnings} warnings"),
+        Rect::new(rect.x + pad, y, width, line),
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+    y += line * 1.6;
+
+    if state.diagnostics.is_empty() {
+        frame.text(run(
+            state,
+            Role::Value,
+            "nothing to report",
+            Rect::new(rect.x + pad, y, width, line),
+            theme.fresh(),
+            Align::Left,
+            scale,
+        ));
+        return;
+    }
+
+    let text = state.document.text();
+    let cursor_line = state.cursor_point().line;
+
+    for diagnostic in state.diagnostics.items() {
+        if y + line * 2.0 > rect.bottom() - pad {
+            break;
+        }
+
+        let is_error = diagnostic
+            .severity
+            .unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING)
+            == vex_lsp::lsp_types::DiagnosticSeverity::ERROR;
+        let color = if is_error {
+            theme.over_budget()
+        } else {
+            theme.stale()
+        };
+
+        let start = vex_lsp::range_from_lsp(text, diagnostic.range).start;
+        let point = text.char_to_point(start);
+        let on_cursor_line = point.line == cursor_line;
+
+        if on_cursor_line {
+            frame.fill(
+                Rect::new(rect.x, y - 2.0 * scale, rect.width, line * 2.0),
+                theme.row_active,
+            );
+        }
+
+        // The line number in the severity's color, then the message. Position first, because the
+        // list is read to decide where to go.
+        frame.text(run(
+            state,
+            Role::Value,
+            format!("{}", point.line + 1),
+            Rect::new(rect.x + pad, y, 36.0 * scale, line),
+            color,
+            Align::Left,
+            scale,
+        ));
+
+        // The first line of the message, wrapped across the two rows this entry has. Server messages
+        // run to paragraphs; the box that appears when the cursor reaches the diagnostic is where the
+        // whole text belongs, and a list is for deciding where to go.
+        let message = diagnostic
+            .message
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let mut spec = state.typography.spec(Role::Value);
+        spec.size_px *= scale;
+        frame.text(TextRun {
+            text: message,
+            spec,
+            color: if on_cursor_line {
+                theme.ink
+            } else {
+                theme.ink_dim
+            },
+            rect: Rect::new(
+                rect.x + pad + 40.0 * scale,
+                y,
+                width - 40.0 * scale,
+                line * 2.0,
+            ),
+            align: Align::Left,
+            center_vertically: false,
+            // Wrapped, unlike everything else in the chrome: a clipped message is unreadable exactly
+            // when it matters, and there is a second row of space here already.
+            wrap: true,
+            layer: Layer::default(),
+        });
+
+        y += line * 2.0;
+    }
+}
+
 /// The file tree, in the sidebar.
 fn draw_tree(
     frame: &mut Frame,
@@ -1402,6 +1533,38 @@ fn draw_code(
             ));
         }
 
+        // Inlay hints for this row, drawn in the gaps rather than shifting the text: the hint is
+        // information *about* the code, and code that moves as hints arrive is code you cannot read.
+        if pane.focused && state.show_inlay_hints {
+            for hint in &state.inlay_hints {
+                let at = vex_lsp::from_lsp(text, hint.position);
+                if at < row.range.start || at > row.range.end {
+                    continue;
+                }
+                let content = match &hint.label {
+                    vex_lsp::lsp_types::InlayHintLabel::String(label) => label.clone(),
+                    vex_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
+                        parts.iter().map(|part| part.value.as_str()).collect()
+                    }
+                };
+                if content.is_empty() {
+                    continue;
+                }
+
+                let column = columns_between(state, text, row.range.start, at);
+                let x = text_left + (column + row.indent) as f32 * advance;
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    content,
+                    Rect::new(x, y, (code.right() - x).max(0.0), row_height),
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            }
+        }
+
         // One run per *highlighted segment*. Cost stays bounded by the viewport: a row yields at
         // most a handful of runs regardless of document size.
         let indent_px = row.indent as f32 * advance;
@@ -1641,6 +1804,10 @@ fn draw_sidebar(
 
     if let Some(tree) = &state.tree {
         draw_tree(frame, state, tree, rect, scale);
+        return;
+    }
+    if state.show_diagnostics {
+        draw_diagnostics_list(frame, state, rect, scale);
         return;
     }
 

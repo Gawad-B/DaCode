@@ -356,9 +356,23 @@ search and replace, file watching.
 > `K` displaced the old add-caret-above binding, which moved to `gA`: `K` for hover is what every
 > Neovim LSP configuration binds, and matching that is the point of "Neovim's keybindings".
 >
-> **Still to do in M6:** no code actions, no find-references, no diagnostics list in the sidebar, no
-> inlay hints, and one server at a time — a project mixing Rust and TypeScript gets a language server
-> for whichever file was opened first.
+> **M6 is complete but for one thing.** Code actions arrive in the *command palette* rather than a
+> menu of their own — it is a list you filter and choose from, which is what the palette already is —
+> and only actions carrying edits are listed: an action whose work is a server-side `command` is
+> something vex cannot perform, and offering a menu entry that does nothing is worse than offering
+> nothing. References land in the *search results panel* for the same reason: both are `path:line`
+> plus a line of context that you move through and open, and two implementations of that would drift.
+>
+> Inlay hints are off by default and requested once per document *version* rather than on a timer, so
+> typing does not queue a request per keystroke and a reply is never for text that has moved. They are
+> drawn in the gaps rather than shifting the code sideways — a hint is information *about* the code,
+> and code that moves as hints arrive is code you cannot read.
+>
+> The diagnostics list answers a question the underlines cannot: `]d` walks them one at a time, which
+> is useless for deciding whether a file is in trouble at all.
+>
+> **Still to do in M6:** one server at a time — a project mixing Rust and TypeScript gets a language
+> server for whichever file was opened first.
 
 ### M6 — LSP (3–4 weeks)
 Client + lifecycle, diagnostics, hover, goto-definition/references, completion,

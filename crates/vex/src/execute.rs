@@ -147,8 +147,22 @@ pub fn execute(
         // Requests go out through the caller, which owns the client; the executor records what was
         // asked for. Splitting it this way keeps `execute` free of process handling and testable
         // without a language server.
-        Action::Hover | Action::GotoDefinition | Action::Format => {
-            state.pending_request = Some(action.clone())
+        Action::Hover
+        | Action::GotoDefinition
+        | Action::Format
+        | Action::CodeAction
+        | Action::FindReferences => state.pending_request = Some(action.clone()),
+        Action::ToggleDiagnosticsList => {
+            state.show_diagnostics = !state.show_diagnostics;
+            // The tree and the diagnostics list share the sidebar; showing one hides the other
+            // rather than one silently winning.
+            if state.show_diagnostics {
+                state.tree = None;
+            }
+        }
+        Action::ToggleInlayHints => {
+            state.show_inlay_hints = !state.show_inlay_hints;
+            state.inlay_hints.clear();
         }
         Action::Rename => {
             // Pre-filled with the symbol under the cursor, because a rename is nearly always an edit

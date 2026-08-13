@@ -234,7 +234,7 @@ pub fn action_names() -> Vec<&'static str> {
 
 /// The names this crate advertises. Filtered through `Action::from_name`, so a name deleted from the
 /// vocabulary disappears from `vex.actions` instead of being advertised and then rejected.
-const CANDIDATE_ACTIONS: [&str; 66] = [
+const CANDIDATE_ACTIONS: [&str; 70] = [
     "move_left",
     "move_right",
     "move_up",
@@ -301,6 +301,10 @@ const CANDIDATE_ACTIONS: [&str; 66] = [
     "next_pane",
     "previous_pane",
     "toggle_tree",
+    "code_action",
+    "find_references",
+    "toggle_inlay_hints",
+    "toggle_diagnostics",
 ];
 
 /// The closest name in `candidates`, if one is close enough to be worth suggesting.
