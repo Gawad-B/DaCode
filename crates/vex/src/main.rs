@@ -23,7 +23,7 @@ use vex_input::{Action, Grammar, Key, KeyCode, Registers, Resolution};
 use vex_project::{FileIndex, FileWalk, find_root};
 use vex_render::{Frame, Rect, Renderer};
 use vex_syntax::{Language, SyntaxRequest, SyntaxWorker};
-use vex_text::{Selection, SelectionSet, Text, Version};
+use vex_text::{CharOffset, Selection, SelectionSet, Text, Version};
 use vex_theme::{Mode, Theme};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
@@ -100,6 +100,8 @@ fn main() -> Result<()> {
         servers: std::collections::HashMap::new(),
         active_server: None,
         sent_version: None,
+        snippets: load_snippets(),
+        snippet: None,
         jumps: vex_input::JumpList::default(),
         macros: vex_input::Macros::default(),
         code_actions: Vec::new(),
@@ -773,6 +775,10 @@ struct App {
     /// user typed while the server was thinking, applying them would corrupt the file, so the reply
     /// is refused — see `edits::apply_to_document`.
     edit_version: Option<vex_text::Version>,
+    /// Snippets loaded from the config directory, for `tab` expansion.
+    snippets: Vec<vex_import::Snippet>,
+    /// The tab stops of the snippet being filled in, if one is.
+    snippet: Option<vex::snippet::Session>,
     /// Where the cursor has jumped from, for `ctrl-o` / `ctrl-i`.
     jumps: vex_input::JumpList,
     /// Recorded action sequences, for `q` and `@`.
@@ -1817,6 +1823,20 @@ impl App {
         let changes = self.state.document.take_changes();
         let snapshot = self.state.document.snapshot();
 
+        // A live snippet's tab stops move with the text typed into them. Done here because this is
+        // where the edit queue is drained — the stops and the syntax tree need the same edits, in
+        // the same coordinates, and taking them twice is not possible.
+        if let Some(session) = &mut self.snippet {
+            for change in &changes {
+                session.transform(&change.edits);
+            }
+            if session.is_finished() {
+                // Past the last stop there is nothing left to walk, and holding the session open
+                // would make the next `tab` do nothing instead of indenting.
+                self.snippet = None;
+            }
+        }
+
         let worker = self.syntax.as_mut().expect("checked above");
 
         // One request per applied transaction, in order: tree-sitter's incremental reparse needs
@@ -2077,6 +2097,43 @@ fn pane_views<'a>(
         .collect()
 }
 
+/// Snippets from the config directory, as the importer writes them.
+///
+/// Read once at startup. A snippet file that fails to parse is skipped with a note rather than
+/// stopping the editor — the same rule the rest of configuration follows.
+fn load_snippets() -> Vec<vex_import::Snippet> {
+    let directory = vex::config::config_dir().join("snippets");
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return Vec::new();
+    };
+
+    let mut snippets = Vec::new();
+    let mut report = vex_import::ImportReport::default();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        match std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| vex_import::parse_jsonc(&text).ok())
+        {
+            Some(json) => snippets.extend(vex_import::import_snippets(&json, &mut report)),
+            None => eprintln!("vex: could not read snippets from {}", path.display()),
+        }
+    }
+
+    if !snippets.is_empty() {
+        eprintln!(
+            "vex: {} snippet{} loaded",
+            snippets.len(),
+            if snippets.len() == 1 { "" } else { "s" }
+        );
+    }
+    snippets
+}
+
 /// Where a buffer index lives in `buffers`, which excludes the active one.
 fn stored_index(buffer: usize, active: usize) -> Option<usize> {
     if buffer == active {
@@ -2102,6 +2159,7 @@ impl App {
                     self.restore_pane();
                 }
             }
+            Action::ExpandSnippet => self.expand_snippet(),
             Action::Jump { forward } => {
                 let here = self.here();
                 let target = if *forward {
@@ -2252,6 +2310,82 @@ impl App {
 
         let session = vex::session::Session { files, active };
         vex::session::save(&vex::session::session_dir(), self.index.root(), &session);
+    }
+
+    /// `tab` in insert mode: move to the next stop, expand a snippet, or indent.
+    ///
+    /// In that order, because each is what the key should mean when the one before it does not
+    /// apply — and because `tab` has to keep being the indent key for everyone with no snippets.
+    fn expand_snippet(&mut self) {
+        // Already filling one in: move to the next stop.
+        if let Some(session) = &mut self.snippet {
+            if session.advance() {
+                if let Some((at, length)) = session.current() {
+                    let selection = if length == 0 {
+                        Selection::caret(at)
+                    } else {
+                        Selection::new(at, CharOffset(at.get() + length))
+                    };
+                    self.state
+                        .document
+                        .set_selections(SelectionSet::single(selection));
+                    self.reveal_cursor();
+                }
+                return;
+            }
+            self.snippet = None;
+        }
+
+        let cursor = self.state.cursor();
+        let text = self.state.document.text();
+        let line_start =
+            text.point_to_char(vex_text::Point::new(text.char_to_point(cursor).line, 0));
+        let before = text.slice_to_string(line_start..cursor);
+
+        let Some(snippet) = vex::snippet::trigger(&before, &self.snippets).cloned() else {
+            self.state.document.insert("    ");
+            return;
+        };
+
+        let indent: String = before.chars().take_while(|c| c.is_whitespace()).collect();
+        let expansion = vex::snippet::expand(&snippet.body, &indent);
+
+        // The prefix the user typed is replaced by the expansion, as one edit — so `tab` undoes in
+        // one press rather than leaving half a snippet behind.
+        let prefix_len = snippet.prefix.chars().count();
+        let start = CharOffset(cursor.get().saturating_sub(prefix_len));
+        let transaction = vex_text::Transaction::new(vec![vex_text::Edit::replace(
+            start..cursor,
+            expansion.text.clone(),
+        )]);
+        if self
+            .state
+            .document
+            .apply(transaction, vex_buffer::EditKind::Discrete)
+            .is_err()
+        {
+            return;
+        }
+
+        let session = vex::snippet::Session::new(&expansion, start);
+        let first = session
+            .as_ref()
+            .and_then(|session| session.current())
+            .unwrap_or((
+                CharOffset(start.get() + expansion.stops.last().copied().unwrap_or(0)),
+                0,
+            ));
+
+        let selection = if first.1 == 0 {
+            Selection::caret(first.0)
+        } else {
+            Selection::new(first.0, CharOffset(first.0.get() + first.1))
+        };
+        self.state
+            .document
+            .set_selections(SelectionSet::single(selection));
+        self.snippet = session;
+        self.reveal_cursor();
     }
 
     /// Where the cursor is, as a jumplist entry.

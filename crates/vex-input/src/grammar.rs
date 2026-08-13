@@ -189,7 +189,9 @@ impl Grammar {
                 }
             }
             KeyCode::Enter => Resolution::Action(Action::Newline),
-            KeyCode::Tab => Resolution::Action(Action::InsertText("    ".into())),
+            // Tab tries the snippet first and falls back to an indent, so it stays the indent key
+            // for everyone who has no snippets.
+            KeyCode::Tab => Resolution::Action(Action::ExpandSnippet),
             KeyCode::Backspace => Resolution::Action(Action::DeleteBackward),
             KeyCode::Delete => Resolution::Action(Action::DeleteForward),
             _ => Resolution::Unhandled,

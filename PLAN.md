@@ -465,6 +465,13 @@ mistakes, and budget for that rather than being surprised by it.
 > an editor premised on staying light while still having to agree with the `git` binary about
 > worktrees and submodules. The diff is ours, version-tagged like every other background result.
 >
+> Snippet expansion closes a loop left open since M5: the importer could already *read* snippets and
+> said so in its report. `tab` expands, then walks the tab stops, then falls back to indenting — in
+> that order, so it keeps being the indent key for everyone with no snippets. The stops are anchors,
+> so they move with the text typed into them. Deliberately not a live template with mirrored
+> placeholders: those need an edit path running on every keystroke, and every editor that has one has
+> a history of it firing inside a string literal you were editing.
+>
 > Sessions are separate from crash recovery on purpose: recovery must survive a `kill -9` and so is
 > written every two seconds, while a session is only interesting when the editor closed properly and
 > is written once, on the way out.

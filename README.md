@@ -73,6 +73,11 @@ machinery for them exists.
 `]d` `[d` next/previous diagnostic · `gD` diagnostics list · `gi` toggle inlay hints
 `ctrl-space` completion (also in insert mode) · `esc` dismisses an info box
 
+### Snippets
+`tab` in insert mode expands the snippet whose prefix you just typed, then walks its tab stops.
+With no snippet to expand it indents, as usual. Snippets come from `~/.config/vex/snippets/*.json`
+— which is exactly what `vex import --snippets` writes.
+
 ### Jumps and macros
 `ctrl-o` back · `ctrl-i` forward — only far-reaching moves are recorded, so `j` and `w` do not fill it
 `q<letter>` start/stop recording · `@<letter>` replay · `@@` replay the last one

@@ -267,6 +267,9 @@ pub enum Action {
     Jump {
         forward: bool,
     },
+    /// `tab` in insert mode: expand the snippet before the cursor, or move to the next tab stop.
+    /// Falls back to inserting an indent when neither applies.
+    ExpandSnippet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,6 +403,7 @@ impl Action {
             "jump_back" => Action::Jump { forward: false },
             "jump_forward" => Action::Jump { forward: true },
             "replay_macro" => Action::ReplayMacro { register: None },
+            "expand_snippet" => Action::ExpandSnippet,
 
             _ => return None,
         })
