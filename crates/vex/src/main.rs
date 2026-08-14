@@ -5105,16 +5105,24 @@ impl App {
     /// A prompt is a text field, and `../../etc/passwd` is a thing a text field can contain. These
     /// commands create, rename and delete real files, so the one place they turn a string into a
     /// path is the place to check it.
+    ///
+    /// Two checks, because neither alone is enough. `vex_project::within` folds the path lexically,
+    /// which is the only thing that works for a file that does not exist yet — and creating one is
+    /// the common case here. `canonical` then catches what folding cannot see: a symlink inside the
+    /// project pointing out of it. It is asked only where the parent is really on disk, since
+    /// otherwise it hands back its input unchanged and answers nothing.
     fn in_project(&self, relative: &str) -> Option<std::path::PathBuf> {
-        let relative = relative.trim();
-        if relative.is_empty() {
-            return None;
+        let path = vex_project::within(&self.state.project_root, relative)?;
+
+        if let Some(parent) = path.parent() {
+            if parent.exists()
+                && !vex_project::canonical(parent)
+                    .starts_with(vex_project::canonical(&self.state.project_root))
+            {
+                return None;
+            }
         }
-        let joined = self.state.project_root.join(relative);
-        let normal = vex_project::canonical(joined.parent()?);
-        normal
-            .starts_with(vex_project::canonical(&self.state.project_root))
-            .then_some(joined)
+        Some(path)
     }
 
     /// Deletes the selected file, refusing once first.

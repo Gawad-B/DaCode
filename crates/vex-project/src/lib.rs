@@ -44,6 +44,64 @@ pub fn strip_extended_prefix(path: &str) -> &str {
     path.strip_prefix(r"\\?\").unwrap_or(path)
 }
 
+/// Resolves a project-relative path, refusing anything that escapes the root.
+///
+/// **Lexically, without asking the filesystem**, which is the whole point. The version this
+/// replaced joined the name onto the root, canonicalized the *parent*, and compared with
+/// `starts_with`. Two things defeated that. [`canonical`] returns its input unchanged when
+/// `canonicalize` fails, and `canonicalize` fails with `NotFound` the moment any component of the
+/// path does not exist yet — which is the normal case for a file you are about to create.
+/// `Path::starts_with` compares components, and components normalise `.` but never `..`. So
+/// `../evil.txt` was caught, and `x/../../../../evil.txt` with no `x` on disk was not: the parent
+/// came back verbatim, `..` chain intact, and matched the root on its first two components.
+/// `create_dir_all` then walked the chain happily and `write` put the file wherever it landed.
+///
+/// Taking the root as a parameter rather than reading it from `self` is what makes the rules
+/// testable, and this one had no test at all. It is also why the Windows-only accident that hid it
+/// no longer matters: Win32 collapses `..` before the syscall, so the machine this editor is
+/// developed on could not reproduce its own bug.
+///
+/// Returns the *folded* path, so what the caller writes to is what was checked. Symlinks are not
+/// visible to lexical folding; callers that can afford a filesystem round trip should follow up
+/// with [`canonical`] where the parent genuinely exists.
+pub fn within(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+
+    let relative = relative.trim();
+    if relative.is_empty() {
+        return None;
+    }
+
+    let mut folded = root.to_path_buf();
+    // How deep below the root we are. A `..` at zero is an escape, and popping is only safe while
+    // this is positive — otherwise it would eat the root's own components.
+    let mut depth = 0usize;
+
+    for component in std::path::Path::new(relative).components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                folded.push(part);
+                depth += 1;
+            }
+            Component::ParentDir => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                folded.pop();
+            }
+            // An absolute or drive-qualified name replaces the root outright under `join`, so
+            // `/etc/passwd` and `C:\Windows\x` never even reached the old check.
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    // `.`, or `a/..`, names the root itself — a directory, and not a file anything here may create,
+    // rename or delete.
+    (depth > 0).then_some(folded)
+}
+
 /// Canonicalizes a path and removes the prefix Windows adds while doing it.
 pub fn canonical(path: &std::path::Path) -> std::path::PathBuf {
     match path.canonicalize() {

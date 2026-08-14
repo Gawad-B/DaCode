@@ -418,3 +418,85 @@ fn windows_extended_length_prefixes_are_not_part_of_a_path() {
         r"C:\already\plain"
     );
 }
+
+// ---- what a text field is allowed to name ------------------------------------------------------
+
+/// The root every containment test is written against. Never touched on disk: `within` is lexical,
+/// which is exactly the property being pinned down.
+fn root() -> std::path::PathBuf {
+    if cfg!(windows) {
+        std::path::PathBuf::from(r"C:\work\project")
+    } else {
+        std::path::PathBuf::from("/work/project")
+    }
+}
+
+#[test]
+fn an_ordinary_relative_name_resolves_under_the_root() {
+    let resolved = vex_project::within(&root(), "src/new/thing.rs").expect("inside the project");
+    assert!(resolved.starts_with(root()));
+    assert!(resolved.ends_with("thing.rs"));
+}
+
+#[test]
+fn a_parent_step_that_climbs_above_the_root_is_refused_even_when_nothing_exists() {
+    // The defect. The old check canonicalized the parent and compared with `starts_with`:
+    // `canonicalize` fails with NotFound the moment a component is missing — which is the normal
+    // case for a file being created — and `vex_project::canonical` then returns its input
+    // unchanged, `..` chain intact. `starts_with` compares components, and components normalise `.`
+    // but never `..`, so the chain matched the root on its first two and the file was written
+    // wherever the `..`s landed.
+    //
+    // Nothing on this machine could see it: Win32 collapses `..` before the syscall, so the
+    // platform vex is developed on caught the attack by accident and Linux did not.
+    for escape in [
+        "../evil.txt",
+        "../../evil.txt",
+        "x/../../evil.txt",
+        "x/../../../../evil.txt",
+        "a/b/../../../c.txt",
+    ] {
+        assert_eq!(
+            vex_project::within(&root(), escape),
+            None,
+            "`{escape}` escaped the project root"
+        );
+    }
+}
+
+#[test]
+fn an_absolute_name_is_refused_rather_than_replacing_the_root() {
+    // `Path::join` with an absolute argument discards the left side entirely. The old check caught
+    // these, but only by accident: it canonicalized the parent, and `/etc` and `C:\Windows` happen
+    // to exist. A drive or share that did not would have gone through on the same `NotFound`
+    // fallback as the `..` case. Refused for a reason now rather than by luck.
+    for absolute in ["/etc/passwd", r"C:\Windows\system32\x", r"\server\share\x"] {
+        assert_eq!(
+            vex_project::within(&root(), absolute),
+            None,
+            "`{absolute}` replaced the project root"
+        );
+    }
+}
+
+#[test]
+fn a_parent_step_that_stays_inside_the_root_is_allowed_and_folded_away() {
+    // `..` is not itself the problem; climbing out is. And the folded path is what comes back, so
+    // what the caller writes to is what was checked — the old version returned the unfolded join,
+    // so `a.rs` and `./a.rs` compared as different files in rename.
+    let resolved = vex_project::within(&root(), "src/old/../new/thing.rs").expect("inside");
+    assert_eq!(resolved, root().join("src").join("new").join("thing.rs"));
+
+    let dotted = vex_project::within(&root(), "./a.rs").expect("inside");
+    assert_eq!(dotted, root().join("a.rs"));
+}
+
+#[test]
+fn a_name_that_resolves_to_the_root_itself_is_refused() {
+    // The root is a directory. Nothing here may create, rename or delete it, and returning it would
+    // hand a directory to `fs::write`.
+    for naming_the_root in [".", "src/..", "./."] {
+        assert_eq!(vex_project::within(&root(), naming_the_root), None);
+    }
+    assert_eq!(vex_project::within(&root(), "   "), None);
+}
