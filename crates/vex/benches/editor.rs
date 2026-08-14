@@ -73,6 +73,7 @@ fn state(lines: usize) -> EditorState {
         recording: None,
         diff: vex::git::Diff::default(),
         show_diagnostics: false,
+        problems: Default::default(),
         inlay_hints: Vec::new(),
         show_inlay_hints: false,
         welcome: None,

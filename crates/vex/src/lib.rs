@@ -22,6 +22,7 @@ pub mod panes;
 pub mod paths;
 pub mod picker;
 pub mod process;
+pub mod problems;
 pub mod prompt;
 pub mod recovery;
 pub mod results;

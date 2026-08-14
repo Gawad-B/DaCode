@@ -247,7 +247,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 611 tests
+cargo test --workspace                      # 615 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

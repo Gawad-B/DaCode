@@ -313,6 +313,7 @@ fn new_state(
         recording: None,
         diff: vex::git::Diff::default(),
         show_diagnostics: false,
+        problems: Default::default(),
         inlay_hints: Vec::new(),
         show_inlay_hints: settings.inlay_hints,
         welcome: None,
@@ -677,7 +678,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 true,
             ),
         ];
-        let items = sample
+        let items: Vec<vex_lsp::lsp_types::Diagnostic> = sample
             .iter()
             .map(
                 |(line, column, message, is_error)| vex_lsp::lsp_types::Diagnostic {
@@ -701,6 +702,18 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 },
             )
             .collect();
+        // The project store as well as the active file's, and a second file so the capture shows
+        // what the panel is actually for: problems somewhere other than where you are looking.
+        if let Some(path) = state.file_path.clone() {
+            state
+                .problems
+                .publish(std::path::Path::new(&path), &items, None);
+        }
+        state.problems.publish(
+            &state.project_root.join("crates/vex-buffer/src/document.rs"),
+            &items[..2],
+            None,
+        );
         state
             .diagnostics
             .apply(items, None, state.document.version());
@@ -2071,6 +2084,13 @@ impl App {
                             active_path
                         );
                     }
+                    // Every file's, kept whatever happens below. The active buffer's are *also*
+                    // version-checked, because those are drawn on text whose offsets must still be
+                    // valid; a problem in a file that is not open is a path, a line and a message,
+                    // and refusing it for a version mismatch would refuse nearly all of them — the
+                    // version a server quotes is that file's, and the editor is holding another.
+                    self.state.problems.publish(&path, &diagnostics, None);
+
                     if matches_active {
                         let applied =
                             self.state
@@ -4793,6 +4813,48 @@ impl App {
             tree.reveal(&target);
             if let Some(path) = tree.activate() {
                 self.activate(Target::File(path));
+            }
+            return;
+        }
+
+        // The problems list. Choosing a row goes there — the panel exists to decide where to go
+        // next, and one you can only read is half a panel.
+        if self.state.show_diagnostics {
+            let pad = space::LG * scale;
+            let line = 20.0 * scale;
+            let top = sidebar.y + pad + line * 1.4 + line * 1.6;
+
+            let here = self.state.file_path.clone();
+            let problems = self
+                .state
+                .problems
+                .ordered(here.as_deref().map(std::path::Path::new));
+
+            // The same walk the drawing does: a heading each time the file changes, then two lines
+            // per problem. Kept in step by shape rather than by a shared function because the panel
+            // draws no rectangles the mouse needs beyond these rows.
+            let mut cursor = top;
+            let mut last: Option<&std::path::Path> = None;
+            for problem in &problems {
+                if cursor + line * 2.0 > sidebar.bottom() - pad {
+                    break;
+                }
+                if last != Some(problem.path.as_path()) {
+                    last = Some(problem.path.as_path());
+                    cursor += line * 1.2;
+                    if cursor + line * 2.0 > sidebar.bottom() - pad {
+                        break;
+                    }
+                }
+                if y >= cursor && y < cursor + line * 2.0 {
+                    let path = problem.path.clone();
+                    let (target_line, target_column) = (problem.line, problem.column);
+                    self.activate(Target::File(path));
+                    self.restore_cursor(target_line, target_column);
+                    self.reveal_cursor();
+                    return;
+                }
+                cursor += line * 2.0;
             }
             return;
         }

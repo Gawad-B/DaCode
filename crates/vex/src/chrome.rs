@@ -106,6 +106,8 @@ pub struct EditorState {
     pub diff: crate::git::Diff,
     /// Whether the sidebar shows the diagnostics list instead of the structure panel.
     pub show_diagnostics: bool,
+    /// Every problem the language server has reported, across the project.
+    pub problems: crate::problems::Store,
     /// Inlay hints for the visible range, when they are on.
     pub inlay_hints: Vec<vex_lsp::lsp_types::InlayHint>,
     /// Whether to ask for and draw them. Off by default: hints move the code sideways as you type,
@@ -2135,10 +2137,15 @@ fn draw_settings(
     ));
 }
 
-/// Every diagnostic in the file, as a list.
+/// Every problem in the **project**, as a list.
 ///
-/// The underlines say *where*; this says *what, and how many*. Both are needed: `]d` walks them one
-/// at a time, which is useless for deciding whether a file is in trouble at all.
+/// The underlines say *where* in this file; this says what is wrong anywhere. Both are needed: `]d`
+/// walks one file's problems one at a time, which cannot answer "did my change break anything?" —
+/// and vex has no terminal to ask that from either.
+///
+/// Ordered by [`crate::problems::Store::ordered`]: the file you are in first, then files with an
+/// error, then the rest. Grouping by file is what makes it scannable, because going somewhere means
+/// opening a file.
 fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
     let pad = space::LG * scale;
@@ -2146,11 +2153,11 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     let width = rect.width - pad * 2.0;
     let mut y = rect.y + pad;
 
-    let (errors, warnings) = state.diagnostics.counts();
+    let (errors, warnings) = state.problems.counts();
     frame.text(run(
         state,
         Role::Prose,
-        "Diagnostics",
+        "Problems",
         Rect::new(rect.x + pad, y, width, line),
         theme.ink,
         Align::Left,
@@ -2158,9 +2165,14 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     ));
     y += line * 1.4;
 
+    let summary = match state.problems.dropped() {
+        // Silently truncating is a panel that has lied about being complete.
+        0 => format!("{errors} errors · {warnings} warnings"),
+        dropped => format!("{errors} errors · {warnings} warnings · {dropped} not shown"),
+    };
     frame.text(label(
         state,
-        format!("{errors} errors · {warnings} warnings"),
+        elide(state, Role::Label, &summary, width, scale),
         Rect::new(rect.x + pad, y, width, line),
         theme.ink_faint,
         Align::Left,
@@ -2168,7 +2180,10 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     ));
     y += line * 1.6;
 
-    if state.diagnostics.is_empty() {
+    let here = state.file_path.as_deref().map(std::path::Path::new);
+    let problems = state.problems.ordered(here);
+
+    if problems.is_empty() {
         frame.text(run(
             state,
             Role::Value,
@@ -2181,28 +2196,45 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         return;
     }
 
-    let text = state.document.text();
-    let cursor_line = state.cursor_point().line;
+    let mut last_file: Option<&std::path::Path> = None;
 
-    for diagnostic in state.diagnostics.items() {
+    for problem in &problems {
         if y + line * 2.0 > rect.bottom() - pad {
             break;
         }
 
-        let is_error = diagnostic
-            .severity
-            .unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING)
-            == vex_lsp::lsp_types::DiagnosticSeverity::ERROR;
-        let color = if is_error {
-            theme.over_budget()
-        } else {
-            theme.stale()
+        // A heading each time the file changes, so a list spanning six files reads as six groups
+        // rather than as one column of unrelated line numbers.
+        if last_file != Some(problem.path.as_path()) {
+            last_file = Some(problem.path.as_path());
+            let name = problem
+                .path
+                .strip_prefix(&state.project_root)
+                .unwrap_or(&problem.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            frame.text(label(
+                state,
+                elide(state, Role::Label, &name, width, scale),
+                Rect::new(rect.x + pad, y, width, line),
+                theme.ink_dim,
+                Align::Left,
+                scale,
+            ));
+            y += line * 1.2;
+            if y + line * 2.0 > rect.bottom() - pad {
+                break;
+            }
+        }
+
+        let color = match problem.severity {
+            crate::problems::Severity::Error => theme.over_budget(),
+            crate::problems::Severity::Warning => theme.stale(),
+            _ => theme.ink_faint,
         };
 
-        let start = vex_lsp::range_from_lsp(text, diagnostic.range).start;
-        let point = text.char_to_point(start);
-        let on_cursor_line = point.line == cursor_line;
-
+        let on_cursor_line = here == Some(problem.path.as_path())
+            && problem.line == state.cursor_point().line;
         if on_cursor_line {
             frame.fill(
                 Rect::new(rect.x, y - 2.0 * scale, rect.width, line * 2.0),
@@ -2210,12 +2242,12 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
             );
         }
 
-        // The line number in the severity's color, then the message. Position first, because the
+        // The line number in the severity's colour, then the message. Position first, because the
         // list is read to decide where to go.
         frame.text(run(
             state,
             Role::Value,
-            format!("{}", point.line + 1),
+            format!("{}", problem.line + 1),
             Rect::new(rect.x + pad, y, 36.0 * scale, line),
             color,
             Align::Left,
@@ -2225,12 +2257,7 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         // The first line of the message, wrapped across the two rows this entry has. Server messages
         // run to paragraphs; the box that appears when the cursor reaches the diagnostic is where the
         // whole text belongs, and a list is for deciding where to go.
-        let message = diagnostic
-            .message
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_string();
+        let message = problem.message.clone();
         let mut spec = state.typography.spec(Role::Value);
         spec.size_px *= scale;
         frame.text(TextRun {
@@ -3652,8 +3679,19 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         ),
         {
             let (errors, warnings) = state.diagnostics.counts();
+            let (project_errors, project_warnings) = state.problems.counts();
+            let elsewhere = (project_errors + project_warnings)
+                .saturating_sub(errors + warnings);
+
             if errors + warnings == 0 {
-                (state.server_status.clone(), theme.ink_faint)
+                // Nothing wrong here. If something is wrong *elsewhere*, say so — that is the whole
+                // reason the project store exists, and a clean statusline over a broken project is
+                // the misleading answer.
+                if elsewhere > 0 {
+                    (format!("{elsewhere} elsewhere"), theme.stale())
+                } else {
+                    (state.server_status.clone(), theme.ink_faint)
+                }
             } else {
                 let plural = |count: usize, word: &str| {
                     if count == 1 {
