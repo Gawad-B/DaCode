@@ -6,8 +6,8 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 
 ## What this is
 
-A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-671 tests, clippy clean.
+A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~50,000 lines,
+724 tests, clippy clean.
 
 ## Commands
 
@@ -86,6 +86,18 @@ returns the exact inverse for undo. Nothing else may touch the rope. `EditKind::
 own undo group" — use it for anything that is one *intent* however many edits it makes (a rename, a
 format, a macro replay, a snippet expansion).
 
+**In the binary, that path is `EditorState::mutate`, not `Document::apply`.** The document is the
+funnel for changing text, but folds live *outside* it in the display map and are line numbers —
+nothing moved them, so deleting a function above a closed fold left a range running off the end of
+the file, and since `is_hidden` only asks whether a line falls inside the range, that hid everything
+below the fold's head. `mutate` takes a closure, runs it against the document, then replays
+`changes_since` over the folds through `vex_text::transform_offset`. `conventions.rs` greps for it,
+because "remember to call the other thing too" is not a rule that survives a year — and that grep
+found two sites hand-editing had already missed.
+
+**Nothing outside the document may hold a bare line number across an edit.** Folds are the case that
+existed; if you add another, transform it in `mutate` beside them or clear it, and say which.
+
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
 headlessly. Adding a user-visible operation means adding an `Action`, a name in `Action::from_name`,
@@ -106,8 +118,18 @@ modifier is held and leaves `shift` on the key for bindings that mean it. Never 
 platform event any other way.
 
 **Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
-the chrome and the toolbar, `menu::geometry`, `welcome::geometry`. The drawing code reads the same
-function. A rectangle computed twice is a click that lands somewhere other than where it looks.
+the chrome and the toolbar, `menu::geometry`, `welcome::geometry`, `settings_ui::panel`,
+`tree::panel`, `layout::CodeArea`. The drawing code reads the same function. A rectangle computed
+twice is a click that lands somewhere other than where it looks.
+
+That rule has now been broken three times and each break looked like a different bug. `draw_code`
+shadowed its own `code` parameter with what sticky scroll left of it, so the mouse, the hover box,
+the completion popup and the which-key hint all measured against a rectangle a row taller per pinned
+head — clicks landed up to three lines low, and because nothing is pinned at the top of a file it
+read as intermittent. The file tree's click handler left no bottom pad where the drawing did, so the
+two asked `FileTree::visible` for different heights and clicking one file opened another. **A
+function that returns rows must return their rectangles too**, and the caller must do the splitting
+before either half runs — `CodeArea::new` exists so `draw_code` cannot shrink a rectangle privately.
 
 **If a feature can only be reached by a key, it is not finished.** The toolbar, the menus, the context
 menu, the clickable settings rows and the clickable wizard all exist because someone who chose the
@@ -170,6 +192,34 @@ pylsp` up in it finds nothing, ever — and a venv's own server is the main reas
 Relative paths resolve against the **project root**, not the process's working directory, which for
 a windowed editor is wherever the desktop launched it from and never what the user meant.
 
+**A path typed into a prompt is relative to the project, never to the process.** The same reasoning,
+and it caught Save As and `:w path` too: both stored the raw string, and `fs::write` resolves it
+against whatever directory the desktop launched the editor from, so `src/notes.rs` wrote a file the
+user could not find. Go through `absolute_in`. An absolute path is left alone — saving a copy outside
+the project is a real thing to want.
+
+**Containment is decided lexically, not by the filesystem.** `vex_project::within` folds `.` and `..`
+itself and refuses a climb above the root. Asking `canonicalize` cannot work for a file that does not
+exist yet, which is the normal case for one being created: it fails with `NotFound`, `canonical`
+falls back to returning its input with the `..` chain intact, and `Path::starts_with` compares
+components — which normalise `.` and never `..`. So `x/../../../../evil.txt` passed the check and
+`create_dir_all` walked it happily. It takes the root as a parameter, which is why it has tests;
+nothing on Windows could have found this, because Win32 collapses `..` before the syscall.
+
+**Buffer identity is the canonical path; buffer *order* is one function.** `buffer_key` decides
+whether two buffers are the same file — it used to be `relative_crumbs`, a display path truncated to
+four segments, so one file opened two ways got two undo histories and two files deep in different
+trees collided. `stored_index` is the only mapping from a buffer's number to its slot in
+`App::buffers`, which skips the live one; it existed and was written out by hand at five other sites
+anyway, and that is exactly how `switch_to` came to renumber the whole list on every non-adjacent
+switch. Anything that removes a buffer must also tell `Panes::buffer_closed`, or a split pane keeps
+an index that now names a different file.
+
+**Every `didOpen` owes a `didClose`.** `opened_document` records what the server was told, and
+`start_language_server` closes it before the next one opens — which covers switching, closing,
+renaming and deleting, because all four reach `after_buffer_change`. Without it a server accumulated
+every document of a session, each frozen at the version last sent.
+
 **Formatting has two answers, and the server is asked at the handshake which one applies.**
 `documentFormattingProvider` from the `initialize` reply decides whether `Action::Format` goes to the
 server or to `format::FormatWorker`. pyright says no, so a Python file formats through ruff or black;
@@ -226,9 +276,24 @@ They are cleared on buffer change: they are line numbers and nothing more.
   not include — a value that cannot occur on the machine the test was written on.
 - **A rule that keeps being broken becomes a test.** `crates/vex/tests/conventions.rs` greps the
   workspace for direct `canonicalize()` calls, because that one slip caused three consecutive Windows CI
-  failures and each cost a fifteen-minute round trip to find. Verify such a guard by *injecting a
+  failures and each cost a fifteen-minute round trip to find. It also greps for text changed outside
+  `EditorState::mutate`, which is what carries the folds. Verify such a guard by *injecting a
   violation* — the first version scanned zero files (cargo runs tests with the crate as the working
   directory, not the workspace) and passed while checking nothing.
+- **A guard that reads a *window* of lines can pass while checking nothing.** The mutation grep's
+  first version looked a few lines back for a nearby `mutate(` call, and the injected violation
+  happened to sit two lines under an unrelated one — green, and worthless. It checks the *receiver*
+  now: inside the closure the document is named plainly, everywhere else it is reached through
+  something. Prefer a test that can only be satisfied one way over one that looks for context.
+- **A test must drive the real code path, not a copy of it.** The first version of the session
+  ordering test wrote out its own restore loop, so it passed whatever `main` did — and passed with
+  the defect injected. `restore_session` and `session_snapshot` exist because the logic was
+  unreachable from a test while it lived inside `main` and inside the function that also wrote the
+  file. If a defect is not reachable from a test, that is the first thing to fix.
+- **A timing guard has to measure the thing, not the early return.** `median` reuses one
+  `EditorState` across thousands of iterations, so a keystroke test for electric dedent measured the
+  scan once and the "line is no longer blank" early return every time after. `latency.rs` calls
+  `dedent_for_closer` directly for that reason. Injecting the unbounded walk back reports 96x.
 - **A test that names a program must name one the *platform* guarantees**, not one the machine happens
   to have. `picker.rs` asserted `which("sh")` and passed everywhere it had ever run — including the
   Windows runner, whose image ships Git's `sh.exe` — then failed on the first real Windows developer
@@ -314,7 +379,11 @@ anything platform-shaped:
 | LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
 | Which language server runs | `crates/vex-lsp/src/lib.rs` — `LANGUAGES`, plus `vex.server` in config |
 | Where the settings rows are | `crates/vex/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
+| Where the tree's rows are | `crates/vex/src/tree.rs` — `panel`, same rule |
 | Whether a file may be opened | `crates/vex/src/open.rs` — every refusal is a sentence for the screen |
+| Whether a path is inside the project | `crates/vex-project/src/lib.rs` — `within`, lexical and testable |
+| Which buffer is which | `crates/vex/src/main.rs` — `buffer_key` for identity, `stored_index` for order |
+| What survives an edit | `crates/vex/src/chrome.rs` — `EditorState::mutate` |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
 panel. If you add it to fewer, it will silently not work somewhere.
@@ -329,6 +398,16 @@ Smaller ones, from the non-modal work: a drag after a double-click extends by ch
 word; the which-key popup sits at the top left of the code area rather than following the cursor,
 because a popup that moved as you typed would be harder to read than a still one; and the palette and
 help panel take the keyboard only — their rows are not clickable, though the menus' are.
+
+Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{` is more than four
+or five hundred lines above it is left where it was typed. It used to walk to the start of the
+document, which cost 5.8 ms per keystroke in a hundred-thousand-line file. Doing nothing is what
+already happened when no opener was found, so there was nothing new to invent.
+
+Only the *active* buffer gets a file watcher, a git diff, and a language server. Background buffers
+get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused buffer is
+noticed when you switch to it rather than when it happens. Deliberate — the alternative is N watchers
+and N servers — but it is a limitation, not an oversight.
 
 Known and stated rather than hidden: **buffer search is still linear in the document**. `find_all`
 no longer copies the rope — it scans a line at a time, so the memory is bounded and a query
