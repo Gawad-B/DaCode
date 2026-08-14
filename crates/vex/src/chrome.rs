@@ -1428,9 +1428,10 @@ fn draw_palette(
 /// editor is waiting and nothing about what for. This is the thing Helix is repeatedly praised for
 /// and which people bolt onto Neovim with a plugin: press a prefix, read the menu, learn the key.
 ///
-/// Anchored under the cursor rather than centred, because it is about what you are typing, and
-/// drawn without a scrim: it is a hint, not a decision. It disappears the moment the command
-/// resolves — no dismissal, nothing to learn about the popup itself.
+/// Sits at the top left of the code area, not at the cursor: it appears and disappears within one
+/// keystroke, and a popup that jumped around the window as you typed would be harder to read than a
+/// still one in a place you learn. Drawn without a scrim, because it is a hint and not a decision —
+/// it goes away the moment the command resolves, with nothing to dismiss.
 fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32) {
     if state.pending.is_empty() {
         return;
@@ -1452,11 +1453,16 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
         .map(|(key, what)| key.chars().count() + what.chars().count())
         .max()
         .unwrap_or(20) as f32;
+    let keys_width = entries
+        .iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(4) as f32;
     let width = (longest * 8.0 * scale + pad * 6.0).min(code.width - pad * 2.0);
     let height = entries.len() as f32 * row_height + pad * 2.0;
 
-    // Under the cursor if it fits, above it if it does not: the popup must not fall off the bottom
-    // of the window, which is exactly where a cursor near the end of a file is.
+    // Kept inside the code area: the popup must not fall off the bottom of the window, which is
+    // exactly where the cursor is when a file is longer than the screen.
     let cursor_y = code.y + row_height;
     let y = if cursor_y + height > code.bottom() {
         (code.bottom() - height).max(code.y)
@@ -1476,11 +1482,14 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
 
     for (index, (key, what)) in entries.iter().enumerate() {
         let y = card.y + pad + index as f32 * row_height;
+        // The key column is only as wide as the longest key: `v` and `<c-o>` next to a description
+        // half a window away read as two unrelated lists.
+        let key_column = (keys_width + 2.0) * 8.0 * scale;
         frame.text(run(
             state,
             Role::Value,
             *key,
-            Rect::new(card.x + pad, y, 70.0 * scale, row_height),
+            Rect::new(card.x + pad, y, key_column, row_height),
             accent,
             Align::Left,
             scale,
@@ -1490,9 +1499,9 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
             Role::Value,
             *what,
             Rect::new(
-                card.x + pad + 76.0 * scale,
+                card.x + pad + key_column,
                 y,
-                (card.width - pad * 2.0 - 76.0 * scale).max(0.0),
+                (card.width - pad * 2.0 - key_column).max(0.0),
                 row_height,
             ),
             theme.ink_dim,
@@ -1532,7 +1541,10 @@ fn draw_help(
     frame.rule_left(card, theme.rule, border::BORDER);
 
     let (header, rest) = card.split_top(52.0 * scale);
-    let (rows_area, footer) = rest.split_bottom(30.0 * scale);
+    // `split_bottom` returns the *bottom* piece first, unlike `split_top`. Taking them the other way
+    // round drew the whole list into a thirty-pixel strip at the foot of the card and the footer
+    // across the middle of it — which is what the first render of this panel actually looked like.
+    let (footer, rows_area) = rest.split_bottom(30.0 * scale);
 
     let mut title_spec = state.typography.spec(Role::Display);
     title_spec.size_px = 22.0 * scale;
