@@ -64,11 +64,29 @@ pub fn strip_extended_prefix(path: &str) -> &str {
 /// Returns the *folded* path, so what the caller writes to is what was checked. Symlinks are not
 /// visible to lexical folding; callers that can afford a filesystem round trip should follow up
 /// with [`canonical`] where the parent genuinely exists.
-pub fn within(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
-    use std::path::Component;
-
+///
+/// `windows` says which naming rules apply, as a parameter rather than a `cfg!` — the rule this
+/// codebase already follows for `paths::resolve` and `position::encode_uri`, and the reason is
+/// exactly this function. The first version walked `Path::components()`, which *is* the platform:
+/// on Windows `C:\Windows\x` parses as a drive prefix and is refused, and on Linux it parses as one
+/// perfectly legal filename containing backslashes. The test asserting it was refused passed here
+/// and failed on CI. Splitting the string directly means both rule sets are testable from either
+/// machine, which is the only way the Windows half of this is ever exercised.
+pub fn within(root: &std::path::Path, relative: &str, windows: bool) -> Option<std::path::PathBuf> {
     let relative = relative.trim();
     if relative.is_empty() {
+        return None;
+    }
+
+    // `\` separates on Windows and is an ordinary character in a filename everywhere else.
+    let separator = |c: char| c == '/' || (windows && c == '\\');
+
+    // Absolute, drive-qualified or a UNC share: `join` lets any of these replace the root outright,
+    // which the old check never looked for at all.
+    if relative.starts_with(separator) {
+        return None;
+    }
+    if windows && relative.chars().nth(1) == Some(':') {
         return None;
     }
 
@@ -77,29 +95,32 @@ pub fn within(root: &std::path::Path, relative: &str) -> Option<std::path::PathB
     // this is positive — otherwise it would eat the root's own components.
     let mut depth = 0usize;
 
-    for component in std::path::Path::new(relative).components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => {
-                folded.push(part);
-                depth += 1;
-            }
-            Component::ParentDir => {
+    for segment in relative.split(separator) {
+        match segment {
+            "" | "." => {}
+            ".." => {
                 if depth == 0 {
                     return None;
                 }
                 depth -= 1;
                 folded.pop();
             }
-            // An absolute or drive-qualified name replaces the root outright under `join`, so
-            // `/etc/passwd` and `C:\Windows\x` never even reached the old check.
-            Component::RootDir | Component::Prefix(_) => return None,
+            name => {
+                folded.push(name);
+                depth += 1;
+            }
         }
     }
 
     // `.`, or `a/..`, names the root itself — a directory, and not a file anything here may create,
     // rename or delete.
-    (depth > 0).then_some(folded)
+    //
+    // The containment check is repeated against the assembled path because `PathBuf::push`
+    // *replaces* what it has when the segment is drive-qualified — and that is a property of the
+    // machine this runs on, not of the `windows` flag, so a caller passing the two apart could
+    // otherwise walk a `C:\…` segment straight out of the root. Cheap, and it makes the function
+    // safe under any combination rather than only the honest ones.
+    (depth > 0 && folded.starts_with(root)).then_some(folded)
 }
 
 /// Canonicalizes a path and removes the prefix Windows adds while doing it.

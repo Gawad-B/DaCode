@@ -5297,7 +5297,7 @@ impl App {
     /// project pointing out of it. It is asked only where the parent is really on disk, since
     /// otherwise it hands back its input unchanged and answers nothing.
     fn in_project(&self, relative: &str) -> Option<std::path::PathBuf> {
-        let path = vex_project::within(&self.state.project_root, relative)?;
+        let path = vex_project::within(&self.state.project_root, relative, cfg!(windows))?;
 
         if let Some(parent) = path.parent() {
             if parent.exists()

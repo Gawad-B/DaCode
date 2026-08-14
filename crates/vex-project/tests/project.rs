@@ -421,21 +421,27 @@ fn windows_extended_length_prefixes_are_not_part_of_a_path() {
 
 // ---- what a text field is allowed to name ------------------------------------------------------
 
-/// The root every containment test is written against. Never touched on disk: `within` is lexical,
-/// which is exactly the property being pinned down.
-fn root() -> std::path::PathBuf {
-    if cfg!(windows) {
-        std::path::PathBuf::from(r"C:\work\project")
-    } else {
-        std::path::PathBuf::from("/work/project")
-    }
+/// The two roots, and the naming rules that go with each. Never touched on disk: `within` is
+/// lexical, which is exactly the property being pinned down — and taking the platform as a
+/// parameter is what lets the Windows column of this table run on Linux and the other way round.
+const WINDOWS_ROOT: &str = r"C:\work\project";
+const UNIX_ROOT: &str = "/work/project";
+
+fn resolve(windows: bool, typed: &str) -> Option<std::path::PathBuf> {
+    let root = std::path::PathBuf::from(if windows { WINDOWS_ROOT } else { UNIX_ROOT });
+    vex_project::within(&root, typed, windows)
 }
 
 #[test]
 fn an_ordinary_relative_name_resolves_under_the_root() {
-    let resolved = vex_project::within(&root(), "src/new/thing.rs").expect("inside the project");
-    assert!(resolved.starts_with(root()));
-    assert!(resolved.ends_with("thing.rs"));
+    for windows in [true, false] {
+        let resolved = resolve(windows, "src/new/thing.rs").expect("inside the project");
+        assert!(resolved.ends_with("thing.rs"));
+        assert!(
+            resolved.to_string_lossy().contains("project"),
+            "{resolved:?} left the root"
+        );
+    }
 }
 
 #[test]
@@ -447,35 +453,73 @@ fn a_parent_step_that_climbs_above_the_root_is_refused_even_when_nothing_exists(
     // but never `..`, so the chain matched the root on its first two and the file was written
     // wherever the `..`s landed.
     //
-    // Nothing on this machine could see it: Win32 collapses `..` before the syscall, so the
-    // platform vex is developed on caught the attack by accident and Linux did not.
-    for escape in [
-        "../evil.txt",
-        "../../evil.txt",
-        "x/../../evil.txt",
-        "x/../../../../evil.txt",
-        "a/b/../../../c.txt",
-    ] {
-        assert_eq!(
-            vex_project::within(&root(), escape),
-            None,
-            "`{escape}` escaped the project root"
-        );
+    // Nothing on the machine this was written on could see it: Win32 collapses `..` before the
+    // syscall, so Windows caught the attack by accident and Linux did not.
+    for windows in [true, false] {
+        for escape in [
+            "../evil.txt",
+            "../../evil.txt",
+            "x/../../evil.txt",
+            "x/../../../../evil.txt",
+            "a/b/../../../c.txt",
+        ] {
+            assert_eq!(
+                resolve(windows, escape),
+                None,
+                "`{escape}` escaped the project root (windows: {windows})"
+            );
+        }
     }
 }
 
 #[test]
-fn an_absolute_name_is_refused_rather_than_replacing_the_root() {
+fn a_windows_name_that_would_replace_the_root_is_refused_under_windows_rules() {
     // `Path::join` with an absolute argument discards the left side entirely. The old check caught
-    // these, but only by accident: it canonicalized the parent, and `/etc` and `C:\Windows` happen
-    // to exist. A drive or share that did not would have gone through on the same `NotFound`
-    // fallback as the `..` case. Refused for a reason now rather than by luck.
-    for absolute in ["/etc/passwd", r"C:\Windows\system32\x", r"\server\share\x"] {
+    // these only by accident — it canonicalized the parent, and `C:\Windows` happens to exist.
+    //
+    // Asserted with `windows: true` from either machine, because that is the half nobody here can
+    // reach otherwise: on Linux `C:\Windows\x` is not a path at all, it is one legal filename that
+    // happens to contain backslashes, and treating it as a drive would refuse a name the
+    // filesystem allows. The first version of this test asserted the Windows answer everywhere and
+    // failed on CI.
+    for absolute in [
+        r"C:\Windows\system32\x",
+        r"\server\share\x",
+        r"\Windows\x",
+        "D:/x",
+        "/etc/passwd",
+    ] {
         assert_eq!(
-            vex_project::within(&root(), absolute),
+            resolve(true, absolute),
             None,
             "`{absolute}` replaced the project root"
         );
+    }
+
+    // Under Unix rules only a leading `/` is absolute — a backslash is an ordinary character in a
+    // filename there, so `C:\Windows\x` is one legal segment rather than a drive.
+    assert_eq!(resolve(false, "/etc/passwd"), None);
+
+    // What must hold whatever rules apply, and whatever machine runs them: an answer is always
+    // inside the root. Asserted rather than reasoned about, because `PathBuf::push` *replaces* what
+    // it has when a segment is drive-qualified, and that depends on the host rather than the flag —
+    // so the previous version of this loop expected a Unix answer and got a Windows one.
+    for windows in [true, false] {
+        let root = if windows { WINDOWS_ROOT } else { UNIX_ROOT };
+        for typed in [
+            r"C:\Windows\system32\x",
+            r"\\server\share\x",
+            "src/x.rs",
+            r"src\x.rs",
+            "a/../b/c.rs",
+        ] {
+            if let Some(resolved) = resolve(windows, typed) {
+                assert!(
+                    resolved.starts_with(root),
+                    "`{typed}` resolved to {resolved:?}, outside {root} (windows: {windows})"
+                );
+            }
+        }
     }
 }
 
@@ -484,19 +528,36 @@ fn a_parent_step_that_stays_inside_the_root_is_allowed_and_folded_away() {
     // `..` is not itself the problem; climbing out is. And the folded path is what comes back, so
     // what the caller writes to is what was checked — the old version returned the unfolded join,
     // so `a.rs` and `./a.rs` compared as different files in rename.
-    let resolved = vex_project::within(&root(), "src/old/../new/thing.rs").expect("inside");
-    assert_eq!(resolved, root().join("src").join("new").join("thing.rs"));
+    let resolved = resolve(false, "src/old/../new/thing.rs").expect("inside");
+    assert_eq!(
+        resolved,
+        std::path::Path::new(UNIX_ROOT).join("src/new/thing.rs")
+    );
 
-    let dotted = vex_project::within(&root(), "./a.rs").expect("inside");
-    assert_eq!(dotted, root().join("a.rs"));
+    assert_eq!(
+        resolve(false, "./a.rs"),
+        Some(std::path::Path::new(UNIX_ROOT).join("a.rs"))
+    );
+
+    // And a backslash separates under Windows rules, so the same folding applies to it.
+    assert_eq!(
+        resolve(true, r"src\old\..\new\thing.rs"),
+        Some(
+            std::path::Path::new(WINDOWS_ROOT)
+                .join("src")
+                .join("new")
+                .join("thing.rs")
+        )
+    );
 }
 
 #[test]
 fn a_name_that_resolves_to_the_root_itself_is_refused() {
     // The root is a directory. Nothing here may create, rename or delete it, and returning it would
     // hand a directory to `fs::write`.
-    for naming_the_root in [".", "src/..", "./."] {
-        assert_eq!(vex_project::within(&root(), naming_the_root), None);
+    for windows in [true, false] {
+        for naming_the_root in [".", "src/..", "./.", "   ", ""] {
+            assert_eq!(resolve(windows, naming_the_root), None);
+        }
     }
-    assert_eq!(vex_project::within(&root(), "   "), None);
 }
