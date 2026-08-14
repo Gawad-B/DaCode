@@ -3244,6 +3244,11 @@ impl App {
                                 if to.exists() {
                                     self.warn(&format!("{} already exists", to.display()));
                                 } else {
+                                    // Taken before the rename: once the file has moved, `canonical`
+                                    // can no longer resolve the old name and hands back the raw
+                                    // string, which matches no buffer.
+                                    let was = buffer_key(Some(from.to_string_lossy().as_ref()))
+                                        .unwrap_or_else(|| from.clone());
                                     let made = to
                                         .parent()
                                         .map(std::fs::create_dir_all)
@@ -3251,16 +3256,15 @@ impl App {
                                         .and_then(|()| std::fs::rename(&from, &to));
                                     match made {
                                         Ok(()) => {
-                                            // A buffer open on the old path would save it back into
-                                            // existence, so it follows the file.
-                                            if self.state.file_path.as_deref()
-                                                == Some(from.to_string_lossy().as_ref())
-                                            {
-                                                let name = to.to_string_lossy().to_string();
-                                                self.state.path = relative_crumbs(&name);
-                                                self.state.file_path = Some(name);
-                                                self.refresh_buffer_tabs();
-                                            }
+                                            // Any buffer open on the old path would save it back
+                                            // into existence, so they follow the file. Compared by
+                                            // the key taken before the rename, not by string —
+                                            // `from` and a buffer's `file_path` are two spellings
+                                            // of one file as often as not.
+                                            self.rebind_buffers(
+                                                &was,
+                                                Some(to.to_string_lossy().to_string()),
+                                            );
                                             self.rescan_project();
                                         }
                                         Err(err) => self.warn(&format!("could not rename: {err}")),
@@ -3617,11 +3621,29 @@ fn load_snippets() -> Vec<vex_import::Snippet> {
 }
 
 /// Where a buffer index lives in `buffers`, which excludes the active one.
+///
+/// **The one definition.** It existed and was written out by hand at five other sites anyway, which
+/// is how the buffer list came to disagree with itself: one of those copies renumbered the whole
+/// list on every switch, another never repaired the panes, and nothing tied them together because
+/// there was nothing to tie them to.
 fn stored_index(buffer: usize, active: usize) -> Option<usize> {
     if buffer == active {
         return None;
     }
     Some(if buffer < active { buffer } else { buffer - 1 })
+}
+
+/// What makes two buffers the same buffer.
+///
+/// The path as the filesystem sees it, not as it was typed. Identity used to be `relative_crumbs` —
+/// a *display* path, truncated to its last four segments — so `src/main.rs` and `./src/main.rs`
+/// opened twice, with two undo histories and two dirty flags over one file on disk, and two
+/// genuinely different files buried five directories deep in different trees collided into one.
+///
+/// `None` for a scratch buffer, and two scratch buffers are never the same one: nothing on disk
+/// backs them, so there is nothing for them to share.
+fn buffer_key(file_path: Option<&str>) -> Option<std::path::PathBuf> {
+    file_path.map(|path| vex_project::canonical(std::path::Path::new(path)))
 }
 
 impl App {
@@ -4778,19 +4800,75 @@ impl App {
 
     /// The path of buffer `index`, where `active_buffer` refers to the live document.
     fn buffer_at(&self, index: usize) -> (Vec<String>, bool) {
-        if index == self.state.active_buffer {
+        let Some(stored) = stored_index(index, self.state.active_buffer) else {
             return (self.state.path.clone(), true);
-        }
-        // Buffers are stored in order with the active one's slot skipped.
-        let stored = if index < self.state.active_buffer {
-            index
-        } else {
-            index - 1
         };
         match self.buffers.get(stored) {
             Some(buffer) => (buffer.path.clone(), false),
             None => (self.state.path.clone(), true),
         }
+    }
+
+    /// The file buffer `index` is showing, if it has one.
+    ///
+    /// Kept separate from [`App::buffer_at`], which returns *crumbs* — a display path, and the
+    /// thing this used to be compared by.
+    fn buffer_file(&self, index: usize) -> Option<&str> {
+        match stored_index(index, self.state.active_buffer) {
+            None => self.state.file_path.as_deref(),
+            Some(stored) => self.buffers.get(stored)?.file_path.as_deref(),
+        }
+    }
+
+    /// Points every buffer showing `key` at a new path, or turns it into a scratch buffer when
+    /// there is none — for a file that has just been renamed or deleted out from under it.
+    ///
+    /// `key` must be taken **before** the filesystem operation. `vex_project::canonical` hands back
+    /// its input unchanged once `canonicalize` fails, and it fails as soon as the file is gone, so a
+    /// key computed afterwards is the raw string again and matches nothing.
+    ///
+    /// Every buffer, not only the live one. The file being deleted from the tree is usually *not*
+    /// the one on screen, and a stored buffer left pointing at it writes it back into existence the
+    /// next time that buffer is saved.
+    fn rebind_buffers(&mut self, key: &std::path::Path, now: Option<String>) {
+        let rebind = |path: &mut Vec<String>, file: &mut Option<String>| match &now {
+            Some(name) => {
+                *path = relative_crumbs(name);
+                *file = Some(name.clone());
+            }
+            None => {
+                *path = vec!["untitled".to_string()];
+                *file = None;
+            }
+        };
+
+        if buffer_key(self.state.file_path.as_deref()).as_deref() == Some(key) {
+            rebind(&mut self.state.path, &mut self.state.file_path);
+        }
+        for buffer in &mut self.buffers {
+            if buffer_key(buffer.file_path.as_deref()).as_deref() == Some(key) {
+                rebind(&mut buffer.path, &mut buffer.file_path);
+            }
+        }
+        self.refresh_buffer_tabs();
+    }
+
+    /// Whether buffer `index` has unsaved changes.
+    fn buffer_is_dirty(&self, index: usize) -> bool {
+        match stored_index(index, self.state.active_buffer) {
+            None => self.state.document.is_dirty(),
+            Some(stored) => self
+                .buffers
+                .get(stored)
+                .is_some_and(|buffer| buffer.document.is_dirty()),
+        }
+    }
+
+    /// Which buffer is already showing this file, if any.
+    fn buffer_showing(&self, path: &std::path::Path) -> Option<usize> {
+        let wanted = buffer_key(Some(path.to_string_lossy().as_ref()))?;
+        (0..=self.buffers.len())
+            .find(|index| buffer_key(self.buffer_file(*index)) == Some(wanted.clone()))
     }
 
     fn handle_palette_key(&mut self, key: Key) {
@@ -4858,10 +4936,11 @@ impl App {
                 let path_string = path.to_string_lossy().to_string();
 
                 // Already open? Switch rather than loading a second copy, which would give the file
-                // two independent undo histories.
-                if let Some(index) = (0..=self.buffers.len()).find(|index| {
-                    self.buffer_at(*index).0.join("/") == relative_crumbs(&path_string).join("/")
-                }) {
+                // two independent undo histories. Matched on the path the filesystem sees, not on
+                // the breadcrumbs: those are truncated to four segments for the title bar, so this
+                // both missed the same file spelled differently and confused two different files
+                // that happened to end the same way.
+                if let Some(index) = self.buffer_showing(&path) {
                     self.switch_to(index);
                     return;
                 }
@@ -4982,19 +5061,7 @@ impl App {
     /// that can be answered by repeating what you already did is faster than one that makes you
     /// find a button, and it still cannot happen by accident — the first press only warns.
     fn request_close_buffer(&mut self, index: usize) {
-        let dirty = if index == self.state.active_buffer {
-            self.state.document.is_dirty()
-        } else {
-            let stored = if index < self.state.active_buffer {
-                index
-            } else {
-                index - 1
-            };
-            self.buffers
-                .get(stored)
-                .map(|buffer| buffer.document.is_dirty())
-                .unwrap_or(false)
-        };
+        let dirty = self.buffer_is_dirty(index);
 
         if dirty && self.confirm_close != Some(index) {
             self.confirm_close = Some(index);
@@ -5046,10 +5113,11 @@ impl App {
             self.switch_to(next);
         }
 
-        let stored = if index < self.state.active_buffer {
-            index
-        } else {
-            index - 1
+        // `None` cannot happen here: the branch above already switched away from `index` if it was
+        // live. Returning rather than assuming is still cheaper than the alternative, which is
+        // removing the wrong buffer.
+        let Some(stored) = stored_index(index, self.state.active_buffer) else {
+            return;
         };
         if stored < self.buffers.len() {
             self.buffers.remove(stored);
@@ -5059,6 +5127,12 @@ impl App {
         if index < self.state.active_buffer {
             self.state.active_buffer -= 1;
         }
+
+        // And so does every pane's. Buffers are addressed by position, so a pane above the closed
+        // one was left pointing at its neighbour's file — the function that repairs them existed,
+        // documented, tested, and was never called from here.
+        self.panes.buffer_closed(index);
+
         self.state.buffer_count = self.buffers.len() + 1;
         self.refresh_buffer_tabs();
     }
@@ -5153,16 +5227,17 @@ impl App {
         }
         self.confirm_delete = None;
 
+        // Before the removal, for the same reason rename takes it early: `canonical` cannot resolve
+        // a file that is no longer there, and returns the raw string instead.
+        let was = buffer_key(Some(path.to_string_lossy().as_ref())).unwrap_or_else(|| path.clone());
+
         match std::fs::remove_file(&path) {
             Ok(()) => {
                 self.state.hover = Some(format!("deleted {relative}"));
-                // The buffer showing it, if any, becomes a scratch buffer rather than a window onto
-                // a file that no longer exists and would be recreated by the next save.
-                if self.state.file_path.as_deref() == Some(path.to_string_lossy().as_ref()) {
-                    self.state.file_path = None;
-                    self.state.path = vec!["untitled".to_string()];
-                    self.refresh_buffer_tabs();
-                }
+                // Any buffer showing it becomes a scratch buffer rather than a window onto a file
+                // that no longer exists and would be recreated by the next save. This looked only
+                // at the live one, and compared raw strings.
+                self.rebind_buffers(&was, None);
                 self.rescan_project();
             }
             Err(err) => self.warn(&format!("could not delete {relative}: {err}")),
@@ -5195,47 +5270,45 @@ impl App {
                     .last()
                     .cloned()
                     .unwrap_or_else(|| "untitled".to_string());
-                let dirty = if index == self.state.active_buffer {
-                    self.state.document.is_dirty()
-                } else {
-                    let stored = if index < self.state.active_buffer {
-                        index
-                    } else {
-                        index - 1
-                    };
-                    self.buffers
-                        .get(stored)
-                        .map(|buffer| buffer.document.is_dirty())
-                        .unwrap_or(false)
-                };
-                (name, dirty)
+                (name, self.buffer_is_dirty(index))
             })
             .collect();
     }
 
+    /// Makes buffer `index` the live one.
+    ///
+    /// A **rotation**, not a swap. Swapping the live document with the stored one put the buffer
+    /// that had been live into the *target's* slot, so the two traded places in the global
+    /// numbering: switching from buffer 3 to buffer 1 left 1's file sitting at 3 and 3's at 1. The
+    /// tab strip renamed itself under the pointer, and any pane holding an index — every one of
+    /// them does — was now showing a different file than the one it was opened on. It happened to
+    /// be right for adjacent switches, which is most of them, and wrong for the rest.
     fn switch_to(&mut self, index: usize) {
-        if index == self.state.active_buffer || index > self.buffers.len() {
+        let was = self.state.active_buffer;
+        if index == was || index > self.buffers.len() {
             return;
         }
-
-        let stored = if index < self.state.active_buffer {
-            index
-        } else {
-            index - 1
-        };
-        let Some(target) = self.buffers.get_mut(stored) else {
+        let Some(stored) = stored_index(index, was).filter(|at| *at < self.buffers.len()) else {
             return;
         };
 
-        // Swap the live document out and the chosen one in. Both keep their own undo history and
-        // scroll position, which is what makes switching back feel like returning rather than
-        // reopening.
-        std::mem::swap(&mut self.state.document, &mut target.document);
-        std::mem::swap(&mut self.state.path, &mut target.path);
-        std::mem::swap(&mut self.state.file_path, &mut target.file_path);
-        std::mem::swap(&mut self.state.scroll, &mut target.scroll);
-        // Highlights travel with the buffer so an unfocused pane keeps its colors.
-        std::mem::swap(&mut self.state.highlights, &mut target.highlights);
+        // Both buffers keep their own undo history and scroll position, which is what makes
+        // switching back feel like returning rather than reopening.
+        let target = self.buffers.remove(stored);
+        let previous = Buffer {
+            document: std::mem::replace(&mut self.state.document, target.document),
+            path: std::mem::replace(&mut self.state.path, target.path),
+            file_path: std::mem::replace(&mut self.state.file_path, target.file_path),
+            scroll: std::mem::replace(&mut self.state.scroll, target.scroll),
+            // Highlights travel with the buffer so an unfocused pane keeps its colors.
+            highlights: std::mem::replace(&mut self.state.highlights, target.highlights),
+        };
+
+        // Where the buffer that was live belongs: at its own number, in a list that now skips the
+        // one that just became live. This is the whole fix, and it is the one mapping function
+        // rather than a second guess at the arithmetic.
+        let at = stored_index(was, index).expect("the two indices differ, checked above");
+        self.buffers.insert(at, previous);
 
         self.state.active_buffer = index;
         self.after_buffer_change();
@@ -6719,5 +6792,165 @@ mod wiring_tests {
         assert!(settle(&mut app, |app| !app.services_busy()));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod buffer_tests {
+    use super::*;
+
+    /// A directory of this test's own, so no two can interfere.
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vex-buffers-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An editor rooted at `dir` with `names` open, in order, the last one live.
+    fn editor(dir: &std::path::Path, names: &[&str]) -> App {
+        for name in names {
+            std::fs::write(dir.join(name), format!("contents of {name}\n")).unwrap();
+        }
+        let first = dir.join(names[0]);
+        let (state, _) = new_state(
+            Text::from_str(&format!("contents of {}\n", names[0])),
+            vec![names[0].to_string()],
+            Some(first.to_string_lossy().to_string()),
+            Mode::Insert,
+            None,
+            dir.to_path_buf(),
+        );
+        let mut app = App::new(
+            dir.to_path_buf(),
+            state,
+            Grammar::new(),
+            &vex::config::Settings::default(),
+        );
+        for name in &names[1..] {
+            app.activate(Target::File(dir.join(name)));
+        }
+        app
+    }
+
+    /// What each buffer number is showing, by file name — the global numbering, the one the tabs
+    /// and the panes both count in.
+    fn names(app: &App) -> Vec<String> {
+        (0..=app.buffers.len())
+            .map(|index| {
+                app.buffer_file(index)
+                    .and_then(|path| {
+                        std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                    })
+                    .unwrap_or_else(|| "untitled".into())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn switching_buffers_does_not_renumber_them() {
+        // It swapped the live document with the stored one, which put the buffer that had been
+        // live into the *target's* slot: switching from 3 to 1 left 1's file at 3 and 3's at 1. The
+        // tab strip renamed itself under the pointer, and every pane holds one of these numbers. It
+        // happened to be right for adjacent switches, which is most of them.
+        let dir = scratch("renumber");
+        let mut app = editor(&dir, &["a.rs", "b.rs", "c.rs", "d.rs"]);
+
+        let before = names(&app);
+        assert_eq!(before, ["a.rs", "b.rs", "c.rs", "d.rs"]);
+        assert_eq!(app.state.active_buffer, 3);
+
+        for target in [1usize, 3, 0, 2, 0, 3, 1] {
+            app.switch_to(target);
+            assert_eq!(
+                app.state.active_buffer, target,
+                "switching to {target} did not make it live"
+            );
+            assert_eq!(
+                names(&app),
+                before,
+                "switching to {target} moved the other buffers"
+            );
+        }
+    }
+
+    #[test]
+    fn closing_a_buffer_moves_the_panes_watching_the_ones_above_it() {
+        // Buffers are addressed by position, so closing one shifts every index above it.
+        // `Panes::buffer_closed` exists, is documented, is tested in its own module — and was never
+        // called. A split pane showing buffer 3 kept showing "3" after buffer 1 closed, which is a
+        // different file.
+        let dir = scratch("panes");
+        let mut app = editor(&dir, &["a.rs", "b.rs", "c.rs", "d.rs"]);
+
+        app.panes.split(chrome::PaneLayout::Vertical);
+        app.switch_to(0);
+
+        // The unfocused pane goes on watching d.rs while this one shows a.rs, which is what a split
+        // is for. The focused pane follows the active buffer on its own, so it cannot show this.
+        app.panes.cycle(true);
+        app.panes.focused_mut().buffer = 3;
+        app.panes.cycle(true);
+        assert_eq!(names(&app)[3], "d.rs");
+
+        app.close_buffer(1);
+
+        let watching: Vec<Option<String>> = {
+            let open = names(&app);
+            app.panes
+                .iter()
+                .map(|pane| open.get(pane.buffer).cloned())
+                .collect()
+        };
+        assert!(
+            watching.contains(&Some("d.rs".to_string())),
+            "a pane followed its index instead of its file: {watching:?}"
+        );
+    }
+
+    #[test]
+    fn one_file_reached_two_ways_is_one_buffer() {
+        // Identity was `relative_crumbs` — a display path, truncated to four segments. Opening the
+        // same file by a second spelling gave it two independent undo histories and two dirty
+        // flags over one file on disk, and whichever was saved last won.
+        let dir = scratch("identity");
+        let mut app = editor(&dir, &["a.rs", "b.rs"]);
+        let count = app.buffers.len();
+
+        // The same file, named through a directory and back out of it.
+        app.activate(Target::File(dir.join("sub").join("..").join("a.rs")));
+
+        assert_eq!(
+            app.buffers.len(),
+            count,
+            "the same file was opened a second time"
+        );
+        assert_eq!(
+            app.state.active_buffer, 0,
+            "it switched to the one already open"
+        );
+    }
+
+    #[test]
+    fn a_deleted_file_releases_every_buffer_showing_it_not_just_the_visible_one() {
+        // A stored buffer left pointing at a deleted file writes it back into existence the next
+        // time that buffer is saved — and the file being deleted from the tree is usually not the
+        // one on screen, which is exactly the case this missed.
+        let dir = scratch("delete");
+        let mut app = editor(&dir, &["a.rs", "b.rs"]);
+        assert_eq!(app.state.active_buffer, 1);
+
+        let was = buffer_key(Some(dir.join("a.rs").to_string_lossy().as_ref())).unwrap();
+        std::fs::remove_file(dir.join("a.rs")).unwrap();
+        app.rebind_buffers(&was, None);
+
+        assert_eq!(
+            app.buffer_file(0),
+            None,
+            "a stored buffer still points at the deleted file"
+        );
+        assert_eq!(names(&app)[0], "untitled");
     }
 }
