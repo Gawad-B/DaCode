@@ -364,10 +364,17 @@ fn positional(args: &[String]) -> Option<String> {
 }
 
 /// Breadcrumbs for a path, trimmed to the last few segments so the title bar stays readable.
+///
+/// Split on **both** separators. Windows hands the editor `crates\vex\src\main.rs`, and splitting on
+/// `/` alone made that one crumb — so the title bar showed a raw path where every other platform
+/// shows breadcrumbs. Nothing failed; it just looked wrong, and only on the platform nobody was
+/// looking at. Found by rendering a screenshot there.
 fn relative_crumbs(path: &str) -> Vec<String> {
     let all: Vec<String> = path
         .trim_start_matches("./")
-        .split('/')
+        .trim_start_matches(".\\")
+        .split(['/', '\\'])
+        .filter(|segment| !segment.is_empty())
         .map(str::to_string)
         .collect();
     if all.len() > 4 {
@@ -392,7 +399,7 @@ fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
 
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
-            let crumbs = path.split('/').map(str::to_string).collect();
+            let crumbs = relative_crumbs(&path);
             Ok((Text::from_str(&contents), crumbs, Some(path)))
         }
         // A missing file is a scratch buffer, not a fatal error — but it must not be silently
@@ -947,6 +954,11 @@ impl ApplicationHandler for App {
             return;
         }
 
+        // `mut` only where something mutates it. The X11 and Wayland names below are the only thing
+        // that does, and they are Unix-only — so on Windows this was an unused `mut`, a warning that
+        // clippy would have failed the build on if clippy had ever run there. It runs on Linux in CI,
+        // where the `mut` is used, so nothing saw it until the workspace was built on Windows.
+        #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
         let mut attributes = Window::default_attributes()
             .with_title("vex")
             .with_window_icon(vex::icon::window_icon())
@@ -4249,5 +4261,40 @@ impl App {
         if let Err(err) = renderer.render(&self.frame, self.state.theme.bg) {
             eprintln!("vex: frame dropped: {err:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn breadcrumbs_split_on_either_separator() {
+        // Windows hands the editor backslashes. Splitting on `/` alone made the whole path one crumb,
+        // so the title bar showed `crates\vex\src\main.rs` where Linux showed four breadcrumbs — a
+        // defect no test could fail on and only a screenshot could show.
+        assert_eq!(
+            relative_crumbs(r"crates\vex\src\main.rs"),
+            vec!["crates", "vex", "src", "main.rs"]
+        );
+        assert_eq!(
+            relative_crumbs("crates/vex/src/main.rs"),
+            vec!["crates", "vex", "src", "main.rs"]
+        );
+    }
+
+    #[test]
+    fn a_long_path_keeps_only_its_last_few_segments() {
+        // The title bar is one line. A path from the filesystem root would push the file name off it,
+        // which is the one part that has to be visible.
+        let crumbs = relative_crumbs("/home/someone/code/project/crates/vex/src/main.rs");
+        assert_eq!(crumbs.len(), 4);
+        assert_eq!(crumbs.last().map(String::as_str), Some("main.rs"));
+    }
+
+    #[test]
+    fn a_leading_dot_slash_is_not_a_crumb() {
+        assert_eq!(relative_crumbs("./src/main.rs"), vec!["src", "main.rs"]);
+        assert_eq!(relative_crumbs(r".\src\main.rs"), vec!["src", "main.rs"]);
     }
 }

@@ -50,6 +50,14 @@ install -Dm644 %{_sourcedir}/init.lua %{buildroot}%{_docdir}/vex/examples/init.l
 %doc %{_docdir}/vex/examples/init.lua
 
 %changelog
+* Fri Aug 14 2026 vex - 0.2.0-1
+- The non-modal mode is a conventional editor rather than the modal one with its
+  modes removed: line moves, duplication, comment toggle, occurrence selection,
+  word deletion, and a mouse that selects words, lines and extra cursors.
+- Copy and paste use the system clipboard, which they did not before.
+- F1 lists the keys, ctrl-shift-P every command, and there is a menu bar and a
+  context menu; all of them show the shortcut for what they offer.
+
 * Fri Aug 14 2026 vex - 0.1.1-1
 - Windows: built-in theme names load again, the folder chooser can leave the folder
   it opened in, and helper processes no longer flash console windows.
