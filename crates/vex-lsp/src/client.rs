@@ -28,7 +28,7 @@ use vex_text::Version;
 /// appearing over the editor a second after it starts. The same rule as `vex::process::quiet`, which
 /// is the copy to keep in step with this one: `vex-lsp` is below the binary in the dependency order
 /// and cannot borrow it.
-fn no_window(command: &mut Command) {
+pub fn no_window(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -66,6 +66,29 @@ pub enum Pending {
     CodeAction,
     References,
     InlayHints,
+    /// Asking for the rest of one suggestion. Carries where it sits in the list, since the reply
+    /// says nothing about which item it is for.
+    ResolveCompletion {
+        at: usize,
+        /// The label of the item asked about. A reply carries no identity of its own, and a list
+        /// can be replaced while one is in flight — rust-analyzer marks nearly every list
+        /// incomplete, so typing one more character fetches a new one. Without this the reply
+        /// lands on whatever now sits at that index, and grafts one suggestion's import onto
+        /// another's name.
+        label: String,
+    },
+    /// Everything named in one file, for an outline. Carries the file, because the hierarchical
+    /// form of the reply names no URI at all — it is all one document, and the server assumes the
+    /// client remembers which.
+    DocumentSymbols {
+        path: PathBuf,
+    },
+    /// Everything in the project matching a query. Carries the query, because replies to an
+    /// out-of-date one arrive after the user has typed on and must be discarded — the same
+    /// staleness rule as everywhere else here, keyed on the text instead of a version.
+    WorkspaceSymbols {
+        query: String,
+    },
     Shutdown,
 }
 
@@ -75,6 +98,8 @@ pub enum ServerEvent {
     /// The handshake completed; document notifications may now be sent.
     Ready {
         server_name: String,
+        /// Whether it answers `textDocument/formatting` at all.
+        formats: bool,
     },
     /// Diagnostics for a file, with the document version they were computed against when the
     /// server supplied one.
@@ -91,7 +116,28 @@ pub enum ServerEvent {
         position: Position,
     },
     Completion {
-        items: Vec<String>,
+        items: Vec<CompletionItem>,
+        /// The server says this list is not the whole answer and it should be asked again as more
+        /// is typed. rust-analyzer sets it whenever it truncated, and filtering a truncated list
+        /// locally forever is how an editor comes to insist a name does not exist.
+        incomplete: bool,
+    },
+    /// One suggestion, filled in. `at` is where it sat in the list that was offered.
+    CompletionResolved {
+        at: usize,
+        /// What the item was labelled when it was asked about, so a reply for a list that has
+        /// since been replaced can be told apart from one for the list on screen.
+        label: String,
+        item: CompletionItem,
+    },
+    /// Everything named, in one file or across the project.
+    ///
+    /// `query` is the text the project-wide search was for, and is `None` for a file outline. The
+    /// editor refuses a reply whose query is not the one being typed now — replies arrive out of
+    /// order, and a list that flickers back to an older answer is worse than one that waits.
+    Symbols {
+        query: Option<String>,
+        symbols: Vec<Symbol>,
     },
     /// Edits for a rename, possibly across several files.
     Rename {
@@ -132,6 +178,215 @@ pub enum ServerEvent {
     Stopped,
 }
 
+/// One suggestion, as the server described it.
+///
+/// The parse used to keep the label and throw the rest away, which is three separate defects
+/// wearing one coat. The label is what you *read*: rust-analyzer labels a macro `println!` and
+/// expects `println!($0)` to be inserted, so inserting the label gives you `println!` with no
+/// parentheses and the cursor after it. The `detail` is the type, without which a list of bare
+/// names cannot tell a field from a method. And `additional` is where every server puts the
+/// **import** — completing `HashMap` is supposed to add `use std::collections::HashMap;` at the
+/// top of the file, which is the single most valuable thing completion does and which vex was
+/// silently discarding.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CompletionItem {
+    pub label: String,
+    /// What to insert. Falls back to the label when the server named nothing else.
+    pub insert: String,
+    /// Whether `insert` carries `$1` / `${1:name}` / `$0` placeholders.
+    pub snippet: bool,
+    /// A type or signature, shown beside the label.
+    pub detail: Option<String>,
+    /// A short tag — `fn`, `var`, `mod` — rather than the protocol's number.
+    pub kind: &'static str,
+    /// The server's own ranking. rust-analyzer's is far better than anything an editor can invent
+    /// from a string, so it is kept rather than re-derived.
+    pub sort: Option<String>,
+    /// What to match the typed prefix against, when that is not the label.
+    pub filter: Option<String>,
+    /// Edits elsewhere in the file that have to land with it — the import, nearly always.
+    pub additional: Vec<TextEdit>,
+    pub deprecated: bool,
+    /// The item exactly as it came off the wire.
+    ///
+    /// Kept because `completionItem/resolve` must be handed the item back *as received*: servers
+    /// put an opaque `data` blob on it that only they can read, and reconstructing something that
+    /// looks similar is not the same request.
+    pub raw: serde_json::Value,
+}
+
+/// The protocol's `CompletionItemKind`, as something short enough to sit in a popup.
+///
+/// A tag rather than an icon: the bundled fonts have no symbol set, and a missing glyph renders as
+/// a tofu box — which is how the file tree's chevrons first shipped.
+fn completion_kind(number: Option<u64>) -> &'static str {
+    match number.unwrap_or(0) {
+        2 => "method",
+        3 => "fn",
+        4 => "new",
+        5 => "field",
+        6 => "var",
+        7 => "class",
+        8 => "trait",
+        9 => "mod",
+        10 => "prop",
+        11 => "unit",
+        12 => "value",
+        13 => "enum",
+        14 => "kw",
+        15 => "snip",
+        16 => "color",
+        17 => "file",
+        18 => "ref",
+        19 => "dir",
+        20 => "variant",
+        21 => "const",
+        22 => "struct",
+        23 => "event",
+        24 => "op",
+        25 => "type",
+        // 1 is Text, and 0 is "the server did not say" — neither is worth a column.
+        _ => "",
+    }
+}
+
+/// A named thing in the code: a function, a type, a field.
+///
+/// One type for both `textDocument/documentSymbol` and `workspace/symbol`, because to the person
+/// reading a list they are the same question asked at two scopes, and the palette that shows them
+/// should not need to know which one it is looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbol {
+    pub name: String,
+    /// A short tag — `fn`, `struct`, `mod` — rather than the protocol's number.
+    pub kind: &'static str,
+    /// What encloses it: the `impl` block or module a server named, or the file it is in.
+    pub container: String,
+    pub path: PathBuf,
+    pub position: Position,
+    /// How deeply nested, so a file outline can be indented into the shape of the file.
+    pub depth: usize,
+}
+
+/// The protocol's `SymbolKind`, as something short enough to sit in a list.
+fn symbol_kind(number: Option<u64>) -> &'static str {
+    match number.unwrap_or(0) {
+        1 => "file",
+        2 => "mod",
+        3 => "ns",
+        4 => "pkg",
+        5 => "class",
+        6 => "method",
+        7 => "prop",
+        8 => "field",
+        9 => "new",
+        10 => "enum",
+        11 => "trait",
+        12 => "fn",
+        13 => "var",
+        14 => "const",
+        15 => "str",
+        16 => "num",
+        17 => "bool",
+        18 => "array",
+        19 => "object",
+        20 => "key",
+        21 => "null",
+        22 => "variant",
+        23 => "struct",
+        24 => "event",
+        25 => "op",
+        26 => "type",
+        _ => "",
+    }
+}
+
+/// Flattens a symbol reply, whichever shape it arrived in.
+///
+/// `documentSymbol` answers with either a *hierarchy* (`DocumentSymbol`, carrying `children` and no
+/// path, since it is all one file) or the older flat `SymbolInformation` with a `location`.
+/// `workspace/symbol` answers with `SymbolInformation` or `WorkspaceSymbol`. All four are read here
+/// rather than in the editor, so the palette sees one kind of thing.
+///
+/// `fallback` is the file the request was for, used by the hierarchical form, which names no URI at
+/// all because the server assumes the client remembers which document it asked about.
+pub fn symbols_from(value: &serde_json::Value, fallback: &Path) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+    collect_symbols(value, fallback, "", 0, &mut symbols);
+    symbols
+}
+
+fn collect_symbols(
+    value: &serde_json::Value,
+    fallback: &Path,
+    container: &str,
+    depth: usize,
+    into: &mut Vec<Symbol>,
+) {
+    let Some(list) = value.as_array() else {
+        return;
+    };
+
+    for item in list {
+        let Some(name) = item.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let kind = symbol_kind(item.get("kind").and_then(|k| k.as_u64()));
+
+        // A hierarchical symbol carries `selectionRange` — the name itself — where a flat one
+        // carries a whole `location`. Preferring the selection range is what makes choosing a
+        // symbol land on its name rather than on the first line of its body.
+        let (path, position) = match item.get("location") {
+            Some(location) => {
+                let path = location
+                    .get("uri")
+                    .and_then(|uri| uri.as_str())
+                    .and_then(position::uri_to_path)
+                    .unwrap_or_else(|| fallback.to_path_buf());
+                (path, range_start(location.get("range")))
+            }
+            None => (
+                fallback.to_path_buf(),
+                range_start(item.get("selectionRange").or_else(|| item.get("range"))),
+            ),
+        };
+
+        let own = item
+            .get("containerName")
+            .and_then(|c| c.as_str())
+            .unwrap_or(container);
+
+        into.push(Symbol {
+            name: name.to_string(),
+            kind,
+            container: own.to_string(),
+            path,
+            position,
+            depth,
+        });
+
+        if let Some(children) = item.get("children") {
+            // The enclosing name becomes the children's container, which is what makes a method
+            // read as `new` under `Anchor` rather than as an unattached `new`.
+            collect_symbols(children, fallback, name, depth + 1, into);
+        }
+    }
+}
+
+fn range_start(range: Option<&serde_json::Value>) -> Position {
+    let read = |key: &str| {
+        range?
+            .get("start")?
+            .get(key)?
+            .as_u64()
+            .map(|value| value as u32)
+    };
+    Position {
+        line: read("line").unwrap_or(0),
+        character: read("character").unwrap_or(0),
+    }
+}
+
 /// One thing a server offers to do about the code under the cursor.
 ///
 /// Only actions carrying edits survive the parse: an action whose work is a server-side `command` is
@@ -156,6 +411,9 @@ fn describe_request(kind: &Pending) -> String {
         Pending::CodeAction => "code actions".into(),
         Pending::References => "find references".into(),
         Pending::InlayHints => "inlay hints".into(),
+        Pending::ResolveCompletion { .. } => "the rest of a suggestion".into(),
+        Pending::DocumentSymbols { .. } => "this file's symbols".into(),
+        Pending::WorkspaceSymbols { query } => format!("symbols matching `{query}`"),
         Pending::Shutdown => "shutdown".into(),
     }
 }
@@ -177,8 +435,12 @@ pub struct LspClient {
 impl LspClient {
     /// Spawns a server and sends `initialize`. Returns as soon as the process is running — the
     /// handshake completes asynchronously, announced by [`ServerEvent::Ready`].
-    pub fn start(program: &str, args: &[&str], root: &Path) -> Result<Self> {
-        let mut command = Command::new(program);
+    ///
+    /// `executable` is a **resolved path**, not a bare name, and `name` is what to call it in the
+    /// interface. Passing the bare name is what broke every npm-installed server on Windows: see
+    /// [`crate::resolve_in`].
+    pub fn start(executable: &Path, name: &str, args: &[&str], root: &Path) -> Result<Self> {
+        let mut command = Command::new(executable);
         no_window(&mut command);
         let mut child = command
             .args(args)
@@ -188,7 +450,12 @@ impl LspClient {
             // Kept, not inherited: a chatty server must not scribble over the editor's own output.
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("could not start {program} — is it on PATH?"))?;
+            .with_context(|| {
+                format!(
+                    "could not start {name} from {} — it resolved on PATH but would not run",
+                    executable.display()
+                )
+            })?;
 
         let stdin = child.stdin.take().context("no stdin pipe")?;
         let stdout = child.stdout.take().context("no stdout pipe")?;
@@ -271,7 +538,7 @@ impl LspClient {
             stopping,
             state: State::Starting,
             root: root.to_path_buf(),
-            server_name: program.to_string(),
+            server_name: name.to_string(),
         };
 
         client.send_initialize()?;
@@ -331,9 +598,36 @@ impl LspClient {
                     "publishDiagnostics": { "relatedInformation": false, "versionSupport": true },
                     "hover": { "contentFormat": ["plaintext", "markdown"] },
                     "definition": { "dynamicRegistration": false },
+                    // `snippetSupport` is honest now: an accepted suggestion goes through the same
+                    // expander `tab` uses, so `println!($0)` lands with the cursor between the
+                    // parentheses rather than as a literal `$0` on screen.
+                    //
+                    // `resolveSupport` is not politeness — it is the switch that turns auto-import
+                    // on. rust-analyzer will not offer an out-of-scope name at all unless the
+                    // client can ask for its import separately, because computing one for each of
+                    // a hundred candidates up front is too slow to be worth doing. Without this,
+                    // completing `HashMap` in a file that does not import it simply offered
+                    // nothing, and the reason was invisible from the editor's side.
                     "completion": {
-                        "completionItem": { "snippetSupport": false },
+                    // `labelDetailsSupport` keeps the label a name. Without it rust-analyzer folds
+                    // the detail into the label itself for compatibility, and an auto-import
+                    // candidate arrives labelled `HashMap(use std::collections::HashMap)` — which
+                    // is the whole import path sitting in the column meant for the identifier.
+                        "completionItem": {
+                            "snippetSupport": true,
+                            "deprecatedSupport": true,
+                            "labelDetailsSupport": true,
+                            "resolveSupport": {
+                                "properties": ["additionalTextEdits", "detail", "documentation"]
+                            }
+                        },
                         "dynamicRegistration": false
+                    },
+                    // The hierarchical form, so a file outline can be indented into the shape of the
+                    // file rather than being a flat list of every name in it.
+                    "documentSymbol": {
+                        "dynamicRegistration": false,
+                        "hierarchicalDocumentSymbolSupport": true
                     },
                     "rename": { "dynamicRegistration": false, "prepareSupport": false },
                     "formatting": { "dynamicRegistration": false },
@@ -348,6 +642,7 @@ impl LspClient {
                 },
                 "workspace": {
                     "workspaceFolders": true,
+                    "symbol": { "dynamicRegistration": false },
                     // `documentChanges: false` is deliberate: it asks servers for the simpler
                     // `changes` map. vex applies text edits and refuses file creation and deletion,
                     // so promising to understand resource operations would be a lie.
@@ -446,6 +741,48 @@ impl LspClient {
     }
 
     /// Asks for a symbol to be renamed everywhere.
+    /// Asks for the rest of one suggestion — its import, most usefully.
+    ///
+    /// The item goes back **exactly as it arrived**: the server put an opaque `data` blob on it
+    /// that only it can read, and an item rebuilt from the parsed fields is a different request.
+    pub fn resolve_completion(
+        &self,
+        at: usize,
+        label: &str,
+        item: &serde_json::Value,
+    ) -> Result<i64> {
+        self.request(
+            "completionItem/resolve",
+            item.clone(),
+            Pending::ResolveCompletion {
+                at,
+                label: label.to_string(),
+            },
+        )
+    }
+
+    /// Everything named in one file.
+    pub fn document_symbols(&self, path: &Path) -> Result<i64> {
+        self.request(
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": position::path_to_uri(path) } }),
+            Pending::DocumentSymbols {
+                path: path.to_path_buf(),
+            },
+        )
+    }
+
+    /// Everything in the project matching a query.
+    pub fn workspace_symbols(&self, query: &str) -> Result<i64> {
+        self.request(
+            "workspace/symbol",
+            serde_json::json!({ "query": query }),
+            Pending::WorkspaceSymbols {
+                query: query.to_string(),
+            },
+        )
+    }
+
     pub fn rename(&self, path: &Path, position: Position, new_name: &str) -> Result<i64> {
         let mut params = document_position(path, position);
         params["newName"] = serde_json::json!(new_name);
@@ -668,6 +1005,16 @@ fn interpret(
                 .and_then(|name| name.as_str())
                 .unwrap_or("language server")
                 .to_string(),
+            // Whether asking it to format is worth doing at all. pyright — the most common Python
+            // server — says no, and an editor that asks anyway gets silence and has nothing to
+            // tell the user. Knowing up front is what lets it reach for an external formatter
+            // instead. Either `true` or an options object means yes.
+            formats: matches!(
+                result
+                    .get("capabilities")
+                    .and_then(|c| c.get("documentFormattingProvider")),
+                Some(serde_json::Value::Bool(true)) | Some(serde_json::Value::Object(_))
+            ),
         }),
         Pending::Hover => {
             let text = hover_text(result)?;
@@ -759,14 +1106,83 @@ fn interpret(
                 .and_then(|i| i.as_array())
                 .or_else(|| result.as_array())?;
             Some(ServerEvent::Completion {
-                items: items
-                    .iter()
-                    .filter_map(|item| item.get("label")?.as_str().map(str::to_string))
-                    .collect(),
+                items: items.iter().filter_map(completion_item).collect(),
+                incomplete: result
+                    .get("isIncomplete")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
             })
         }
+        Pending::ResolveCompletion { at, label } => {
+            completion_item(result).map(|item| ServerEvent::CompletionResolved { at, label, item })
+        }
+        Pending::DocumentSymbols { path } => Some(ServerEvent::Symbols {
+            query: None,
+            symbols: symbols_from(result, &path),
+        }),
+        Pending::WorkspaceSymbols { query } => Some(ServerEvent::Symbols {
+            symbols: symbols_from(result, Path::new("")),
+            query: Some(query),
+        }),
         Pending::Shutdown => None,
     }
+}
+
+/// One item of a completion reply, or nothing if it has no label to show.
+///
+/// `textEdit` is read only for the **text** it carries, not its range. The range is in the
+/// coordinates of the document version the request was made against, and by the time a suggestion
+/// is accepted the user has typed the rest of the word — so the range is stale by construction.
+/// The editor replaces the word it anchored the session at instead, which is the same span for
+/// every item that survives its own prefix filter. `additionalTextEdits` *are* used with their
+/// ranges, and can be: they are line-and-column, they sit on other lines, and an edit within one
+/// line does not move another line's coordinates.
+fn completion_item(item: &serde_json::Value) -> Option<CompletionItem> {
+    let string = |key: &str| item.get(key)?.as_str().map(str::to_string);
+    let label = string("label")?;
+
+    // In preference order: the edit's text, `insertText`, then the label. A server that sends a
+    // `textEdit` means it; `insertText` is the older spelling of the same intent.
+    let insert = item
+        .get("textEdit")
+        .and_then(|edit| edit.get("newText"))
+        .and_then(|text| text.as_str())
+        .map(str::to_string)
+        .or_else(|| string("insertText"))
+        .unwrap_or_else(|| label.clone());
+
+    Some(CompletionItem {
+        label,
+        insert,
+        // `insertTextFormat: 2` is the protocol's word for "this has placeholders in it".
+        snippet: item.get("insertTextFormat").and_then(|f| f.as_u64()) == Some(2),
+        // `labelDetails.description` is where a server puts the thing that makes two identical
+        // names different — for an auto-import candidate, the module it would come from, which is
+        // the one fact that decides which `HashMap` you meant.
+        detail: string("detail").or_else(|| {
+            let details = item.get("labelDetails")?;
+            let part = |key: &str| details.get(key)?.as_str().filter(|text| !text.is_empty());
+            match (part("detail"), part("description")) {
+                (Some(detail), Some(description)) => Some(format!("{detail}  {description}")),
+                (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+                (None, None) => None,
+            }
+        }),
+        kind: completion_kind(item.get("kind").and_then(|k| k.as_u64())),
+        sort: string("sortText"),
+        filter: string("filterText"),
+        additional: item
+            .get("additionalTextEdits")
+            .and_then(|edits| serde_json::from_value::<Vec<TextEdit>>(edits.clone()).ok())
+            .unwrap_or_default(),
+        // Both spellings: `deprecated` is the old boolean, `tags: [1]` the one that replaced it.
+        deprecated: item.get("deprecated").and_then(|d| d.as_bool()) == Some(true)
+            || item
+                .get("tags")
+                .and_then(|tags| tags.as_array())
+                .is_some_and(|tags| tags.iter().any(|tag| tag.as_u64() == Some(1))),
+        raw: item.clone(),
+    })
 }
 
 /// Hover contents come in three shapes across protocol versions.

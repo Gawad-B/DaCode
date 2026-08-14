@@ -79,9 +79,17 @@ pub const TOOLBAR: [ToolButton; 7] = [
 /// Right-aligned, because the left of that row is the file's tabs and they are the thing you are
 /// looking at. One definition, read by the drawing code and by the mouse — the rule this module
 /// exists for.
+///
+/// A narrow window cannot hold all seven, and the first version simply subtracted the full width
+/// from the right edge — so in a window around 400px the leftmost buttons were laid out at negative
+/// x and drawn off the side of the window, which is what a real Windows run showed. Buttons that do
+/// not fit are dropped from the end instead: [`TOOLBAR`] is ordered by how often each is reached
+/// for, so the tail is the part that can be spared, and a shorter toolbar is honest where half a
+/// button hanging past the edge is not.
 pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
     let height = 22.0 * scale;
     let gap = 6.0 * scale;
+    let margin = 16.0 * scale;
     let y = tabs.y + (tabs.height - height) / 2.0;
 
     // Width follows the label, so nothing is clipped and the row stays tight.
@@ -89,15 +97,186 @@ pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
         .iter()
         .map(|button| (button.label.chars().count() as f32 + 2.0) * 7.5 * scale)
         .collect();
-    let total: f32 = widths.iter().sum::<f32>() + gap * (TOOLBAR.len() as f32 - 1.0);
 
-    let mut x = tabs.right() - 16.0 * scale - total;
-    let mut placed = Vec::with_capacity(TOOLBAR.len());
-    for (button, width) in TOOLBAR.iter().zip(&widths) {
+    let span = |count: usize| -> f32 {
+        widths[..count].iter().sum::<f32>() + gap * (count.saturating_sub(1) as f32)
+    };
+
+    let available = (tabs.width - margin * 2.0).max(0.0);
+    let mut count = TOOLBAR.len();
+    while count > 0 && span(count) > available {
+        count -= 1;
+    }
+
+    let mut x = tabs.right() - margin - span(count);
+    let mut placed = Vec::with_capacity(count);
+    for (button, width) in TOOLBAR.iter().take(count).zip(&widths) {
         placed.push((*button, Rect::new(x, y, *width, height)));
         x += width + gap;
     }
     placed
+}
+
+/// The mapping between a pane's code area and the display grid inside it.
+///
+/// **The single definition of where a column is in pixels and which column a pixel is in.**
+/// `draw_code` reads it to place every glyph, underline and highlight; `App::offset_at` reads it to
+/// turn a click into an offset. There were two copies of that mapping before this existed, and they
+/// already disagreed — drawing padded by `space::SM` (12) and the mouse subtracted 8, so a click
+/// landed most of a character out. Adding a horizontal scroll offset to two copies would have made
+/// a click land in a different column from the one under the pointer the moment the view moved.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeGrid {
+    /// The code area itself, after sticky scroll has taken its share.
+    pub code: Rect,
+    pad: f32,
+    advance: f32,
+    row_height: f32,
+    /// Leftmost visible column. Always 0 while soft wrap is on.
+    offset: usize,
+}
+
+impl CodeGrid {
+    pub fn new(code: Rect, advance: f32, row_height: f32, offset: usize, scale: f32) -> Self {
+        Self {
+            code,
+            pad: vex_theme::space::SM * scale,
+            advance,
+            row_height,
+            offset,
+        }
+    }
+
+    pub fn advance(&self) -> f32 {
+        self.advance
+    }
+
+    pub fn row_height(&self) -> f32 {
+        self.row_height
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// The left edge of a display column, in pixels.
+    pub fn x_of(&self, column: usize) -> f32 {
+        self.code.x + self.pad + (column as f32 - self.offset as f32) * self.advance
+    }
+
+    /// Which display column a pixel is in. The exact inverse of [`CodeGrid::x_of`].
+    pub fn column_at(&self, x: f32) -> usize {
+        let columns = ((x - self.code.x - self.pad) / self.advance).round();
+        (columns.max(0.0) as usize) + self.offset
+    }
+
+    /// Which visible row a pixel is in, counted from the top of the code area.
+    pub fn row_at(&self, y: f32) -> usize {
+        ((y - self.code.y) / self.row_height).floor().max(0.0) as usize
+    }
+
+    /// How many whole columns fit across the code area.
+    pub fn columns(&self) -> usize {
+        (((self.code.width - self.pad * 2.0) / self.advance).floor()).max(1.0) as usize
+    }
+}
+
+/// A pane's code area once sticky scroll has taken its strip off the top.
+///
+/// `draw_code` used to make this split itself, shadowing its own `code` parameter — which left
+/// every other reader of that rectangle measuring against one that was a row taller per pinned
+/// head. The mouse was one of them, so with three heads pinned a click landed three lines below the
+/// line under the pointer, and the hover box and completion popup were drawn three rows above the
+/// cursor they belonged to. The split happens once now, here, and everything reads the result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeArea {
+    /// The rows that scroll. This is the rectangle to measure anything against.
+    pub code: Rect,
+    /// The strip holding the pinned heads, when there are any.
+    pub pinned: Option<Rect>,
+    /// The block heads pinned above the viewport, outermost first.
+    pub heads: Vec<usize>,
+}
+
+impl CodeArea {
+    pub fn new(code: Rect, heads: Vec<usize>, row_height: f32) -> Self {
+        if heads.is_empty() {
+            return Self {
+                code,
+                pinned: None,
+                heads,
+            };
+        }
+        let (pinned, rest) = code.split_top(row_height * heads.len() as f32);
+        Self {
+            code: rest,
+            pinned: Some(pinned),
+            heads,
+        }
+    }
+}
+
+/// One open file in the tab strip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tab {
+    /// Index into the buffer list, which is what `switch_to` and `close_buffer` count in.
+    pub index: usize,
+    /// The whole tab: clicking it switches to that file.
+    pub rect: Rect,
+    /// The close button at its right end. Inside `rect`, so it must be tested *first*.
+    pub close: Rect,
+}
+
+/// Where each open file's tab is.
+///
+/// The strip drew exactly one tab — the active file's name — which meant the other open buffers
+/// were invisible and the only way between them was `ctrl-b` or the palette. One definition, read
+/// by the drawing code and by the mouse, for the reason this module exists.
+///
+/// Tabs share whatever the toolbar leaves. When they no longer fit they shrink to a floor and then
+/// stop being produced, rather than sliding under the buttons: a tab you cannot read is still a tab
+/// you can click, but one drawn beneath something else is a click that lands on the wrong thing.
+pub fn tabs(strip: Rect, count: usize, active: usize, scale: f32) -> Vec<Tab> {
+    const IDEAL: f32 = 150.0;
+    const FLOOR: f32 = 64.0;
+
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let pad = 16.0 * scale;
+    let height = 22.0 * scale;
+    let y = strip.y + (strip.height - height) / 2.0;
+
+    // The toolbar owns the right end of the same row.
+    let toolbar_left = toolbar_buttons(strip, scale)
+        .first()
+        .map(|(_, box_)| box_.x)
+        .unwrap_or(strip.right());
+    let available = (toolbar_left - strip.x - pad * 2.0).max(0.0);
+    if available < FLOOR * scale {
+        return Vec::new();
+    }
+
+    let width = (available / count as f32).clamp(FLOOR * scale, IDEAL * scale);
+    let fits = ((available / width).floor() as usize).max(1).min(count);
+
+    // When they do not all fit, keep the window that contains the active one — the file you are
+    // looking at must always have a tab.
+    let first = if active >= fits { active + 1 - fits } else { 0 };
+
+    (first..(first + fits).min(count))
+        .enumerate()
+        .map(|(slot, index)| {
+            let rect = Rect::new(strip.x + pad + slot as f32 * width, y, width, height);
+            let button = 18.0 * scale;
+            Tab {
+                index,
+                rect,
+                close: Rect::new(rect.right() - button, y, button, height),
+            }
+        })
+        .collect()
 }
 
 impl Layout {
@@ -256,6 +435,134 @@ mod tests {
     }
 
     #[test]
+    fn a_narrow_window_drops_toolbar_buttons_rather_than_drawing_them_off_the_edge() {
+        // A real Windows run in a narrow window laid the first buttons out at a negative x, so
+        // `open` and `files` were painted past the left edge — and since the mouse reads the same
+        // rectangles, they could not be clicked either. Every button that is drawn must be inside
+        // the strip it belongs to, at every width.
+        for width in [120.0, 200.0, 320.0, 434.0, 700.0, 1600.0] {
+            let tabs = Rect::new(0.0, 72.0, width, 34.0);
+            for (button, box_) in toolbar_buttons(tabs, 1.0) {
+                assert!(
+                    box_.x >= tabs.x,
+                    "`{}` starts left of the strip in a {width}px window",
+                    button.label
+                );
+                assert!(
+                    box_.right() <= tabs.right(),
+                    "`{}` runs past the right edge in a {width}px window",
+                    button.label
+                );
+            }
+        }
+
+        let wide = toolbar_buttons(Rect::new(0.0, 72.0, 1600.0, 34.0), 1.0);
+        assert_eq!(wide.len(), TOOLBAR.len(), "a wide window shows all of it");
+        assert_eq!(
+            wide[0].0.command, TOOLBAR[0].command,
+            "and shows it in order"
+        );
+
+        let narrow = toolbar_buttons(Rect::new(0.0, 72.0, 200.0, 34.0), 1.0);
+        assert!(narrow.len() < TOOLBAR.len(), "a narrow one cannot");
+        assert_eq!(
+            narrow.first().map(|(button, _)| button.command),
+            Some(TOOLBAR[0].command),
+            "what survives is the front of the row — the buttons reached for most"
+        );
+    }
+
+    #[test]
+    fn a_column_and_the_pixel_it_sits_at_are_exact_inverses() {
+        // The defect this exists for: drawing and hit-testing each had their own copy of this
+        // mapping, and they already disagreed about the left pad — drawing used 12, the mouse used
+        // 8 — so a click landed most of a character out before any horizontal scroll existed.
+        // Adding an offset to two copies would have made it a whole column, and growing.
+        let code = Rect::new(300.0, 120.0, 900.0, 600.0);
+
+        for offset in [0usize, 1, 17, 240] {
+            let grid = CodeGrid::new(code, 8.1, 26.0, offset, 1.0);
+            for column in offset..offset + 40 {
+                assert_eq!(
+                    grid.column_at(grid.x_of(column)),
+                    column,
+                    "column {column} at offset {offset} did not survive the round trip"
+                );
+            }
+            assert!(
+                grid.x_of(offset) >= code.x,
+                "the leftmost visible column must not be drawn left of the code area"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_sideways_moves_the_pixels_and_nothing_else() {
+        let code = Rect::new(0.0, 0.0, 800.0, 400.0);
+        let still = CodeGrid::new(code, 8.0, 26.0, 0, 1.0);
+        let moved = CodeGrid::new(code, 8.0, 26.0, 10, 1.0);
+
+        assert_eq!(
+            moved.x_of(10),
+            still.x_of(0),
+            "column 10 at an offset of 10 sits where column 0 sat"
+        );
+        assert_eq!(
+            still.row_at(30.0),
+            moved.row_at(30.0),
+            "the vertical axis is untouched"
+        );
+        assert_eq!(still.columns(), moved.columns());
+    }
+
+    #[test]
+    fn every_tab_is_clickable_and_none_reaches_the_toolbar() {
+        // The strip is shared with the toolbar, and both are read by the mouse. A tab drawn under a
+        // button is a click that runs the wrong thing — the failure this module exists to prevent,
+        // and the one that gets blamed on everything else.
+        let strip = Rect::new(0.0, 72.0, 1600.0, 34.0);
+        let toolbar_left = toolbar_buttons(strip, 1.0)
+            .first()
+            .map(|(_, box_)| box_.x)
+            .expect("a wide strip has a toolbar");
+
+        for count in 1..=12 {
+            for active in 0..count {
+                let tabs = tabs(strip, count, active, 1.0);
+                assert!(
+                    tabs.iter().any(|tab| tab.index == active),
+                    "the file being edited must always have a tab: {active} of {count}"
+                );
+                for tab in &tabs {
+                    assert!(tab.rect.x >= strip.x, "a tab starts left of the strip");
+                    assert!(
+                        tab.rect.right() <= toolbar_left,
+                        "a tab runs under the toolbar with {count} open"
+                    );
+                    assert!(
+                        contains(tab.rect, tab.close.x + 1.0, tab.close.y + 1.0),
+                        "the close button must sit inside its own tab"
+                    );
+                }
+                for pair in tabs.windows(2) {
+                    assert!(
+                        pair[0].rect.right() <= pair[1].rect.x + 0.01,
+                        "two tabs overlap"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_strip_gives_up_on_tabs_rather_than_drawing_unreadable_ones() {
+        // At some width there is no honest tab to draw. Returning none is better than a sliver that
+        // cannot show a name but can still be clicked.
+        let tabs = tabs(Rect::new(0.0, 72.0, 120.0, 34.0), 5, 0, 1.0);
+        assert!(tabs.is_empty());
+    }
+
+    #[test]
     fn panes_tile_the_editor_area_without_gaps_or_overlap() {
         let layout = Layout::of(bounds(), 1.0, None);
 
@@ -315,5 +622,38 @@ mod tests {
         let layout = Layout::of(bounds(), 1.0, None);
         assert!(layout.pane(0, 1, true, 1.0).footer.is_none());
         assert!(layout.pane(0, 2, true, 1.0).footer.is_some());
+    }
+
+    #[test]
+    fn a_pinned_head_moves_the_first_code_row_down_for_the_mouse_too() {
+        // `draw_code` made this split itself and shadowed its own parameter, so every other reader
+        // of the pane rectangle measured against one a row taller per pinned head. The mouse was
+        // one of them: with three heads pinned a click landed three lines below the line under the
+        // pointer, and since nothing is pinned at the top of a file it read as intermittent.
+        let code = Rect::new(300.0, 120.0, 900.0, 600.0);
+        const ROW: f32 = 26.0;
+
+        let none = CodeArea::new(code, Vec::new(), ROW);
+        assert_eq!(none.code, code, "nothing pinned changes nothing");
+        assert!(none.pinned.is_none());
+
+        for heads in 1..=3usize {
+            let area = CodeArea::new(code, (0..heads).collect(), ROW);
+            let strip = area.pinned.expect("a strip for the pinned heads");
+            assert_eq!(strip.y, code.y);
+            assert_eq!(strip.height, ROW * heads as f32);
+            assert_eq!(area.code.y, code.y + ROW * heads as f32);
+            assert_eq!(
+                area.code.height,
+                code.height - ROW * heads as f32,
+                "the strip comes out of the scrolling rows, not out of nowhere"
+            );
+
+            // What the defect actually was: the first row of code, at the pixel it is drawn at,
+            // must be display row zero.
+            let grid = CodeGrid::new(area.code, 8.0, ROW, 0, 1.0);
+            assert_eq!(grid.row_at(area.code.y + ROW / 2.0), 0);
+            assert_eq!(grid.row_at(area.code.y + ROW * 1.5), 1);
+        }
     }
 }

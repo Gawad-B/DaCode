@@ -280,7 +280,12 @@ pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
         Step::Import => (0..crate::settings_ui::Importable::ALL.len())
             .map(|index| {
                 let line = px(34.0);
-                Rect::new(left, top + px(40.0) + index as f32 * line, content_width, line)
+                Rect::new(
+                    left,
+                    top + px(40.0) + index as f32 * line,
+                    content_width,
+                    line,
+                )
             })
             .collect(),
         Step::Done => Vec::new(),

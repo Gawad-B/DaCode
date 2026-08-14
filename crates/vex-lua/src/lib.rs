@@ -49,8 +49,28 @@ pub struct Config {
     /// Token overrides from `vex.theme{...}`, in the order they were written.
     pub colors: Vec<(String, Oklch)>,
     pub keymap: Keymap,
+    /// Language servers named by `vex.server(...)`, in the order they were written.
+    pub servers: Vec<Server>,
+    /// Formatters named by `vex.formatter(...)`. Described exactly as a server is — a language, a
+    /// command, its arguments and the files it applies to — so one struct serves both.
+    pub formatters: Vec<Server>,
     /// Everything that went wrong, in the user's terms. Shown rather than swallowed.
     pub problems: Vec<String>,
+}
+
+/// A language server named by `vex.server(language, { command = …, args = {…} })`.
+///
+/// Kept as plain strings, validated by the caller. This crate does not know what languages exist —
+/// `vex-lsp` owns that table, and duplicating it here is how the two would come to disagree about
+/// what `"python"` means.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Server {
+    pub language: String,
+    pub command: String,
+    pub args: Vec<String>,
+    /// File extensions, without the dot. Empty means "vex already knows which files this language
+    /// is written in".
+    pub extensions: Vec<String>,
 }
 
 impl Config {
@@ -75,6 +95,11 @@ impl Config {
             && self.theme_name.is_none()
             && self.colors.is_empty()
             && self.keymap.is_empty()
+            // A file whose only content is `vex.server(...)` is not a default config, and leaving
+            // this out would have had the caller skip it entirely — the config would be read,
+            // parsed, and then thrown away for looking empty.
+            && self.servers.is_empty()
+            && self.formatters.is_empty()
     }
 }
 
@@ -247,6 +272,44 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
         })?,
     )?;
 
+    // `vex.server(language, { command = …, args = {…}, extensions = {…} })` — a language server.
+    //
+    // The language comes first and positionally because it is what the entry is *about*; everything
+    // else is a detail of how to start it. Validated by the caller, which owns the language table.
+    let target = state.clone();
+    vex.set(
+        "server",
+        lua.create_function(move |_, (language, options): (String, Table)| {
+            let mut config = target.borrow_mut();
+            let command = string(&options, "command").unwrap_or_default();
+            config.servers.push(Server {
+                language,
+                command,
+                args: strings(&options, "args"),
+                extensions: strings(&options, "extensions"),
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // `vex.formatter(language, { command = …, args = {…}, extensions = {…} })` — an external
+    // formatter. The same shape as `vex.server`, because it is the same kind of fact.
+    let target = state.clone();
+    vex.set(
+        "formatter",
+        lua.create_function(move |_, (language, options): (String, Table)| {
+            let mut config = target.borrow_mut();
+            let command = string(&options, "command").unwrap_or_default();
+            config.formatters.push(Server {
+                language,
+                command,
+                args: strings(&options, "args"),
+                extensions: strings(&options, "extensions"),
+            });
+            Ok(())
+        })?,
+    )?;
+
     // The action vocabulary, readable from Lua. Config that can enumerate what it may bind to is
     // config a user can explore without leaving their editor.
     let actions = lua.create_table()?;
@@ -407,6 +470,17 @@ fn boolean(table: &Table, key: &str) -> Option<bool> {
 
 fn string(table: &Table, key: &str) -> Option<String> {
     table.get::<String>(key).ok()
+}
+
+/// A list of strings, or nothing. A missing key and an empty list mean the same thing to every
+/// caller here, so they are not distinguished.
+fn strings(table: &Table, key: &str) -> Vec<String> {
+    let Ok(list) = table.get::<Table>(key) else {
+        return Vec::new();
+    };
+    list.sequence_values::<String>()
+        .filter_map(Result::ok)
+        .collect()
 }
 
 /// Turns a Lua error into one line a user can act on.
@@ -639,6 +713,33 @@ mod tests {
             !all.contains("bg_alt, bg_panel"),
             "the whole token list should not be in the message: {all}"
         );
+    }
+
+    #[test]
+    fn language_servers_can_be_named() {
+        let config = run(r##"
+            vex.server("python", { command = ".venv/bin/pylsp" })
+            vex.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig" } })
+        "##);
+
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(config.servers.len(), 2);
+        assert_eq!(config.servers[0].language, "python");
+        assert_eq!(config.servers[0].command, ".venv/bin/pylsp");
+        assert!(
+            config.servers[0].args.is_empty() && config.servers[0].extensions.is_empty(),
+            "what was not said stays unsaid, so the caller can fill it from its own table"
+        );
+        assert_eq!(config.servers[1].args, vec!["--stdio"]);
+        assert_eq!(config.servers[1].extensions, vec!["zig"]);
+    }
+
+    #[test]
+    fn a_config_that_only_names_a_server_is_not_a_default_one() {
+        // The trap this exists for: the caller skips a config that looks default, so leaving
+        // `servers` out of that check would have the file read, parsed and then thrown away.
+        let config = run(r##"vex.server("python", { command = "pylsp" })"##);
+        assert!(!config.is_default());
     }
 
     #[test]

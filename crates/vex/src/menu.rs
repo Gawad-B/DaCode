@@ -70,7 +70,15 @@ impl Item {
 const MENUS: [(&str, &[&str]); 5] = [
     (
         "file",
-        &["save", "open_folder", "toggle_tree", "settings", "quit"],
+        &[
+            "save",
+            "save_as",
+            "open_folder",
+            "close_buffer",
+            "toggle_tree",
+            "settings",
+            "quit",
+        ],
     ),
     (
         "edit",
@@ -78,6 +86,7 @@ const MENUS: [(&str, &[&str]); 5] = [
             "undo",
             "redo",
             "paste",
+            "replace",
             "toggle_comment",
             "duplicate_line_down",
             "delete_line",
@@ -100,6 +109,8 @@ const MENUS: [(&str, &[&str]); 5] = [
         &[
             "goto_definition",
             "find_references",
+            "goto_symbol",
+            "goto_symbol_in_project",
             "search",
             "search_project",
             "next_diagnostic",
@@ -137,9 +148,37 @@ const CONTEXT: [&str; 14] = [
     "format",
 ];
 
+/// What a right-click **on the file tree** offers.
+///
+/// A different list from the text one, because a right-click is about the thing under the pointer
+/// and the thing under the pointer is a file, not a symbol. Until this existed the tree was
+/// strictly read-only — which contradicts the rule that a feature reachable only by a key is not
+/// finished, for exactly the audience that rule was written for.
+const TREE: [&str; 4] = ["new_file", "rename_file", "delete_file", "search_project"];
+
 impl Menu {
+    /// The context menu for a file-tree row.
+    pub fn tree(at: (f32, f32), modal: bool) -> Self {
+        Self {
+            kind: Kind::Context,
+            titles: Vec::new(),
+            open: 0,
+            items: TREE
+                .iter()
+                .filter_map(|name| commands::by_name(name))
+                .map(|command| Item::from_command(command, modal))
+                .collect(),
+            selected: 0,
+            at,
+        }
+    }
+
     /// The bar, with its first menu open.
-    pub fn bar() -> Self {
+    ///
+    /// Takes the grammar rather than assuming it: this hardcoded `true`, so with Vim off the file
+    /// menu still advertised `:w  <c-s>` for save and `:q  <c-q>` for quit — two ex-commands whose
+    /// leading `:` the user's own grammar cannot even parse.
+    pub fn bar(modal: bool) -> Self {
         let mut menu = Self {
             kind: Kind::Bar,
             titles: MENUS.iter().map(|(title, _)| *title).collect(),
@@ -148,7 +187,7 @@ impl Menu {
             selected: 0,
             at: (0.0, 0.0),
         };
-        menu.fill(true);
+        menu.fill(modal);
         menu
     }
 
@@ -323,27 +362,53 @@ mod tests {
                 );
             }
         }
-        for name in CONTEXT {
+        for name in CONTEXT.iter().chain(TREE.iter()) {
             assert!(
                 commands::by_name(name).is_some(),
-                "the context menu offers `{name}`, which is not a command"
+                "a context menu offers `{name}`, which is not a command"
+            );
+        }
+    }
+
+    #[test]
+    fn every_menu_entry_resolves_to_an_action_rather_than_falling_back() {
+        // `Item::from_command` falls back to `DismissInfo` when a name resolves to no action, which
+        // closes the menu and does nothing — from the outside, indistinguishable from a menu that
+        // cannot be clicked at all. The test above only checks the name is in the command table, and
+        // a name can be in the table with nothing behind it.
+        let named = CONTEXT
+            .iter()
+            .chain(TREE.iter())
+            .chain(MENUS.iter().flat_map(|(_, names)| names.iter()));
+        for name in named {
+            let command = commands::by_name(name).expect("checked above");
+            assert!(
+                command.action().is_some(),
+                "`{name}` is offered in a menu but resolves to no action, so choosing it does nothing"
             );
         }
     }
 
     #[test]
     fn the_bar_opens_on_its_first_menu_with_items_in_it() {
-        let menu = Menu::bar();
+        let menu = Menu::bar(true);
         assert_eq!(menu.titles.first(), Some(&"file"));
         assert!(!menu.items.is_empty());
-        assert_eq!(menu.selection().map(|item| item.action.clone()), Some(Action::Save));
+        assert_eq!(
+            menu.selection().map(|item| item.action.clone()),
+            Some(Action::Save)
+        );
     }
 
     #[test]
     fn walking_off_the_end_of_the_bar_wraps() {
-        let mut menu = Menu::bar();
+        let mut menu = Menu::bar(true);
         menu.move_menu(-1, true);
-        assert_eq!(menu.open, MENUS.len() - 1, "left from the first is the last");
+        assert_eq!(
+            menu.open,
+            MENUS.len() - 1,
+            "left from the first is the last"
+        );
         menu.move_menu(1, true);
         assert_eq!(menu.open, 0);
     }
@@ -352,7 +417,7 @@ mod tests {
     fn a_menu_entry_carries_the_key_that_does_the_same_thing() {
         // The point of the menu: you read it once and learn the shortcut. An entry with no key is
         // allowed — some commands have none — but save is not one of them.
-        let menu = Menu::bar();
+        let menu = Menu::bar(true);
         let save = menu.selection().expect("file menu has entries");
         assert!(
             save.keys.contains("<c-s>"),
@@ -366,7 +431,7 @@ mod tests {
         // Drawing and hit-testing read the same geometry; this is the test that says so. The bug it
         // prevents — clicking one row and getting its neighbour — is the classic symptom of two
         // copies of the arithmetic, and it always gets blamed on something else.
-        let menu = Menu::bar();
+        let menu = Menu::bar(true);
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
         let geometry = menu.geometry(bounds, 1.0);
 
@@ -387,8 +452,41 @@ mod tests {
     }
 
     #[test]
+    fn a_context_menu_row_is_hit_at_a_fractional_scale_too() {
+        // Every other menu test runs at scale 1.0, and the machine this was reported on does not.
+        // This pins the half of the defect that was *not* broken, so a fix does not get aimed at
+        // the geometry when the causes were hover, drag and the pad strip.
+        let menu = Menu::context((640.0, 380.0), false);
+        let bounds = Rect::new(0.0, 0.0, 1920.0, 1200.0);
+        let geometry = menu.geometry(bounds, 1.5);
+
+        for (index, row) in geometry.rows.iter().enumerate() {
+            let middle = (row.x + row.width / 2.0, row.y + row.height / 2.0);
+            assert_eq!(menu.row_at(&geometry, middle.0, middle.1), Some(index));
+        }
+    }
+
+    #[test]
+    fn the_card_has_a_padded_strip_that_is_not_a_row() {
+        // The pointer sits on the card's top-left corner the moment a context menu opens: inside
+        // the card, above the first row. The click handler treated "in the card but not on a row"
+        // as clicking away, so right-click then left-click without moving dismissed the menu — the
+        // first thing anyone tries. The geometry is right; the caller has to know about this strip.
+        let menu = Menu::context((100.0, 200.0), false);
+        let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
+        let geometry = menu.geometry(bounds, 1.0);
+
+        let corner = (geometry.card.x + 2.0, geometry.card.y + 2.0);
+        assert_eq!(menu.row_at(&geometry, corner.0, corner.1), None);
+        assert!(
+            crate::layout::contains(geometry.card, corner.0, corner.1),
+            "the corner is inside the card, which is why dismissing on it was wrong"
+        );
+    }
+
+    #[test]
     fn clicking_a_title_is_how_the_bar_is_walked_with_a_mouse() {
-        let menu = Menu::bar();
+        let menu = Menu::bar(true);
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
         let geometry = menu.geometry(bounds, 1.0);
         let second = geometry.titles[1];
@@ -400,6 +498,30 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_on_the_tree_offers_file_operations_not_symbol_ones() {
+        // The tree was strictly read-only, which contradicts this project's rule that a feature
+        // reachable only by a key is not finished — for exactly the audience the mouse layer was
+        // built for. A right-click is about what is under the pointer, and on the tree that is a
+        // file, so it cannot be the same list as the text one.
+        let tree = Menu::tree((100.0, 200.0), false);
+        let names: Vec<&str> = tree.items.iter().map(|item| item.label.as_str()).collect();
+
+        assert!(
+            tree.items
+                .iter()
+                .any(|item| item.action == Action::DeleteFile),
+            "the tree menu must offer the file operations: {names:?}"
+        );
+        assert!(
+            !tree
+                .items
+                .iter()
+                .any(|item| item.action == Action::GotoDefinition),
+            "and not the ones about a symbol: {names:?}"
+        );
+    }
+
+    #[test]
     fn a_context_menu_at_the_edge_is_pushed_back_onto_the_window() {
         // Right-clicking near the bottom right is normal, and a menu that hung off the window there
         // would be unusable exactly where people click most.
@@ -407,7 +529,10 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
         let geometry = menu.geometry(bounds, 1.0);
 
-        assert!(geometry.card.right() <= bounds.right(), "off the right edge");
+        assert!(
+            geometry.card.right() <= bounds.right(),
+            "off the right edge"
+        );
         assert!(geometry.card.bottom() <= bounds.bottom(), "off the bottom");
     }
 

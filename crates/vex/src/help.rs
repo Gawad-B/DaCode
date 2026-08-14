@@ -123,11 +123,15 @@ mod tests {
             what: "comment or uncomment these lines"
         }));
         assert!(
-            !flat.iter().any(|line| matches!(line, Line::Binding { keys, .. } if *keys == "dd")),
+            !flat
+                .iter()
+                .any(|line| matches!(line, Line::Binding { keys, .. } if *keys == "dd")),
             "a non-modal user has no dd"
         );
         assert!(
-            modal.iter().any(|line| matches!(line, Line::Binding { keys, .. } if keys.contains("dd"))),
+            modal
+                .iter()
+                .any(|line| matches!(line, Line::Binding { keys, .. } if keys.contains("dd"))),
             "a modal user does"
         );
     }
@@ -156,9 +160,9 @@ mod tests {
         }
         let lines = help.lines();
         assert!(
-            lines
-                .iter()
-                .all(|line| !matches!(line, Line::Binding { what, .. } if !what.contains("comment"))),
+            lines.iter().all(
+                |line| !matches!(line, Line::Binding { what, .. } if !what.contains("comment"))
+            ),
             "the filter left something unrelated behind"
         );
         assert!(lines.len() >= 2, "and left the heading and the answer");

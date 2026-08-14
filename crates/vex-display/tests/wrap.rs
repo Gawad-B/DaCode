@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use vex_display::{DisplayMap, ScrollAnchor, WrapMode};
-use vex_text::{CharOffset, DisplayPoint, Text};
+use vex_text::{CharOffset, DisplayPoint, Edit, Text, Transaction};
 
 fn map(columns: usize) -> DisplayMap {
     DisplayMap::new(WrapMode::Word, columns)
@@ -131,6 +131,7 @@ fn an_anchor_can_sit_mid_line_so_long_lines_scroll_smoothly() {
         ScrollAnchor {
             line: 0,
             sub_row: 2,
+            column: 0,
         },
         2,
     );
@@ -401,6 +402,7 @@ fn an_anchor_inside_a_fold_is_nudged_out_rather_than_drawing_hidden_text() {
         ScrollAnchor {
             line: 2,
             sub_row: 0,
+            column: 0,
         },
         3,
     );
@@ -484,4 +486,249 @@ fn a_blank_line_borrows_the_context_of_the_code_above_it() {
         vec![0],
         "standing on a blank line inside a function still shows the function"
     );
+}
+
+// ---- horizontal scrolling ---------------------------------------------------------------
+
+#[test]
+fn a_caret_past_the_right_edge_drags_the_view_to_it() {
+    // The defect: with soft wrap off there was no horizontal offset at all, so anything past the
+    // viewport's right edge was permanently invisible *and* unreachable — the caret could be there
+    // and you could not see it.
+    let text = Text::from_str(&format!("{}END\n", "x".repeat(300)));
+    let map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor::at_line(0);
+
+    let near_the_end = CharOffset(299);
+    let moved = map.scroll_to_reveal_column(&text, anchor, 80, near_the_end, 8);
+    assert!(moved.column > 0, "the view must follow the caret sideways");
+    assert!(
+        moved.column <= 299,
+        "and must not scroll past the caret itself"
+    );
+
+    // Back at the start, it comes back.
+    let home = map.scroll_to_reveal_column(&text, moved, 80, CharOffset(0), 8);
+    assert_eq!(home.column, 0);
+}
+
+#[test]
+fn a_caret_already_comfortably_visible_does_not_move_the_view() {
+    // A view that re-centres on every keystroke is unusable, which is why the reveal is "the least
+    // amount that brings it into view" rather than "put it in the middle".
+    let text = Text::from_str(&format!("{}\n", "y".repeat(300)));
+    let map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor {
+        line: 0,
+        sub_row: 0,
+        column: 100,
+    };
+
+    let inside = map.scroll_to_reveal_column(&text, anchor, 80, CharOffset(140), 8);
+    assert_eq!(inside.column, 100, "nothing to do");
+}
+
+#[test]
+fn soft_wrap_leaves_the_horizontal_offset_alone() {
+    // With wrap on there is nothing to the right of the viewport, so the remembered column must not
+    // drift while it is invisible — otherwise turning wrap off returns you somewhere you never were.
+    let text = Text::from_str(&format!("{}\n", "z".repeat(300)));
+    let map = DisplayMap {
+        mode: WrapMode::Word,
+        columns: 40,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor {
+        line: 0,
+        sub_row: 0,
+        column: 77,
+    };
+
+    let after = map.scroll_to_reveal_column(&text, anchor, 40, CharOffset(250), 8);
+    assert_eq!(after.column, 77, "remembered, not reset and not moved");
+}
+
+#[test]
+fn the_horizontal_offset_survives_a_vertical_scroll() {
+    // `scroll_to_reveal` builds a fresh anchor, and dropping the column there would snap the view
+    // back to the left every time the cursor changed row.
+    let doc = Text::from_str(&format!(
+        "{}\n{}\n{}\n",
+        "a".repeat(200),
+        "b".repeat(200),
+        "c".repeat(200)
+    ));
+    let map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor {
+        line: 0,
+        sub_row: 0,
+        column: 50,
+    };
+
+    let after = map.scroll_to_reveal(&doc, anchor, 2, CharOffset(450), 1);
+    assert_eq!(after.column, 50, "the vertical reveal must not reset it");
+}
+
+// ---- folds against a moving document ------------------------------------------------------
+
+/// Twelve numbered lines, so a fold's range and what it hides are both easy to state.
+fn numbered() -> Text {
+    Text::from_str(
+        &(0..12)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn unwrapped() -> DisplayMap {
+    DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    }
+}
+
+/// Applies one edit and returns the text on either side of it, the way the editor does.
+fn edited(text: &Text, range: std::ops::Range<usize>, replacement: &str) -> (Text, Vec<Edit>) {
+    let edits = vec![Edit::replace(
+        CharOffset(range.start)..CharOffset(range.end),
+        replacement,
+    )];
+    let mut after = text.clone();
+    Transaction::new(edits.clone())
+        .apply(&mut after)
+        .expect("the edit is in bounds");
+    (after, edits)
+}
+
+#[test]
+fn deleting_lines_above_a_fold_moves_it_down_the_same_number() {
+    // The whole point: a fold is a pair of line numbers, and line numbers only mean anything
+    // against the text they were taken from.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(6..9);
+
+    // Remove lines 0 and 1 entirely.
+    let cut = before.line_to_char(2).get();
+    let (after, edits) = edited(&before, 0..cut, "");
+    map.folds.transform(&before, &after, &edits);
+
+    assert_eq!(
+        map.folds.closed_at(4),
+        Some(4..7),
+        "the same block, two lines higher"
+    );
+}
+
+#[test]
+fn a_shrinking_edit_cannot_leave_a_fold_hiding_the_rest_of_the_file() {
+    // The defect this exists for. `is_hidden` asks only whether a line falls inside the range, so
+    // a fold whose end had run off the end of the document hid *everything below its head*: delete
+    // a function above a closed fold and the rest of the file silently disappeared, with a fold
+    // marker on one line as the only clue it was still there.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(8..11);
+
+    // Cut lines 0..8 — more than enough to run the old range past the new last line.
+    let cut = before.line_to_char(8).get();
+    let (after, edits) = edited(&before, 0..cut, "");
+    map.folds.transform(&before, &after, &edits);
+
+    let last = after.last_line();
+    for line in 0..=last {
+        assert!(
+            !map.folds.is_hidden(line) || line <= 3,
+            "line {line} of {last} is hidden by a fold that should have moved with it"
+        );
+    }
+    assert_eq!(map.folds.closed_at(0), Some(0..3));
+}
+
+#[test]
+fn a_fold_whose_block_was_deleted_is_dropped_rather_than_left_pointing_at_nothing() {
+    // Both anchors land on the same offset, so there is nothing left to hide — and a fold marker
+    // on a line with no block under it is a control that does nothing when clicked.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(4..7);
+
+    let (start, end) = (before.line_to_char(4).get(), before.line_to_char(8).get());
+    let (after, edits) = edited(&before, start..end, "");
+    map.folds.transform(&before, &after, &edits);
+
+    assert!(map.folds.is_empty(), "nothing left to fold");
+}
+
+#[test]
+fn typing_on_a_line_below_a_fold_leaves_it_where_it_was() {
+    // The common case, and the one a coarser fix — clearing every fold on any edit — would have
+    // got wrong: folding a block and then typing anywhere else must not unfold it.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(2..5);
+
+    let at = before.line_to_char(9).get();
+    let (after, edits) = edited(&before, at..at, "x");
+    map.folds.transform(&before, &after, &edits);
+
+    assert_eq!(map.folds.closed_at(2), Some(2..5));
+}
+
+#[test]
+fn moving_down_from_a_fold_head_lands_after_the_block_it_hides() {
+    // Arrow-down used to walk the caret into hidden lines, one row at a time. The caret sat on
+    // text nobody could see, and typing then edited it.
+    let text = numbered();
+    let mut map = unwrapped();
+    map.folds.close(3..7);
+
+    let head = text.line_to_char(3);
+    let moved = map.move_vertically(&text, head, 1, Some(0));
+    assert_eq!(
+        text.char_to_line(moved),
+        8,
+        "the first line the fold does not hide"
+    );
+}
+
+#[test]
+fn moving_up_into_a_fold_lands_on_its_head() {
+    let text = numbered();
+    let mut map = unwrapped();
+    map.folds.close(3..7);
+
+    let below = text.line_to_char(8);
+    let moved = map.move_vertically(&text, below, -1, Some(0));
+    assert_eq!(text.char_to_line(moved), 3, "the head, not the hidden tail");
+}
+
+#[test]
+fn the_wheel_steps_over_a_fold_and_can_climb_back_up_over_it() {
+    // Scrolling stepped by buffer lines with no idea folds existed, so a notch landed *inside* a
+    // closed block — where `rows_from` nudges the anchor forward again to avoid drawing hidden
+    // text. The view could go down past a fold and never come back up over it.
+    let text = numbered();
+    let mut map = unwrapped();
+    map.folds.close(2..8);
+
+    let top = ScrollAnchor::at_line(0);
+    let down = map.step(&text, top, 3);
+    assert_eq!(
+        down.line, 9,
+        "three rows: line 1, the fold's one row, then line 9"
+    );
+
+    let back = map.step(&text, down, -3);
+    assert_eq!(back.line, 0, "and the same three rows in reverse");
 }

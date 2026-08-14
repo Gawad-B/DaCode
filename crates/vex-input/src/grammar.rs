@@ -156,6 +156,17 @@ impl Grammar {
         self.count.unwrap_or(1) * self.operator_count.unwrap_or(1)
     }
 
+    /// The line `G` or `gg` was aimed at, if any count was typed at all.
+    ///
+    /// **Either count**, which is the whole point. A count typed *after* an operator lands in
+    /// `operator_count`, so `G` reading only `count` saw nothing for `d5G` and fell through to "the
+    /// end of the file" — deleting from the cursor to the last line instead of to line five. The
+    /// same for `d5gg` upwards. A count is not the same question as whether one was given, so this
+    /// returns an `Option` rather than defaulting to 1 and losing the distinction.
+    fn target_line(&self) -> Option<usize> {
+        (self.count.is_some() || self.operator_count.is_some()).then(|| self.total_count())
+    }
+
     fn emit(&mut self, action: Action) -> Resolution {
         self.clear();
         Resolution::Action(action)
@@ -268,6 +279,7 @@ impl Grammar {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
                 KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
+                KeyCode::Char('h') => Some(Action::StartReplace),
                 KeyCode::Char('g') => Some(Action::StartCommand),
                 // `ctrl-d` is occurrence selection, not "a cursor below": it is the first shortcut a
                 // VSCode user reaches for, and having it do something else is worse than not having
@@ -338,16 +350,27 @@ impl Grammar {
     /// The editor's own Ctrl chords, which are not Vim's and survive the grammar being off.
     fn feed_editor_chords(&mut self, key: Key) -> Resolution {
         match key.code {
+            // Both push what was typed before returning `Pending`. Without it the which-key popup
+            // and the statusline were handed an empty string: with the grammar off, `ctrl-w` and
+            // `ctrl-k` waited for a second key and said nothing at all about it — and those two are
+            // *only* reachable this way when Vim is off, so the popup that exists to teach them
+            // never appeared for the people who needed it.
             KeyCode::Char('w') => {
+                self.push_display(&key);
                 self.stage = Stage::WindowPrefix;
                 Resolution::Pending(self.display.clone())
             }
             KeyCode::Char('k') => {
+                self.push_display(&key);
                 self.stage = Stage::ChordPrefix;
                 Resolution::Pending(self.display.clone())
             }
             KeyCode::Char('e') => self.emit(Action::ToggleTree),
+            // Before the unshifted `o`, which is jump-back: a shifted binding written after the
+            // plain one never matches, and that is exactly how five bindings shipped dead in 0.2.0.
+            KeyCode::Char('o') if key.shift => self.emit(Action::GotoSymbol),
             KeyCode::Char('o') => self.emit(Action::Jump { forward: false }),
+            KeyCode::Char('t') => self.emit(Action::GotoSymbolInProject),
             KeyCode::Char('i') => self.emit(Action::Jump { forward: true }),
             KeyCode::Char(',') => self.emit(Action::ToggleSettings),
             _ => Resolution::Unhandled,
@@ -399,7 +422,14 @@ impl Grammar {
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
+                // In both grammars. Vim's own answer is `:s/a/b/g`, which is a fine thing to know
+                // and a poor thing to be the only way — and the prompt it opens is the same one, so
+                // there is no second implementation to keep in step.
+                KeyCode::Char('h') => Some(Action::StartReplace),
+                // Shifted first, or the plain arm swallows it — see `feed_editor_chords`.
+                KeyCode::Char('o') if key.shift => Some(Action::GotoSymbol),
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
+                KeyCode::Char('t') => Some(Action::GotoSymbolInProject),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 KeyCode::Char(',') => Some(Action::ToggleSettings),
                 // The palette of every command works in both grammars. Vim's own vocabulary has no
@@ -471,6 +501,30 @@ impl Grammar {
         }
     }
 
+    /// Hands the key to whatever the grammar is already waiting for, or `None` if it is waiting
+    /// for nothing a second key completes.
+    ///
+    /// One definition, consulted twice: once above the global Ctrl bindings for the two prefixes a
+    /// modifier can still be held through, and once below for everything else. Writing the match
+    /// out at both sites is how the two would drift.
+    fn take_pending(&mut self, key: Key, extend: bool) -> Option<Resolution> {
+        Some(match self.stage {
+            Stage::Register => self.take_register(key),
+            Stage::FindChar { forward, till } => self.take_find_char(key, forward, till, extend),
+            Stage::ReplaceChar => self.take_replace_char(key),
+            Stage::ObjectKind { around } => self.take_object_kind(key, around),
+            Stage::GPrefix => self.take_g_prefix(key, extend),
+            Stage::BracketPrefix { forward } => self.take_bracket_prefix(key, forward),
+            Stage::WindowPrefix => self.take_window_prefix(key),
+            Stage::FoldPrefix => self.take_fold_prefix(key),
+            Stage::RecordRegister => self.take_macro_register(key, true),
+            Stage::ReplayRegister => self.take_macro_register(key, false),
+            Stage::ChordPrefix => self.take_chord(key),
+            // `Target` waits for a motion, which is the rest of `feed_builtin` rather than a taker.
+            Stage::Start | Stage::Target => return None,
+        })
+    }
+
     fn feed_builtin(&mut self, mode: Mode, key: Key) -> Resolution {
         let extend = mode == Mode::Visual;
 
@@ -488,6 +542,19 @@ impl Grammar {
             return Resolution::Pending(self.display.clone());
         }
 
+        // A chord entered *with ctrl held* claims its second key before the global Ctrl bindings
+        // below get a chance at it. A VSCode-style chord is typed without letting go of ctrl —
+        // that is what makes it a chord — so `ctrl-k ctrl-s` reached `editing_key` as a plain
+        // `ctrl-s`, saved the file and dropped the prefix, and `ctrl-k ctrl-o` jumped backwards
+        // instead of opening a folder. Only these two stages, because they are the only ones a
+        // modifier can still be down for; the rest wait on an ordinary character, and reordering
+        // them would change what an arrow key does mid-command for no reported reason.
+        if matches!(self.stage, Stage::WindowPrefix | Stage::ChordPrefix) {
+            if let Some(resolution) = self.take_pending(key, extend) {
+                return resolution;
+            }
+        }
+
         // Arrow keys and Ctrl bindings bypass the grammar, but must respect visual mode.
         if let Some(action) = self.editing_key(key) {
             let action = match (action, extend) {
@@ -497,31 +564,27 @@ impl Grammar {
             return self.emit(action);
         }
 
-        match self.stage {
-            Stage::Register => return self.take_register(key),
-            Stage::FindChar { forward, till } => {
-                return self.take_find_char(key, forward, till, extend);
-            }
-            Stage::ReplaceChar => return self.take_replace_char(key),
-            Stage::ObjectKind { around } => return self.take_object_kind(key, around),
-            Stage::GPrefix => return self.take_g_prefix(key, extend),
-            Stage::BracketPrefix { forward } => return self.take_bracket_prefix(key, forward),
-            Stage::WindowPrefix => return self.take_window_prefix(key),
-            Stage::FoldPrefix => return self.take_fold_prefix(key),
-            Stage::RecordRegister => return self.take_macro_register(key, true),
-            Stage::ReplayRegister => return self.take_macro_register(key, false),
-            Stage::ChordPrefix => return self.take_chord(key),
-            Stage::Start | Stage::Target => {}
+        if let Some(resolution) = self.take_pending(key, extend) {
+            return resolution;
         }
 
         // A Ctrl key the grammar does not know is *not* a character. Falling through here made
         // `ctrl-p` paste and `ctrl-b` move a word back, which only looked harmless because the
         // application intercepts both before the grammar sees them.
+        //
+        // Both of these clear first. They are only reached at `Start` or `Target`, but a count, a
+        // register or an operator can be live at either — and leaving one behind is invisible, so
+        // the next key acts on it. The application clears *its own* copy of the pending string on
+        // `Unhandled` (main.rs), which is what the statusline and the which-key popup read: the
+        // display went blank while the grammar was still holding `d3`, and the next `w` deleted
+        // three words.
         if key.ctrl || key.alt {
+            self.clear();
             return Resolution::Unhandled;
         }
 
         let KeyCode::Char(c) = key.code else {
+            self.clear();
             return Resolution::Unhandled;
         };
 
@@ -671,10 +734,12 @@ impl Grammar {
 
             'u' => self.emit(Action::Undo),
             'q' => {
+                self.push_display(&key);
                 self.stage = Stage::RecordRegister;
                 Resolution::Pending(self.display.clone())
             }
             '@' => {
+                self.push_display(&key);
                 self.stage = Stage::ReplayRegister;
                 Resolution::Pending(self.display.clone())
             }
@@ -694,6 +759,7 @@ impl Grammar {
             'z' => {
                 // A prefix, as in Vim. Soft wrap moves to `zw`: `za`/`zR`/`zM` are muscle memory
                 // worth matching, and a single-key `z` would make them unreachable.
+                self.push_display(&key);
                 self.stage = Stage::FoldPrefix;
                 Resolution::Pending(self.display.clone())
             }
@@ -747,7 +813,7 @@ impl Grammar {
             '}' => Motion::ParagraphForward,
             'G' => {
                 // `G` with a count goes to that line; without one, to the end of the file.
-                return Some(match self.count {
+                return Some(match self.target_line() {
                     Some(line) => Motion::ToLine(line.saturating_sub(1)),
                     None => Motion::FileEnd,
                 });
@@ -909,6 +975,10 @@ impl Grammar {
             'M' => self.emit(Action::FoldAll { close: true }),
             // vex's own: soft wrap has no Vim spelling to collide with.
             'w' => self.emit(Action::ToggleSoftWrap),
+            // Vim's, but eight columns a press rather than one — one is unusable on a screen 200
+            // columns wide, and the cheat sheet says which it is.
+            'h' => self.emit(Action::ScrollHorizontally { right: false }),
+            'l' => self.emit(Action::ScrollHorizontally { right: true }),
             _ => {
                 self.clear();
                 Resolution::Unhandled
@@ -951,7 +1021,7 @@ impl Grammar {
         match c {
             'g' => {
                 // `gg` goes to the first line, or to the count-th line if one was typed.
-                let motion = match self.count {
+                let motion = match self.target_line() {
                     Some(line) => Motion::ToLine(line.saturating_sub(1)),
                     None => Motion::FileStart,
                 };
@@ -980,6 +1050,8 @@ impl Grammar {
             // to `gA`'s neighbourhood as `g%` — the whole file, in the same spirit as `%`.
             'a' => self.emit(Action::CodeAction),
             'u' => self.emit(Action::FindReferences),
+            's' => self.emit(Action::GotoSymbol),
+            'S' => self.emit(Action::GotoSymbolInProject),
             'i' => self.emit(Action::ToggleInlayHints),
             'D' => self.emit(Action::ToggleDiagnosticsList),
             '%' => self.emit(Action::SelectAll),
@@ -1003,6 +1075,13 @@ impl Grammar {
         match c {
             // `]d` / `[d`, as LSP configurations spell it.
             'd' => self.emit(Action::NextDiagnostic { forward }),
+            // `]c` / `[c` is what Vim itself uses for the next change in a diff, and what every
+            // git-gutter plugin adopted from it.
+            'c' => self.emit(Action::GotoChange { forward }),
+            // `]C` for the destructive one: a shifted neighbour of the key that walks to it, so
+            // undoing the change you just stepped onto is one key away and not a key you can hit
+            // by accident while walking.
+            'C' => self.emit(Action::RevertHunk),
             _ => {
                 self.clear();
                 Resolution::Unhandled
@@ -1027,11 +1106,22 @@ fn function_key(key: Key) -> Option<Action> {
         return None;
     };
 
+    // ctrl-F4 closes the file, as it does in every tabbed application on Windows. `ctrl-w` is the
+    // other muscle memory for this and cannot have it: it is already the pane prefix, in both
+    // grammars. The tab's own close button is there for everyone who would guess neither.
+    if key.ctrl && number == 4 {
+        return Some(Action::CloseBuffer);
+    }
+
     Some(match (number, key.shift) {
         (1, _) => Action::ToggleHelp,
         (2, _) => Action::Rename,
         (3, false) => Action::RepeatSearch { forward: true },
         (3, true) => Action::RepeatSearch { forward: false },
+        // The two things you step through in a file: what is wrong with it, and what you changed.
+        // Neighbouring keys because they are the same gesture pointed at different marks.
+        (7, false) => Action::GotoChange { forward: true },
+        (7, true) => Action::GotoChange { forward: false },
         (8, false) => Action::NextDiagnostic { forward: true },
         (8, true) => Action::NextDiagnostic { forward: false },
         (10, false) => Action::ToggleMenu,

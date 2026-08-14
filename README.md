@@ -6,8 +6,9 @@ Vim's grammar if you want it, a conventional editor if you don't — and the sec
 editor, not the first with the modes taken out: `ctrl-d` selects the next occurrence, `alt-↑` moves a
 line, `ctrl-/` comments, double-click takes a word, alt-click adds a cursor, and copy and paste use
 the system clipboard. Tree-sitter highlighting, language servers, splits, a file tree and a git
-gutter. One rule is enforced above the others: **nothing unbounded ever runs on the UI thread**, which
-is why a keystroke costs the same in a 100,000-line file as in a ten-line one.
+gutter you can walk with `]c` and undo one change at a time with `]C`. One rule is enforced above
+the others: **nothing unbounded ever runs on the UI thread**, which is why a keystroke costs the
+same in a 100,000-line file as in a ten-line one.
 
 **You do not have to learn it first, and you do not have to use the keyboard at all.** There are
 buttons along the top — open, files, find, save, settings, commands, keys — a right-click menu with
@@ -116,8 +117,10 @@ conventional editor, not a modal one with the modes hidden:
 | `tab` · `shift-tab` | indent · outdent a selection |
 | `ctrl-backspace` | delete a word |
 | `F2` · `F12` · `F8` | rename · go to definition · next problem |
+| `F7` · `]c` | next change since the last commit |
 | double-click · triple-click | select the word · the line |
-| alt-click · ctrl-click | another cursor · go to the definition |
+| alt-click · alt-drag | another cursor · a rectangular selection |
+| ctrl-click | go to the definition |
 
 **With Vim keys on**, the grammar composes as you expect: `3dw`, `d2f)`, `ci"`, `"ayy`, `.` to repeat.
 Vertical motion follows *display* rows, so it moves through soft-wrapped lines the way they look.
@@ -154,7 +157,7 @@ or `h`/`l`; `w` writes the panel's values to `init.lua`.
 | `theme` | the five built in, cycled live |
 | `line_numbers` | absolute, relative (Vim's), or none — defaults to absolute without Vim keys |
 | `sticky_scroll` · `inlay_hints` | pin block heads · show inferred types |
-| `format_on_save` | reformat through the language server on every save |
+| `format_on_save` | reformat on every save — through the language server, or a formatter |
 | `autosave` | write the file a moment after you stop typing |
 
 Autosave waits for a **pause in typing** rather than running on a timer, so what reaches the disk is
@@ -212,8 +215,73 @@ most of what makes VSCode heavy. Extension *data* — themes, snippets, keybindi
 configuration — imports; anything whose value is its own JavaScript does not. §5a of `PLAN.md` has the
 full account.
 
-Language support is not extensions here: install `rust-analyzer`, `pyright-langserver`,
-`typescript-language-server` and vex drives them over LSP directly.
+Language support is not extensions here: install a language server and vex drives it over LSP
+directly. It looks for these, in this order, and starts the first one it finds:
+
+| Language | Servers vex looks for | Install |
+|---|---|---|
+| Rust | `rust-analyzer` | `rustup component add rust-analyzer` |
+| Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp` | `npm i -g pyright` |
+| TypeScript, JavaScript | `typescript-language-server` | `npm i -g typescript-language-server typescript` |
+| C, C++ | `clangd` | install LLVM |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| Lua | `lua-language-server` | your package manager |
+| Dart | `dart` | the Dart SDK |
+
+A language server is a separate program from the language itself — having Python installed does not
+give you a Python language server. When vex cannot find one it says which language it wanted and how
+to install it, rather than naming a binary you have never heard of. The **settings panel** lists
+every language above with where its server was found, or what would install it.
+
+What that buys you, beyond diagnostics and go-to-definition: `ctrl-space` completes with each
+suggestion's **type** beside it, in the order the server ranked them, and accepting one brings its
+**import** — completing `HashMap` in a file that has no `use std::collections::HashMap` adds that
+line as part of the same undo step. Snippet completions land expanded, so `println!` gives you
+`println!()` with the cursor already inside. `ctrl-shift-o` opens the file as a searchable outline,
+`ctrl-t` searches every symbol in the project.
+
+## Formatting
+
+`gf`, or `format_on_save`. A language server does it when it can — rust-analyzer runs rustfmt, gopls
+runs gofmt — and otherwise vex runs a formatter itself, which is what a plain JavaScript, CSS or
+Markdown project needs and what Python needs too, since pyright does not format at all.
+
+| Language | Formatters vex looks for |
+|---|---|
+| Rust | `rustfmt` |
+| JavaScript, TypeScript | `prettier`, `biome` |
+| Python | `ruff`, `black` |
+| C, C++ | `clang-format` |
+| Go | `gofmt` |
+| JSON, CSS, HTML, Markdown, YAML | `prettier` |
+
+Or name your own — the same shape as `vex.server`:
+
+```lua
+vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+vex.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
+```
+
+It runs on a worker thread, from the project root so it finds your `.prettierrc` or
+`pyproject.toml`, and text goes in on stdin and comes back on stdout — never the path, because a
+formatter handed the file would rewrite it behind a buffer you have unsaved changes in. A result
+computed against text you have since typed into is discarded rather than merged, and only the part
+that actually changed is replaced, so the cursor stays where you left it. The settings panel lists
+what was found.
+
+**Naming your own.** The table above is a default, not a limit:
+
+```lua
+-- A project's own virtualenv. Relative paths resolve against the project root.
+vex.server("python", { command = ".venv/bin/pylsp" })
+
+-- A language vex has never heard of has to say which files it serves.
+vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+```
+
+Yours is tried **first**; vex's own list stays behind it, so naming a venv does not cost you the
+fallback when that venv is not there. A command containing a slash is a path rather than a name to
+look for on `PATH`, and `~/` means your home directory.
 
 ## Where files live
 
@@ -233,7 +301,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 567 tests
+cargo test --workspace                      # 671 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

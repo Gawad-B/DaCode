@@ -3,6 +3,12 @@
 //! The design puts measured frame time in the statusline against a 16.6ms budget, and that is
 //! the right instinct: a performance target you cannot see is a target you will lose. This is
 //! infrastructure, not decoration — the number has to be real from the first frame.
+//!
+//! **It brackets the whole frame**: building the [`crate::Frame`] *and* submitting it. It used to
+//! start inside `Renderer::render`, which excluded the build — the half this project has optimised
+//! hardest, where the sidebar walking 512 rows to compute one coordinate lived, and the half every
+//! remaining performance defect lands in. A budget that cannot see the work is not a budget, and
+//! the number it showed was mostly a vsync wait nobody controls.
 
 use std::time::{Duration, Instant};
 use vex_theme::FRAME_BUDGET_MS;

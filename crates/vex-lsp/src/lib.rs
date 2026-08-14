@@ -20,54 +20,324 @@ pub mod client;
 pub mod position;
 pub mod transport;
 
-pub use client::{CodeActionItem, Diagnostics, LspClient, Pending, ServerEvent, State};
+use std::path::{Path, PathBuf};
+
+pub use client::{
+    CodeActionItem, CompletionItem, Diagnostics, LspClient, Pending, ServerEvent, State, Symbol,
+    symbols_from,
+};
 /// Re-exported so consumers can name severities and ranges without depending on the crate directly.
 pub use lsp_types;
 pub use position::{from_lsp, path_to_uri, range_from_lsp, range_to_lsp, to_lsp, uri_to_path};
 
 /// Which server to run for a language, and what to call the language on the wire.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Owned rather than `&'static str`, which it used to be, because a server named in `init.lua` is
+/// not static and there is no useful way to pretend otherwise. The cost is an allocation per
+/// lookup, paid when a buffer is opened rather than per frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSpec {
-    pub program: &'static str,
-    pub args: &'static [&'static str],
+    pub program: String,
+    pub args: Vec<String>,
     /// The protocol's `languageId`.
-    pub language_id: &'static str,
+    pub language_id: String,
+    /// What the language is called in a sentence: "Python", not "py".
+    ///
+    /// The statusline used to say `pyright-langserver not installed`, which names a program most
+    /// people have never heard of, does not say it is a *Python* server, does not say it is a
+    /// separate thing from the Python interpreter, and offers no way forward. Someone with Python
+    /// installed reads that as "vex cannot see my Python", and they are not being unreasonable.
+    pub language: String,
+    /// One line that installs it, or empty for a server `init.lua` named — nobody can be told how
+    /// to install a program only they know about, and the useful message there is a different one.
+    pub install: String,
+    /// Whether `init.lua` asked for this one rather than vex knowing about it.
+    pub configured: bool,
 }
 
-/// The servers vex knows how to start, by file extension.
+/// One server vex ships knowledge of: a program, its arguments, and the line that installs it.
+#[derive(Debug, Clone, Copy)]
+struct Builtin {
+    program: &'static str,
+    args: &'static [&'static str],
+    install: &'static str,
+}
+
+const fn builtin(
+    program: &'static str,
+    args: &'static [&'static str],
+    install: &'static str,
+) -> Builtin {
+    Builtin {
+        program,
+        args,
+        install,
+    }
+}
+
+/// A language vex knows about: what its files are called, what the protocol calls it, and what can
+/// serve it.
 ///
-/// These are the languages from the plan. A server that is not installed is reported at startup
-/// rather than silently skipped, because "no diagnostics" and "no server" look identical otherwise.
-pub fn server_for(path: &str) -> Option<ServerSpec> {
-    let extension = path.rsplit('.').next()?;
-    Some(match extension {
-        "rs" => ServerSpec {
-            program: "rust-analyzer",
-            args: &[],
-            language_id: "rust",
+/// The table is pivoted around the **language** rather than the program because that is what config
+/// keys off. `vex.server("python", …)` names a language, and matching that to a file needs the
+/// extension list — which used to exist only as arms of a `match`, reachable by nothing.
+#[derive(Debug, Clone, Copy)]
+pub struct Language {
+    /// What it is called in a sentence: "Python", not "py".
+    pub name: &'static str,
+    /// The protocol's `languageId`, and the name `vex.server` uses.
+    pub id: &'static str,
+    /// Without the dot.
+    pub extensions: &'static [&'static str],
+    servers: &'static [Builtin],
+}
+
+impl Language {
+    /// Every server vex would try for this language, best first.
+    pub fn specs(&self) -> Vec<ServerSpec> {
+        self.servers
+            .iter()
+            .map(|server| ServerSpec {
+                program: server.program.to_string(),
+                args: server.args.iter().map(|arg| (*arg).to_string()).collect(),
+                language_id: self.id.to_string(),
+                language: self.name.to_string(),
+                install: server.install.to_string(),
+                configured: false,
+            })
+            .collect()
+    }
+
+    /// The programs vex would look for, for a message that has to say what it tried.
+    pub fn programs(&self) -> Vec<&'static str> {
+        self.servers.iter().map(|server| server.program).collect()
+    }
+
+    /// The line that installs the first choice.
+    pub fn install(&self) -> &'static str {
+        self.servers.first().map(|s| s.install).unwrap_or_default()
+    }
+}
+
+/// Every language vex knows a server for.
+///
+/// More than one server per language where there genuinely is more than one: "the Python server" is
+/// not a single program — pyright comes from npm and pylsp from pip — and a machine has whichever
+/// its owner happened to install. Offering only the first and reporting it missing is how an editor
+/// tells someone with a perfectly good language server that it cannot find one.
+pub const LANGUAGES: [Language; 7] = [
+    Language {
+        name: "Rust",
+        id: "rust",
+        extensions: &["rs"],
+        servers: &[builtin(
+            "rust-analyzer",
+            &[],
+            "rustup component add rust-analyzer",
+        )],
+    },
+    Language {
+        name: "TypeScript",
+        id: "typescript",
+        extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
+        servers: &[builtin(
+            "typescript-language-server",
+            &["--stdio"],
+            "npm i -g typescript-language-server typescript",
+        )],
+    },
+    Language {
+        name: "Python",
+        id: "python",
+        extensions: &["py", "pyi"],
+        servers: &[
+            builtin("pyright-langserver", &["--stdio"], "npm i -g pyright"),
+            builtin(
+                "basedpyright-langserver",
+                &["--stdio"],
+                "pip install basedpyright",
+            ),
+            builtin("pylsp", &[], "pip install python-lsp-server"),
+        ],
+    },
+    Language {
+        name: "C and C++",
+        id: "cpp",
+        extensions: &["c", "h", "cpp", "hpp", "cc", "cxx", "hh"],
+        servers: &[builtin(
+            "clangd",
+            &[],
+            "install LLVM, or `apt install clangd`",
+        )],
+    },
+    Language {
+        name: "Go",
+        id: "go",
+        extensions: &["go"],
+        servers: &[builtin(
+            "gopls",
+            &[],
+            "go install golang.org/x/tools/gopls@latest",
+        )],
+    },
+    Language {
+        name: "Lua",
+        id: "lua",
+        extensions: &["lua"],
+        servers: &[builtin(
+            "lua-language-server",
+            &[],
+            "install lua-language-server from your package manager",
+        )],
+    },
+    Language {
+        name: "Dart",
+        id: "dart",
+        extensions: &["dart"],
+        servers: &[builtin(
+            "dart",
+            &["language-server", "--protocol=lsp"],
+            "install the Dart SDK",
+        )],
+    },
+];
+
+/// A file's extension, without the dot, or empty when it has none.
+///
+/// The last component only, and a leading dot does not count: a file named `.gitignore` has no
+/// extension, and the old `rsplit('.')` said its extension was `gitignore`. Harmless while every
+/// comparison was against a fixed list, and not harmless once config can name extensions.
+fn extension_of(path: &str) -> &str {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => extension,
+        _ => "",
+    }
+}
+
+/// The language a file is written in, as far as vex knows.
+pub fn language_for(path: &str) -> Option<&'static Language> {
+    let extension = extension_of(path);
+    if extension.is_empty() {
+        return None;
+    }
+    LANGUAGES
+        .iter()
+        .find(|language| language.extensions.contains(&extension))
+}
+
+/// A language by the name `vex.server` uses.
+pub fn language_named(id: &str) -> Option<&'static Language> {
+    let id = id.trim().to_ascii_lowercase();
+    LANGUAGES.iter().find(|language| language.id == id)
+}
+
+/// A server `init.lua` asked for, and the files it serves.
+///
+/// Kept beside the spec rather than inside it because the extension list is how a *file* reaches
+/// this entry, and the built-in table already answers that question from [`Language`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Configured {
+    pub spec: ServerSpec,
+    /// Without the dot.
+    pub extensions: Vec<String>,
+}
+
+/// Turns what config said into a spec, or explains what is wrong with it.
+///
+/// The language name is looked up in vex's own table, so `vex.server("python", …)` inherits both the
+/// protocol's `languageId` and the extension list without the user restating them. A language vex has
+/// never heard of is allowed — it simply has to say which files it serves, because a server that can
+/// never match a file is a line of config that silently does nothing, which is the worst outcome
+/// available.
+pub fn configure(
+    language: &str,
+    command: &str,
+    args: &[String],
+    extensions: &[String],
+) -> Result<Configured, String> {
+    let known = language_named(language);
+    let command = command.trim();
+    if command.is_empty() {
+        return Err(format!(
+            "vex.server(\"{language}\", …) needs a command — the program that speaks LSP"
+        ));
+    }
+
+    let extensions: Vec<String> = if extensions.is_empty() {
+        match known {
+            Some(known) => known.extensions.iter().map(|e| (*e).to_string()).collect(),
+            None => {
+                return Err(format!(
+                    "vex.server(\"{language}\", …): vex does not know a language called \
+                     `{language}`, so say which files it serves — \
+                     extensions = {{ \"{language}\" }}"
+                ));
+            }
+        }
+    } else {
+        extensions
+            .iter()
+            .map(|extension| {
+                extension
+                    .trim()
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase()
+            })
+            .filter(|extension| !extension.is_empty())
+            .collect()
+    };
+
+    if extensions.is_empty() {
+        return Err(format!(
+            "vex.server(\"{language}\", …): the extensions list is empty, so nothing would ever \
+             use it"
+        ));
+    }
+
+    Ok(Configured {
+        spec: ServerSpec {
+            program: command.to_string(),
+            args: args.to_vec(),
+            // An unknown language's id is what the user typed, which is what a server for it will
+            // expect: they are the only two parties who know the name.
+            language_id: known.map(|k| k.id).unwrap_or(language).to_string(),
+            language: known.map(|k| k.name).unwrap_or(language).to_string(),
+            install: String::new(),
+            configured: true,
         },
-        "ts" | "tsx" | "js" | "jsx" => ServerSpec {
-            program: "typescript-language-server",
-            args: &["--stdio"],
-            language_id: "typescript",
-        },
-        "py" => ServerSpec {
-            program: "pyright-langserver",
-            args: &["--stdio"],
-            language_id: "python",
-        },
-        "c" | "h" | "cpp" | "hpp" | "cc" => ServerSpec {
-            program: "clangd",
-            args: &[],
-            language_id: "cpp",
-        },
-        "dart" => ServerSpec {
-            program: "dart",
-            args: &["language-server", "--protocol=lsp"],
-            language_id: "dart",
-        },
-        _ => return None,
+        extensions,
     })
+}
+
+/// The servers vex would try for a file, best first: what config asked for, then what vex knows.
+///
+/// Configured entries go **first** rather than replacing the built-ins, so naming a server for a
+/// venv does not also throw away the fallback when that venv is not there. The statusline names
+/// whichever one actually started, so the order is visible rather than a guess.
+pub fn servers_for(path: &str, configured: &[Configured]) -> Vec<ServerSpec> {
+    let extension = extension_of(path);
+    if extension.is_empty() {
+        return Vec::new();
+    }
+
+    let mut specs: Vec<ServerSpec> = configured
+        .iter()
+        .filter(|entry| entry.extensions.iter().any(|known| known == extension))
+        .map(|entry| entry.spec.clone())
+        .collect();
+
+    if let Some(language) = language_for(path) {
+        specs.extend(language.specs());
+    }
+    specs
+}
+
+/// The first server vex would try for a file.
+///
+/// Kept for callers that only want to know whether the language is supported at all.
+pub fn server_for(path: &str, configured: &[Configured]) -> Option<ServerSpec> {
+    servers_for(path, configured).into_iter().next()
 }
 
 /// Whether a program exists on `PATH`.
@@ -92,10 +362,12 @@ pub fn server_for(path: &str) -> Option<ServerSpec> {
 /// later when the server it launched exits. Used by tests to decide whether there is a server to test
 /// against at all.
 pub fn can_start(program: &str) -> bool {
-    if !is_installed(program) {
+    let Some(resolved) = resolve(program) else {
         return false;
-    }
-    std::process::Command::new(program)
+    };
+    let mut command = std::process::Command::new(resolved);
+    client::no_window(&mut command);
+    command
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -104,29 +376,138 @@ pub fn can_start(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn is_installed(program: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
+/// Where a program is on `PATH`, if it is there at all.
+///
+/// Returns the **path**, not a yes-or-no, and that is the whole point. The old check honoured
+/// `PATHEXT` and so found `pyright-langserver.cmd`; the spawn beside it did `Command::new` on the
+/// bare name, and Rust's Windows resolver appends only `.exe` — `PATHEXT` is a shell concept it
+/// deliberately does not implement. So the two disagreed, and every language server that npm
+/// installs as a `.cmd` shim — pyright and typescript-language-server, the two most common servers
+/// in the world — passed the check and then failed to spawn. Handing the resolved path to
+/// `Command::new` fixes both halves: std detects a `.bat`/`.cmd` and routes it through `cmd.exe`
+/// itself, with the argument escaping that CVE-2024-24576 added. Wrapping it in `cmd /c` by hand
+/// would reopen exactly that hole.
+///
+/// Takes its environment as parameters so the Windows rules have tests that run anywhere — the same
+/// reason `paths::resolve` and `position::encode_uri` do.
+pub fn resolve_in(
+    program: &str,
+    path: &std::ffi::OsStr,
+    pathext: Option<&str>,
+    windows: bool,
+) -> Option<PathBuf> {
+    let extensions = runnable_extensions(pathext, windows);
 
-    // On Windows the file is `name.exe`, `name.cmd` or `name.bat`, and several language servers ship
-    // as `.cmd` shims. A bare-name check finds none of them, which would report every server as
-    // missing while they were all installed.
-    let extensions: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
-            .split(';')
-            .filter(|extension| !extension.is_empty())
-            .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    std::env::split_paths(&path).any(|directory| {
-        directory.join(program).is_file()
-            || extensions
-                .iter()
-                .any(|extension| directory.join(format!("{program}.{extension}")).is_file())
+    std::env::split_paths(path).find_map(|directory| {
+        let bare = directory.join(program);
+        if bare.is_file() && (!windows || bare.extension().is_some()) {
+            return Some(bare);
+        }
+        extensions
+            .iter()
+            .map(|extension| directory.join(format!("{program}.{extension}")))
+            .find(|candidate| candidate.is_file())
     })
+}
+
+/// The `PATHEXT` entries that name something actually runnable.
+///
+/// Filtered rather than taken whole: a real machine's `PATHEXT` includes `.JS`, and a stray
+/// `pyright-langserver.js` would satisfy the check and then not run.
+fn runnable_extensions(pathext: Option<&str>, windows: bool) -> Vec<String> {
+    const RUNNABLE: [&str; 4] = ["exe", "cmd", "bat", "com"];
+
+    if !windows {
+        return Vec::new();
+    }
+    pathext
+        .unwrap_or(".EXE;.CMD;.BAT;.COM")
+        .split(';')
+        .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
+        .filter(|extension| RUNNABLE.contains(&extension.as_str()))
+        .collect()
+}
+
+/// A path as written, or the same path with an executable extension Windows would have added.
+fn executable_at(base: PathBuf, extensions: &[String]) -> Option<PathBuf> {
+    if base.is_file() {
+        return Some(base);
+    }
+    // `.venv/bin/pylsp` is what someone writes on any platform; on Windows the file is
+    // `pylsp.exe`, and refusing the path they wrote because of a suffix would be pedantry with a
+    // broken editor attached.
+    extensions.iter().find_map(|extension| {
+        let mut candidate = base.clone().into_os_string();
+        candidate.push(".");
+        candidate.push(extension);
+        let candidate = PathBuf::from(candidate);
+        candidate.is_file().then_some(candidate)
+    })
+}
+
+/// Where a program named by config is: a `PATH` lookup, or a path.
+///
+/// **A command containing a separator is a path, not a name.** That is the whole reason this exists
+/// beside [`resolve_in`]: `command = ".venv/bin/pylsp"` names one project's interpreter's server,
+/// and searching `PATH` for a string containing a slash finds nothing, ever. A leading `~/` is
+/// expanded for the same reason — it is what people write, and silently not finding it is exactly
+/// the failure this feature was added to end.
+///
+/// A relative path is resolved against the **project root** first, not the process's working
+/// directory: for a windowed editor that directory is wherever the desktop happened to launch it
+/// from, and never what the user meant by `.venv`.
+///
+/// Takes its environment as parameters for the reason every platform-shaped function here does —
+/// the Windows rules then have tests that run on Linux.
+pub fn resolve_command_in(
+    program: &str,
+    root: &Path,
+    home: Option<&Path>,
+    path: &std::ffi::OsStr,
+    pathext: Option<&str>,
+    windows: bool,
+) -> Option<PathBuf> {
+    let is_path = program.contains('/') || (windows && program.contains('\\'));
+    if !is_path && !program.starts_with('~') {
+        return resolve_in(program, path, pathext, windows);
+    }
+
+    let extensions = runnable_extensions(pathext, windows);
+    if let Some(rest) = program
+        .strip_prefix("~/")
+        .or_else(|| program.strip_prefix("~\\"))
+    {
+        return executable_at(home?.join(rest), &extensions);
+    }
+
+    let direct = PathBuf::from(program);
+    if direct.is_absolute() {
+        return executable_at(direct, &extensions);
+    }
+    executable_at(root.join(program), &extensions).or_else(|| executable_at(direct, &extensions))
+}
+
+/// [`resolve_in`] against this process's environment.
+pub fn resolve(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let pathext = std::env::var("PATHEXT").ok();
+    resolve_in(program, &path, pathext.as_deref(), cfg!(windows))
+}
+
+/// [`resolve_command_in`] against this process's environment.
+pub fn resolve_command(program: &str, root: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").ok();
+    resolve_command_in(
+        program,
+        root,
+        home,
+        &path,
+        pathext.as_deref(),
+        cfg!(windows),
+    )
+}
+
+pub fn is_installed(program: &str) -> bool {
+    resolve(program).is_some()
 }

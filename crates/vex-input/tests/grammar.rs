@@ -536,6 +536,10 @@ proptest! {
             prop_oneof![
                 Just('d'), Just('c'), Just('y'), Just('2'), Just('w'),
                 Just('i'), Just('a'), Just('"'), Just('f'), Just('g'),
+                // The three prefixes that set a stage: they returned `Pending` with an empty
+                // string, which is exactly the state this property says cannot exist, and the
+                // alphabet could not reach them to say so.
+                Just('q'), Just('@'), Just('z'),
             ],
             1..12,
         ),
@@ -849,4 +853,163 @@ fn the_modal_grammar_is_unchanged_when_it_is_on() {
             register: None
         }]
     );
+}
+
+#[test]
+fn a_count_after_an_operator_still_names_a_line_for_g() {
+    // `d5G` deletes to line five. It deleted to the **end of the file** instead: a count typed
+    // after an operator lands in `operator_count`, and `G` only read `count`, so it saw none and
+    // fell through to "the whole rest of the document". The same for `d5gg` upwards. Both are
+    // ordinary Vim, and both silently destroyed far more than was asked for.
+    for keys in ["5G", "d5G", "c5G", "y5G"] {
+        let action = normal(keys);
+        let motion = match &action {
+            Action::Move { motion, .. } | Action::Extend { motion, .. } => *motion,
+            Action::Apply {
+                target: Target::Motion { motion, .. },
+                ..
+            } => *motion,
+            other => panic!("{keys} resolved to {other:?}"),
+        };
+        assert_eq!(
+            motion,
+            Motion::ToLine(4),
+            "{keys} means line five, not the end of the file"
+        );
+    }
+
+    for keys in ["5gg", "d5gg"] {
+        let action = normal(keys);
+        let motion = match &action {
+            Action::Move { motion, .. } => *motion,
+            Action::Apply {
+                target: Target::Motion { motion, .. },
+                ..
+            } => *motion,
+            other => panic!("{keys} resolved to {other:?}"),
+        };
+        assert_eq!(motion, Motion::ToLine(4), "{keys} means line five");
+    }
+}
+
+#[test]
+fn g_and_gg_with_no_count_at_all_still_reach_the_ends() {
+    // The distinction the fix turns on: "no count" is not "a count of one". Losing it would send
+    // `G` to line one instead of to the last line, which is a worse defect than the one being
+    // fixed.
+    assert!(matches!(
+        normal("G"),
+        Action::Move {
+            motion: Motion::FileEnd,
+            ..
+        }
+    ));
+    assert!(matches!(
+        normal("gg"),
+        Action::Move {
+            motion: Motion::FileStart,
+            ..
+        }
+    ));
+    assert_eq!(
+        normal("dG"),
+        Action::Apply {
+            operator: Operator::Delete,
+            target: Target::Motion {
+                motion: Motion::FileEnd,
+                count: 1
+            },
+            register: None,
+        }
+    );
+}
+
+// ---- what the machine leaves behind ----------------------------------------------------------
+
+#[test]
+fn a_key_the_grammar_does_not_know_clears_the_prefix_whatever_shape_it_is() {
+    // `an_unbound_key_clears_the_prefix` only ever fed a `Char`, which hits the one arm that was
+    // already clearing. Two others were not: a ctrl or alt key, and any *named* key — PageUp,
+    // Delete, F5. Both returned `Unhandled` with the count still live.
+    //
+    // What makes it worse than it sounds is that the leak is invisible. The application clears its
+    // own copy of the pending string on `Unhandled`, and that copy is what the statusline and the
+    // which-key popup read — so the display went blank while the grammar was still holding `d3`,
+    // and the next `w` deleted three words with nothing on screen to explain why.
+    for stray in [
+        Key::ctrl('p'),
+        Key::named(KeyCode::PageDown),
+        Key::named(KeyCode::Function(5)),
+    ] {
+        let mut grammar = Grammar::new();
+        feed(&mut grammar, Mode::Normal, "d3");
+        assert!(!grammar.is_idle(), "the operator and count are live");
+
+        assert_eq!(grammar.feed(Mode::Normal, stray), Resolution::Unhandled);
+        assert!(
+            grammar.is_idle(),
+            "{stray:?} left the grammar holding a prefix the user cannot see"
+        );
+    }
+}
+
+#[test]
+fn a_chord_typed_with_ctrl_held_completes_instead_of_firing_a_global_binding() {
+    // A VSCode-style chord is typed without letting go of ctrl — that is what makes it a chord.
+    // The second key reached the global Ctrl bindings first, so `ctrl-k ctrl-s` saved the file and
+    // silently dropped the prefix, and `ctrl-k ctrl-o` jumped backwards instead of opening a
+    // folder. Both spellings must reach the same place.
+    for second in [Key::char('s'), Key::ctrl('s')] {
+        let mut grammar = Grammar::new();
+        assert!(matches!(
+            grammar.feed(Mode::Normal, Key::ctrl('k')),
+            Resolution::Pending(_)
+        ));
+        assert_eq!(
+            grammar.feed(Mode::Normal, second),
+            Resolution::Action(Action::ToggleSettings),
+            "the chord must win over ctrl-s meaning save"
+        );
+    }
+
+    // And the same for the window prefix, where `ctrl-w ctrl-q` is the one people type.
+    let mut grammar = Grammar::new();
+    grammar.feed(Mode::Normal, Key::ctrl('w'));
+    assert_eq!(
+        grammar.feed(Mode::Normal, Key::ctrl('q')),
+        Resolution::Action(Action::ClosePane),
+        "ctrl-w ctrl-q closes the pane rather than quitting the editor"
+    );
+}
+
+#[test]
+fn every_prefix_says_on_screen_that_it_is_waiting() {
+    // `Pending` with an empty string is a machine waiting for a key while telling the user nothing.
+    // Five prefixes did it: `q` and `@` and `z` in the modal grammar, and `ctrl-w` and `ctrl-k`
+    // with the grammar off — which are *only* reachable that way, so the popup that exists to teach
+    // them never appeared for the people who needed it most.
+    let mut grammar = Grammar::new();
+    for key in ['q', '@', 'z'] {
+        assert!(
+            matches!(grammar.feed(Mode::Normal, Key::char(key)), Resolution::Pending(shown) if !shown.is_empty()),
+            "`{key}` waits for a second key without saying so"
+        );
+        assert!(!grammar.pending().is_empty());
+        grammar.feed(Mode::Normal, Key::named(KeyCode::Escape));
+    }
+
+    let mut grammar = flat();
+    for key in ['w', 'k'] {
+        assert!(
+            matches!(grammar.feed(Mode::Normal, Key::ctrl(key)), Resolution::Pending(shown) if !shown.is_empty()),
+            "`ctrl-{key}` waits for a second key without saying so"
+        );
+        // Against the table rather than a literal: what the popup can offer continuations for is
+        // the thing that matters, and a hand-written string would drift from it.
+        assert!(
+            !vex_input::commands::continuations(grammar.pending(), false).is_empty(),
+            "`ctrl-{key}` shows a prefix the which-key popup has nothing to say about"
+        );
+        grammar.feed(Mode::Normal, Key::named(KeyCode::Escape));
+    }
 }

@@ -18,11 +18,12 @@
 //! describes.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use vex_buffer::{Document, EditKind};
 use vex_lsp::lsp_types::{TextEdit, Uri, WorkspaceEdit};
 use vex_lsp::position;
-use vex_text::{Edit, Text, Transaction, Version};
+use vex_text::{CharOffset, Edit, Text, Transaction, Version};
 
 /// What a set of edits changed, for reporting to the user.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -283,6 +284,72 @@ fn text_edit_of(
 mod tests {
     use super::*;
     use vex_lsp::lsp_types::{Position, Range};
+
+    #[test]
+    fn replacing_every_match_is_one_undo_and_the_offsets_do_not_drift() {
+        // The failure this prevents: applying matches one at a time, in order, so the second edit is
+        // expressed against text the first already moved. A longer replacement than what it replaces
+        // is what makes it visible — with equal lengths the bug hides.
+        let mut document = Document::from_str("one two one three one\n");
+        let matches = vex_buffer::find_all(
+            document.text(),
+            "one",
+            &vex_buffer::SearchOptions::default(),
+        );
+        assert_eq!(matches.len(), 3);
+
+        let count = replace_matches(&mut document, &matches, "ONE-LONGER").unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            document.text().to_string(),
+            "ONE-LONGER two ONE-LONGER three ONE-LONGER\n"
+        );
+
+        document.undo();
+        assert_eq!(
+            document.text().to_string(),
+            "one two one three one\n",
+            "forty replacements are one intent, so one undo puts all of them back"
+        );
+    }
+
+    #[test]
+    fn a_replacement_shorter_than_the_match_also_lands() {
+        let mut document = Document::from_str("aaa bbb aaa\n");
+        let matches = vex_buffer::find_all(
+            document.text(),
+            "aaa",
+            &vex_buffer::SearchOptions::default(),
+        );
+        replace_matches(&mut document, &matches, "x").unwrap();
+        assert_eq!(document.text().to_string(), "x bbb x\n");
+    }
+
+    #[test]
+    fn replace_one_acts_on_the_match_you_are_standing_in() {
+        // And on the next one when the caret is between matches, and wraps at the end — the same
+        // rule stepping already follows, because replacing your way down a file must not stop dead
+        // with matches still above the cursor.
+        let text = vex_text::Text::from_str("one two one three one\n");
+        let matches = vex_buffer::find_all(&text, "one", &vex_buffer::SearchOptions::default());
+
+        assert_eq!(
+            target_at(&matches, CharOffset(1)).map(|range| range.start),
+            Some(CharOffset(0)),
+            "inside a match is that match"
+        );
+        assert_eq!(
+            target_at(&matches, CharOffset(4)).map(|range| range.start),
+            Some(CharOffset(8)),
+            "between matches is the next one"
+        );
+        assert_eq!(
+            target_at(&matches, CharOffset(21)).map(|range| range.start),
+            Some(CharOffset(0)),
+            "past the last one wraps to the first"
+        );
+        assert_eq!(target_at(&[], CharOffset(0)), None);
+    }
 
     /// A URI for a path, through the same conversion the client uses — so the tests exercise the
     /// round trip rather than a second implementation of it.
@@ -571,6 +638,162 @@ mod tests {
 ///
 /// The open buffer goes through its undo history; other files are written atomically and are not
 /// undoable — the same limitation a cross-file rename has, and reported the same way.
+/// Replaces the given match ranges in the open buffer, as one undoable change.
+///
+/// Built from ranges the caller already has — the same ones `vex_buffer::find_all` produced for the
+/// search box and the highlighting — rather than re-scanning with a different matcher. `find_all` is
+/// smart-case and has a whole-document path for a query spanning a newline; a second search here
+/// would replace a different set of matches from the ones highlighted, which is the worst possible
+/// answer for an operation this destructive.
+///
+/// One `Transaction`, so `Transaction::apply` carries the running delta and a replacement longer or
+/// shorter than what it replaces cannot disturb the matches after it. `EditKind::Discrete` because
+/// replacing forty occurrences is one *intent*, however many edits it makes: undo must put all of
+/// them back at once.
+pub fn replace_matches(
+    document: &mut Document,
+    matches: &[Range<CharOffset>],
+    replacement: &str,
+) -> Result<usize, EditError> {
+    if matches.is_empty() {
+        return Ok(0);
+    }
+
+    let edits: Vec<Edit> = matches
+        .iter()
+        .map(|range| Edit::replace(range.clone(), replacement))
+        .collect();
+
+    let count = edits.len();
+    let transaction = Transaction::new(edits);
+    // Validated first, so a bad set changes nothing at all.
+    transaction
+        .validate(document.text())
+        .map_err(|err| EditError::Invalid(err.to_string()))?;
+    document
+        .apply(transaction, EditKind::Discrete)
+        .map_err(|err| EditError::Invalid(err.to_string()))?;
+    Ok(count)
+}
+
+/// Everything accepting a completion needs to change, worked out but not yet applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Accepted {
+    /// The word replaced, plus whatever the server wanted elsewhere — one transaction, one undo.
+    pub transaction: Transaction,
+    /// The snippet's tab stops, when the suggestion carried placeholders.
+    pub expansion: Option<crate::snippet::Expansion>,
+    /// Where the inserted text starts once the other edits have shifted it, for those tab stops.
+    pub at: CharOffset,
+    /// How many of the server's other edits were taken. Nearly always an import, or none.
+    pub imports: usize,
+    /// The server wanted an import and it could not be trusted, so the user has to be told.
+    pub imports_refused: bool,
+}
+
+/// Works out what accepting a suggestion does to the buffer.
+///
+/// **One transaction, one undo step.** Accepting `HashMap` inserts the name *and* adds
+/// `use std::collections::HashMap;` at the top of the file; undoing has to take both, because an
+/// import left behind by an undone completion is a compile error the user did not write.
+///
+/// The server's own `textEdit` range is deliberately not used — it is in the coordinates of the
+/// version the request was made against, and by the time a suggestion is accepted the user has
+/// typed the rest of the word by definition. `anchor..caret` is the same span for every item that
+/// survived the popup's own prefix filter, and it cannot be stale.
+///
+/// `imports_ok` is the caller's answer to whether the *other* edits can still be trusted; see
+/// `completion::Completion::imports_are_current` for what that question means.
+pub fn accept_completion(
+    text: &Text,
+    offer: &vex_lsp::CompletionItem,
+    anchor: CharOffset,
+    caret: CharOffset,
+    imports_ok: bool,
+) -> Accepted {
+    // A snippet goes through the same expander `tab` uses, so `println!($0)` lands as `println!()`
+    // with the cursor between the parentheses rather than as a literal `$0` on screen.
+    let indent: String = {
+        let line = text.char_to_line(anchor);
+        let start = text.point_to_char(vex_text::Point::new(line, 0));
+        text.slice_to_string(start..anchor)
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect()
+    };
+    let expansion = offer
+        .snippet
+        .then(|| crate::snippet::expand(&offer.insert, &indent));
+    let inserted = match &expansion {
+        Some(expansion) => expansion.text.clone(),
+        None => offer.insert.clone(),
+    };
+
+    let mut edits = vec![Edit::replace(anchor..caret, inserted)];
+    let mut imports = 0;
+    // How far the edits before the word push it along, so the snippet's stops land where the text
+    // actually ended up rather than where it would have without an import.
+    let mut shift: isize = 0;
+
+    if imports_ok {
+        // Every span already taken, so a second edit covering the same text can be dropped rather
+        // than rejected. A transaction whose edits overlap fails validation *whole*, so one
+        // malformed pair from a server would silently cost the user the completion itself — the
+        // name would not be inserted either.
+        let mut taken: Vec<std::ops::Range<CharOffset>> = vec![anchor..caret];
+
+        for edit in &offer.additional {
+            let range = position::range_from_lsp(text, edit.range);
+            // Never one that overlaps the word being replaced, or one already accepted: two edits
+            // over one span is not something a transaction can resolve, and no server meant it.
+            if taken
+                .iter()
+                .any(|held| range.end > held.start && range.start < held.end)
+            {
+                continue;
+            }
+            // A zero-width insertion at a point another edit already inserts at is the one overlap
+            // the check above cannot see, since neither range contains the other.
+            if range.start == range.end && taken.iter().any(|held| held.start == range.start) {
+                continue;
+            }
+            taken.push(range.start..range.end);
+            if range.end <= anchor {
+                shift += edit.new_text.chars().count() as isize
+                    - (range.end.get() - range.start.get()) as isize;
+            }
+            edits.push(Edit::replace(range.start..range.end, edit.new_text.clone()));
+            imports += 1;
+        }
+    }
+
+    // Ascending, which a transaction requires: an import goes in at the top of the file and the
+    // word being completed is further down, so they are built in the opposite order to the one
+    // they have to be applied in.
+    edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
+
+    Accepted {
+        transaction: Transaction::new(edits),
+        expansion,
+        at: CharOffset(anchor.get().saturating_add_signed(shift)),
+        imports,
+        imports_refused: !imports_ok && !offer.additional.is_empty(),
+    }
+}
+
+/// Which match a replace-one should act on: the one the caret is inside, else the next one after it.
+///
+/// Wrapping, like `find_next`, so replacing your way down a file does not stop dead at the bottom
+/// with matches still above the cursor.
+pub fn target_at(matches: &[Range<CharOffset>], cursor: CharOffset) -> Option<Range<CharOffset>> {
+    matches
+        .iter()
+        .find(|range| range.start <= cursor && cursor < range.end)
+        .or_else(|| matches.iter().find(|range| range.start > cursor))
+        .or_else(|| matches.first())
+        .cloned()
+}
+
 pub fn replace_in_hits(
     document: &mut Document,
     open_path: Option<&Path>,
@@ -659,6 +882,201 @@ fn replacement_edits(text: &str, pattern: &str, replacement: &str) -> Vec<TextEd
     }
 
     edits
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use vex_lsp::lsp_types::{Position, Range as LspRange};
+
+    fn offer(label: &str, insert: &str) -> vex_lsp::CompletionItem {
+        vex_lsp::CompletionItem {
+            label: label.into(),
+            insert: insert.into(),
+            ..Default::default()
+        }
+    }
+
+    /// An edit inserting a line at the top of the file, as an auto-import arrives.
+    fn import(line: u32, text: &str) -> TextEdit {
+        TextEdit {
+            range: LspRange {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 0 },
+            },
+            new_text: text.into(),
+        }
+    }
+
+    fn apply(source: &str, accepted: &Accepted) -> String {
+        let mut document = Document::from_str(source);
+        document
+            .apply(accepted.transaction.clone(), EditKind::Discrete)
+            .expect("valid");
+        document.text().to_string()
+    }
+
+    #[test]
+    fn the_typed_prefix_is_replaced_rather_than_appended_to() {
+        // Accepting `length` after typing `len` must not produce `lenlength`.
+        let text = Text::from_str("let n = len");
+        let accepted = accept_completion(
+            &text,
+            &offer("length", "length"),
+            CharOffset(8),
+            CharOffset(11),
+            true,
+        );
+        assert_eq!(apply("let n = len", &accepted), "let n = length");
+    }
+
+    #[test]
+    fn what_is_inserted_is_what_the_server_asked_for_not_what_it_displayed() {
+        // rust-analyzer labels a macro `println!` and expects `println!($0)`. Inserting the label
+        // gives you a macro with no parentheses and the cursor after it — which is the shape of
+        // this defect: the label is what you *read*, not what you get.
+        let text = Text::from_str("fn main() { pri }");
+        let mut item = offer("println!", "println!($0)");
+        item.snippet = true;
+
+        let accepted = accept_completion(&text, &item, CharOffset(12), CharOffset(15), true);
+        assert_eq!(
+            apply("fn main() { pri }", &accepted),
+            "fn main() { println!() }"
+        );
+        assert_eq!(
+            accepted.at,
+            CharOffset(12),
+            "with no import before it, the text lands where the word was"
+        );
+        let stops = accepted.expansion.expect("a snippet has stops");
+        assert_eq!(
+            stops.stops,
+            vec![9],
+            "$0 is between the parentheses, so that is where the cursor goes"
+        );
+    }
+
+    #[test]
+    fn an_import_lands_with_the_word_as_one_undo_step() {
+        // The single most valuable thing completion does, and the one vex was silently discarding.
+        let source = "use std::io;\n\nfn main() {\n    let m = Hash\n}\n";
+        let text = Text::from_str(source);
+        let mut item = offer("HashMap", "HashMap");
+        item.additional = vec![import(1, "use std::collections::HashMap;\n")];
+
+        let anchor = CharOffset(source.find("Hash").unwrap());
+        let caret = CharOffset(anchor.get() + 4);
+        let accepted = accept_completion(&text, &item, anchor, caret, true);
+
+        assert_eq!(accepted.imports, 1);
+        assert!(!accepted.imports_refused);
+        assert_eq!(
+            apply(source, &accepted),
+            "use std::io;\nuse std::collections::HashMap;\n\nfn main() {\n    let m = HashMap\n}\n"
+        );
+        // One transaction is what makes it one undo: an import left behind by an undone completion
+        // is a compile error the user did not write.
+        assert_eq!(accepted.transaction.edits.len(), 2);
+    }
+
+    #[test]
+    fn an_import_before_the_word_shifts_where_the_snippet_stops_land() {
+        // The import is inserted first, so everything after it moves. A stop placed at the anchor
+        // would end up that many characters early — inside the import, not inside the call.
+        let source = "use std::io;\n\nfn main() {\n    wr\n}\n";
+        let text = Text::from_str(source);
+        let mut item = offer("write!", "write!($0)");
+        item.snippet = true;
+        item.additional = vec![import(1, "use std::fmt::Write;\n")];
+
+        let anchor = CharOffset(source.find("wr").unwrap());
+        let accepted = accept_completion(&text, &item, anchor, CharOffset(anchor.get() + 2), true);
+        assert_eq!(
+            accepted.at.get(),
+            anchor.get() + "use std::fmt::Write;\n".chars().count(),
+            "the inserted word moved by exactly the import's length"
+        );
+    }
+
+    #[test]
+    fn a_stale_import_is_refused_rather_than_placed_by_guess() {
+        // Its coordinates are line-and-column against a document that has since gained or lost a
+        // line, so vex cannot know where it belongs. An import landing mid-statement is worse than
+        // no import, and the caller says so on screen rather than silently doing neither.
+        let source = "use std::io;\n\nfn main() { Hash }\n";
+        let text = Text::from_str(source);
+        let mut item = offer("HashMap", "HashMap");
+        item.additional = vec![import(1, "use std::collections::HashMap;\n")];
+
+        let anchor = CharOffset(source.find("Hash").unwrap());
+        let accepted = accept_completion(&text, &item, anchor, CharOffset(anchor.get() + 4), false);
+
+        assert_eq!(accepted.imports, 0);
+        assert!(accepted.imports_refused, "and the user is told");
+        assert_eq!(
+            apply(source, &accepted),
+            "use std::io;\n\nfn main() { HashMap }\n",
+            "the word itself still completes"
+        );
+    }
+
+    #[test]
+    fn two_extra_edits_over_the_same_span_do_not_cost_the_completion() {
+        // A transaction whose edits overlap fails validation *whole*, so one malformed pair from a
+        // server would have silently cost the user the completion itself — the name would not be
+        // inserted either, and nothing would say why.
+        let source = "use std::io;\n\nfn main() { Hash }\n";
+        let text = Text::from_str(source);
+        let mut item = offer("HashMap", "HashMap");
+        item.additional = vec![
+            import(1, "use std::collections::HashMap;\n"),
+            import(1, "use std::collections::HashSet;\n"),
+        ];
+
+        let anchor = CharOffset(source.find("Hash").unwrap());
+        let accepted = accept_completion(&text, &item, anchor, CharOffset(anchor.get() + 4), true);
+
+        assert_eq!(
+            accepted.imports, 1,
+            "the second one over that point is dropped"
+        );
+        assert!(
+            accepted.transaction.validate(&text).is_ok(),
+            "and what is left still applies, so the completion lands"
+        );
+        assert!(apply(source, &accepted).contains("HashMap }"));
+    }
+
+    #[test]
+    fn an_extra_edit_overlapping_the_word_is_dropped() {
+        // Two edits over one span is not something a transaction can resolve, and no server meant
+        // it — but a transaction that fails validation would lose the completion entirely.
+        let source = "let x = ab\n";
+        let text = Text::from_str(source);
+        let mut item = offer("abc", "abc");
+        item.additional = vec![TextEdit {
+            range: LspRange {
+                start: Position {
+                    line: 0,
+                    character: 8,
+                },
+                end: Position {
+                    line: 0,
+                    character: 10,
+                },
+            },
+            new_text: "zz".into(),
+        }];
+
+        let accepted = accept_completion(&text, &item, CharOffset(8), CharOffset(10), true);
+        assert_eq!(accepted.imports, 0);
+        assert!(
+            accepted.transaction.validate(&text).is_ok(),
+            "what is left still applies"
+        );
+        assert_eq!(apply(source, &accepted), "let x = abc\n");
+    }
 }
 
 #[cfg(test)]

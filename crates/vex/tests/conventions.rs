@@ -52,6 +52,89 @@ fn paths_are_resolved_through_one_function() {
     );
 }
 
+#[test]
+fn nothing_modal_reaches_a_non_modal_reader() {
+    // The rule the whole `flat`/`modal_only` split exists for, tested at the readers rather than at
+    // the table — because the table was always right and it was a reader that leaked. With Vim off
+    // the palette listed "start selecting", and choosing it put a non-modal editor into visual mode
+    // with no way out that the user's own grammar could type.
+    use vex_input::commands;
+
+    for command in commands::available(false) {
+        assert!(
+            !command.modal_only,
+            "`{}` is modal-only and reached the non-modal command list",
+            command.name
+        );
+    }
+
+    // The help panel filters on having a key, which reaches the same place by another route.
+    for line in vex::help::Help::new(false).lines() {
+        if let vex::help::Line::Binding { keys, what } = line {
+            assert!(!keys.is_empty(), "`{what}` is offered with no key to press");
+        }
+    }
+
+    // And the which-key popup, whose two Vim-only prefixes `feed_flat` cannot even produce.
+    for prefix in ["\"", "q", "g", "z"] {
+        assert!(
+            commands::continuations(prefix, false).is_empty(),
+            "the which-key popup offers `{prefix}` continuations with the grammar off"
+        );
+    }
+}
+
+#[test]
+fn no_ex_command_is_shown_without_asking_which_grammar_is_on() {
+    // Four messages told everyone to press `:q!`, `:wq`, `:w <path>` and `:e` — including the people
+    // who had turned Vim off, whose grammar cannot parse the leading `:`. Each is now behind a
+    // `state.modal` branch. This is the grep that keeps the fifth one from being written: an ex
+    // command may appear in a source line only where `modal` appears too.
+    let mut offenders = Vec::new();
+
+    for file in rust_files(&workspace_root()) {
+        let relative = file.to_string_lossy().replace('\\', "/");
+        if relative.ends_with("crates/vex/tests/conventions.rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+
+        let lines: Vec<&str> = text.lines().collect();
+        for (number, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            // Comments explain the history and are allowed to quote it.
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            let quotes_an_ex_command = [":q!", ":wq", ":w <path>", ":e to", ":w to"]
+                .iter()
+                .any(|needle| line.contains(needle));
+            if !quotes_an_ex_command {
+                continue;
+            }
+
+            // The branch is a few lines up — `if self.state.modal {` and then the string, or a
+            // multi-line format! whose second half carries the needle. A window rather than the one
+            // line, because what matters is that the decision was made nearby, not on which line.
+            const LOOKBACK: usize = 5;
+            let guarded = lines[number.saturating_sub(LOOKBACK)..=number]
+                .iter()
+                .any(|nearby| nearby.contains("modal"));
+            if !guarded {
+                offenders.push(format!("{relative}:{}: {}", number + 1, trimmed));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "an ex command is shown without checking whether the user has Vim's grammar on:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The only places allowed to spawn a process with a bare `Command::new`.
 const MAY_SPAWN: [&str; 5] = [
     // Where the helper lives, and its counterpart in vex-lsp.
@@ -82,7 +165,11 @@ fn helper_processes_are_spawned_without_a_console_window() {
             continue;
         };
         // Tests may spawn whatever they like: they run from a terminal that already has a console.
-        let source = text.split("\nmod tests {").next().unwrap_or(&text).to_string();
+        let source = text
+            .split("\nmod tests {")
+            .next()
+            .unwrap_or(&text)
+            .to_string();
         for (number, line) in source.lines().enumerate() {
             if line.contains("Command::new(") {
                 offenders.push(format!("{relative}:{}: {}", number + 1, line.trim()));
@@ -94,6 +181,97 @@ fn helper_processes_are_spawned_without_a_console_window() {
         offenders.is_empty(),
         "spawn through vex::process::command, not Command::new — on Windows a GUI application's \
          console child gets a console window of its own, in front of the editor:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Every `Document` method that changes the text, and so moves the lines folds are named by.
+const MUTATES_TEXT: [&str; 10] = [
+    "apply",
+    "insert",
+    "insert_newline",
+    "insert_newline_smart",
+    "type_char",
+    "delete_forward",
+    "delete_backward",
+    "delete_backward_pairs",
+    "undo",
+    "redo",
+];
+
+#[test]
+fn text_is_changed_only_through_the_state_that_owns_the_folds() {
+    // `Document::apply` is the single funnel for mutation, but the folds live outside the document,
+    // in the display map. Nothing moved them, so they went on naming lines an edit had shifted or
+    // deleted — and since a fold hides every line inside its range, one whose end had run off the
+    // document hid *everything below its head*. Deleting a function above a closed fold made the
+    // rest of the file vanish.
+    //
+    // `EditorState::mutate` replays the change queue over the folds afterwards. This is the grep
+    // that keeps the next mutation site from going straight to the document and quietly skipping
+    // it, because "remember to call the other thing too" is not a rule that survives a year.
+    let mut offenders = Vec::new();
+    let root = workspace_root();
+
+    for file in rust_files(&root) {
+        let relative = file.to_string_lossy().replace('\\', "/");
+        // Only the binary has an `EditorState` to go through. Everything below it — and the tests
+        // that drive a bare `Document` — legitimately holds the document directly.
+        if !relative.contains("/vex/src/") || relative.ends_with("conventions.rs") {
+            continue;
+        }
+
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        // Tests drive a bare `Document` on purpose — they are checking the document, not the
+        // editor around it.
+        let source = text.split("\nmod tests {").next().unwrap_or(&text);
+        let lines: Vec<&str> = source.lines().collect();
+
+        for (number, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+
+            // What is checked is the *receiver*, not a lookback window: inside a `mutate` closure
+            // the document is named plainly, `document.insert(…)`, and everywhere else it is
+            // reached through something — `state.document.insert(…)`. A window instead of this
+            // read as passing while the injected violation sat two lines under an unrelated
+            // `mutate` call, which is how a guard ends up checking nothing.
+            let mutates_through_a_field = MUTATES_TEXT
+                .iter()
+                .any(|method| line.contains(&format!(".document.{method}(")));
+
+            // The same call written over three lines, which rustfmt does whenever it is long
+            // enough: `state`, then `.document`, then `.apply(…)`.
+            let split_over_lines = trimmed == ".document"
+                && lines.get(number + 1).is_some_and(|next| {
+                    let next = next.trim_start();
+                    MUTATES_TEXT
+                        .iter()
+                        .any(|method| next.starts_with(&format!(".{method}(")))
+                });
+
+            // Handing the document to something else that will change it — every one of these is
+            // an `edits::` helper that builds its own transaction. Swapping a whole document is a
+            // buffer change rather than an edit, and clears the folds on its own.
+            let lent_out = (line.contains("&mut state.document")
+                || line.contains("&mut self.state.document"))
+                && !line.contains("mem::replace")
+                && !line.contains("mem::swap");
+
+            if mutates_through_a_field || split_over_lines || lent_out {
+                offenders.push(format!("{relative}:{}: {}", number + 1, trimmed));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "change text through EditorState::mutate, not the document directly — the folds are line \
+         numbers held outside the document and only that path moves them:\n{}",
         offenders.join("\n")
     );
 }

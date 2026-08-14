@@ -88,6 +88,11 @@ pub struct EditorState {
     pub server_status: String,
     /// How many buffers are open, for the tab strip.
     pub buffer_count: usize,
+    /// The name of each open buffer, in order, and whether it has unsaved changes.
+    ///
+    /// Refreshed when the buffer list changes rather than read through a borrow, because the
+    /// drawing code is handed `&EditorState` and the buffers live beside it on the app.
+    pub buffer_tabs: Vec<(String, bool)>,
     /// Index of the active buffer.
     pub active_buffer: usize,
     /// Whether Vim's modal grammar is in force. Shown in the statusline, since with it off there is
@@ -101,6 +106,8 @@ pub struct EditorState {
     pub diff: crate::git::Diff,
     /// Whether the sidebar shows the diagnostics list instead of the structure panel.
     pub show_diagnostics: bool,
+    /// Every problem the language server has reported, across the project.
+    pub problems: crate::problems::Store,
     /// Inlay hints for the visible range, when they are on.
     pub inlay_hints: Vec<vex_lsp::lsp_types::InlayHint>,
     /// Whether to ask for and draw them. Off by default: hints move the code sideways as you type,
@@ -137,6 +144,66 @@ pub struct EditorState {
 }
 
 impl EditorState {
+    /// Mutates the document and moves everything outside it that names a position in it.
+    ///
+    /// [`Document::apply`] is the single funnel for changing text, but the folds live out here in
+    /// the display map, and nothing was moving them — so they went on naming lines the edit had
+    /// shifted or deleted. Since [`vex_display::Folds::is_hidden`] asks only whether a line falls
+    /// inside a range, a fold whose end had run off the end of the document hid *everything below
+    /// its head*: delete a function above a closed fold and the rest of the file disappeared.
+    ///
+    /// Takes a closure rather than a transaction because two of the mutation sites are in
+    /// [`crate::edits`], which builds the transaction itself and is tested against a bare
+    /// `Document`. `crates/vex/tests/conventions.rs` enforces going through here, since "remember
+    /// to call the other thing too" is not a rule that survives a year.
+    pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
+        // Nothing folded is the overwhelmingly common case, and then this costs one `is_empty`.
+        if self.display.folds.is_empty() {
+            return change(&mut self.document);
+        }
+
+        let mut before = self.document.text().clone();
+        let mark = self.document.version();
+        let outcome = change(&mut self.document);
+
+        let moved = self.document.version() != mark;
+        let folds = &mut self.display.folds;
+        let mut replayed = false;
+
+        // Each change's edits are expressed against the previous change's text, so they are walked
+        // in order rather than concatenated — the same reason the syntax worker replays them.
+        for applied in self.document.changes_since(mark) {
+            folds.transform(&before, &applied.text, &applied.edits);
+            before = applied.text.clone();
+            replayed = true;
+        }
+
+        if moved && !replayed {
+            // The queue was truncated, so how far the lines moved is no longer knowable. Folds that
+            // cannot be trusted are worse than no folds: they hide code silently.
+            folds.clear();
+        }
+        outcome
+    }
+
+    /// The block heads sticky scroll pins above a viewport, outermost first.
+    ///
+    /// Only when the head has actually scrolled off — pinning a line that is already visible would
+    /// show it twice, which is the thing that makes this feature annoying elsewhere.
+    ///
+    /// Read by `draw_code` to place them and, through [`crate::layout::CodeArea`], by the mouse to
+    /// take their strip off the top before turning a pixel into a display row. It lived inside the
+    /// drawing code, where nothing else could see it.
+    pub fn sticky_heads(&self, text: &Text, scroll_line: usize, focused: bool) -> Vec<usize> {
+        if !focused || !self.sticky_scroll {
+            return Vec::new();
+        }
+        vex_display::enclosing_heads(text, scroll_line, self.display.tab_width, 3)
+            .into_iter()
+            .filter(|head| *head < scroll_line)
+            .collect()
+    }
+
     pub fn cursor(&self) -> CharOffset {
         self.document.selections().primary().head
     }
@@ -520,7 +587,6 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             wrap: false,
             layer: Layer::default(),
         });
-
     }
 
     // The finishing row, which is where the last option lands — and the one thing on this screen
@@ -790,7 +856,14 @@ pub fn draw_panes(
         // on line numbers.
         let gutter_width = px(78.0).min(slot.width * 0.22);
         let (gutter, code) = slot.split_left(gutter_width);
-        draw_code(frame, state, pane, gutter, code, row_height, scale);
+        // Sticky scroll takes its strip before anything measures against the code area — including
+        // the info box, the completion popup and the mouse, all of which read `focused_code` below.
+        let area = crate::layout::CodeArea::new(
+            code,
+            state.sticky_heads(pane.document.text(), pane.scroll.line, pane.focused),
+            row_height,
+        );
+        draw_code(frame, state, pane, gutter, &area, row_height, scale);
 
         if let Some(footer) = footer {
             frame.fill(footer, if pane.focused { theme.bg_alt } else { theme.bg });
@@ -817,7 +890,7 @@ pub fn draw_panes(
         }
 
         if pane.focused {
-            focused_code = code;
+            focused_code = area.code;
         }
     }
 
@@ -884,13 +957,15 @@ fn draw_completion(
             .display_point(state.document.text(), state.scroll, 512, completion.anchor);
     let Some(point) = anchor_point else { return };
 
+    // Wide enough for the label and what sits beside it. A popup sized to the label alone puts the
+    // type — half of why you are reading the list at all — off the right edge.
     let widest = visible
         .iter()
-        .map(|item| item.label.chars().count())
+        .map(|item| item.label().chars().count() + 2 + tail_of(item).chars().count().min(TAIL))
         .max()
         .unwrap_or(12)
         .max(12);
-    let width = ((widest as f32 + 2.0) * advance).min(code.width * 0.6);
+    let width = ((widest as f32 + 4.0) * advance).min(code.width * 0.6);
 
     let x = (code.x + space::SM * scale + point.column as f32 * advance)
         .min(code.right() - width - space::SM * scale);
@@ -953,12 +1028,47 @@ fn draw_completion(
         }
 
         let text_x = popup.x + space::XS * scale;
+        let inner = popup.width - space::XS * 2.0 * scale;
+
+        // The type on the right, in the faint ink. It gives way to the label rather than the other
+        // way round: a truncated type is still a hint, a truncated name is not something you can
+        // accept.
+        let tail = tail_of(item);
+        let label_room = if tail.is_empty() {
+            inner
+        } else {
+            let tail = elide(
+                state,
+                Role::Value,
+                &tail,
+                (TAIL as f32 * advance).min(inner * 0.62),
+                scale,
+            );
+            frame.text(run(
+                state,
+                Role::Value,
+                tail.clone(),
+                Rect::new(text_x, item_y, inner, row),
+                theme.ink_faint,
+                Align::Right,
+                scale,
+            ));
+            inner - (tail.chars().count() as f32 + 1.0) * advance
+        };
+
+        let label = elide(state, Role::Value, item.label(), label_room, scale);
         frame.text(run(
             state,
             Role::Value,
-            item.label.clone(),
-            Rect::new(text_x, item_y, popup.width - space::XS * 2.0 * scale, row),
-            if selected { theme.ink } else { theme.ink_dim },
+            label.clone(),
+            Rect::new(text_x, item_y, label_room, row),
+            match (selected, item.offer.deprecated) {
+                // Deprecated stays readable but stops looking like the answer. Striking it through
+                // would need a rule per row the renderer has no cheap way to place.
+                (_, true) => theme.ink_faint,
+                (true, false) => theme.ink,
+                (false, false) => theme.ink_dim,
+            },
             Align::Left,
             scale,
         ));
@@ -966,7 +1076,7 @@ fn draw_completion(
         // The typed prefix, in the mode color, over the label's own glyphs.
         let prefix_advance = advance_for(state.typography.spec(Role::Value).size_px * scale);
         for position in &item.highlights {
-            let Some(c) = item.label.chars().nth(*position as usize) else {
+            let Some(c) = label.chars().nth(*position as usize) else {
                 continue;
             };
             frame.text(run(
@@ -984,6 +1094,24 @@ fn draw_completion(
                 scale,
             ));
         }
+    }
+}
+
+/// Characters of type signature a completion row will show before eliding.
+///
+/// The popup is capped at 60% of the code area, so this is what keeps a single 200-character
+/// generic signature from setting the width for every other row in the list.
+const TAIL: usize = 34;
+
+/// What sits to the right of a suggestion's name.
+///
+/// The type when the server gave one, and the kind only when it did not. Showing both was worse
+/// than either: at this width the kind was elided to `m…`, which names nothing — and a signature
+/// starting `fn(` already says what a `method` tag would.
+fn tail_of(item: &crate::completion::Item) -> String {
+    match &item.offer.detail {
+        Some(detail) => detail.clone(),
+        None => item.offer.kind.to_string(),
     }
 }
 
@@ -1220,7 +1348,13 @@ fn draw_palette(
 
     let header_height = 52.0 * scale;
     let footer_height = 34.0 * scale;
-    let card_height = header_height + footer_height + visible.len() as f32 * row_height;
+
+    // An empty result still occupies a row: the "no matches" line needs somewhere to go. Sizing the
+    // card by `visible.len()` alone collapsed it to header plus footer, and the empty-state line was
+    // then drawn at the footer's own y — two strings on one baseline, which is what a real run
+    // showed for a query that matched nothing.
+    let row_count = visible.len().max(1);
+    let card_height = header_height + footer_height + row_count as f32 * row_height;
 
     let card = Rect::new(
         bounds.x + (bounds.width - width) / 2.0,
@@ -1311,7 +1445,7 @@ fn draw_palette(
     frame.rule_bottom(header, theme.rule_soft, border::BORDER);
 
     // Rows.
-    let (rows_area, footer) = rest.split_top(visible.len() as f32 * row_height);
+    let (rows_area, footer) = rest.split_top(row_count as f32 * row_height);
     for (index, row) in visible.iter().enumerate() {
         let y = rows_area.y + index as f32 * row_height;
         let selected = index == cursor;
@@ -1322,9 +1456,11 @@ fn draw_palette(
         }
 
         // Score, right-aligned in a narrow column. Not for commands: a match score beside "save this
-        // file" is the editor showing its workings to someone who asked what it can do.
+        // file" is the editor showing its workings to someone who asked what it can do. And not
+        // when it is zero, which is every list the editor did not rank itself — a column of ten
+        // zeroes reads as a counter that has broken rather than as a column that does not apply.
         let score_rect = Rect::new(row_rect.x + pad, y, 30.0 * scale, row_height);
-        if palette.kind != PaletteKind::Commands {
+        if palette.kind != PaletteKind::Commands && row.score > 0 {
             frame.text(run(
                 state,
                 Role::Value,
@@ -1459,7 +1595,7 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     if state.pending.is_empty() {
         return;
     }
-    let entries = vex_input::commands::continuations(&state.pending);
+    let entries = vex_input::commands::continuations(&state.pending, state.modal);
     if entries.is_empty() {
         return;
     }
@@ -1495,7 +1631,12 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     let card = Rect::new(code.x + pad, y, width, height);
 
     frame.fill(
-        Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
+        Rect::new(
+            card.x - 2.0 * scale,
+            card.y + 4.0 * scale,
+            card.width + 4.0 * scale,
+            card.height,
+        ),
         theme.shadow,
     );
     frame.fill(card, theme.bg_panel);
@@ -1588,7 +1729,12 @@ fn draw_help(
         } else {
             accent
         },
-        rect: Rect::new(header.x + pad, header.y, header.width - pad * 2.0, header.height),
+        rect: Rect::new(
+            header.x + pad,
+            header.y,
+            header.width - pad * 2.0,
+            header.height,
+        ),
         align: Align::Left,
         center_vertically: true,
         wrap: false,
@@ -1597,7 +1743,12 @@ fn draw_help(
     frame.text(label(
         state,
         "type to filter",
-        Rect::new(header.x + pad, header.y, header.width - pad * 2.0, header.height),
+        Rect::new(
+            header.x + pad,
+            header.y,
+            header.width - pad * 2.0,
+            header.height,
+        ),
         theme.ink_faint,
         Align::Right,
         scale,
@@ -1613,7 +1764,12 @@ fn draw_help(
                 frame.text(label(
                     state,
                     *title,
-                    Rect::new(rows_area.x + pad, y, rows_area.width - pad * 2.0, row_height),
+                    Rect::new(
+                        rows_area.x + pad,
+                        y,
+                        rows_area.width - pad * 2.0,
+                        row_height,
+                    ),
                     theme.ink_faint,
                     Align::Left,
                     scale,
@@ -1653,7 +1809,12 @@ fn draw_help(
     frame.text(label(
         state,
         "↑↓ scroll · esc close · ctrl-shift-p every command",
-        Rect::new(footer.x + pad, footer.y, footer.width - pad * 2.0, footer.height),
+        Rect::new(
+            footer.x + pad,
+            footer.y,
+            footer.width - pad * 2.0,
+            footer.height,
+        ),
         theme.ink_faint,
         Align::Left,
         scale,
@@ -1700,7 +1861,12 @@ fn draw_menu(
     }
 
     frame.fill(
-        Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
+        Rect::new(
+            card.x - 2.0 * scale,
+            card.y + 4.0 * scale,
+            card.width + 4.0 * scale,
+            card.height,
+        ),
         theme.shadow,
     );
     frame.fill(card, theme.bg_panel);
@@ -1775,6 +1941,49 @@ fn label(
     run(state, Role::Label, text, rect, color, align, scale)
 }
 
+/// Shortens text to fit a width, ending in an ellipsis.
+///
+/// The renderer clips a run to its rectangle, which means a string that is too long simply stops —
+/// a narrow window showed a setting's caption as `modal editing; off means typing a`, cut mid-word
+/// with no sign there was more. An ellipsis is the difference between text that is abbreviated and
+/// text that looks broken.
+fn elide(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) -> String {
+    let advance = state.typography.advance(role) * scale;
+    if advance <= 0.0 || width <= 0.0 {
+        return text.to_string();
+    }
+    let fits = (width / advance).floor().max(0.0) as usize;
+    let length = text.chars().count();
+    if length <= fits {
+        return text.to_string();
+    }
+    if fits <= 1 {
+        return "…".to_string();
+    }
+    text.chars().take(fits - 1).collect::<String>() + "…"
+}
+
+/// Shortens text to fit by dropping the **front**, for values whose end is the identifying part.
+///
+/// A path is the case: `…\.cargo\bin\rust-analyzer.exe` still names the program, while eliding it
+/// the usual way gives `C:\Users\Gawa…` — every character of which the reader already knew.
+fn elide_start(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) -> String {
+    let advance = state.typography.advance(role) * scale;
+    if advance <= 0.0 || width <= 0.0 {
+        return text.to_string();
+    }
+    let fits = (width / advance).floor().max(0.0) as usize;
+    let length = text.chars().count();
+    if length <= fits {
+        return text.to_string();
+    }
+    if fits <= 1 {
+        return "…".to_string();
+    }
+    let skip = length - (fits - 1);
+    "…".to_string() + &text.chars().skip(skip).collect::<String>()
+}
+
 /// What the viewport shows when no file is open: the mark, and one line telling you how to open one.
 ///
 /// Nothing else. A recent-files list or a tips carousel here would be the first place the editor
@@ -1837,18 +2046,17 @@ fn draw_settings(
     let pad = space::LG * scale;
     let line = 20.0 * scale;
     let width = rect.width - pad * 2.0;
-    let mut y = rect.y + pad;
+    let title = Rect::new(rect.x + pad, rect.y + pad, width, line);
 
     frame.text(run(
         state,
         Role::Prose,
         "Settings",
-        Rect::new(rect.x + pad, y, width, line),
+        title,
         theme.ink,
         Align::Left,
         scale,
     ));
-    y += line * 1.7;
 
     let values = crate::settings_ui::Values {
         modal: state.modal,
@@ -1863,29 +2071,32 @@ fn draw_settings(
         autosave: state.autosave,
     };
 
-    for (index, entry) in crate::settings_ui::Settings::lines().iter().enumerate() {
-        use crate::settings_ui::{Importable, Line};
+    // Every rectangle comes from `settings_ui::panel`, which the mouse reads too. The panel had two
+    // copies of this walk, and the moment the list started scrolling they disagreed: a click
+    // selected whichever row used to be under the pointer.
+    let panel = crate::settings_ui::panel(rect, scale, settings);
 
+    for heading in &panel.headings {
+        frame.text(label(
+            state,
+            heading.label,
+            heading.rect,
+            theme.ink_dim,
+            Align::Left,
+            scale,
+        ));
+    }
+
+    for placement in &panel.rows {
+        use crate::settings_ui::Line;
+
+        let (index, entry, y, block) = (
+            placement.index,
+            &placement.line,
+            placement.rect.y,
+            placement.rect.height,
+        );
         let selected = index == settings.selected;
-
-        // A heading before the import section, so the checklist does not read as more settings.
-        if *entry == Line::Import(Importable::Settings) {
-            y += line * 0.6;
-            frame.text(label(
-                state,
-                "import from vscode",
-                Rect::new(rect.x + pad, y, width, line),
-                theme.ink_dim,
-                Align::Left,
-                scale,
-            ));
-            y += line * 1.4;
-        }
-
-        let block = match entry {
-            Line::Option(_) => line * 2.0,
-            _ => line * 1.4,
-        };
 
         if selected {
             frame.fill(
@@ -1905,10 +2116,25 @@ fn draw_settings(
 
         match entry {
             Line::Option(field) => {
+                // The value is the thing you came to read, so it keeps its width and the name gives
+                // way: in a narrow panel a truncated name is still recognisable, a truncated value
+                // is useless.
+                let value = values.get(*field);
+                let value_width = ((value.chars().count() as f32 + 1.0)
+                    * state.typography.advance(Role::Value)
+                    * scale)
+                    .min(width);
+
                 frame.text(run(
                     state,
                     Role::Value,
-                    field.name(),
+                    elide(
+                        state,
+                        Role::Value,
+                        field.title(state.modal),
+                        (width - value_width).min(width * 0.62),
+                        scale,
+                    ),
                     Rect::new(rect.x + pad, y, width * 0.62, line),
                     if selected { theme.ink } else { theme.ink_dim },
                     Align::Left,
@@ -1919,7 +2145,7 @@ fn draw_settings(
                 frame.text(run(
                     state,
                     Role::Value,
-                    values.get(*field),
+                    value,
                     Rect::new(rect.x + pad, y, width, line),
                     if selected { accent } else { theme.ink },
                     Align::Right,
@@ -1935,11 +2161,17 @@ fn draw_settings(
                     .unwrap_or(Source::Default);
                 frame.text(label(
                     state,
-                    if selected {
-                        field.help().to_string()
-                    } else {
-                        source.label().to_string()
-                    },
+                    elide(
+                        state,
+                        Role::Label,
+                        if selected {
+                            field.help(state.modal)
+                        } else {
+                            source.label()
+                        },
+                        width,
+                        scale,
+                    ),
                     Rect::new(rect.x + pad, y + line * 0.85, width, line),
                     theme.ink_faint,
                     Align::Left,
@@ -1952,10 +2184,16 @@ fn draw_settings(
                 frame.text(run(
                     state,
                     Role::Value,
-                    format!(
-                        "[{}] {}",
-                        if settings.is_ticked(*item) { "x" } else { " " },
-                        item.name()
+                    elide(
+                        state,
+                        Role::Value,
+                        &format!(
+                            "[{}] {}",
+                            if settings.is_ticked(*item) { "x" } else { " " },
+                            item.name()
+                        ),
+                        width,
+                        scale,
                     ),
                     Rect::new(rect.x + pad, y, width, line),
                     if settings.is_ticked(*item) {
@@ -1983,11 +2221,17 @@ fn draw_settings(
                 frame.text(run(
                     state,
                     Role::Value,
-                    if available {
-                        "import now".to_string()
-                    } else {
-                        "no vscode installation found".to_string()
-                    },
+                    elide(
+                        state,
+                        Role::Value,
+                        if available {
+                            "import now"
+                        } else {
+                            "no vscode installation found"
+                        },
+                        width,
+                        scale,
+                    ),
                     Rect::new(rect.x + pad, y, width, line),
                     match (available, selected) {
                         (false, _) => theme.ink_faint,
@@ -1998,36 +2242,131 @@ fn draw_settings(
                     scale,
                 ));
             }
-        }
+            Line::Server(at) | Line::Formatter(at) => {
+                let list = match entry {
+                    Line::Formatter(_) => &settings.formatters,
+                    _ => &settings.servers,
+                };
+                let Some(server) = list.get(*at) else {
+                    continue;
+                };
 
-        y += block + 4.0 * scale;
+                // The language on the left, what it resolved to on the right — the same shape as an
+                // option row, because it is answering the same question: what is this set to, and
+                // who set it.
+                let mark = if server.configured { " (init.lua)" } else { "" };
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    elide(
+                        state,
+                        Role::Value,
+                        &format!("{}{mark}", server.language),
+                        width * 0.7,
+                        scale,
+                    ),
+                    Rect::new(rect.x + pad, y, width, line),
+                    if selected { theme.ink } else { theme.ink_dim },
+                    Align::Left,
+                    scale,
+                ));
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    if server.found { "found" } else { "missing" },
+                    Rect::new(rect.x + pad, y, width, line),
+                    if server.found {
+                        theme.fresh()
+                    } else {
+                        theme.ink_faint
+                    },
+                    Align::Right,
+                    scale,
+                ));
+
+                // The programs vex looked for, and — on the selected row — what it found. Two lines
+                // in one, the same trade the option rows make: both at once is a hundred characters
+                // in a 292-pixel panel, and the version that fits is the one nobody can read.
+                //
+                // A found path elides from the front, because its end is the part that identifies
+                // it; an install line elides from the back, because its start is.
+                let caption = if selected {
+                    if server.found {
+                        elide_start(state, Role::Label, &server.status, width, scale)
+                    } else {
+                        elide(state, Role::Label, &server.status, width, scale)
+                    }
+                } else {
+                    elide(state, Role::Label, &server.program, width, scale)
+                };
+                frame.text(label(
+                    state,
+                    caption,
+                    Rect::new(rect.x + pad, y + line * 0.85, width, line),
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            }
+        }
     }
 
-    // What the last import said, if one ran.
+    // What the last import said, if one ran. Under the last visible row, if there is room.
     if let Some(report) = &settings.import_report {
+        let after = panel
+            .rows
+            .last()
+            .map(|row| row.rect.bottom() + line * 0.4)
+            .unwrap_or(panel.footer.y);
+        if after + line <= panel.footer.y - line * 0.6 {
+            frame.text(label(
+                state,
+                elide(state, Role::Label, report, width, scale),
+                Rect::new(rect.x + pad, after, width, line),
+                theme.fresh(),
+                Align::Left,
+                scale,
+            ));
+        }
+    }
+
+    // The scroll cue rides on the title, which has the whole width of the panel spare, rather than
+    // competing with the footer, which does not. Without a cue at all a list that scrolls looks
+    // like a list that is missing settings — the complaint this panel already answered once.
+    //
+    // `↓` rather than a solid triangle: the tree's chevrons shipped as tofu boxes once, and the
+    // arrows are glyphs this font is known to have.
+    if panel.scrolls {
         frame.text(label(
             state,
-            report.clone(),
-            Rect::new(rect.x + pad, y + line * 0.4, width, line),
-            theme.fresh(),
-            Align::Left,
+            "more ↓",
+            title,
+            theme.ink_faint,
+            Align::Right,
             scale,
         ));
     }
 
     // The footer says how to change and how to keep. Nothing is written without being asked: this is
     // a file the user owns.
-    let footer = Rect::new(rect.x + pad, rect.bottom() - line * 2.2, width, line);
+    //
+    // Short, because the panel is 292px wide and the old hint was half again too long for it — so
+    // it was hard-clipped to `CLICK TO CHANGE · H L ADJUST · W WI`, which is how the defect was
+    // first reported. `h l` and `w` are also Vim's letters, and this panel is reached from a toolbar
+    // button by people who turned Vim off; the keys underneath take arrows and ctrl-s either way.
+    let hint = match (settings.dirty, state.modal) {
+        (true, true) => "w writes init.lua",
+        (true, false) => "ctrl-s writes init.lua",
+        (false, true) => "click or h l · w saves",
+        (false, false) => "click or ←→ · ctrl-s saves",
+    };
+
     frame.text(label(
         state,
         // Says click first: the panel is reachable from the toolbar by people who have not been
         // told any keys, and a footer that only names keys is a footer that excludes them.
-        if settings.dirty {
-            "click to change · w write to init.lua · esc close"
-        } else {
-            "click to change · h l adjust · w write · esc close"
-        },
-        footer,
+        elide(state, Role::Label, hint, width, scale),
+        panel.footer,
         if settings.dirty {
             theme.stale()
         } else {
@@ -2038,10 +2377,15 @@ fn draw_settings(
     ));
 }
 
-/// Every diagnostic in the file, as a list.
+/// Every problem in the **project**, as a list.
 ///
-/// The underlines say *where*; this says *what, and how many*. Both are needed: `]d` walks them one
-/// at a time, which is useless for deciding whether a file is in trouble at all.
+/// The underlines say *where* in this file; this says what is wrong anywhere. Both are needed: `]d`
+/// walks one file's problems one at a time, which cannot answer "did my change break anything?" —
+/// and vex has no terminal to ask that from either.
+///
+/// Ordered by [`crate::problems::Store::ordered`]: the file you are in first, then files with an
+/// error, then the rest. Grouping by file is what makes it scannable, because going somewhere means
+/// opening a file.
 fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
     let pad = space::LG * scale;
@@ -2049,11 +2393,11 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     let width = rect.width - pad * 2.0;
     let mut y = rect.y + pad;
 
-    let (errors, warnings) = state.diagnostics.counts();
+    let (errors, warnings) = state.problems.counts();
     frame.text(run(
         state,
         Role::Prose,
-        "Diagnostics",
+        "Problems",
         Rect::new(rect.x + pad, y, width, line),
         theme.ink,
         Align::Left,
@@ -2061,9 +2405,14 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     ));
     y += line * 1.4;
 
+    let summary = match state.problems.dropped() {
+        // Silently truncating is a panel that has lied about being complete.
+        0 => format!("{errors} errors · {warnings} warnings"),
+        dropped => format!("{errors} errors · {warnings} warnings · {dropped} not shown"),
+    };
     frame.text(label(
         state,
-        format!("{errors} errors · {warnings} warnings"),
+        elide(state, Role::Label, &summary, width, scale),
         Rect::new(rect.x + pad, y, width, line),
         theme.ink_faint,
         Align::Left,
@@ -2071,7 +2420,10 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     ));
     y += line * 1.6;
 
-    if state.diagnostics.is_empty() {
+    let here = state.file_path.as_deref().map(std::path::Path::new);
+    let problems = state.problems.ordered(here);
+
+    if problems.is_empty() {
         frame.text(run(
             state,
             Role::Value,
@@ -2084,28 +2436,45 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         return;
     }
 
-    let text = state.document.text();
-    let cursor_line = state.cursor_point().line;
+    let mut last_file: Option<&std::path::Path> = None;
 
-    for diagnostic in state.diagnostics.items() {
+    for problem in &problems {
         if y + line * 2.0 > rect.bottom() - pad {
             break;
         }
 
-        let is_error = diagnostic
-            .severity
-            .unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING)
-            == vex_lsp::lsp_types::DiagnosticSeverity::ERROR;
-        let color = if is_error {
-            theme.over_budget()
-        } else {
-            theme.stale()
+        // A heading each time the file changes, so a list spanning six files reads as six groups
+        // rather than as one column of unrelated line numbers.
+        if last_file != Some(problem.path.as_path()) {
+            last_file = Some(problem.path.as_path());
+            let name = problem
+                .path
+                .strip_prefix(&state.project_root)
+                .unwrap_or(&problem.path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            frame.text(label(
+                state,
+                elide(state, Role::Label, &name, width, scale),
+                Rect::new(rect.x + pad, y, width, line),
+                theme.ink_dim,
+                Align::Left,
+                scale,
+            ));
+            y += line * 1.2;
+            if y + line * 2.0 > rect.bottom() - pad {
+                break;
+            }
+        }
+
+        let color = match problem.severity {
+            crate::problems::Severity::Error => theme.over_budget(),
+            crate::problems::Severity::Warning => theme.stale(),
+            _ => theme.ink_faint,
         };
 
-        let start = vex_lsp::range_from_lsp(text, diagnostic.range).start;
-        let point = text.char_to_point(start);
-        let on_cursor_line = point.line == cursor_line;
-
+        let on_cursor_line =
+            here == Some(problem.path.as_path()) && problem.line == state.cursor_point().line;
         if on_cursor_line {
             frame.fill(
                 Rect::new(rect.x, y - 2.0 * scale, rect.width, line * 2.0),
@@ -2113,12 +2482,12 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
             );
         }
 
-        // The line number in the severity's color, then the message. Position first, because the
+        // The line number in the severity's colour, then the message. Position first, because the
         // list is read to decide where to go.
         frame.text(run(
             state,
             Role::Value,
-            format!("{}", point.line + 1),
+            format!("{}", problem.line + 1),
             Rect::new(rect.x + pad, y, 36.0 * scale, line),
             color,
             Align::Left,
@@ -2128,12 +2497,7 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         // The first line of the message, wrapped across the two rows this entry has. Server messages
         // run to paragraphs; the box that appears when the cursor reaches the diagnostic is where the
         // whole text belongs, and a list is for deciding where to go.
-        let message = diagnostic
-            .message
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .to_string();
+        let message = problem.message.clone();
         let mut spec = state.typography.spec(Role::Value);
         spec.size_px *= scale;
         frame.text(TextRun {
@@ -2174,24 +2538,31 @@ fn draw_tree(
     let accent = theme.accent(state.mode);
     let pad = space::LG * scale;
     let line = 22.0 * scale;
-    let mut y = rect.y + pad;
+    // One walk, shared with the click handler. The two used to be written out separately and had
+    // already drifted a pad apart, which is a click that opens the file below the one you pointed
+    // at as soon as the tree is longer than the panel.
+    let panel = crate::tree::panel(rect, scale, tree);
 
     frame.text(run(
         state,
         Role::Prose,
         "Files",
-        Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+        panel.header,
         theme.ink,
         Align::Left,
         scale,
     ));
-    y += line * 1.6;
 
     if tree.is_empty() {
         frame.text(label(
             state,
             "indexing",
-            Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+            Rect::new(
+                rect.x + pad,
+                panel.header.y + line * 1.6,
+                rect.width - pad * 2.0,
+                line,
+            ),
             theme.ink_faint,
             Align::Left,
             scale,
@@ -2199,15 +2570,12 @@ fn draw_tree(
         return;
     }
 
-    let height = (((rect.bottom() - pad) - y) / line).floor().max(1.0) as usize;
-    let (rows, cursor) = tree.visible(height);
-
-    for (index, row) in rows.iter().enumerate() {
-        let row_y = y + index as f32 * line;
-        let selected = index == cursor;
+    for (index, (row, box_)) in panel.rows.iter().enumerate() {
+        let row_y = box_.y;
+        let selected = panel.cursor == Some(index);
 
         if selected {
-            frame.fill(Rect::new(rect.x, row_y, rect.width, line), theme.row_active);
+            frame.fill(*box_, theme.row_active);
             frame.fill(
                 Rect::new(rect.x, row_y, border::ACCENT_BORDER * scale, line),
                 accent,
@@ -2251,6 +2619,37 @@ fn draw_tree(
 /// Derived from the type scale for now. At the point where a proportional fallback glyph can
 /// appear in code, this must come from the shaper's measured advance, or the gutter and the text
 /// will drift out of registration.
+/// The part of `content` inside the grid's visible columns, and the x it starts at.
+///
+/// `content` must already have been through `expand_tabs`, so one char is one column. Returns
+/// `None` when the segment is entirely off screen — the common case for the left of a long line
+/// once the view has scrolled, and the reason this is worth doing at all rather than drawing
+/// everything and letting the clip sort it out.
+fn visible_slice(
+    grid: &crate::layout::CodeGrid,
+    start_column: usize,
+    content: &str,
+) -> Option<(f32, String)> {
+    let first = grid.offset();
+    let last = first + grid.columns() + 1;
+    let end = start_column + content.chars().count();
+
+    if end <= first || start_column >= last {
+        return None;
+    }
+    if start_column >= first && end <= last {
+        return Some((grid.x_of(start_column), content.to_string()));
+    }
+
+    let skip = first.saturating_sub(start_column);
+    let take = (last.min(end)).saturating_sub(start_column.max(first));
+    let sliced: String = content.chars().skip(skip).take(take).collect();
+    if sliced.is_empty() {
+        return None;
+    }
+    Some((grid.x_of(start_column + skip), sliced))
+}
+
 fn column_advance(state: &EditorState, scale: f32) -> f32 {
     advance_for(state.typography.code_size * scale)
 }
@@ -2359,34 +2758,73 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     frame.fill(rect, theme.bg_alt);
     frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
 
-    let inner = Rect::new(
-        rect.x + space::XL * scale,
-        rect.y,
-        rect.width - space::XL * 2.0 * scale,
-        rect.height,
-    );
-    let name = state.path.last().cloned().unwrap_or_default();
+    // One tab per open file, from the same function the mouse hit-tests. The strip used to draw a
+    // single tab — the active file's name — so every other open buffer was invisible, and there was
+    // no way to close one at all.
+    for tab in crate::layout::tabs(rect, state.buffer_count, state.active_buffer, scale) {
+        let (name, dirty) = state
+            .buffer_tabs
+            .get(tab.index)
+            .cloned()
+            .unwrap_or_else(|| (String::from("untitled"), false));
+        let active = tab.index == state.active_buffer;
+        let hovered = crate::layout::contains(tab.rect, state.pointer.0, state.pointer.1);
 
-    let tab_width = 130.0 * scale;
-    let (tab, rest) = inner.split_left(tab_width);
-    frame.text(run(
-        state,
-        Role::Value,
-        name,
-        tab,
-        theme.ink,
-        Align::Left,
-        scale,
-    ));
-    frame.fill(
-        Rect::new(
-            tab.x,
-            tab.bottom() - border::ACCENT_BORDER * scale,
-            tab_width * 0.72,
-            border::ACCENT_BORDER * scale,
-        ),
-        accent,
-    );
+        if active {
+            frame.fill(tab.rect, theme.bg);
+        } else if hovered {
+            frame.fill(tab.rect, theme.row_active);
+        }
+
+        // A dot rather than a second word: the tab is narrow, and "modified" spelled out would
+        // take the room the name needs.
+        let label_text = if dirty { format!("{name} ·") } else { name };
+        let label_area = Rect::new(
+            tab.rect.x + space::XS * scale,
+            tab.rect.y,
+            (tab.close.x - tab.rect.x - space::XS * 2.0 * scale).max(0.0),
+            tab.rect.height,
+        );
+        frame.text(run(
+            state,
+            Role::Value,
+            elide(state, Role::Value, &label_text, label_area.width, scale),
+            label_area,
+            if active { theme.ink } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+
+        // `x` rather than a multiplication sign or a cross glyph: the bundled font has the letter,
+        // and the tree's chevrons shipped as tofu boxes once already.
+        if active || hovered {
+            frame.text(run(
+                state,
+                Role::Value,
+                "x",
+                tab.close,
+                if crate::layout::contains(tab.close, state.pointer.0, state.pointer.1) {
+                    theme.ink
+                } else {
+                    theme.ink_faint
+                },
+                Align::Center,
+                scale,
+            ));
+        }
+
+        if active {
+            frame.fill(
+                Rect::new(
+                    tab.rect.x,
+                    tab.rect.bottom() - border::ACCENT_BORDER * scale,
+                    tab.rect.width,
+                    border::ACCENT_BORDER * scale,
+                ),
+                accent,
+            );
+        }
+    }
 
     // Buttons rather than a line of advice. This row used to advertise `i / v / R / esc mode` to
     // people who had turned modes off — keys that do nothing, shown to exactly the person least able
@@ -2412,28 +2850,8 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         ));
     }
 
-    // What is left of the row says which buffer you are in, when there is more than one.
-    if state.buffer_count > 1 {
-        let left = Rect::new(
-            rest.x,
-            rest.y,
-            (buttons.first().map(|(_, b)| b.x).unwrap_or(rest.right()) - rest.x - space::LG * scale)
-                .max(0.0),
-            rest.height,
-        );
-        frame.text(label(
-            state,
-            format!(
-                "buffer {} of {}",
-                state.active_buffer + 1,
-                state.buffer_count
-            ),
-            left,
-            theme.ink_faint,
-            Align::Right,
-            scale,
-        ));
-    }
+    // `buffer 3 of 7` used to live here, which was the strip apologising for not showing the tabs.
+    // It shows them now.
 }
 
 fn draw_code(
@@ -2441,10 +2859,13 @@ fn draw_code(
     state: &EditorState,
     pane: &PaneView<'_>,
     gutter: Rect,
-    code: Rect,
+    area: &crate::layout::CodeArea,
     row_height: f32,
     scale: f32,
 ) {
+    // Everything below measures against the scrolling rows, never the whole pane: the split is the
+    // caller's, so the mouse and the popups get the same rectangle this does.
+    let code = area.code;
     let theme = &state.theme;
     // The mode belongs to the focused pane. An unfocused one is not in insert mode just because the
     // pane beside it is, and tinting it as though it were would be a lie about where typing goes.
@@ -2469,32 +2890,12 @@ fn draw_code(
         return;
     }
 
-    // Sticky scroll: the block heads enclosing the top of the viewport, pinned above it. Only when
-    // the head has actually scrolled off — pinning a line that is already visible would show it
-    // twice, which is the thing that makes this feature annoying elsewhere.
-    let sticky: Vec<usize> = if pane.focused && state.sticky_scroll {
-        vex_display::enclosing_heads(text, pane.scroll.line, state.display.tab_width, 3)
-            .into_iter()
-            .filter(|head| *head < pane.scroll.line)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    if let Some(pinned) = area.pinned {
+        frame.fill(pinned, theme.bg_alt);
+        frame.rule_bottom(pinned, theme.rule_soft, border::BORDER);
 
-    let (code, sticky_area) = if sticky.is_empty() {
-        (code, None)
-    } else {
-        let strip = row_height * sticky.len() as f32;
-        let (top, rest) = code.split_top(strip);
-        (rest, Some(top))
-    };
-
-    if let Some(area) = sticky_area {
-        frame.fill(area, theme.bg_alt);
-        frame.rule_bottom(area, theme.rule_soft, border::BORDER);
-
-        for (index, head) in sticky.iter().enumerate() {
-            let y = area.y + index as f32 * row_height;
+        for (index, head) in area.heads.iter().enumerate() {
+            let y = pinned.y + index as f32 * row_height;
             let range = text.line_range(*head);
             let raw = text.slice_to_string(range.start..range.end);
             let content = expand_tabs(state, &raw);
@@ -2528,8 +2929,90 @@ fn draw_code(
     let height = state.visible_rows(code.height, row_height);
     let rows = state.display.rows_from(text, pane.scroll, height);
     let advance = column_advance(state, scale);
-    let text_left = code.x + space::SM * scale;
+    // One grid, read by every x below and by the mouse. The horizontal scroll offset enters the
+    // arithmetic here and nowhere else — a second copy is a click landing in a different column
+    // from the one under the pointer the instant the view moves sideways.
+    let grid = crate::layout::CodeGrid::new(
+        code,
+        advance,
+        row_height,
+        // Ignored while wrap is on: there is nothing to the right of the viewport then, and the
+        // remembered column must not affect anything while it is invisible.
+        if state.display.mode == WrapMode::None {
+            pane.scroll.column
+        } else {
+            0
+        },
+        scale,
+    );
+    let text_left = grid.x_of(0);
     let em = state.typography.code_size * scale;
+
+    // Diagnostics, search matches and inlay hints, narrowed to what is on screen — once per frame
+    // rather than once per row.
+    //
+    // Each of the three loops below used to walk its whole list for every visible row, so the cost
+    // was rows × N: searching a common substring in a large file made the row loop walk tens of
+    // thousands of matches forty times a frame. That is per-frame work bounded by the *document*
+    // instead of by the viewport, which is the one thing this editor is not allowed to do.
+    //
+    // A linear filter rather than a binary search, deliberately: the protocol does not promise
+    // diagnostics arrive in document order, and a `partition_point` over an unsorted list drops
+    // real errors silently. One pass over N is already the difference that matters.
+    let span = match (rows.first(), rows.last()) {
+        (Some(first), Some(last)) => first.range.start..last.range.end,
+        _ => CharOffset(0)..CharOffset(0),
+    };
+    let overlaps =
+        |range: &std::ops::Range<CharOffset>| range.start < span.end && range.end > span.start;
+
+    let diagnostics: Vec<(std::ops::Range<CharOffset>, _)> = if pane.focused {
+        state
+            .diagnostics
+            .items()
+            .iter()
+            .filter_map(|diagnostic| {
+                // The conversion is a rope lookup, so doing it here also takes it off the row loop.
+                let range = vex_lsp::range_from_lsp(text, diagnostic.range);
+                overlaps(&range).then_some((range, diagnostic.severity))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let matches: Vec<std::ops::Range<CharOffset>> = if pane.focused {
+        state
+            .search_matches
+            .iter()
+            .filter(|range| overlaps(range))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let hints: Vec<(CharOffset, String)> = if pane.focused && state.show_inlay_hints {
+        state
+            .inlay_hints
+            .iter()
+            .filter_map(|hint| {
+                let at = vex_lsp::from_lsp(text, hint.position);
+                if at < span.start || at > span.end {
+                    return None;
+                }
+                let content: String = match &hint.label {
+                    vex_lsp::lsp_types::InlayHintLabel::String(label) => label.clone(),
+                    vex_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
+                        parts.iter().map(|part| part.value.as_str()).collect()
+                    }
+                };
+                (!content.is_empty()).then_some((at, content))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     for (index, row) in rows.iter().enumerate() {
         let y = code.y + index as f32 * row_height;
@@ -2549,8 +3032,7 @@ fn draw_code(
         // Diagnostic underlines. Drawn as a 2px rule beneath the offending span rather than as a
         // fill, so the code stays readable — a wash over an error makes it *harder* to read the
         // thing you are being told about.
-        for diagnostic in state.diagnostics.items().iter().filter(|_| pane.focused) {
-            let range = vex_lsp::range_from_lsp(text, diagnostic.range);
+        for (range, severity) in &diagnostics {
             let start = range.start.max(row.range.start);
             let end = range.end.min(row.range.end);
             if start >= end {
@@ -2559,9 +3041,7 @@ fn draw_code(
 
             let from_column = columns_between(state, text, row.range.start, start);
             let to_column = columns_between(state, text, row.range.start, end);
-            let severity = diagnostic
-                .severity
-                .unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING);
+            let severity = severity.unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING);
             let color = if severity == vex_lsp::lsp_types::DiagnosticSeverity::ERROR {
                 theme.over_budget()
             } else {
@@ -2574,14 +3054,15 @@ fn draw_code(
                     y + row_height - border::ACCENT_BORDER * scale - 1.0,
                     ((to_column - from_column) as f32 * advance).max(advance),
                     border::ACCENT_BORDER * scale,
-                ),
+                )
+                .intersect(code),
                 color,
             );
         }
 
         // Search matches, under the selection fills: a match you have also selected should read as
         // selected.
-        for range in state.search_matches.iter().filter(|_| pane.focused) {
+        for range in &matches {
             let start = range.start.max(row.range.start);
             let end = range.end.min(row.range.end);
             if start >= end {
@@ -2595,7 +3076,8 @@ fn draw_code(
                     y,
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
-                ),
+                )
+                .intersect(code),
                 // The visual hue at low alpha: a found-text wash that is not the selection and not
                 // the cursor line.
                 theme
@@ -2624,7 +3106,8 @@ fn draw_code(
                     y,
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
-                ),
+                )
+                .intersect(code),
                 theme.selection_fill(if pane.focused {
                     state.mode
                 } else {
@@ -2706,34 +3189,21 @@ fn draw_code(
 
         // Inlay hints for this row, drawn in the gaps rather than shifting the text: the hint is
         // information *about* the code, and code that moves as hints arrive is code you cannot read.
-        if pane.focused && state.show_inlay_hints {
-            for hint in &state.inlay_hints {
-                let at = vex_lsp::from_lsp(text, hint.position);
-                if at < row.range.start || at > row.range.end {
-                    continue;
-                }
-                let content = match &hint.label {
-                    vex_lsp::lsp_types::InlayHintLabel::String(label) => label.clone(),
-                    vex_lsp::lsp_types::InlayHintLabel::LabelParts(parts) => {
-                        parts.iter().map(|part| part.value.as_str()).collect()
-                    }
-                };
-                if content.is_empty() {
-                    continue;
-                }
-
-                let column = columns_between(state, text, row.range.start, at);
-                let x = text_left + (column + row.indent) as f32 * advance;
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    content,
-                    Rect::new(x, y, (code.right() - x).max(0.0), row_height),
-                    theme.ink_faint,
-                    Align::Left,
-                    scale,
-                ));
+        for (at, content) in &hints {
+            if *at < row.range.start || *at > row.range.end {
+                continue;
             }
+            let column = columns_between(state, text, row.range.start, *at);
+            let x = text_left + (column + row.indent) as f32 * advance;
+            frame.text(run(
+                state,
+                Role::Value,
+                content.clone(),
+                Rect::new(x, y, (code.right() - x).max(0.0), row_height),
+                theme.ink_faint,
+                Align::Left,
+                scale,
+            ));
         }
 
         // One run per *highlighted segment*. Cost stays bounded by the viewport: a row yields at
@@ -2746,10 +3216,20 @@ fn draw_code(
         let mut column = 0usize;
 
         for segment in segments(pane.highlights, row.range.clone()) {
-            let x = text_left + indent_px + column as f32 * advance;
             let raw = text.slice_to_string(segment.range.clone());
             let content = expand_tabs(state, &raw);
+            let at = row.indent + column;
             column += content.chars().count();
+
+            // Sliced to the visible columns rather than drawn at a negative x and left to clip. A
+            // run *is* clipped by glyphon — but to its own rect, which is the one starting at that
+            // negative x, and glyphs are drawn after all quads within a layer. So a row scrolled
+            // sideways would paint its code over the line numbers. Slicing also keeps shaping
+            // bounded by the viewport, which is what a minified file needs.
+            let Some((x, content)) = visible_slice(&grid, at, &content) else {
+                continue;
+            };
+            let _ = indent_px;
 
             frame.text(run(
                 state,
@@ -3007,38 +3487,52 @@ fn draw_sidebar(
     ));
     y += line * 1.6;
 
+    // The panel is a fixed height and this list is not. In a short window the rows ran straight
+    // into the footer below and the two were painted over each other — the same defect the settings
+    // panel beside it had, and invisible for the same reason: the capture harness only ever
+    // rendered at 1600x1000, where everything fits.
+    //
+    // `y` still advances for a row that is not drawn, so the arithmetic is unchanged and only the
+    // painting is suppressed. The rows get the whole panel: the tagline below is decoration and
+    // gives way to them, rather than the other way round.
+    let limit = rect.bottom() - pad;
+
     let section = |frame: &mut Frame, content: &str, y: &mut f32| {
-        frame.text(label(
-            state,
-            content,
-            Rect::new(rect.x + pad, *y, width, line),
-            theme.ink_faint,
-            Align::Left,
-            scale,
-        ));
+        if *y + line <= limit {
+            frame.text(label(
+                state,
+                content,
+                Rect::new(rect.x + pad, *y, width, line),
+                theme.ink_faint,
+                Align::Left,
+                scale,
+            ));
+        }
         *y += line * 1.2;
     };
 
     let pair = |frame: &mut Frame, key: &str, value: &str, y: &mut f32, color: Oklch| {
-        let row = Rect::new(rect.x + pad, *y, width, line);
-        frame.text(run(
-            state,
-            Role::Value,
-            key,
-            row,
-            theme.ink_dim,
-            Align::Left,
-            scale,
-        ));
-        frame.text(run(
-            state,
-            Role::Value,
-            value,
-            row,
-            color,
-            Align::Right,
-            scale,
-        ));
+        if *y + line <= limit {
+            let row = Rect::new(rect.x + pad, *y, width, line);
+            frame.text(run(
+                state,
+                Role::Value,
+                elide(state, Role::Value, key, width * 0.6, scale),
+                row,
+                theme.ink_dim,
+                Align::Left,
+                scale,
+            ));
+            frame.text(run(
+                state,
+                Role::Value,
+                value,
+                row,
+                color,
+                Align::Right,
+                scale,
+            ));
+        }
         *y += line;
     };
 
@@ -3214,28 +3708,33 @@ fn draw_sidebar(
         theme.ink_dim,
     );
 
+    // The rule this editor is built around, in the panel that shows it being kept. Decorative, so
+    // it is the first thing to go when the panel is too short to hold both — in a small window the
+    // coordinate readouts are what someone is actually looking at.
     let footer = Rect::new(rect.x + pad, rect.bottom() - line * 4.0, width, line * 3.0);
-    let mut spec = state.typography.spec(Role::Prose);
-    spec.size_px *= scale;
-    frame.text(TextRun {
-        text: "Nothing on the UI thread may ever be unbounded in cost.".into(),
-        spec,
-        color: theme.ink_dim,
-        rect: footer,
-        align: Align::Left,
-        center_vertically: false,
-        wrap: true,
-        layer: Layer::default(),
-    });
-    frame.fill(
-        Rect::new(
-            rect.x + pad,
-            footer.y - line * 0.5,
-            26.0 * scale,
-            2.0 * scale,
-        ),
-        accent,
-    );
+    if y + line <= footer.y - line * 0.5 {
+        let mut spec = state.typography.spec(Role::Prose);
+        spec.size_px *= scale;
+        frame.text(TextRun {
+            text: "Nothing on the UI thread may ever be unbounded in cost.".into(),
+            spec,
+            color: theme.ink_dim,
+            rect: footer,
+            align: Align::Left,
+            center_vertically: false,
+            wrap: true,
+            layer: Layer::default(),
+        });
+        frame.fill(
+            Rect::new(
+                rect.x + pad,
+                footer.y - line * 0.5,
+                26.0 * scale,
+                2.0 * scale,
+            ),
+            accent,
+        );
+    }
 }
 
 fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
@@ -3289,7 +3788,20 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         if prompt.is_search() && !prompt.input.is_empty() {
             // Words, not `↵`: the bundled font has no glyph for it, so it drew a tofu box — and the
             // whole point of this line is to be read by someone who does not yet know the keys.
-            let keys = "enter next · shift-enter back · ctrl-shift-f every file";
+            //
+            // A replace prompt teaches its own keys instead of the search ones, and which of them
+            // depends on where the caret is: naming "enter replaces" while the caret is in the field
+            // you find with would be teaching a key that does nothing yet.
+            let keys = if prompt.is_replace() {
+                match prompt.focus {
+                    crate::prompt::Field::Query => "tab to what replaces it",
+                    crate::prompt::Field::Replacement => {
+                        "enter replaces one · ctrl-enter replaces all · tab back"
+                    }
+                }
+            } else {
+                "enter next · shift-enter back · ctrl-shift-f every file"
+            };
             let (text, color) = match prompt.matches.len() {
                 0 => ("no matches".to_string(), theme.stale()),
                 total => match vex_buffer::index_of(&prompt.matches, state.cursor()) {
@@ -3401,8 +3913,18 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         ),
         {
             let (errors, warnings) = state.diagnostics.counts();
+            let (project_errors, project_warnings) = state.problems.counts();
+            let elsewhere = (project_errors + project_warnings).saturating_sub(errors + warnings);
+
             if errors + warnings == 0 {
-                (state.server_status.clone(), theme.ink_faint)
+                // Nothing wrong here. If something is wrong *elsewhere*, say so — that is the whole
+                // reason the project store exists, and a clean statusline over a broken project is
+                // the misleading answer.
+                if elsewhere > 0 {
+                    (format!("{elsewhere} elsewhere"), theme.stale())
+                } else {
+                    (state.server_status.clone(), theme.ink_faint)
+                }
             } else {
                 let plural = |count: usize, word: &str| {
                     if count == 1 {
@@ -3439,10 +3961,13 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
             cell_width - space::MD * scale,
             right.height,
         );
+        // These are right-aligned, so an over-long cell was clipped at its *left* edge and
+        // `no language server` came out as `o language server` — a missing first letter, which
+        // reads as a rendering fault rather than as text that did not fit.
         frame.text(run(
             state,
             Role::Value,
-            content,
+            elide(state, Role::Value, &content, cell.width, scale),
             cell,
             color,
             Align::Right,

@@ -44,6 +44,85 @@ pub fn strip_extended_prefix(path: &str) -> &str {
     path.strip_prefix(r"\\?\").unwrap_or(path)
 }
 
+/// Resolves a project-relative path, refusing anything that escapes the root.
+///
+/// **Lexically, without asking the filesystem**, which is the whole point. The version this
+/// replaced joined the name onto the root, canonicalized the *parent*, and compared with
+/// `starts_with`. Two things defeated that. [`canonical`] returns its input unchanged when
+/// `canonicalize` fails, and `canonicalize` fails with `NotFound` the moment any component of the
+/// path does not exist yet — which is the normal case for a file you are about to create.
+/// `Path::starts_with` compares components, and components normalise `.` but never `..`. So
+/// `../evil.txt` was caught, and `x/../../../../evil.txt` with no `x` on disk was not: the parent
+/// came back verbatim, `..` chain intact, and matched the root on its first two components.
+/// `create_dir_all` then walked the chain happily and `write` put the file wherever it landed.
+///
+/// Taking the root as a parameter rather than reading it from `self` is what makes the rules
+/// testable, and this one had no test at all. It is also why the Windows-only accident that hid it
+/// no longer matters: Win32 collapses `..` before the syscall, so the machine this editor is
+/// developed on could not reproduce its own bug.
+///
+/// Returns the *folded* path, so what the caller writes to is what was checked. Symlinks are not
+/// visible to lexical folding; callers that can afford a filesystem round trip should follow up
+/// with [`canonical`] where the parent genuinely exists.
+///
+/// `windows` says which naming rules apply, as a parameter rather than a `cfg!` — the rule this
+/// codebase already follows for `paths::resolve` and `position::encode_uri`, and the reason is
+/// exactly this function. The first version walked `Path::components()`, which *is* the platform:
+/// on Windows `C:\Windows\x` parses as a drive prefix and is refused, and on Linux it parses as one
+/// perfectly legal filename containing backslashes. The test asserting it was refused passed here
+/// and failed on CI. Splitting the string directly means both rule sets are testable from either
+/// machine, which is the only way the Windows half of this is ever exercised.
+pub fn within(root: &std::path::Path, relative: &str, windows: bool) -> Option<std::path::PathBuf> {
+    let relative = relative.trim();
+    if relative.is_empty() {
+        return None;
+    }
+
+    // `\` separates on Windows and is an ordinary character in a filename everywhere else.
+    let separator = |c: char| c == '/' || (windows && c == '\\');
+
+    // Absolute, drive-qualified or a UNC share: `join` lets any of these replace the root outright,
+    // which the old check never looked for at all.
+    if relative.starts_with(separator) {
+        return None;
+    }
+    if windows && relative.chars().nth(1) == Some(':') {
+        return None;
+    }
+
+    let mut folded = root.to_path_buf();
+    // How deep below the root we are. A `..` at zero is an escape, and popping is only safe while
+    // this is positive — otherwise it would eat the root's own components.
+    let mut depth = 0usize;
+
+    for segment in relative.split(separator) {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                folded.pop();
+            }
+            name => {
+                folded.push(name);
+                depth += 1;
+            }
+        }
+    }
+
+    // `.`, or `a/..`, names the root itself — a directory, and not a file anything here may create,
+    // rename or delete.
+    //
+    // The containment check is repeated against the assembled path because `PathBuf::push`
+    // *replaces* what it has when the segment is drive-qualified — and that is a property of the
+    // machine this runs on, not of the `windows` flag, so a caller passing the two apart could
+    // otherwise walk a `C:\…` segment straight out of the root. Cheap, and it makes the function
+    // safe under any combination rather than only the honest ones.
+    (depth > 0 && folded.starts_with(root)).then_some(folded)
+}
+
 /// Canonicalizes a path and removes the prefix Windows adds while doing it.
 pub fn canonical(path: &std::path::Path) -> std::path::PathBuf {
     match path.canonicalize() {

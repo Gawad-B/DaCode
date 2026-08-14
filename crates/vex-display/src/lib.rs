@@ -17,7 +17,7 @@
 //! what the user's mental model uses anyway.
 
 use std::ops::Range;
-use vex_text::{CharOffset, DisplayPoint, Point, Text};
+use vex_text::{Anchor, CharOffset, DisplayPoint, Edit, Point, Text};
 
 /// How lines that exceed the viewport width are handled.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -38,11 +38,28 @@ pub enum WrapMode {
 pub struct ScrollAnchor {
     pub line: usize,
     pub sub_row: usize,
+    /// Leftmost visible display column.
+    ///
+    /// Only means anything with [`WrapMode::None`]: with wrap on there is nothing to the right of
+    /// the viewport to scroll to. It is *remembered* rather than reset while wrapping, so turning
+    /// wrap off returns you to where you were looking — and everything that draws or hit-tests
+    /// ignores it while wrap is on, which is one rule in one place rather than a reset in the
+    /// toggle, the settings panel and the config reader.
+    ///
+    /// It lives here rather than beside it because of what this struct already travels through: it
+    /// is the field a buffer switch swaps and a pane save/restore carries, so the column comes with
+    /// them for free. On `EditorState` it would draw every unfocused pane at the focused pane's
+    /// offset.
+    pub column: usize,
 }
 
 impl ScrollAnchor {
     pub fn at_line(line: usize) -> Self {
-        Self { line, sub_row: 0 }
+        Self {
+            line,
+            sub_row: 0,
+            column: 0,
+        }
     }
 }
 
@@ -146,6 +163,71 @@ impl Folds {
                 None => return line,
             }
         }
+    }
+
+    /// The last line at or before `line` that is not hidden.
+    ///
+    /// Terminates because a fold's head is always visible and always precedes the lines it hides,
+    /// so each step strictly decreases the line.
+    pub fn previous_visible(&self, line: usize) -> usize {
+        let mut line = line;
+        loop {
+            match self
+                .closed
+                .iter()
+                .find(|fold| line > fold.start && line <= fold.end)
+            {
+                Some(fold) => line = fold.start,
+                None => return line,
+            }
+        }
+    }
+
+    /// Moves folds to follow an edit.
+    ///
+    /// A fold is a pair of line numbers, and line numbers are only meaningful against the text they
+    /// were taken from. Nothing moved them, so an edit that removed lines left a fold naming a
+    /// block that no longer existed — and since [`Folds::is_hidden`] asks only whether a line falls
+    /// inside the range, a fold whose end had run off the document hid *everything below its head*.
+    /// Delete a function above a closed fold and the rest of the file vanished, with a fold marker
+    /// on one line as the only clue.
+    ///
+    /// The head and the tail travel as [`Anchor`]s through [`vex_text::transform_offset`], which is
+    /// the same code selections and diagnostics use — its doc comment already promised folds would
+    /// come through here. Both take `Bias::Right`, so text inserted exactly at a boundary is drawn
+    /// on the same side of the fold as the line it was typed into.
+    ///
+    /// Bounded by the number of folds, which is what someone folded by hand; the text work is two
+    /// line lookups each.
+    pub fn transform(&mut self, before: &Text, after: &Text, edits: &[Edit]) {
+        let last = after.last_line();
+
+        self.closed = self
+            .closed
+            .iter()
+            .filter_map(|fold| {
+                let head = Anchor::right(before.line_to_char(fold.start.min(before.last_line())))
+                    .transform(edits);
+                let tail = Anchor::right(before.line_to_char(fold.end.min(before.last_line())))
+                    .transform(edits);
+
+                let start = after.char_to_line(head.offset);
+                let end = after.char_to_line(tail.offset).min(last);
+
+                // The block collapsed to a single line — or was deleted outright, which lands both
+                // anchors on the same offset. Either way there is nothing left to hide, and keeping
+                // it would leave a fold marker on a line with no block under it.
+                (end > start).then_some(start..end)
+            })
+            .collect();
+
+        // Widest first among equal heads, so the survivor of the dedup below is the one that hides
+        // the most — dropping the outer fold instead would reveal lines the user had folded away.
+        self.closed
+            .sort_by_key(|fold| (fold.start, std::cmp::Reverse(fold.end)));
+        // An edit can squeeze two folds onto the same head. `closed_at` and `open` both work by
+        // start line, so a duplicate would be a fold that needs opening twice.
+        self.closed.dedup_by_key(|fold| fold.start);
     }
 }
 
@@ -442,6 +524,27 @@ impl DisplayMap {
         self.wrap_line(text, line).len()
     }
 
+    /// The display rows a buffer line actually contributes.
+    ///
+    /// All of its wrapped rows, or exactly one when it heads a closed fold — which is what
+    /// [`DisplayMap::rows_from`] draws for it. Anything that steps through rows must count them the
+    /// same way rows_from does, or it steps past what is on screen.
+    fn visible_rows(&self, text: &Text, line: usize) -> Vec<Row> {
+        let mut rows = self.wrap_line(text, line);
+        if self.folds.closed_at(line).is_some() {
+            rows.truncate(1);
+        }
+        rows
+    }
+
+    fn visible_rows_in_line(&self, text: &Text, line: usize) -> usize {
+        if self.folds.closed_at(line).is_some() {
+            1
+        } else {
+            self.rows_in_line(text, line)
+        }
+    }
+
     /// Walks display rows forward from an anchor. Bounded by `count`, never by document size.
     pub fn rows_from(&self, text: &Text, anchor: ScrollAnchor, count: usize) -> Vec<Row> {
         let mut out = Vec::with_capacity(count);
@@ -534,6 +637,7 @@ impl DisplayMap {
         let target = ScrollAnchor {
             line: target_line,
             sub_row: target_sub_row,
+            column: anchor.column,
         };
 
         // Above the viewport: put the target `margin` rows below the top.
@@ -557,9 +661,23 @@ impl DisplayMap {
         }
     }
 
+    /// Moves the viewport anchor by display rows, forwards or back.
+    ///
+    /// The wheel used to step by *buffer* lines with no idea folds existed, so one notch crossed a
+    /// whole closed block, and stepping back up landed inside it — where [`DisplayMap::rows_from`]
+    /// nudges the anchor forward again to avoid drawing hidden text. The view could not climb back
+    /// over a fold at all.
+    pub fn step(&self, text: &Text, anchor: ScrollAnchor, delta: isize) -> ScrollAnchor {
+        if delta < 0 {
+            self.step_back(text, anchor, delta.unsigned_abs())
+        } else {
+            self.step_forward(text, anchor, delta as usize)
+        }
+    }
+
     /// Moves an anchor back by `count` display rows.
     fn step_back(&self, text: &Text, from: ScrollAnchor, count: usize) -> ScrollAnchor {
-        let mut line = from.line;
+        let mut line = self.folds.previous_visible(from.line.min(text.last_line()));
         let mut sub_row = from.sub_row;
         let mut remaining = count;
 
@@ -573,12 +691,96 @@ impl DisplayMap {
             if line == 0 {
                 break;
             }
-            line -= 1;
-            sub_row = self.rows_in_line(text, line).saturating_sub(1);
+            line = self.folds.previous_visible(line - 1);
+            sub_row = self.visible_rows_in_line(text, line).saturating_sub(1);
             remaining -= 1;
         }
 
-        ScrollAnchor { line, sub_row }
+        ScrollAnchor {
+            line,
+            sub_row,
+            // The horizontal position is not this function's business. Dropping it here would snap
+            // the view back to column zero every time the cursor moved a row.
+            column: from.column,
+        }
+    }
+
+    /// Moves an anchor forward by `count` display rows, stopping at the last line.
+    fn step_forward(&self, text: &Text, from: ScrollAnchor, count: usize) -> ScrollAnchor {
+        let last = text.last_line();
+        let mut line = self.folds.next_visible(from.line.min(last)).min(last);
+        let mut sub_row = from.sub_row;
+
+        for _ in 0..count {
+            if sub_row + 1 < self.visible_rows_in_line(text, line) {
+                sub_row += 1;
+                continue;
+            }
+            let next = self.folds.next_visible(line + 1);
+            if next > last {
+                break;
+            }
+            line = next;
+            sub_row = 0;
+        }
+
+        ScrollAnchor {
+            line,
+            sub_row,
+            column: from.column,
+        }
+    }
+
+    /// The display column `offset` sits at within its own row.
+    ///
+    /// The horizontal counterpart of the row index [`DisplayMap::display_point`] returns — and
+    /// unlike it, this answers even when the position is off screen, which is exactly when the
+    /// horizontal reveal needs it.
+    pub fn column_of(&self, text: &Text, offset: CharOffset) -> usize {
+        let line = text.char_to_line(offset);
+        let rows = self.wrap_line(text, line);
+        let Some(row) = rows
+            .iter()
+            .find(|row| offset >= row.range.start && offset <= row.range.end)
+        else {
+            return 0;
+        };
+        let chars: Vec<char> = text
+            .slice_to_string(row.range.start..offset.min(row.range.end))
+            .chars()
+            .collect();
+        row.indent + self.columns_of(&chars)
+    }
+
+    /// Slides the view sideways the least amount that brings `offset` into view.
+    ///
+    /// Returns the anchor untouched when soft wrap is on: there is nothing to the right of the
+    /// viewport then, and the remembered column must not drift while it is invisible.
+    ///
+    /// `margin` is in columns and is capped at half the viewport, so a narrow pane still resolves
+    /// rather than fighting itself.
+    pub fn scroll_to_reveal_column(
+        &self,
+        text: &Text,
+        anchor: ScrollAnchor,
+        width: usize,
+        offset: CharOffset,
+        margin: usize,
+    ) -> ScrollAnchor {
+        if self.mode != WrapMode::None || width == 0 {
+            return anchor;
+        }
+
+        let column = self.column_of(text, offset);
+        let margin = margin.min(width / 2);
+        let mut moved = anchor;
+
+        if column < anchor.column.saturating_add(margin) {
+            moved.column = column.saturating_sub(margin);
+        } else if column + margin >= anchor.column + width {
+            moved.column = (column + margin + 1).saturating_sub(width);
+        }
+        moved
     }
 
     /// Vertical motion that follows *display* rows, so moving down a wrapped line lands on the
@@ -591,7 +793,11 @@ impl DisplayMap {
         goal_column: Option<usize>,
     ) -> CharOffset {
         let line = text.char_to_line(offset);
-        let rows = self.wrap_line(text, line);
+        // The rows this line *shows*, which for a closed fold head is only the first: the caret
+        // must not step onto a wrapped row of a line whose block is hidden, and must not walk down
+        // into the hidden block either. Both used to happen — arrow-down from a fold marker put the
+        // caret on text nobody could see, and typing then edited it.
+        let rows = self.visible_rows(text, line);
         let index = rows
             .iter()
             .position(|row| offset >= row.range.start && offset <= row.range.end)
@@ -614,13 +820,14 @@ impl DisplayMap {
             if line == 0 {
                 return CharOffset::ZERO;
             }
-            let previous = self.wrap_line(text, line - 1);
+            let previous = self.visible_rows(text, self.folds.previous_visible(line - 1));
             previous[previous.len() - 1].clone()
         } else {
-            if line >= text.last_line() {
+            let next = self.folds.next_visible(line + 1);
+            if line >= text.last_line() || next > text.last_line() {
                 return text.len_chars();
             }
-            self.wrap_line(text, line + 1)[0].clone()
+            self.visible_rows(text, next)[0].clone()
         };
 
         self.offset_at_column(text, &row, column)

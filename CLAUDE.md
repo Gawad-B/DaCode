@@ -6,8 +6,8 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 
 ## What this is
 
-A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-567 tests, clippy clean.
+A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~50,000 lines,
+724 tests, clippy clean.
 
 ## Commands
 
@@ -38,6 +38,14 @@ cargo check --workspace --target x86_64-pc-windows-msvc   # 7 of 9 crates; see "
 
 If you add a background producer, give it a `Version` and a `poll()` that never blocks, and wire it
 into `about_to_wait` beside the others.
+
+**`crates/vex/tests/latency.rs` is the rule as a test that fails the build.** It asserts *flatness*,
+not milliseconds: a hundredfold larger document may cost at most 3x more, which is machine-
+independent in a way an absolute budget is not — a loaded runner is slower at everything, so any
+threshold tight enough to catch a regression is also tight enough to fail at random. Absolute
+ceilings are there too, set where only a catastrophe trips them. Verified the way every guard here
+must be, by injecting a violation: a document-length walk added to `chrome::draw` fails it at 104x,
+and one added to `InsertText` fails it at 111x. `cargo bench` still measures; this is what *fails*.
 
 ## Architecture, in dependency order
 
@@ -78,6 +86,18 @@ returns the exact inverse for undo. Nothing else may touch the rope. `EditKind::
 own undo group" — use it for anything that is one *intent* however many edits it makes (a rename, a
 format, a macro replay, a snippet expansion).
 
+**In the binary, that path is `EditorState::mutate`, not `Document::apply`.** The document is the
+funnel for changing text, but folds live *outside* it in the display map and are line numbers —
+nothing moved them, so deleting a function above a closed fold left a range running off the end of
+the file, and since `is_hidden` only asks whether a line falls inside the range, that hid everything
+below the fold's head. `mutate` takes a closure, runs it against the document, then replays
+`changes_since` over the folds through `vex_text::transform_offset`. `conventions.rs` greps for it,
+because "remember to call the other thing too" is not a rule that survives a year — and that grep
+found two sites hand-editing had already missed.
+
+**Nothing outside the document may hold a bare line number across an edit.** Folds are the case that
+existed; if you add another, transform it in `mutate` beside them or clear it, and say which.
+
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
 headlessly. Adding a user-visible operation means adding an `Action`, a name in `Action::from_name`,
@@ -98,8 +118,18 @@ modifier is held and leaves `shift` on the key for bindings that mean it. Never 
 platform event any other way.
 
 **Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
-the chrome and the toolbar, `menu::geometry`, `welcome::geometry`. The drawing code reads the same
-function. A rectangle computed twice is a click that lands somewhere other than where it looks.
+the chrome and the toolbar, `menu::geometry`, `welcome::geometry`, `settings_ui::panel`,
+`tree::panel`, `layout::CodeArea`. The drawing code reads the same function. A rectangle computed
+twice is a click that lands somewhere other than where it looks.
+
+That rule has now been broken three times and each break looked like a different bug. `draw_code`
+shadowed its own `code` parameter with what sticky scroll left of it, so the mouse, the hover box,
+the completion popup and the which-key hint all measured against a rectangle a row taller per pinned
+head — clicks landed up to three lines low, and because nothing is pinned at the top of a file it
+read as intermittent. The file tree's click handler left no bottom pad where the drawing did, so the
+two asked `FileTree::visible` for different heights and clicking one file opened another. **A
+function that returns rows must return their rectangles too**, and the caller must do the splitting
+before either half runs — `CodeArea::new` exists so `draw_code` cannot shrink a rectangle privately.
 
 **If a feature can only be reached by a key, it is not finished.** The toolbar, the menus, the context
 menu, the clickable settings rows and the clickable wizard all exist because someone who chose the
@@ -116,6 +146,104 @@ felt like.
 **The executor owns no processes.** `execute()` records a request on the state (`pending_request`) or
 returns `Outcome::Window(action)`; the event loop, which owns the LSP client and the pane list, carries
 it out. That split is what lets hover and rename be tested with no server running.
+
+**Never configure the surface while holding a frame.** wgpu requires the acquired `SurfaceOutput` to
+be dropped *before* `Surface::configure`. Doing both at once is a validation error, which the default
+handler turns into a panic, whose unwind drops the texture, whose drop is a second validation error,
+which panics again — and a panic during a panic aborts. That was the whole of "minimise vex and it
+closes": minimising is what makes the surface start reporting `Suboptimal`, and that branch
+reconfigured inline. `Renderer` now sets a `reconfigure` flag and acts on it at the top of the *next*
+frame. The device also has an uncaptured-error handler that reports instead of panicking, because a
+GPU error must never take unsaved work with it — a release build on Windows has no console to say so
+in.
+
+**Nothing draws without being measured against its box.** `run()`/`label()` set `wrap: false` and
+glyphon clips a run to its rectangle, so text that is too long simply stops mid-word with nothing to
+say it was cut. Anything user-supplied or variable-length goes through `chrome::elide`, which uses
+`Typography::advance` — a type-scale estimate, not the shaper, so it can be a character out either
+way. Better an approximate ellipsis than an exact guillotine.
+
+**The horizontal scroll offset enters pixel arithmetic only through `layout::CodeGrid`.** That type
+is the single mapping between a display column and an x, read by `draw_code` to place every glyph and
+by `App::offset_at` to turn a click into an offset. There were two copies before it existed and they
+already disagreed about the left pad — drawing used `space::SM` (12) and the mouse subtracted 8 — so
+a click landed most of a character out. A second copy plus an offset is a click landing in a
+different column from the one under the pointer, growing as you scroll. Text is *sliced* to the
+visible columns rather than drawn at a negative x: a run is clipped to its own rect, which is the one
+starting at that negative x, and glyphs are drawn after all quads in a layer — so scrolled code would
+paint over the line numbers. Quads positioned from a column go through `Rect::intersect(code)` for
+the same reason; `Frame::fill` clips nothing.
+
+**A panel that scrolls must hand its rectangles to the mouse.** `settings_ui::panel` returns the
+visible rows and their boxes; drawing and hit-testing both read it. Teaching the drawing half to
+scroll while the click handler kept its own copy of the walk immediately produced clicks landing on
+the row that *used* to be there — the same failure `layout.rs` exists to prevent, one panel over.
+
+**Resolve a program to a path before spawning it.** `vex_lsp::resolve` returns the `PathBuf`, not a
+yes/no, because on Windows the two are different questions: the check honours `PATHEXT` and finds
+`pyright-langserver.cmd`, while `Command::new` on a bare name only ever appends `.exe`. They
+disagreed, so no npm-installed language server could start at all. Hand the resolved path to
+`Command::new` and std routes a `.cmd` through `cmd.exe` itself with the escaping CVE-2024-24576
+added; hand-rolling `cmd /c` would reopen that hole.
+
+**A configured command containing a separator is a path, not a name.** `resolve_command` exists
+beside `resolve` for that one distinction: `PATH` is a list of directories, so looking `.venv/bin/
+pylsp` up in it finds nothing, ever — and a venv's own server is the main reason to name one.
+Relative paths resolve against the **project root**, not the process's working directory, which for
+a windowed editor is wherever the desktop launched it from and never what the user meant.
+
+**A path typed into a prompt is relative to the project, never to the process.** The same reasoning,
+and it caught Save As and `:w path` too: both stored the raw string, and `fs::write` resolves it
+against whatever directory the desktop launched the editor from, so `src/notes.rs` wrote a file the
+user could not find. Go through `absolute_in`. An absolute path is left alone — saving a copy outside
+the project is a real thing to want.
+
+**Containment is decided lexically, not by the filesystem.** `vex_project::within` folds `.` and `..`
+itself and refuses a climb above the root. Asking `canonicalize` cannot work for a file that does not
+exist yet, which is the normal case for one being created: it fails with `NotFound`, `canonical`
+falls back to returning its input with the `..` chain intact, and `Path::starts_with` compares
+components — which normalise `.` and never `..`. So `x/../../../../evil.txt` passed the check and
+`create_dir_all` walked it happily. It takes the root as a parameter, which is why it has tests;
+nothing on Windows could have found this, because Win32 collapses `..` before the syscall.
+
+**Buffer identity is the canonical path; buffer *order* is one function.** `buffer_key` decides
+whether two buffers are the same file — it used to be `relative_crumbs`, a display path truncated to
+four segments, so one file opened two ways got two undo histories and two files deep in different
+trees collided. `stored_index` is the only mapping from a buffer's number to its slot in
+`App::buffers`, which skips the live one; it existed and was written out by hand at five other sites
+anyway, and that is exactly how `switch_to` came to renumber the whole list on every non-adjacent
+switch. Anything that removes a buffer must also tell `Panes::buffer_closed`, or a split pane keeps
+an index that now names a different file.
+
+**Every `didOpen` owes a `didClose`.** `opened_document` records what the server was told, and
+`start_language_server` closes it before the next one opens — which covers switching, closing,
+renaming and deleting, because all four reach `after_buffer_change`. Without it a server accumulated
+every document of a session, each frozen at the version last sent.
+
+**Formatting has two answers, and the server is asked at the handshake which one applies.**
+`documentFormattingProvider` from the `initialize` reply decides whether `Action::Format` goes to the
+server or to `format::FormatWorker`. pyright says no, so a Python file formats through ruff or black;
+a plain JavaScript project has no server at all, and `sync_lsp` returns before it would ever take the
+request — which is why `route_format` runs at the *top* of that function rather than beside its five
+callers. A formatter is given text on stdin and never a path: one handed the file would rewrite it
+behind a dirty buffer.
+
+**A capability vex does not declare is a feature the server silently withholds.** rust-analyzer will
+not offer an out-of-scope name at all unless the client advertises `completionItem.resolveSupport`
+for `additionalTextEdits` — computing an import for each of a hundred candidates up front is too
+slow to be worth doing, so it simply does not. Auto-import was therefore not a parsing gap but a
+handshake one, and nothing in the editor could see it: the list came back looking perfectly normal
+with the one useful entry missing. `labelDetailsSupport` is the same shape — without it the server
+folds the detail into the label and an item arrives named `HashMap(use std::collections::HashMap)`.
+When a server "does not support" something, check what vex claimed before assuming it does not.
+
+**The language table is pivoted around the language, not the program.** `vex_lsp::LANGUAGES` carries
+the extensions, the `languageId` and the servers together, because `vex.server("python", …)` names a
+*language* and matching that to a file needs the extension list — which used to exist only as arms
+of a `match`, reachable by nothing. `ServerSpec` is owned rather than `&'static str` for the same
+reason: a server named in `init.lua` is not static, and pretending otherwise costs more than the
+allocation does. A configured entry goes **ahead** of the built-ins rather than replacing them, so
+naming a venv does not also throw away the fallback.
 
 **Paint layers.** The renderer draws all quads then all glyphs *per layer*, so an overlay on a higher
 layer occludes text below it. Within one layer it cannot. Panels go on `Layer::Panel`, the palette on
@@ -148,13 +276,33 @@ They are cleared on buffer change: they are line numbers and nothing more.
   not include — a value that cannot occur on the machine the test was written on.
 - **A rule that keeps being broken becomes a test.** `crates/vex/tests/conventions.rs` greps the
   workspace for direct `canonicalize()` calls, because that one slip caused three consecutive Windows CI
-  failures and each cost a fifteen-minute round trip to find. Verify such a guard by *injecting a
+  failures and each cost a fifteen-minute round trip to find. It also greps for text changed outside
+  `EditorState::mutate`, which is what carries the folds. Verify such a guard by *injecting a
   violation* — the first version scanned zero files (cargo runs tests with the crate as the working
   directory, not the workspace) and passed while checking nothing.
+- **A guard that reads a *window* of lines can pass while checking nothing.** The mutation grep's
+  first version looked a few lines back for a nearby `mutate(` call, and the injected violation
+  happened to sit two lines under an unrelated one — green, and worthless. It checks the *receiver*
+  now: inside the closure the document is named plainly, everywhere else it is reached through
+  something. Prefer a test that can only be satisfied one way over one that looks for context.
+- **A test must drive the real code path, not a copy of it.** The first version of the session
+  ordering test wrote out its own restore loop, so it passed whatever `main` did — and passed with
+  the defect injected. `restore_session` and `session_snapshot` exist because the logic was
+  unreachable from a test while it lived inside `main` and inside the function that also wrote the
+  file. If a defect is not reachable from a test, that is the first thing to fix.
+- **A timing guard has to measure the thing, not the early return.** `median` reuses one
+  `EditorState` across thousands of iterations, so a keystroke test for electric dedent measured the
+  scan once and the "line is no longer blank" early return every time after. `latency.rs` calls
+  `dedent_for_closer` directly for that reason. Injecting the unbounded walk back reports 96x.
 - **A test that names a program must name one the *platform* guarantees**, not one the machine happens
   to have. `picker.rs` asserted `which("sh")` and passed everywhere it had ever run — including the
   Windows runner, whose image ships Git's `sh.exe` — then failed on the first real Windows developer
   machine, which does not have one. `cmd` on Windows, `sh` elsewhere, as `paths.rs` already did.
+- **The same goes for a path.** A test opening `sub/../a.rs` without creating `sub` passes on Windows
+  and nowhere else: Win32 collapses `..` lexically before the syscall, and every other kernel walks
+  it and returns `ENOENT`. That asymmetry is the reason `vex_project::within` exists at all, and it
+  still caught a test written an hour after the function was. Create every directory a test path
+  names, even the ones it only passes through.
 - **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
   thread-safe against the `getenv` other tests do in parallel, and doing it deadlocked this suite
   inside glibc for twenty minutes. Take the value as a parameter instead — see
@@ -170,8 +318,18 @@ work on Wayland here, so this is the only way — and it is better anyway, being
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
---splash --empty --at LINE --columns N --no-vim --help-panel --menu --context-menu --commands
---which-key PREFIX`.
+--splash --empty --at LINE --at-column N --row N --columns N --no-wrap --size WxH --no-vim
+--help-panel --menu --context-menu --commands --which-key PREFIX --symbols QUERY
+--block LINE:COLUMN`.
+
+`--row N` selects a settings row, which is the only way to see a section below the fold — the panel
+scrolls to its selection, and the language-server report is always below it.
+
+**Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
+and a whole family of defects lives below that: the settings rows collided with the footer under
+~900px of height, the toolbar was laid out at a negative x under ~450px of width, and neither was
+reproducible here. Four overflow defects shipped for exactly this reason. Anything with a panel in
+it gets captured at a small size too.
 
 ## Style
 
@@ -224,6 +382,13 @@ anything platform-shaped:
 | What a right-click offers | `crates/vex/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/vex-theme/src/theme.rs` |
 | LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
+| Which language server runs | `crates/vex-lsp/src/lib.rs` — `LANGUAGES`, plus `vex.server` in config |
+| Where the settings rows are | `crates/vex/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
+| Where the tree's rows are | `crates/vex/src/tree.rs` — `panel`, same rule |
+| Whether a file may be opened | `crates/vex/src/open.rs` — every refusal is a sentence for the screen |
+| Whether a path is inside the project | `crates/vex-project/src/lib.rs` — `within`, lexical and testable |
+| Which buffer is which | `crates/vex/src/main.rs` — `buffer_key` for identity, `stored_index` for order |
+| What survives an edit | `crates/vex/src/chrome.rs` — `EditorState::mutate` |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
 panel. If you add it to fewer, it will silently not work somewhere.
@@ -238,3 +403,21 @@ Smaller ones, from the non-modal work: a drag after a double-click extends by ch
 word; the which-key popup sits at the top left of the code area rather than following the cursor,
 because a popup that moved as you typed would be harder to read than a still one; and the palette and
 help panel take the keyboard only — their rows are not clickable, though the menus' are.
+
+Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{` is more than four
+or five hundred lines above it is left where it was typed. It used to walk to the start of the
+document, which cost 5.8 ms per keystroke in a hundred-thousand-line file. Doing nothing is what
+already happened when no opener was found, so there was nothing new to invent.
+
+Only the *active* buffer gets a file watcher, a git diff, and a language server. Background buffers
+get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused buffer is
+noticed when you switch to it rather than when it happens. Deliberate — the alternative is N watchers
+and N servers — but it is a limitation, not an oversight.
+
+Known and stated rather than hidden: **buffer search is still linear in the document**. `find_all`
+no longer copies the rope — it scans a line at a time, so the memory is bounded and a query
+containing a newline falls back to the whole-document path — but a rare query in a very large file
+still walks all of it on the UI thread. The fix is the same shape as syntax and git: a worker with a
+`Version` tag. **Opening a file is still synchronous** for the same reason; what changed is that it
+is now *bounded* (`open::MAX_BYTES`) and that binary files and non-UTF-8 files are refused with a
+sentence rather than mangled. Neither is asynchronous yet, and the doc comments say so.

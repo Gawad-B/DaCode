@@ -146,6 +146,24 @@ impl Document {
         self.pending.drain(..).collect()
     }
 
+    /// The changes applied since `version`, borrowed rather than taken.
+    ///
+    /// The queue has one consumer that drains it — the syntax worker, which replays the changes in
+    /// order and cannot have any of them taken from underneath it. Anything else that needs the
+    /// same edits in the same coordinates has to look without touching, which is what this is for:
+    /// the display map's folds are line numbers, and only these edits say how far the lines moved.
+    ///
+    /// Empty when nothing changed. Also empty if the queue was truncated past `version`, which is
+    /// indistinguishable from here — callers that must know should compare
+    /// [`Document::version`] themselves and treat the gap as "start over", the same as
+    /// [`Document::take_needs_resync`].
+    pub fn changes_since(&self, version: Version) -> impl ExactSizeIterator<Item = &Change> {
+        let start = self
+            .pending
+            .partition_point(|change| change.version <= version);
+        self.pending.range(start..)
+    }
+
     /// Whether the change sequence was truncated, meaning a consumer must start over.
     pub fn take_needs_resync(&mut self) -> bool {
         std::mem::take(&mut self.needs_resync)
@@ -318,9 +336,10 @@ impl Document {
             }
             TypeAction::Pair { open, close } => {
                 if self.selections.primary().is_caret() {
-                    if let Some(indent) = pairs::dedent_for_closer(&text, primary, open, config) {
-                        self.reindent_line(&indent);
-                    }
+                    // No electric dedent here. This arm is reached with an *opening* delimiter, and
+                    // `dedent_for_closer` returns on its first line for anything that is not a
+                    // closer — so the call that stood here could never do anything, while implying
+                    // a second live path that had to be kept in step with the first.
                     self.insert(&format!("{open}{close}"));
                     // Land between the halves.
                     self.selections = self
@@ -359,26 +378,33 @@ impl Document {
     }
 
     /// Backspace that removes both halves of an empty pair.
+    ///
+    /// **Decided per caret**, unlike [`Document::type_char`]. That function's rule — the primary
+    /// decides and every caret follows — is defensible because every caret then inserts the *same*
+    /// text. It does not carry over to deleting: this asked whether the *primary* sat between `(`
+    /// and `)` and then took two graphemes at every caret, so with the primary inside a pair, a
+    /// second caret in the middle of a word ate the character after it as well as the one before.
+    /// A caret at offset zero deleted forwards outright.
+    ///
+    /// Going through [`Document::edits_for_deletion`] rather than mapping the edits by hand is the
+    /// other half. That helper's whole purpose is adjacent carets, which here produced `n-1..n+1`
+    /// and `n..n+2` — overlapping, so the transaction was refused and the result discarded by a
+    /// `let _ =`. Backspace silently did nothing for the entire selection set.
     pub fn delete_backward_pairs(&mut self, config: &PairConfig) {
         let text = self.text.clone();
-        let primary = self.selections.primary().head;
-
-        if self.selections.primary().is_caret() && pairs::deletes_pair(&text, primary, config) {
-            let edits: Vec<Edit> = self
-                .selections
-                .iter()
-                .filter(|selection| selection.is_caret())
-                .map(|selection| {
-                    Edit::delete(
-                        text.prev_grapheme(selection.head)..text.next_grapheme(selection.head),
-                    )
-                })
-                .collect();
-            let _ = self.apply(Transaction::new(edits), EditKind::Delete);
-            return;
-        }
-
-        self.delete_backward();
+        let edits = self.edits_for_deletion(|selection| {
+            if !selection.is_caret() {
+                // A range selection is deleted, always. It used to be filtered out on this branch
+                // and deleted on the other, so what backspace did to selected text depended on
+                // whether an unrelated caret happened to be sitting on a pair.
+                return selection.range();
+            }
+            if pairs::deletes_pair(&text, selection.head, config) {
+                return text.prev_grapheme(selection.head)..text.next_grapheme(selection.head);
+            }
+            text.prev_grapheme(selection.head)..selection.head
+        });
+        let _ = self.apply(Transaction::new(edits), EditKind::Delete);
     }
 
     /// A newline that indents, and that opens a block when the cursor sits inside a pair.

@@ -30,6 +30,14 @@ pub struct Command {
     pub keys: &'static str,
     /// The keys with it off.
     pub flat: &'static str,
+    /// Whether the command only means anything with the modal grammar on.
+    ///
+    /// Deliberately not the same as "has no key when it is off". `previous_pane` has no key in
+    /// either grammar and the palette is the only way to reach it, which is correct. `visual_mode`
+    /// is a different thing: with the grammar off there *is* no visual mode, and listing "start
+    /// selecting" for someone who turned Vim off teaches them a Vim idea in the one surface that
+    /// was supposed to be free of them.
+    pub modal_only: bool,
 }
 
 impl Command {
@@ -97,6 +105,28 @@ const fn command(
         group,
         keys,
         flat,
+        modal_only: false,
+    }
+}
+
+/// A command that exists only while the modal grammar is on.
+///
+/// It takes no `flat` because there could not be one: these are the operations that are *about* the
+/// grammar — a mode to enter, a change to repeat, a macro to replay, a paste that has a side to
+/// land on.
+const fn modal(
+    name: &'static str,
+    what: &'static str,
+    group: Group,
+    keys: &'static str,
+) -> Command {
+    Command {
+        name,
+        what,
+        group,
+        keys,
+        flat: "",
+        modal_only: true,
     }
 }
 
@@ -109,7 +139,13 @@ use Group::*;
 pub const COMMANDS: &[Command] = &[
     // ---- files -------------------------------------------------------------------------
     command("save", "save this file", Files, ":w  <c-s>", "<c-s>"),
-    command("save_as", "save this file somewhere else", Files, "", "<c-s-s>"),
+    command(
+        "save_as",
+        "save this file somewhere else",
+        Files,
+        "",
+        "<c-s-s>",
+    ),
     command(
         "toggle_autosave",
         "save automatically, or do not",
@@ -117,33 +153,92 @@ pub const COMMANDS: &[Command] = &[
         "",
         "",
     ),
-    command("open_folder", "open a folder as the project", Files, "<c-k>o", "<c-k>o"),
+    command(
+        "open_folder",
+        "open a folder as the project",
+        Files,
+        "<c-k>o",
+        "<c-k>o",
+    ),
+    command("close_buffer", "close this file", Files, "<c-f4>", "<c-f4>"),
+    // No keys: these act on what the tree has selected, and the tree is a mouse surface. The
+    // palette and the tree's own right-click menu are the honest routes, and inventing a chord for
+    // "delete a file" would be actively unkind.
+    command("new_file", "new file here", Files, "", ""),
+    command("rename_file", "rename this file", Files, "", ""),
+    command("delete_file", "delete this file", Files, "", ""),
     command("quit", "quit", Files, ":q  <c-q>", "<c-q>"),
-
     // ---- editing -----------------------------------------------------------------------
     command("copy", "copy", Editing, "y", "<c-c>"),
     command("cut", "cut", Editing, "d", "<c-x>"),
     command("undo", "undo", Editing, "u", "<c-z>"),
     command("redo", "redo", Editing, "<c-r>", "<c-y>  <c-s-z>"),
     command("paste", "paste after the cursor", Editing, "p", "<c-v>"),
-    command("paste_before", "paste before the cursor", Editing, "P", ""),
-    command("toggle_comment", "comment or uncomment these lines", Editing, "", "<c-/>"),
+    modal("paste_before", "paste before the cursor", Editing, "P"),
+    command(
+        "toggle_comment",
+        "comment or uncomment these lines",
+        Editing,
+        "",
+        "<c-/>",
+    ),
     command("move_line_up", "move these lines up", Editing, "", "<a-↑>"),
-    command("move_line_down", "move these lines down", Editing, "", "<a-↓>"),
-    command("duplicate_line_up", "copy these lines above", Editing, "", "<a-s-↑>"),
-    command("duplicate_line_down", "copy these lines below", Editing, "", "<a-s-↓>"),
+    command(
+        "move_line_down",
+        "move these lines down",
+        Editing,
+        "",
+        "<a-↓>",
+    ),
+    command(
+        "duplicate_line_up",
+        "copy these lines above",
+        Editing,
+        "",
+        "<a-s-↑>",
+    ),
+    command(
+        "duplicate_line_down",
+        "copy these lines below",
+        Editing,
+        "",
+        "<a-s-↓>",
+    ),
     command("delete_line", "delete this line", Editing, "dd", "<c-s-k>"),
-    command("delete_word_backward", "delete the word before the cursor", Editing, "db", "<c-bs>"),
-    command("delete_word_forward", "delete the word after the cursor", Editing, "dw", "<c-del>"),
+    command(
+        "delete_word_backward",
+        "delete the word before the cursor",
+        Editing,
+        "db",
+        "<c-bs>",
+    ),
+    command(
+        "delete_word_forward",
+        "delete the word after the cursor",
+        Editing,
+        "dw",
+        "<c-del>",
+    ),
     command("indent", "indent", Editing, ">>", "<tab>"),
     command("outdent", "outdent", Editing, "<<", "<s-tab>"),
     command("format", "reformat the file", Editing, "", ""),
-    command("expand_snippet", "expand the snippet before the cursor", Editing, "<tab>", "<tab>"),
-    command("repeat_change", "repeat the last change", Editing, ".", ""),
-    command("replay_macro", "replay a recorded macro", Editing, "@", ""),
-
+    command(
+        "expand_snippet",
+        "expand the snippet before the cursor",
+        Editing,
+        "<tab>",
+        "<tab>",
+    ),
+    modal("repeat_change", "repeat the last change", Editing, "."),
+    modal("replay_macro", "replay a recorded macro", Editing, "@"),
     // ---- selection ---------------------------------------------------------------------
-    command("select_all", "select the whole file", Selection, "ggVG", "<c-a>"),
+    command(
+        "select_all",
+        "select the whole file",
+        Selection,
+        "ggVG",
+        "<c-a>",
+    ),
     command("select_line", "select this line", Selection, "V", "<c-l>"),
     command(
         "select_next_occurrence",
@@ -152,66 +247,284 @@ pub const COMMANDS: &[Command] = &[
         "",
         "<c-d>",
     ),
-    command("select_all_occurrences", "select every copy of it", Selection, "", "<c-s-l>"),
-    command("add_caret_below", "add a cursor below", Selection, "<c-a-↓>", "<c-a-↓>"),
-    command("add_caret_above", "add a cursor above", Selection, "<c-a-↑>", "<c-a-↑>"),
-    command("split_selection_into_lines", "one cursor per selected line", Selection, "s", ""),
-    command("keep_primary_selection", "drop the other cursors", Selection, ",", ""),
-    command("collapse_selections", "collapse to one cursor", Selection, "<esc>", "<esc>"),
-    command("visual_mode", "start selecting", Selection, "v", ""),
-
+    command(
+        "select_all_occurrences",
+        "select every copy of it",
+        Selection,
+        "",
+        "<c-s-l>",
+    ),
+    command(
+        "add_caret_below",
+        "add a cursor below",
+        Selection,
+        "<c-a-↓>",
+        "<c-a-↓>",
+    ),
+    command(
+        "add_caret_above",
+        "add a cursor above",
+        Selection,
+        "<c-a-↑>",
+        "<c-a-↑>",
+    ),
+    command(
+        "split_selection_into_lines",
+        "one cursor per selected line",
+        Selection,
+        "s",
+        "",
+    ),
+    command(
+        "keep_primary_selection",
+        "drop the other cursors",
+        Selection,
+        ",",
+        "",
+    ),
+    command(
+        "collapse_selections",
+        "collapse to one cursor",
+        Selection,
+        "<esc>",
+        "<esc>",
+    ),
+    modal("visual_mode", "start selecting", Selection, "v"),
     // ---- navigation --------------------------------------------------------------------
-    command("move_file_start", "go to the top", Navigation, "gg", "<c-home>"),
-    command("move_file_end", "go to the bottom", Navigation, "G", "<c-end>"),
-    command("move_matching_bracket", "jump to the matching bracket", Navigation, "%", ""),
-    command("jump_back", "back to where you were", Navigation, "<c-o>", "<a-←>"),
-    command("jump_forward", "forward again", Navigation, "<c-i>", "<a-→>"),
-    command("toggle_fold", "fold or unfold this block", Navigation, "za", ""),
+    command(
+        "move_file_start",
+        "go to the top",
+        Navigation,
+        "gg",
+        "<c-home>",
+    ),
+    command(
+        "move_file_end",
+        "go to the bottom",
+        Navigation,
+        "G",
+        "<c-end>",
+    ),
+    command(
+        "move_matching_bracket",
+        "jump to the matching bracket",
+        Navigation,
+        "%",
+        "",
+    ),
+    command(
+        "jump_back",
+        "back to where you were",
+        Navigation,
+        "<c-o>",
+        "<a-←>",
+    ),
+    command(
+        "jump_forward",
+        "forward again",
+        Navigation,
+        "<c-i>",
+        "<a-→>",
+    ),
+    command(
+        "toggle_fold",
+        "fold or unfold this block",
+        Navigation,
+        "za",
+        "",
+    ),
     command("fold_all", "fold everything", Navigation, "zM", ""),
     command("unfold_all", "unfold everything", Navigation, "zR", ""),
-
     // ---- search ------------------------------------------------------------------------
     command("search", "find in this file", Search, "/", "<c-f>"),
+    command(
+        "replace",
+        "find and replace in this file",
+        Search,
+        "<c-h>",
+        "<c-h>",
+    ),
     command("search_next", "next match", Search, "n", "<f3>"),
     command("search_previous", "previous match", Search, "N", "<s-f3>"),
-    command("search_project", "find in every file", Search, "", "<c-s-f>"),
+    command(
+        "search_project",
+        "find in every file",
+        Search,
+        "",
+        "<c-s-f>",
+    ),
     command("command", "type a command", Search, ":", "<c-g>"),
-    command("command_palette", "every command, searchable", Search, "<c-s-p>", "<c-s-p>"),
+    command(
+        "command_palette",
+        "every command, searchable",
+        Search,
+        "<c-s-p>",
+        "<c-s-p>",
+    ),
     command("help", "which keys do what", Search, "<f1>", "<f1>"),
-
     // ---- language server ---------------------------------------------------------------
-    command("goto_definition", "go to the definition", Language, "gd", "<f12>"),
-    command("find_references", "find every use of this", Language, "gu", "<s-f12>"),
+    command(
+        "goto_definition",
+        "go to the definition",
+        Language,
+        "gd",
+        "<f12>",
+    ),
+    command(
+        "find_references",
+        "find every use of this",
+        Language,
+        "gu",
+        "<s-f12>",
+    ),
+    command(
+        "goto_symbol",
+        "go to a symbol in this file",
+        Language,
+        "gs",
+        "<c-s-o>",
+    ),
+    command(
+        "goto_symbol_in_project",
+        "go to a symbol anywhere in the project",
+        Language,
+        "gS",
+        "<c-t>",
+    ),
+    command(
+        "next_change",
+        "next change since the last commit",
+        Language,
+        "]c",
+        "<f7>",
+    ),
+    command(
+        "previous_change",
+        "previous change since the last commit",
+        Language,
+        "[c",
+        "<s-f7>",
+    ),
+    command(
+        "revert_hunk",
+        "undo this change, back to how it was committed",
+        Language,
+        "]C",
+        "",
+    ),
     command("hover", "what is this?", Language, "K", ""),
     command("rename", "rename this everywhere", Language, "gr", "<f2>"),
-    command("code_action", "what can be done about this?", Language, "ga", ""),
-    command("completion", "suggest a completion", Language, "<c-space>", "<c-space>"),
+    command(
+        "code_action",
+        "what can be done about this?",
+        Language,
+        "ga",
+        "",
+    ),
+    command(
+        "completion",
+        "suggest a completion",
+        Language,
+        "<c-space>",
+        "<c-space>",
+    ),
     command("next_diagnostic", "next problem", Language, "]d", "<f8>"),
-    command("previous_diagnostic", "previous problem", Language, "[d", "<s-f8>"),
-    command("toggle_diagnostics", "list every problem", Language, "gD", ""),
-    command("toggle_inlay_hints", "show or hide inlay hints", Language, "", ""),
-
+    command(
+        "previous_diagnostic",
+        "previous problem",
+        Language,
+        "[d",
+        "<s-f8>",
+    ),
+    command(
+        "toggle_diagnostics",
+        "list every problem",
+        Language,
+        "gD",
+        "",
+    ),
+    command(
+        "toggle_inlay_hints",
+        "show or hide inlay hints",
+        Language,
+        "",
+        "",
+    ),
     // ---- the view ----------------------------------------------------------------------
     command("settings", "settings", View, "<c-,>", "<c-,>"),
-    command("toggle_tree", "show or hide the file tree", View, "<c-e>", "<c-e>"),
-    command("toggle_theme", "switch between light and dark", View, "", ""),
-    command("toggle_soft_wrap", "wrap long lines, or do not", View, "", ""),
+    command(
+        "toggle_tree",
+        "show or hide the file tree",
+        View,
+        "<c-e>",
+        "<c-e>",
+    ),
+    command(
+        "toggle_theme",
+        "switch between light and dark",
+        View,
+        "",
+        "",
+    ),
+    command(
+        "toggle_soft_wrap",
+        "wrap long lines, or do not",
+        View,
+        "",
+        "",
+    ),
+    // No non-modal key by design: no conventional editor binds horizontal scroll to one, the wheel
+    // and reveal-on-cursor cover it, and inventing a chord is worse than the palette saying
+    // honestly that there is none.
+    command("scroll_left", "look left along a long line", View, "zh", ""),
+    command(
+        "scroll_right",
+        "look right along a long line",
+        View,
+        "zl",
+        "",
+    ),
     command("increase_font_size", "bigger text", View, "", ""),
     command("decrease_font_size", "smaller text", View, "", ""),
     command("menu", "the menu bar", View, "<f10>", "<f10>"),
-    command("context_menu", "what can I do here?", View, "<s-f10>", "<s-f10>"),
-
+    command(
+        "context_menu",
+        "what can I do here?",
+        View,
+        "<s-f10>",
+        "<s-f10>",
+    ),
     // ---- panes -------------------------------------------------------------------------
     command("split_vertical", "split beside", Panes, "<c-w>v", "<c-w>v"),
     command("split_horizontal", "split below", Panes, "<c-w>s", "<c-w>s"),
     command("close_pane", "close this pane", Panes, "<c-w>c", "<c-w>c"),
-    command("next_pane", "focus the next pane", Panes, "<c-w>w", "<c-w>w"),
+    command(
+        "next_pane",
+        "focus the next pane",
+        Panes,
+        "<c-w>w",
+        "<c-w>w",
+    ),
     command("previous_pane", "focus the previous pane", Panes, "", ""),
 ];
 
 /// The commands in a group, for the help panel.
 pub fn in_group(group: Group) -> impl Iterator<Item = &'static Command> {
-    COMMANDS.iter().filter(move |command| command.group == group)
+    COMMANDS
+        .iter()
+        .filter(move |command| command.group == group)
+}
+
+/// Every command that means something in this grammar.
+///
+/// The palette listed the whole table regardless, so someone who had turned Vim off could still
+/// search it and find "start selecting", "repeat the last change" and "replay a recorded macro" —
+/// three ideas that do not exist in the editor they chose, in the one surface whose whole job is to
+/// tell them what the editor can do.
+pub fn available(modal: bool) -> impl Iterator<Item = &'static Command> {
+    COMMANDS
+        .iter()
+        .filter(move |command| modal || !command.modal_only)
 }
 
 /// Looks a command up by name.
@@ -224,7 +537,14 @@ pub fn by_name(name: &str) -> Option<&'static Command> {
 /// Typed out rather than derived from the grammar because the grammar is a state machine over
 /// characters and cannot say what it *would* accept next — and a popup that guessed would teach
 /// people keys that do not work. The test below checks every entry actually resolves.
-pub fn continuations(prefix: &str) -> &'static [(&'static str, &'static str)] {
+///
+/// Takes the grammar because two of these prefixes are Vim's alone: `"` chooses a register and `q`
+/// records a macro, and `feed_flat` can produce neither. A popup that offered them with the grammar
+/// off would be teaching keys that cannot be pressed.
+pub fn continuations(prefix: &str, modal: bool) -> &'static [(&'static str, &'static str)] {
+    if !modal && matches!(prefix, "\"" | "q" | "g" | "z" | "]" | "[") {
+        return &[];
+    }
     match prefix {
         "<c-w>" => &[
             ("v", "split beside"),
@@ -248,6 +568,9 @@ pub fn continuations(prefix: &str) -> &'static [(&'static str, &'static str)] {
             ("a", "fold or unfold this block"),
             ("R", "unfold everything"),
             ("M", "fold everything"),
+            ("w", "wrap long lines, or do not"),
+            ("h", "look left along a long line"),
+            ("l", "look right along a long line"),
         ],
         "]" => &[("d", "next problem")],
         "[" => &[("d", "previous problem")],
@@ -384,7 +707,11 @@ mod tests {
         // The palette is a list, so the descriptions have to scan as one: no trailing full stops,
         // nothing capitalised for no reason, nothing empty.
         for command in COMMANDS {
-            assert!(!command.what.is_empty(), "{} has no description", command.name);
+            assert!(
+                !command.what.is_empty(),
+                "{} has no description",
+                command.name
+            );
             assert!(
                 !command.what.ends_with('.'),
                 "{}: descriptions are list entries, not sentences",
@@ -399,15 +726,15 @@ mod tests {
         // teaching a key that does nothing.
         for prefix in ["<c-w>", "<c-k>", "g", "z", "]", "["] {
             assert!(
-                !continuations(prefix).is_empty(),
+                !continuations(prefix, true).is_empty(),
                 "{prefix} lost its continuations"
             );
-            for (key, what) in continuations(prefix) {
+            for (key, what) in continuations(prefix, true) {
                 assert!(!key.is_empty() && !what.is_empty());
             }
         }
         assert!(
-            continuations("d").is_empty(),
+            continuations("d", true).is_empty(),
             "an operator is not a prefix with a menu: `d` waits for a motion, and listing every \
              motion would be the cheatsheet, not a hint"
         );

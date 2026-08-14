@@ -11,6 +11,11 @@
 //! instant, and predictable in a way tree-derived indentation is not when the tree is a version
 //! behind. Tree-sitter indent *queries* remain the better answer for pathological cases; they belong
 //! behind a synchronous parse of the current line, which is a later, separate decision.
+//!
+//! The one rule here that cannot be answered from one or two lines is electric dedent, which has to
+//! find the opener a `}` belongs to. That paragraph above was written as though it applied to this
+//! whole module and did not: [`dedent_for_closer`] walked back to the start of the document. It is
+//! bounded now, and says in its own doc comment what it gives up in exchange.
 
 use vex_text::{CharOffset, Text};
 
@@ -187,10 +192,30 @@ pub fn on_newline(text: &Text, caret: CharOffset, config: &PairConfig) -> Newlin
     }
 }
 
+/// How far back the search for an unmatched opener is allowed to go.
+///
+/// In characters, not lines, because one line can be the whole file: a bundled `.js` or a minified
+/// JSON document is a single line of up to `open::MAX_BYTES`, so a line budget would be no budget
+/// at all there.
+///
+/// Sixteen thousand characters is four or five hundred lines of ordinary source — further than any
+/// block whose closing brace someone is typing by hand — and costs tens of microseconds, which is
+/// what a keystroke can afford. It has to be a good deal smaller than the documents the latency
+/// test compares, or that test measures the budget instead of the algorithm.
+const DEDENT_SCAN_LIMIT: usize = 16 * 1024;
+
 /// The indentation a line *should* have when it begins with a closing delimiter.
 ///
 /// Used for electric dedent: typing `}` on an otherwise blank line pulls it back to match its
 /// opener, which is the one indentation correction people expect an editor to make for them.
+///
+/// **The honest limitation:** the opener has to be within [`DEDENT_SCAN_LIMIT`] characters, and a
+/// `}` whose `{` is further away than that is left where it was typed. This function used to walk
+/// back to the start of the document — on the UI thread, from a keystroke, which is the one thing
+/// this editor is not allowed to do, and worse than a plain linear walk because each character cost
+/// a fresh rope descent. Nothing caught it: the latency test types `x`, which is not a closer and
+/// returns three lines in. Doing nothing is the right degradation, and is already what happens when
+/// no opener is found at all.
 pub fn dedent_for_closer(
     text: &Text,
     caret: CharOffset,
@@ -217,12 +242,19 @@ pub fn dedent_for_closer(
         .find(|(_, close)| *close == typed)
         .map(|(open, _)| *open)?;
 
-    // Walk back for the unmatched opener and copy its line's indentation.
+    // Walk back for the unmatched opener and copy its line's indentation. Bounded, and over a
+    // reverse cursor rather than an indexed `char()` per step — ropey's iterators are not
+    // double-ended, so this is `Chars::reversed`, not `.rev()`.
+    let floor = line_start.get().saturating_sub(DEDENT_SCAN_LIMIT);
     let mut depth = 0isize;
     let mut index = line_start.get();
-    while index > 0 {
+    let mut backwards = text.rope().chars_at(line_start.get()).reversed();
+
+    while index > floor {
         index -= 1;
-        let c = text.rope().char(index);
+        let Some(c) = backwards.next() else {
+            break;
+        };
         if c == typed {
             depth += 1;
         } else if c == open {

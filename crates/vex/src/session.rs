@@ -24,6 +24,13 @@ pub struct Session {
     pub files: Vec<OpenFile>,
     /// Which of them was on screen.
     pub active: usize,
+    /// The window's size in physical pixels when it closed.
+    ///
+    /// Part of "where you were" as much as the files are: opening at a fixed 1280x820 on a large
+    /// monitor every single launch is the friction people describe as an editor not feeling
+    /// finished. Not the *position* — a window restored onto a monitor that is no longer attached
+    /// is worse than one that opens where the desktop puts it.
+    pub window: Option<(u32, u32)>,
 }
 
 impl Session {
@@ -38,6 +45,10 @@ impl Session {
     /// time spent on nothing. Tabs, because a path can contain almost anything else.
     pub fn encode(&self) -> String {
         let mut out = String::from("# vex session\n");
+        // `!` rather than another `#`: a comment is skipped by the reader, and this has to be read.
+        if let Some((width, height)) = self.window {
+            out.push_str(&format!("!{width}x{height}\n"));
+        }
         for (index, file) in self.files.iter().enumerate() {
             out.push_str(&format!(
                 "{}{}\t{}\t{}\n",
@@ -55,6 +66,15 @@ impl Session {
 
         for line in text.lines() {
             if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            // Before the file parsing, which would otherwise read this as a file called `1600x900`.
+            if let Some(size) = line.strip_prefix('!') {
+                if let Some((width, height)) = size.split_once('x') {
+                    if let (Ok(width), Ok(height)) = (width.parse(), height.parse()) {
+                        session.window = Some((width, height));
+                    }
+                }
                 continue;
             }
             let active = line.starts_with('*');
@@ -117,7 +137,10 @@ pub fn remember_project(directory: &Path, root: &Path) {
     if std::fs::create_dir_all(directory).is_err() {
         return;
     }
-    let _ = std::fs::write(last_project_path(directory), root.to_string_lossy().as_ref());
+    let _ = std::fs::write(
+        last_project_path(directory),
+        root.to_string_lossy().as_ref(),
+    );
 }
 
 /// The last project worked in, if it still exists.
@@ -190,6 +213,7 @@ mod tests {
                 },
             ],
             active: 1,
+            window: None,
         }
     }
 
@@ -197,6 +221,28 @@ mod tests {
     fn a_session_round_trips() {
         let decoded = Session::decode(&session().encode());
         assert_eq!(decoded, session());
+    }
+
+    #[test]
+    fn the_window_size_comes_back_with_the_files() {
+        // Opening at a fixed size on a large monitor every launch is the friction people describe
+        // as an editor not feeling finished. The `!` line must also not be mistaken for a file — an
+        // earlier reader would have restored a buffer called `1600x900`.
+        let mut original = session();
+        original.window = Some((1600, 900));
+
+        let decoded = Session::decode(&original.encode());
+        assert_eq!(decoded.window, Some((1600, 900)));
+        assert_eq!(decoded.files.len(), 2, "and no phantom file for the size");
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn a_session_from_before_window_sizes_still_loads() {
+        // Sessions on disk predate this field. Reading one must give the old behaviour, not fail.
+        let decoded = Session::decode("# vex session\n*/a.rs\t1\t0\n");
+        assert_eq!(decoded.window, None);
+        assert_eq!(decoded.files.len(), 1);
     }
 
     #[test]
@@ -209,6 +255,7 @@ mod tests {
                 column: 1,
             }],
             active: 0,
+            window: None,
         };
         assert_eq!(Session::decode(&original.encode()), original);
     }
@@ -243,6 +290,7 @@ mod tests {
                 },
             ],
             active: 1,
+            window: None,
         };
 
         save(&dir, Path::new("/project"), &original);
@@ -270,6 +318,7 @@ mod tests {
                 column: 0,
             }],
             active: 0,
+            window: None,
         };
         let two = Session {
             files: vec![OpenFile {
@@ -278,6 +327,7 @@ mod tests {
                 column: 0,
             }],
             active: 0,
+            window: None,
         };
 
         save(&dir, Path::new("/home/a/project"), &one);

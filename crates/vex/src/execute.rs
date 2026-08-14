@@ -56,24 +56,26 @@ pub fn execute(
             match (chars.next(), chars.next()) {
                 (Some(single), None) => {
                     let config = state.pairs.clone();
-                    state.document.type_char(single, &config);
+                    state.mutate(|document| document.type_char(single, &config));
                 }
-                _ => state.document.insert(text),
+                _ => state.mutate(|document| document.insert(text)),
             }
         }
         Action::Newline => {
             let config = state.pairs.clone();
-            state.document.insert_newline_smart(&config);
+            state.mutate(|document| document.insert_newline_smart(&config));
         }
         Action::DeleteBackward => {
             let config = state.pairs.clone();
-            state.document.delete_backward_pairs(&config);
+            state.mutate(|document| document.delete_backward_pairs(&config));
         }
-        Action::DeleteForward => state.document.delete_forward(),
+        Action::DeleteForward => state.mutate(|document| document.delete_forward()),
         Action::ReplaceChar(c) => {
             // Overwrite: one intent, so the delete and insert land in one undo group.
-            state.document.delete_forward();
-            state.document.insert(&c.to_string());
+            state.mutate(|document| {
+                document.delete_forward();
+                document.insert(&c.to_string());
+            });
         }
 
         Action::Paste {
@@ -83,10 +85,10 @@ pub fn execute(
         } => paste(state, registers, *register, *before, *count),
 
         Action::Undo => {
-            state.document.undo();
+            state.mutate(|document| document.undo());
         }
         Action::Redo => {
-            state.document.redo();
+            state.mutate(|document| document.redo());
         }
         // Handled by the caller, which owns the last-change record.
         Action::RepeatChange => {}
@@ -165,7 +167,25 @@ pub fn execute(
         | Action::GotoDefinition
         | Action::Format
         | Action::CodeAction
-        | Action::FindReferences => state.pending_request = Some(action.clone()),
+        | Action::FindReferences
+        | Action::GotoSymbol
+        | Action::GotoSymbolInProject => state.pending_request = Some(action.clone()),
+
+        // Walking the diff needs nothing but the marks already on screen, so it happens here.
+        Action::GotoChange { forward } => {
+            let line = state.cursor_point().line;
+            match state.diff.change_near(line, *forward) {
+                Some(target) => {
+                    let text = state.document.text();
+                    let at =
+                        text.point_to_char(vex_text::Point::new(target.min(text.last_line()), 0));
+                    state.document.set_primary_caret(at);
+                }
+                None => state.hover = Some("nothing has changed since the last commit".into()),
+            }
+        }
+        // Reverting needs git, which the event loop owns.
+        Action::RevertHunk => return Outcome::Window(action.clone()),
         // The jumplist and macros need the editor's own history, which the executor does not hold —
         // the same split as the window actions.
         Action::OpenFolder
@@ -269,6 +289,27 @@ pub fn execute(
             ));
             state.pending_request = Some(action.clone());
         }
+        // The window action list owns this: the clamp needs the rows on screen, which the caller
+        // has and the executor's `rows` argument gives it.
+        Action::ScrollHorizontally { right } => {
+            if state.display.mode == vex_display::WrapMode::None {
+                const STEP: usize = 8;
+                let visible =
+                    state
+                        .display
+                        .rows_from(state.document.text(), state.scroll, rows.max(1));
+                let longest = visible.iter().map(|row| row.len()).max().unwrap_or(0);
+                state.scroll.column = if *right {
+                    (state.scroll.column + STEP).min(longest.saturating_add(STEP))
+                } else {
+                    state.scroll.column.saturating_sub(STEP)
+                };
+            }
+        }
+        Action::StartReplace => {
+            state.prompt = Some(Prompt::new(PromptKind::Replace, state.cursor()));
+            state.search_matches.clear();
+        }
         Action::NextDiagnostic { forward } => next_diagnostic(state, *forward),
         Action::DismissInfo => state.hover = None,
 
@@ -276,7 +317,11 @@ pub fn execute(
         // and giving it one would mean giving it the buffer list too.
         Action::SplitPane { .. }
         | Action::ClosePane
+        | Action::CloseBuffer
         | Action::FocusPane { .. }
+        | Action::NewFile
+        | Action::RenameFile
+        | Action::DeleteFile
         | Action::ToggleTree => {
             return Outcome::Window(action.clone());
         }
@@ -449,8 +494,7 @@ fn apply_operator(
                 .map(|range| Edit::delete(range.clone()))
                 .collect();
             let _ = state
-                .document
-                .apply(Transaction::new(edits), EditKind::Discrete);
+                .mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
             if operator == Operator::Change {
                 state.mode = Mode::Insert;
@@ -473,8 +517,7 @@ fn apply_operator(
                 })
                 .collect();
             let _ = state
-                .document
-                .apply(Transaction::new(edits), EditKind::Discrete);
+                .mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
             if leaving_visual {
                 state.mode = Mode::Normal;
             }
@@ -526,9 +569,8 @@ fn indent(state: &mut EditorState, ranges: &[std::ops::Range<CharOffset>], forwa
     }
 
     if !edits.is_empty() {
-        let _ = state
-            .document
-            .apply(Transaction::new(edits), EditKind::Discrete);
+        let _ =
+            state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
     }
 }
 
@@ -548,11 +590,11 @@ fn enter_insert(state: &mut EditorState, position: InsertPosition) {
         InsertPosition::LineEnd => state.document.move_to_line_edge(true, false),
         InsertPosition::LineBelow => {
             state.document.move_to_line_edge(true, false);
-            state.document.insert_newline();
+            state.mutate(|document| document.insert_newline());
         }
         InsertPosition::LineAbove => {
             state.document.move_to_line_edge(false, false);
-            state.document.insert("\n");
+            state.mutate(|document| document.insert("\n"));
             state.document.move_grapheme(false, false);
         }
     }
@@ -604,9 +646,7 @@ fn paste(
         })
         .collect();
 
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 }
 
 fn split_into_lines(state: &mut EditorState) {
@@ -708,7 +748,11 @@ fn move_lines(state: &mut EditorState, down: bool) {
             continue;
         }
 
-        let (from, to) = if down { (first, last + 1) } else { (first - 1, last) };
+        let (from, to) = if down {
+            (first, last + 1)
+        } else {
+            (first - 1, last)
+        };
         let mut contents: Vec<String> = (from..=to).map(|line| line_text(&text, line)).collect();
         if down {
             contents.rotate_right(1);
@@ -736,9 +780,7 @@ fn move_lines(state: &mut EditorState, down: bool) {
         })
         .collect();
 
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
     let text = state.document.text().clone();
     let selections: Vec<Selection> = moved
@@ -775,7 +817,9 @@ fn duplicate_lines(state: &mut EditorState, down: bool) {
 
     let mut edits = Vec::new();
     for (first, last) in &spans {
-        let block: Vec<String> = (*first..=*last).map(|line| line_text(&text, line)).collect();
+        let block: Vec<String> = (*first..=*last)
+            .map(|line| line_text(&text, line))
+            .collect();
         let mut copy = block.join("\n");
         copy.push('\n');
         edits.push(Edit::insert(text.line_to_char(*first), copy));
@@ -796,9 +840,7 @@ fn duplicate_lines(state: &mut EditorState, down: bool) {
         })
         .collect();
 
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
     if !down {
         let text = state.document.text().clone();
@@ -851,7 +893,9 @@ fn toggle_comment(state: &mut EditorState) {
     }
 
     let comment = language.comment();
-    let commented = interesting.iter().all(|(_, text)| is_commented(text, comment));
+    let commented = interesting
+        .iter()
+        .all(|(_, text)| is_commented(text, comment));
 
     // Added at the shallowest indent of the block, not at each line's own, so the comment column
     // stays straight and the relative indentation inside the block survives.
@@ -877,9 +921,8 @@ fn toggle_comment(state: &mut EditorState) {
     }
 
     if !edits.is_empty() {
-        let _ = state
-            .document
-            .apply(Transaction::new(edits), EditKind::Discrete);
+        let _ =
+            state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
     }
 }
 
@@ -937,9 +980,7 @@ fn delete_word(state: &mut EditorState, forward: bool) {
         .iter()
         .map(|range| Edit::delete(range.clone()))
         .collect();
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 }
 
 /// `ctrl-d`, and `ctrl-shift-l` for every occurrence at once.

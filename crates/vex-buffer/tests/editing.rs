@@ -362,6 +362,73 @@ fn search_finds_multi_byte_queries() {
 }
 
 #[test]
+fn search_offsets_survive_multi_byte_lines_above_the_match() {
+    // The rewrite that made search scan a line at a time computes offsets relative to the line's
+    // own start. Get that base wrong — by a byte count rather than a character count — and every
+    // match below the first non-ASCII line silently points somewhere else.
+    let text = vex_text::Text::from_str("héllo 👋\n日本語のテキスト\n\nneedle here\nneedle again");
+    let matches = vex_buffer::find_all(&text, "needle", &Default::default());
+
+    assert_eq!(matches.len(), 2);
+    for found in &matches {
+        assert_eq!(
+            text.slice_to_string(found.clone()),
+            "needle",
+            "a range that does not cover its own match means the line base was wrong"
+        );
+    }
+}
+
+#[test]
+fn search_finds_matches_at_both_ends_of_a_line() {
+    // Line-scoped scanning is where off-by-ones live: the first character of a line and the last
+    // one before the newline are the two it would drop.
+    let text = vex_text::Text::from_str("xa\nbx\ncxc");
+    let matches = vex_buffer::find_all(&text, "x", &Default::default());
+
+    assert_eq!(matches.len(), 3);
+    assert_eq!(matches[0].start.get(), 0, "first character of the file");
+    assert_eq!(matches[1].start.get(), 4, "last character before a newline");
+    assert_eq!(matches[2].start.get(), 7, "middle of the last line");
+    for found in &matches {
+        assert_eq!(text.slice_to_string(found.clone()), "x");
+    }
+}
+
+#[test]
+fn a_query_spanning_a_newline_still_matches() {
+    // Line-scoped scanning cannot see across a newline, so a query that contains one takes the
+    // whole-document path. It is not reachable from the search prompt, which is a single line —
+    // but replace can produce one, and finding nothing would be a silent wrong answer.
+    let text = vex_text::Text::from_str("alpha\nbeta\ngamma\nbeta\n");
+    let matches = vex_buffer::find_all(&text, "alpha\nbeta", &Default::default());
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(text.slice_to_string(matches[0].clone()), "alpha\nbeta");
+}
+
+#[test]
+fn searching_a_large_document_does_not_copy_it() {
+    // Not an allocation assertion — it is a timing one in disguise. This used to build one String
+    // of the whole document, and a second lowercased one, per keystroke; at this size that was
+    // enough to be felt. The test's real job is to fail loudly if the whole-document path is ever
+    // made the default again, because it takes an order of magnitude longer than the line scan.
+    let line = "the quick brown fox jumps over the lazy dog\n";
+    let text = vex_text::Text::from_str(&line.repeat(20_000));
+
+    let started = std::time::Instant::now();
+    let matches = vex_buffer::find_all(&text, "fox", &Default::default());
+    let elapsed = started.elapsed();
+
+    assert_eq!(matches.len(), 10_000, "capped by the default match limit");
+    assert_eq!(text.slice_to_string(matches[0].clone()), "fox");
+    assert!(
+        elapsed < std::time::Duration::from_millis(750),
+        "searching 860KB took {elapsed:?}, which is not a keystroke's worth of work"
+    );
+}
+
+#[test]
 fn an_empty_query_matches_nothing() {
     let text = vex_text::Text::from_str("anything");
     assert!(vex_buffer::find_all(&text, "", &Default::default()).is_empty());
@@ -648,4 +715,159 @@ fn a_replaced_document_can_continue_the_old_version_numbering() {
     let resumed = reloaded.version();
     reloaded.insert("z");
     assert!(reloaded.version() > resumed);
+}
+
+#[test]
+fn a_line_whose_case_folding_moves_its_interior_does_not_panic() {
+    // The defect this exists for killed the editor from the search box. The fast path compared the
+    // *total* byte length of the folded line against the original, which looks equivalent to
+    // "offsets still line up" and is not: `İ` folds from 2 bytes to 3 and `Å` (U+212B) from 3 to 2,
+    // so `İxÅ` folds six bytes to six while every offset inside it moves. Searching it for `x` then
+    // sliced the original at a byte in the middle of `Å`:
+    //
+    //     end byte index 4 is not a char boundary; it is inside 'Å' (bytes 3..6 of string)
+    //
+    // On the UI thread, on a keystroke in the search prompt, taking every unsaved buffer with it.
+    let text = vex_text::Text::from_str("\u{130}x\u{212B}\n");
+    let matches = vex_buffer::find_all(&text, "x", &Default::default());
+
+    assert_eq!(
+        matches,
+        vec![vex_text::CharOffset(1)..vex_text::CharOffset(2)],
+        "and the answer is right, not merely non-fatal"
+    );
+}
+
+#[test]
+fn case_insensitive_search_still_finds_ordinary_accented_text() {
+    // The fix takes the slow path for any character that changes width when folded, so the common
+    // case — accented Latin, which folds in place — must not have been pushed onto it wrongly, and
+    // the uncommon case must still find its match rather than silently reporting none.
+    let text = vex_text::Text::from_str("Caf\u{c9} and CAF\u{c9}\n");
+    assert_eq!(
+        vex_buffer::find_all(&text, "caf\u{e9}", &Default::default()).len(),
+        2,
+        "É folds to é in place"
+    );
+
+    // `İ` is the width-changing one, and a query that matches it must still be found.
+    let text = vex_text::Text::from_str("\u{130}stanbul\n");
+    assert_eq!(
+        vex_buffer::find_all(&text, "stanbul", &Default::default()),
+        vec![vex_text::CharOffset(1)..vex_text::CharOffset(8)],
+        "the slow path has to be correct, not just safe"
+    );
+}
+
+// ---- backspace with more than one caret --------------------------------------------------------
+
+/// A selection set from carets at the given offsets, primary first.
+fn carets(offsets: &[usize]) -> SelectionSet {
+    SelectionSet::from_iter(
+        offsets
+            .iter()
+            .map(|at| Selection::caret(CharOffset(*at)))
+            .collect::<Vec<_>>(),
+        0,
+    )
+}
+
+#[test]
+fn only_the_carets_actually_sitting_on_a_pair_delete_both_halves() {
+    // The decision used to be taken once, from the *primary* caret, and then applied to every
+    // caret. `type_char` does that deliberately — every caret inserts the same text, so following
+    // the primary is predictable. It does not carry over to deleting: a caret in the middle of a
+    // word ate the character *after* it because a caret somewhere else happened to be inside `()`.
+    let mut document = doc("call() and word");
+    document.set_selections(carets(&[5, 15]));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(
+        document.text().to_string(),
+        "call and wor",
+        "the pair caret takes both halves, the word caret takes one character"
+    );
+}
+
+#[test]
+fn a_caret_at_the_start_of_the_document_deletes_nothing_rather_than_forwards() {
+    // `prev_grapheme(0)` clamps to 0, so the old two-grapheme range became `0..1` and backspace at
+    // the very start of the file deleted the character in front of it.
+    let mut document = doc("(hello)");
+    document.set_selections(carets(&[0, 7]));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(document.text().to_string(), "(hello");
+}
+
+#[test]
+fn adjacent_carets_delete_rather_than_being_refused_whole() {
+    // Two carets one character apart both wanted `n-1..n+1` and `n..n+2` — overlapping edits, which
+    // `Transaction::validate` refuses. The result was discarded by a `let _ =`, so backspace did
+    // nothing at all for the entire selection set, silently. `edits_for_deletion` clamps the second
+    // range against the first, which is why one of them deletes only partially: that is the
+    // helper's existing contract for adjacent carets, and it beats doing nothing.
+    let mut document = doc("a()b");
+    document.set_selections(carets(&[2, 3]));
+    document.delete_backward_pairs(&config());
+
+    assert_ne!(
+        document.text().to_string(),
+        "a()b",
+        "the transaction was rejected and backspace silently did nothing"
+    );
+}
+
+#[test]
+fn backspace_deletes_a_selected_range_whoever_else_is_on_a_pair() {
+    // The pair branch filtered range selections out entirely and the other branch handled them, so
+    // what backspace did to selected text depended on whether an unrelated caret was inside `()`.
+    let mut document = doc("call() and word");
+    document.set_selections(SelectionSet::from_iter(
+        vec![
+            Selection::caret(CharOffset(5)),
+            Selection::new(CharOffset(11), CharOffset(15)),
+        ],
+        0,
+    ));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(document.text().to_string(), "call and ");
+}
+
+#[test]
+fn a_query_that_overlaps_itself_reports_each_occurrence_once() {
+    // `find_all` advanced one character past the start of each hit, so `aa` in `aaaa` came back as
+    // three ranges — 0..2, 1..3, 2..4. They are not only highlighted: the same vector is handed to
+    // replace-all, which turns each range into an edit, and overlapping edits are exactly what
+    // `Transaction::validate` refuses. Replace-all on such a query failed whole and reported "the
+    // server sent edits that cannot apply", from a search prompt, with no server involved.
+    let text = vex_text::Text::from_str("aaaa");
+    let found = vex_buffer::find_all(&text, "aa", &vex_buffer::SearchOptions::default());
+
+    assert_eq!(
+        found,
+        vec![CharOffset(0)..CharOffset(2), CharOffset(2)..CharOffset(4)]
+    );
+
+    // And the ranges are usable as edits, which is the property that actually mattered.
+    let edits: Vec<vex_text::Edit> = found
+        .iter()
+        .map(|range| vex_text::Edit::replace(range.clone(), "b"))
+        .collect();
+    assert!(Transaction::new(edits).validate(&text).is_ok());
+}
+
+#[test]
+fn the_case_folding_fallback_does_not_overlap_either() {
+    // The slow path, reached only by a line whose lowercasing changes its byte widths. Left on the
+    // old character-at-a-time walk it would keep producing the overlapping ranges that break
+    // replace — in exactly the files nobody tests with.
+    let text = vex_text::Text::from_str("İxxxx");
+    let found = vex_buffer::find_all(&text, "xx", &vex_buffer::SearchOptions::default());
+
+    assert_eq!(
+        found,
+        vec![CharOffset(1)..CharOffset(3), CharOffset(3)..CharOffset(5)]
+    );
 }

@@ -48,8 +48,10 @@ opinions about.
 | `ctrl-s` `ctrl-shift-s` | save · save as |
 | `ctrl-q` | quit |
 | `F12` `shift-F12` | go to definition · find every use |
+| `ctrl-shift-o` `ctrl-t` | a symbol in this file · anywhere in the project |
 | `F2` | rename everywhere |
 | `F8` `shift-F8` | next problem · previous |
+| `F7` `shift-F7` | next change since the last commit · previous |
 | `ctrl-space` | suggest a completion |
 | `alt-←` `alt-→` | back to where you were · forward again |
 | shift + arrows | extend the selection |
@@ -57,6 +59,7 @@ opinions about.
 | click · drag | place the cursor · select |
 | double-click · triple-click | select the word · the line |
 | alt-click | add a cursor there (click it again to take it away) |
+| alt-drag | select a **rectangle** — one cursor per line, same columns |
 | ctrl-click | go to the definition |
 | right-click | cut, copy, paste, definition, rename, format — with their keys |
 
@@ -134,6 +137,7 @@ Prefix `i` for inner, `a` for around.
 
 | Key | Does |
 |---|---|
+| alt-drag | a rectangle — one cursor per line, over the same columns |
 | `gA` · `C` | add a cursor above · below |
 | `S` | one cursor per selected line |
 | `,` | keep only the primary cursor |
@@ -146,6 +150,7 @@ Prefix `i` for inner, `a` for around.
 | Key | Does |
 |---|---|
 | `/` `?` | search forward / backward, highlighting as you type |
+| `ctrl-h` | find and replace in this file — `:replace old new` is the project-wide one |
 | `enter` `shift-enter` | next / previous match, **without closing the box** |
 | `ctrl-shift-f` | send the same query to a search of every file |
 | `n` `N` · `F3` `shift-F3` | next / previous match once the box is closed |
@@ -168,12 +173,23 @@ which is the thing returning to the origin exists to prevent.
 | `ctrl-p` | file palette (fuzzy) |
 | `ctrl-b` | buffer palette |
 | `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
+
+**Right-click a row in the tree** for new file, rename and delete. They also live in the command
+palette, and act on the tree's selection — or on the open file when the tree is closed. Deleting
+asks once and cannot be undone; nothing else here is destructive.
+
 | `ctrl-s` | save |
+| `ctrl-h` | find and replace in this file — `tab` between the two fields, `enter` replaces one and moves on, `ctrl-enter` replaces all as one undo |
+| `ctrl-f4` | close this file — or click the `x` on its tab |
 | `ctrl-q` | quit |
 | `ctrl-w v` · `ctrl-w s` | split beside · split below |
 | `ctrl-w c` · `ctrl-w q` | close the pane |
 | `ctrl-w w` `ctrl-w l` `ctrl-w j` | focus the next pane |
 | `ctrl-w W` `ctrl-w h` `ctrl-w k` | focus the previous pane |
+
+Every open file has a tab along the top: click one to switch, click its `x` to close. A dot beside
+the name means unsaved changes, and closing a file with unsaved changes warns once — pressing close
+again discards them. `ctrl-w` is the pane prefix here, which is why closing a file is `ctrl-f4`.
 
 ## Language server
 
@@ -182,14 +198,24 @@ which is the thing returning to the origin exists to prevent.
 | `K` | hover |
 | `gd` | go to definition |
 | `gu` | find references → results panel |
+| `gs` · `ctrl-shift-o` | go to a symbol in this file — an outline you can search |
+| `gS` · `ctrl-t` | go to a symbol anywhere in the project |
 | `gr` | rename everywhere |
 | `gf` | format the buffer |
 | `ga` | code actions → palette |
 | `gi` | toggle inlay hints |
 | `]d` `[d` | next / previous diagnostic |
+| `]c` `[c` · `F7` `shift-F7` | next / previous change since the last commit |
+| `]C` | undo this change, back to how it was committed |
 | `gD` | diagnostics list in the sidebar |
 | `ctrl-space` | completion (works in insert mode too) |
 | `esc` | dismiss a hover or message box |
+
+The completion list shows each suggestion's type beside its name, in the order the **server** ranked
+them rather than one vex invented. Accepting one inserts what the server asked for — so `println!`
+lands as `println!()` with the cursor inside, and `tab` walks any further stops — and brings its
+**import** with it: completing `HashMap` in a file without `use std::collections::HashMap` adds that
+line too, as one undo step.
 
 ## Folding
 
@@ -228,9 +254,9 @@ what `vex import --snippets` writes.
 | Key | Does |
 |---|---|
 | `ctrl-,` · `ctrl-k s` | settings panel |
-| `j` `k` | move between settings |
-| `h` `l` · `enter` | change the selected setting — applies immediately |
-| `w` | write the panel's values into `init.lua` |
+| `j` `k` · `↑` `↓` | move between settings |
+| `h` `l` · `←` `→` · `enter` | change the selected setting — applies immediately |
+| `w` · `ctrl-s` | write the panel's values into `init.lua` |
 | `l` on an import row | tick what to bring over from VSCode; `import now` runs it |
 | `enter` on the last row | load a colour scheme file — `.json`, `.tmTheme`, `.yaml`, `.toml` |
 | `esc` | close |
@@ -243,6 +269,7 @@ writes into a marked block at the end of `init.lua`; your own lines are never re
 | Key | Does |
 |---|---|
 | `zw` | toggle soft wrap |
+| `zh` `zl` | with wrap off, look left / right along a long line — 8 columns a press |
 | `gt` | toggle light / dark |
 | `=` `+` · `-` | larger · smaller font |
 
@@ -276,6 +303,27 @@ vex.set { leader = "<space>" }
 vex.map("normal", "<leader>w", "save")
 vex.map("insert", "<c-s>", "save")
 ```
+
+## Naming a language server
+
+```lua
+vex.server("python", { command = ".venv/bin/pylsp" })
+vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+```
+
+A **formatter** is named the same way, and `gf` uses it when no language server can format — which
+is every plain JavaScript, CSS or Markdown project, and Python, since pyright does not format:
+
+```lua
+vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+```
+
+Yours is tried before vex's own list, which stays behind it as the fallback. A command with a slash
+in it is a path — resolved against the project root — rather than a name to look up on `PATH`, and
+`~/` is your home directory. A language vex already knows (`rust`, `typescript`, `python`, `cpp`,
+`go`, `lua`, `dart`) fills in the extensions for you; any other language has to list them, because a
+server that can never match a file would otherwise be a line of config that silently does nothing.
+The settings panel's last section says what was found and where.
 
 In insert mode only modified and named keys can be bound: a letter binding would have to hold the
 letter back to see what came next, and typing would stutter.

@@ -190,6 +190,13 @@ pub enum Action {
     SelectAll,
 
     ToggleSoftWrap,
+    /// `zh` / `zl` — slide the view sideways along a long line, without moving the caret.
+    ///
+    /// Only means anything with soft wrap off; with it on there is nothing to the right of the
+    /// viewport to look at.
+    ScrollHorizontally {
+        right: bool,
+    },
     ToggleTheme,
     IncreaseFontSize,
     DecreaseFontSize,
@@ -209,6 +216,12 @@ pub enum Action {
     RepeatSearch {
         forward: bool,
     },
+    /// `ctrl-h` — find and replace, in this file.
+    ///
+    /// Opens the prompt and stops there. The replacing itself is done by the prompt's own keys, as
+    /// stepping between matches already is: both need two strings and a match the cursor is sitting
+    /// on, neither of which a palette row or a macro replay can supply.
+    StartReplace,
     /// `:` — open the command line.
     StartCommand,
     /// Project-wide search for the word under the cursor, or via `:grep`.
@@ -237,16 +250,42 @@ pub enum Action {
     },
     /// `ctrl-w c` — close the focused pane. The last pane never closes.
     ClosePane,
+    /// `ctrl-F4` — close the file. Not the *pane* and not the editor: the buffer.
+    ///
+    /// `ctrl-w` is what most people would reach for, and it is already the pane prefix in both
+    /// grammars. `ctrl-F4` is the other Windows convention, and the tab has a close button beside
+    /// its name for everyone who would never have guessed either.
+    CloseBuffer,
     /// `ctrl-w w` and the directional keys — move focus between panes.
     FocusPane {
         forward: bool,
     },
     /// `ctrl-e` — show or hide the file tree.
     ToggleTree,
+
+    /// Create a file beside the one selected in the tree, or beside the open file.
+    ///
+    /// The tree was strictly read-only, which contradicts this project's own rule about features
+    /// reachable only by a key — for the audience the whole mouse layer was built for.
+    NewFile,
+    /// Rename the selected file, on disk.
+    RenameFile,
+    /// Delete the selected file. Refuses once before it does.
+    DeleteFile,
     /// `ga` in Neovim's spelling — what the server offers to do about the code under the cursor.
     CodeAction,
     /// `gu` — every use of the symbol under the cursor.
     FindReferences,
+    /// `]c` / `[c` — the next or previous region that differs from the last commit.
+    GotoChange {
+        forward: bool,
+    },
+    /// `]C` — put the change under the cursor back to how it was committed.
+    RevertHunk,
+    /// `gs` — every name in this file, as a searchable outline.
+    GotoSymbol,
+    /// `gS` — every name in the project, searched as you type.
+    GotoSymbolInProject,
     /// Show or hide inlay hints.
     ToggleInlayHints,
     /// `gD` — list every diagnostic in the file, rather than walking them one at a time.
@@ -386,6 +425,8 @@ impl Action {
         "select_line",
         "select_all",
         "toggle_soft_wrap",
+        "scroll_left",
+        "scroll_right",
         "toggle_theme",
         "increase_font_size",
         "decrease_font_size",
@@ -396,6 +437,7 @@ impl Action {
         "search",
         "search_backward",
         "search_next",
+        "replace",
         "search_previous",
         "command",
         "search_project",
@@ -410,11 +452,20 @@ impl Action {
         "split_vertical",
         "split_horizontal",
         "close_pane",
+        "close_buffer",
         "next_pane",
         "previous_pane",
         "toggle_tree",
+        "new_file",
+        "rename_file",
+        "delete_file",
         "code_action",
         "find_references",
+        "goto_symbol",
+        "goto_symbol_in_project",
+        "next_change",
+        "previous_change",
+        "revert_hunk",
         "toggle_inlay_hints",
         "toggle_diagnostics",
         "toggle_fold",
@@ -521,6 +572,8 @@ impl Action {
 
             // Appearance.
             "toggle_soft_wrap" => Action::ToggleSoftWrap,
+            "scroll_left" => Action::ScrollHorizontally { right: false },
+            "scroll_right" => Action::ScrollHorizontally { right: true },
             "toggle_theme" => Action::ToggleTheme,
             "increase_font_size" => Action::IncreaseFontSize,
             "decrease_font_size" => Action::DecreaseFontSize,
@@ -534,6 +587,7 @@ impl Action {
             "search_backward" => Action::StartSearch { forward: false },
             "search_next" => Action::RepeatSearch { forward: true },
             "search_previous" => Action::RepeatSearch { forward: false },
+            "replace" => Action::StartReplace,
             "command" => Action::StartCommand,
             "search_project" => Action::SearchProject,
 
@@ -549,11 +603,20 @@ impl Action {
             "split_vertical" => Action::SplitPane { vertical: true },
             "split_horizontal" => Action::SplitPane { vertical: false },
             "close_pane" => Action::ClosePane,
+            "close_buffer" => Action::CloseBuffer,
             "next_pane" => Action::FocusPane { forward: true },
             "previous_pane" => Action::FocusPane { forward: false },
             "toggle_tree" => Action::ToggleTree,
+            "new_file" => Action::NewFile,
+            "rename_file" => Action::RenameFile,
+            "delete_file" => Action::DeleteFile,
             "code_action" => Action::CodeAction,
             "find_references" => Action::FindReferences,
+            "next_change" => Action::GotoChange { forward: true },
+            "previous_change" => Action::GotoChange { forward: false },
+            "revert_hunk" => Action::RevertHunk,
+            "goto_symbol" => Action::GotoSymbol,
+            "goto_symbol_in_project" => Action::GotoSymbolInProject,
             "toggle_inlay_hints" => Action::ToggleInlayHints,
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
             "toggle_fold" => Action::ToggleFold,

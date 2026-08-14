@@ -53,12 +53,14 @@ impl Session {
                 pending_request: None,
                 project_root: std::path::PathBuf::from("."),
                 buffer_count: 1,
+                buffer_tabs: Vec::new(),
                 active_buffer: 0,
                 modal: true,
                 sticky_scroll: true,
                 recording: None,
                 diff: vex::git::Diff::default(),
                 show_diagnostics: false,
+                problems: Default::default(),
                 inlay_hints: Vec::new(),
                 show_inlay_hints: false,
                 welcome: None,
@@ -730,7 +732,11 @@ fn alt_down_moves_the_line_and_takes_the_cursor_with_it() {
 fn a_line_at_the_edge_does_not_move_or_vanish() {
     let mut session = flat("only\nlines\n").at(0);
     session.press(alt(vex_input::KeyCode::Up));
-    assert_eq!(session.text(), "only\nlines\n", "nothing above the first line");
+    assert_eq!(
+        session.text(),
+        "only\nlines\n",
+        "nothing above the first line"
+    );
 }
 
 #[test]
@@ -752,7 +758,11 @@ fn ctrl_slash_comments_and_uncomments_the_same_lines() {
     assert_eq!(session.text(), "// fn main() {}\n");
 
     session.press(Key::ctrl('/'));
-    assert_eq!(session.text(), "fn main() {}\n", "back to exactly what it was");
+    assert_eq!(
+        session.text(),
+        "fn main() {}\n",
+        "back to exactly what it was"
+    );
 }
 
 #[test]
@@ -783,7 +793,11 @@ fn ctrl_d_takes_the_word_then_the_next_copy_of_it() {
     assert_eq!(session.state.document.selections().len(), 1);
     let first = *session.state.document.selections().primary();
     assert_eq!(
-        session.state.document.text().slice_to_string(first.start()..first.end()),
+        session
+            .state
+            .document
+            .text()
+            .slice_to_string(first.start()..first.end()),
         "total"
     );
 
@@ -865,7 +879,10 @@ fn return_in_the_search_box_walks_the_matches_and_wraps() {
     let third = vex_buffer::find_next(&matches, second.start, true).expect("a next match");
     assert_eq!(third.start, matches[2].start);
     let wrapped = vex_buffer::find_next(&matches, third.start, true).expect("wraps");
-    assert_eq!(wrapped.start, matches[0].start, "the end wraps to the start");
+    assert_eq!(
+        wrapped.start, matches[0].start,
+        "the end wraps to the start"
+    );
 
     // And backwards, which is what shift-return does.
     let back = vex_buffer::find_next(&matches, matches[1].start, false).expect("a previous match");
