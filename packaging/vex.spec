@@ -50,6 +50,12 @@ install -Dm644 %{_sourcedir}/init.lua %{buildroot}%{_docdir}/vex/examples/init.l
 %doc %{_docdir}/vex/examples/init.lua
 
 %changelog
+* Fri Aug 14 2026 vex - 0.2.1-1
+- With Vim keys off, the chrome no longer reports a mode it does not have, and the
+  hint line advertises f1 and the command palette instead of Vim's keys.
+- The search box steps through matches with enter, says which match you are on,
+  and hands its query to a project-wide search with ctrl-shift-f.
+
 * Fri Aug 14 2026 vex - 0.2.0-1
 - The non-modal mode is a conventional editor rather than the modal one with its
   modes removed: line moves, duplication, comment toggle, occurrence selection,

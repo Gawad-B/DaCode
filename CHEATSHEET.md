@@ -134,12 +134,19 @@ Prefix `i` for inner, `a` for around.
 | Key | Does |
 |---|---|
 | `/` `?` | search forward / backward, highlighting as you type |
-| `n` `N` | next / previous match |
-| `ctrl-f` | search the project for the word under the cursor |
+| `enter` `shift-enter` | next / previous match, **without closing the box** |
+| `ctrl-shift-f` | send the same query to a search of every file |
+| `n` `N` · `F3` `shift-F3` | next / previous match once the box is closed |
+| `ctrl-f` | find in this file · `ctrl-shift-f` in every file |
 | `:grep pattern` | search the project for anything |
 | `:replace old new` | replace across the files the search found |
 
-`esc` cancels a search and returns the cursor to where it started.
+The box shows which match you are on — `3 of 17` — and names those keys while it is open, because a
+search that counts matches without saying how to visit them reads like a search that cannot.
+
+`esc` closes it. If you only typed, the cursor goes back where it started; if you stepped through
+matches with `enter`, you stay where you walked to — being thrown back would be losing your place,
+which is the thing returning to the origin exists to prevent.
 
 ## Files, buffers and panes
 
