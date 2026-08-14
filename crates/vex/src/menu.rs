@@ -392,14 +392,21 @@ mod tests {
         let menu = Menu::bar(true);
         assert_eq!(menu.titles.first(), Some(&"file"));
         assert!(!menu.items.is_empty());
-        assert_eq!(menu.selection().map(|item| item.action.clone()), Some(Action::Save));
+        assert_eq!(
+            menu.selection().map(|item| item.action.clone()),
+            Some(Action::Save)
+        );
     }
 
     #[test]
     fn walking_off_the_end_of_the_bar_wraps() {
         let mut menu = Menu::bar(true);
         menu.move_menu(-1, true);
-        assert_eq!(menu.open, MENUS.len() - 1, "left from the first is the last");
+        assert_eq!(
+            menu.open,
+            MENUS.len() - 1,
+            "left from the first is the last"
+        );
         menu.move_menu(1, true);
         assert_eq!(menu.open, 0);
     }
@@ -520,7 +527,10 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
         let geometry = menu.geometry(bounds, 1.0);
 
-        assert!(geometry.card.right() <= bounds.right(), "off the right edge");
+        assert!(
+            geometry.card.right() <= bounds.right(),
+            "off the right edge"
+        );
         assert!(geometry.card.bottom() <= bounds.bottom(), "off the bottom");
     }
 

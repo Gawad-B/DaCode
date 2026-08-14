@@ -424,8 +424,7 @@ mod tests {
         let wide = toolbar_buttons(Rect::new(0.0, 72.0, 1600.0, 34.0), 1.0);
         assert_eq!(wide.len(), TOOLBAR.len(), "a wide window shows all of it");
         assert_eq!(
-            wide[0].0.command,
-            TOOLBAR[0].command,
+            wide[0].0.command, TOOLBAR[0].command,
             "and shows it in order"
         );
 

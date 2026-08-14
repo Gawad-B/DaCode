@@ -18,11 +18,11 @@
 //! describes.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use vex_buffer::{Document, EditKind};
 use vex_lsp::lsp_types::{TextEdit, Uri, WorkspaceEdit};
 use vex_lsp::position;
-use std::ops::Range;
 use vex_text::{CharOffset, Edit, Text, Transaction, Version};
 
 /// What a set of edits changed, for reporting to the user.
@@ -331,8 +331,7 @@ mod tests {
         // rule stepping already follows, because replacing your way down a file must not stop dead
         // with matches still above the cursor.
         let text = vex_text::Text::from_str("one two one three one\n");
-        let matches =
-            vex_buffer::find_all(&text, "one", &vex_buffer::SearchOptions::default());
+        let matches = vex_buffer::find_all(&text, "one", &vex_buffer::SearchOptions::default());
 
         assert_eq!(
             target_at(&matches, CharOffset(1)).map(|range| range.start),
@@ -681,10 +680,7 @@ pub fn replace_matches(
 ///
 /// Wrapping, like `find_next`, so replacing your way down a file does not stop dead at the bottom
 /// with matches still above the cursor.
-pub fn target_at(
-    matches: &[Range<CharOffset>],
-    cursor: CharOffset,
-) -> Option<Range<CharOffset>> {
+pub fn target_at(matches: &[Range<CharOffset>], cursor: CharOffset) -> Option<Range<CharOffset>> {
     matches
         .iter()
         .find(|range| range.start <= cursor && cursor < range.end)

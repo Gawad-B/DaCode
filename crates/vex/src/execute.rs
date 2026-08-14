@@ -733,7 +733,11 @@ fn move_lines(state: &mut EditorState, down: bool) {
             continue;
         }
 
-        let (from, to) = if down { (first, last + 1) } else { (first - 1, last) };
+        let (from, to) = if down {
+            (first, last + 1)
+        } else {
+            (first - 1, last)
+        };
         let mut contents: Vec<String> = (from..=to).map(|line| line_text(&text, line)).collect();
         if down {
             contents.rotate_right(1);
@@ -800,7 +804,9 @@ fn duplicate_lines(state: &mut EditorState, down: bool) {
 
     let mut edits = Vec::new();
     for (first, last) in &spans {
-        let block: Vec<String> = (*first..=*last).map(|line| line_text(&text, line)).collect();
+        let block: Vec<String> = (*first..=*last)
+            .map(|line| line_text(&text, line))
+            .collect();
         let mut copy = block.join("\n");
         copy.push('\n');
         edits.push(Edit::insert(text.line_to_char(*first), copy));
@@ -876,7 +882,9 @@ fn toggle_comment(state: &mut EditorState) {
     }
 
     let comment = language.comment();
-    let commented = interesting.iter().all(|(_, text)| is_commented(text, comment));
+    let commented = interesting
+        .iter()
+        .all(|(_, text)| is_commented(text, comment));
 
     // Added at the shallowest indent of the block, not at each line's own, so the comment column
     // stays straight and the relative indentation inside the block survives.

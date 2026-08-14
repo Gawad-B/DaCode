@@ -137,7 +137,10 @@ pub fn remember_project(directory: &Path, root: &Path) {
     if std::fs::create_dir_all(directory).is_err() {
         return;
     }
-    let _ = std::fs::write(last_project_path(directory), root.to_string_lossy().as_ref());
+    let _ = std::fs::write(
+        last_project_path(directory),
+        root.to_string_lossy().as_ref(),
+    );
 }
 
 /// The last project worked in, if it still exists.

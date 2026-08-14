@@ -365,7 +365,10 @@ mod tests {
         // `C:\Users\O'Brien` is a real name, and an unescaped quote there would close the string and
         // run whatever came after it as PowerShell.
         let script = powershell_script(std::path::Path::new(r"C:\Users\O'Brien\code"));
-        assert!(script.contains(r"$start = 'C:\Users\O''Brien\code'"), "{script}");
+        assert!(
+            script.contains(r"$start = 'C:\Users\O''Brien\code'"),
+            "{script}"
+        );
     }
 
     #[test]

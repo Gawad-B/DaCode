@@ -165,7 +165,11 @@ fn helper_processes_are_spawned_without_a_console_window() {
             continue;
         };
         // Tests may spawn whatever they like: they run from a terminal that already has a console.
-        let source = text.split("\nmod tests {").next().unwrap_or(&text).to_string();
+        let source = text
+            .split("\nmod tests {")
+            .next()
+            .unwrap_or(&text)
+            .to_string();
         for (number, line) in source.lines().enumerate() {
             if line.contains("Command::new(") {
                 offenders.push(format!("{relative}:{}: {}", number + 1, line.trim()));

@@ -129,7 +129,10 @@ mod tests {
         std::fs::write(&file, [0x7f, b'E', b'L', b'F', 0x00, 0x01, 0x02]).unwrap();
 
         let why = refusal(read(&file));
-        assert!(why.contains("thing.bin"), "the message must name the file: {why}");
+        assert!(
+            why.contains("thing.bin"),
+            "the message must name the file: {why}"
+        );
         assert!(why.contains("binary"), "and say what is wrong: {why}");
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -232,7 +232,11 @@ mod tests {
         let mut store = Store::default();
         let path = Path::new("/project/a.rs");
 
-        store.publish(path, &[diagnostic(1, DiagnosticSeverity::ERROR, "one")], None);
+        store.publish(
+            path,
+            &[diagnostic(1, DiagnosticSeverity::ERROR, "one")],
+            None,
+        );
         store.publish(
             path,
             &[
