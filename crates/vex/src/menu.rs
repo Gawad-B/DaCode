@@ -15,6 +15,8 @@
 //! chooses, escape closes.
 
 use vex_input::{Action, Command, commands};
+use vex_render::Rect;
+use vex_theme::space;
 
 /// A menu on screen.
 #[derive(Debug, Clone)]
@@ -191,6 +193,104 @@ impl Menu {
     pub fn selection(&self) -> Option<&Item> {
         self.items.get(self.selected)
     }
+
+    /// Where the menu is, as data.
+    ///
+    /// One definition, read by the drawing code and by the mouse. Two copies of this arithmetic
+    /// drift, and the symptom — clicking one row and getting its neighbour — gets blamed on
+    /// everything except the copy that drifted. The same rule `layout.rs` exists for.
+    ///
+    /// A menu that could only be driven from the keyboard would also be a joke: the menu bar is
+    /// *for* the person reaching for a mouse.
+    pub fn geometry(&self, bounds: Rect, scale: f32) -> Geometry {
+        let row_height = 24.0 * scale;
+        let pad = space::MD * scale;
+
+        // Text is measured at the same nominal advance the chrome draws menu text with. Exact
+        // shaping would need the font; this is a menu, and being a few pixels wide is invisible.
+        let label_width = self.widest(|item| item.label.chars().count()) * 8.0 * scale;
+        let keys_width = self.widest(|item| item.keys.chars().count()) * 8.0 * scale;
+        let width = (label_width + keys_width + pad * 6.0).min(bounds.width - pad * 2.0);
+        let height = self.items.len() as f32 * row_height + pad * 2.0;
+
+        let mut titles = Vec::new();
+        let (x, y) = match self.kind {
+            Kind::Bar => {
+                let title_y = bounds.y + 40.0 * scale;
+                let mut x = bounds.x + space::LG * scale;
+                let mut open_x = x;
+                for (index, title) in self.titles.iter().enumerate() {
+                    let width = (title.chars().count() as f32 + 2.0) * 9.0 * scale;
+                    titles.push(Rect::new(x, title_y, width, row_height));
+                    if index == self.open {
+                        open_x = x;
+                    }
+                    x += width;
+                }
+                (open_x, title_y + row_height)
+            }
+            // Clamped, so a right-click near an edge still shows the whole menu rather than half of
+            // it off the window.
+            Kind::Context => (
+                self.at.0.min(bounds.right() - width - pad).max(bounds.x),
+                self.at.1.min(bounds.bottom() - height - pad).max(bounds.y),
+            ),
+        };
+
+        let card = Rect::new(x, y, width, height);
+        let rows = (0..self.items.len())
+            .map(|index| {
+                Rect::new(
+                    card.x,
+                    card.y + pad + index as f32 * row_height,
+                    card.width,
+                    row_height,
+                )
+            })
+            .collect();
+
+        Geometry {
+            titles,
+            card,
+            rows,
+            label_width,
+            pad,
+        }
+    }
+
+    fn widest(&self, measure: impl Fn(&Item) -> usize) -> f32 {
+        self.items.iter().map(measure).max().unwrap_or(10) as f32
+    }
+
+    /// Which row a point is over, if any.
+    pub fn row_at(&self, geometry: &Geometry, x: f32, y: f32) -> Option<usize> {
+        geometry
+            .rows
+            .iter()
+            .position(|row| crate::layout::contains(*row, x, y))
+    }
+
+    /// Which title along the bar a point is over, if any.
+    pub fn title_at(&self, geometry: &Geometry, x: f32, y: f32) -> Option<usize> {
+        geometry
+            .titles
+            .iter()
+            .position(|title| crate::layout::contains(*title, x, y))
+    }
+}
+
+/// Where a menu's parts are.
+#[derive(Debug, Clone)]
+pub struct Geometry {
+    /// The bar's titles, left to right. Empty for a context menu.
+    pub titles: Vec<Rect>,
+    /// The open list.
+    pub card: Rect,
+    /// One rectangle per item, in order.
+    pub rows: Vec<Rect>,
+    /// Width of the label column, so the drawing code does not measure twice.
+    pub label_width: f32,
+    pub pad: f32,
 }
 
 #[cfg(test)]

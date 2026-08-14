@@ -3654,6 +3654,14 @@ impl App {
         let scale = self.scale();
         let layout = self.layout();
 
+        // An open menu takes the click, wherever it lands: on a row it runs it, on a title it opens
+        // that menu, anywhere else it closes — which is what clicking away from a menu means
+        // everywhere, and the only way out for someone who opened one by accident.
+        if self.state.menu.is_some() && !extend {
+            self.click_menu(x, y, scale);
+            return;
+        }
+
         // The sidebar owns its own clicks: choosing a file in the tree is the whole reason someone
         // reaches for the mouse there.
         if vex::layout::contains(layout.sidebar, x, y) && !extend {
@@ -3768,6 +3776,41 @@ impl App {
         }
 
         self.sync_syntax();
+    }
+
+    /// A click while a menu is open.
+    fn click_menu(&mut self, x: f32, y: f32, scale: f32) {
+        let bounds = {
+            let (width, height) = self
+                .renderer
+                .as_ref()
+                .map(|renderer| renderer.size())
+                .unwrap_or((1280, 820));
+            Rect::new(0.0, 0.0, width as f32, height as f32)
+        };
+        let modal = self.state.modal;
+
+        let Some(menu) = &mut self.state.menu else {
+            return;
+        };
+        let geometry = menu.geometry(bounds, scale);
+
+        if let Some(index) = menu.title_at(&geometry, x, y) {
+            menu.open = index;
+            menu.selected = 0;
+            menu.fill(modal);
+            return;
+        }
+
+        let chosen = menu
+            .row_at(&geometry, x, y)
+            .and_then(|index| menu.items.get(index))
+            .map(|item| item.action.clone());
+
+        self.state.menu = None;
+        if let Some(action) = chosen {
+            let _ = self.run(action);
+        }
     }
 
     /// Which click of a multi-click this is.

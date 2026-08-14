@@ -182,7 +182,7 @@ impl Palette {
 
         // Stable within a score, so an empty query shows the table in its own order — which is
         // grouped by what the commands are for, and is therefore browsable.
-        scored.sort_by(|left, right| right.0.cmp(&left.0));
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         self.rows = scored.into_iter().map(|(_, row)| row).collect();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
     }

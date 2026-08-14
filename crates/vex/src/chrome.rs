@@ -1633,76 +1633,37 @@ fn draw_menu(
     bounds: Rect,
     scale: f32,
 ) {
-    use crate::menu::Kind;
-
     let theme = &state.theme;
     let accent = theme.accent(state.mode);
-    let row_height = 24.0 * scale;
-    let pad = space::MD * scale;
 
-    // The widest row decides the width. Keys are right-aligned in their own column, so the label
-    // column and the key column each need their own measure.
-    let label_width = menu
-        .items
-        .iter()
-        .map(|item| item.label.chars().count())
-        .max()
-        .unwrap_or(10) as f32
-        * 8.0
-        * scale;
-    let keys_width = menu
-        .items
-        .iter()
-        .map(|item| item.keys.chars().count())
-        .max()
-        .unwrap_or(0) as f32
-        * 8.0
-        * scale;
-    let width = (label_width + keys_width + pad * 6.0).min(bounds.width - pad * 2.0);
-    let height = menu.items.len() as f32 * row_height + pad * 2.0;
+    // Geometry comes from the menu, not from here: the mouse reads the same function, and a second
+    // copy of this arithmetic is how clicks start landing a row off.
+    let geometry = menu.geometry(bounds, scale);
+    let card = geometry.card;
+    let pad = geometry.pad;
+    let label_width = geometry.label_width;
 
-    let (x, y) = match menu.kind {
-        Kind::Bar => {
-            // Under its title in the top row. The titles are drawn here too, since the bar only
-            // exists while it is open — a permanent menu bar would cost a row of every window for
-            // something most people use twice.
-            let title_y = bounds.y + 40.0 * scale;
-            let title_width =
-                |title: &str| (title.chars().count() as f32 + 2.0) * 9.0 * scale;
-
-            let mut x = bounds.x + space::LG * scale;
-            let mut open_x = x;
-            for (index, title) in menu.titles.iter().enumerate() {
-                let rect = Rect::new(x, title_y, title_width(title), row_height);
-                if index == menu.open {
-                    frame.fill(rect, theme.row_active);
-                    // Remembered so the list hangs from the title it belongs to, which is the whole
-                    // grammar of a menu bar.
-                    open_x = x;
-                }
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    *title,
-                    Rect::new(rect.x + 4.0 * scale, rect.y, rect.width, rect.height),
-                    if index == menu.open { accent } else { theme.ink_dim },
-                    Align::Left,
-                    scale,
-                ));
-                x += rect.width;
-            }
-
-            (open_x, title_y + row_height)
+    // The bar's titles are drawn here too, since the bar only exists while it is open — a permanent
+    // menu bar would cost a row of every window for something most people use twice.
+    for (index, (title, rect)) in menu.titles.iter().zip(&geometry.titles).enumerate() {
+        if index == menu.open {
+            frame.fill(*rect, theme.row_active);
         }
-        // Clamped so a right-click near an edge still shows the whole menu rather than half of it
-        // off the window.
-        Kind::Context => (
-            menu.at.0.min(bounds.right() - width - pad),
-            menu.at.1.min(bounds.bottom() - height - pad),
-        ),
-    };
+        frame.text(run(
+            state,
+            Role::Value,
+            *title,
+            Rect::new(rect.x + 4.0 * scale, rect.y, rect.width, rect.height),
+            if index == menu.open {
+                accent
+            } else {
+                theme.ink_dim
+            },
+            Align::Left,
+            scale,
+        ));
+    }
 
-    let card = Rect::new(x, y, width, height);
     frame.fill(
         Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
         theme.shadow,
@@ -1712,17 +1673,15 @@ fn draw_menu(
     frame.rule_bottom(card, theme.rule, border::BORDER);
     frame.rule_left(card, theme.rule, border::BORDER);
 
-    for (index, item) in menu.items.iter().enumerate() {
-        let y = card.y + pad + index as f32 * row_height;
-        let row = Rect::new(card.x, y, card.width, row_height);
+    for (index, (item, row)) in menu.items.iter().zip(&geometry.rows).enumerate() {
         if index == menu.selected {
-            frame.fill(row, theme.row_active);
+            frame.fill(*row, theme.row_active);
         }
         frame.text(run(
             state,
             Role::Value,
             item.label.clone(),
-            Rect::new(card.x + pad, y, label_width + pad, row_height),
+            Rect::new(row.x + pad, row.y, label_width + pad, row.height),
             if index == menu.selected {
                 theme.ink
             } else {
@@ -1731,12 +1690,14 @@ fn draw_menu(
             Align::Left,
             scale,
         ));
+        // The key, right-aligned in its own column: the menu's whole purpose is that you read this
+        // and stop needing the menu.
         if !item.keys.is_empty() {
             frame.text(run(
                 state,
                 Role::Value,
                 item.keys.clone(),
-                Rect::new(card.x + pad, y, card.width - pad * 2.0, row_height),
+                Rect::new(row.x + pad, row.y, row.width - pad * 2.0, row.height),
                 theme.ink_faint,
                 Align::Right,
                 scale,
