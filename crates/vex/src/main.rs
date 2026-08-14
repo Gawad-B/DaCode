@@ -2438,6 +2438,21 @@ impl App {
                     self.state.document.set_primary_caret(origin);
                 }
             }
+            // `tab` moves between "what to find" and "what to put there". Only replace has two
+            // fields, so this is inert everywhere else.
+            KeyCode::Tab if prompt.is_replace() => prompt.toggle_field(),
+
+            // `ctrl-↵` replaces every match, as one undoable change. Deliberately the awkward
+            // chord: it is the destructive one, and it is not something to arrive at by leaning on
+            // the return key.
+            KeyCode::Enter if prompt.is_replace() && key.ctrl => self.replace_all(),
+
+            // `↵` in a replace prompt swaps the match under the cursor and moves to the next, which
+            // is the loop people actually run: look, replace, look, replace.
+            KeyCode::Enter if prompt.is_replace() && prompt.focus == vex::prompt::Field::Replacement => {
+                self.replace_one()
+            }
+
             // `↵` steps to the next match and leaves the box open, `⇧↵` to the previous one. It used
             // to close the box, so stepping meant knowing that F3 existed and that the thing you had
             // just been using was over — which is why this looked like an editor that could count
@@ -2452,8 +2467,8 @@ impl App {
             KeyCode::Enter => {
                 let prompt = self.state.prompt.take().expect("checked above");
                 match prompt.kind {
-                    PromptKind::Search { .. } => {
-                        // Unreachable: search is handled above. Kept so the match stays total if a
+                    PromptKind::Search { .. } | PromptKind::Replace => {
+                        // Unreachable: both are handled above. Kept so the match stays total if a
                         // new prompt kind ever wants the old accept-and-close behaviour.
                         self.state.search_matches = prompt.matches;
                     }
@@ -2503,7 +2518,7 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                prompt.input.pop();
+                prompt.field_mut().pop();
                 self.refresh_prompt();
             }
             // The same query, across every file. This is the other half of "find": you look here,
@@ -2518,12 +2533,87 @@ impl App {
                 }
             }
             KeyCode::Char(c) if !key.ctrl && !key.alt => {
-                prompt.input.push(c);
+                prompt.field_mut().push(c);
                 self.refresh_prompt();
             }
             _ => {}
         }
         false
+    }
+
+    /// Replaces the match at or after the cursor, then moves to the next one.
+    fn replace_one(&mut self) {
+        let Some(prompt) = &self.state.prompt else {
+            return;
+        };
+        let (matches, replacement) = (prompt.matches.clone(), prompt.replacement.clone());
+        if matches.is_empty() {
+            return;
+        }
+
+        let Some(target) = vex::edits::target_at(&matches, self.state.cursor()) else {
+            return;
+        };
+        let at = target.start;
+        match vex::edits::replace_matches(
+            &mut self.state.document,
+            std::slice::from_ref(&target),
+            &replacement,
+        ) {
+            Ok(_) => {
+                // Where the caret lands: after what was just written, so the next `↵` finds the
+                // *next* match rather than re-matching what the replacement happens to contain.
+                self.state
+                    .document
+                    .set_primary_caret(vex_text::CharOffset(
+                        at.get() + replacement.chars().count(),
+                    ));
+                self.after_replace();
+                self.step_match(true);
+            }
+            Err(err) => self.state.hover = Some(err.to_string()),
+        }
+    }
+
+    /// Replaces every match in the buffer, as one undoable change.
+    fn replace_all(&mut self) {
+        let Some(prompt) = &self.state.prompt else {
+            return;
+        };
+        let (matches, replacement) = (prompt.matches.clone(), prompt.replacement.clone());
+        if matches.is_empty() {
+            self.state.hover = Some("nothing to replace".into());
+            return;
+        }
+
+        match vex::edits::replace_matches(&mut self.state.document, &matches, &replacement) {
+            Ok(count) => {
+                self.state.hover = Some(format!(
+                    "replaced {count} match{}",
+                    if count == 1 { "" } else { "es" }
+                ));
+                self.state.prompt = None;
+                self.state.search_matches.clear();
+                self.after_replace();
+            }
+            Err(err) => self.state.hover = Some(err.to_string()),
+        }
+    }
+
+    /// The bookkeeping a keystroke normally does, which a prompt key skips.
+    ///
+    /// While a prompt is open the key handler deliberately skips `sync_syntax`, `sync_lsp` and the
+    /// recovery write, because until replace existed nothing typed into a prompt could change the
+    /// buffer. Replace is the first thing that can, and without this tree-sitter and the language
+    /// server would both be describing text that is no longer there.
+    fn after_replace(&mut self) {
+        self.state.search_matches.clear();
+        self.refresh_prompt();
+        self.reveal_cursor();
+        self.sync_syntax();
+        self.sync_lsp();
+        self.persist_recovery(false);
+        self.last_edit = Some(std::time::Instant::now());
     }
 
     /// Moves to the next or previous match of the open search, wrapping at the ends.

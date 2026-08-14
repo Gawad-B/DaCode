@@ -198,6 +198,13 @@ pub const COMMANDS: &[Command] = &[
 
     // ---- search ------------------------------------------------------------------------
     command("search", "find in this file", Search, "/", "<c-f>"),
+    command(
+        "replace",
+        "find and replace in this file",
+        Search,
+        "<c-h>",
+        "<c-h>",
+    ),
     command("search_next", "next match", Search, "n", "<f3>"),
     command("search_previous", "previous match", Search, "N", "<s-f3>"),
     command("search_project", "find in every file", Search, "", "<c-s-f>"),

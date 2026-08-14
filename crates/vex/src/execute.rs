@@ -269,6 +269,10 @@ pub fn execute(
             ));
             state.pending_request = Some(action.clone());
         }
+        Action::StartReplace => {
+            state.prompt = Some(Prompt::new(PromptKind::Replace, state.cursor()));
+            state.search_matches.clear();
+        }
         Action::NextDiagnostic { forward } => next_diagnostic(state, *forward),
         Action::DismissInfo => state.hover = None,
 

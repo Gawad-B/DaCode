@@ -146,6 +146,7 @@ Prefix `i` for inner, `a` for around.
 | Key | Does |
 |---|---|
 | `/` `?` | search forward / backward, highlighting as you type |
+| `ctrl-h` | find and replace in this file — `:replace old new` is the project-wide one |
 | `enter` `shift-enter` | next / previous match, **without closing the box** |
 | `ctrl-shift-f` | send the same query to a search of every file |
 | `n` `N` · `F3` `shift-F3` | next / previous match once the box is closed |
@@ -169,6 +170,7 @@ which is the thing returning to the origin exists to prevent.
 | `ctrl-b` | buffer palette |
 | `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
 | `ctrl-s` | save |
+| `ctrl-h` | find and replace in this file — `tab` between the two fields, `enter` replaces one and moves on, `ctrl-enter` replaces all as one undo |
 | `ctrl-f4` | close this file — or click the `x` on its tab |
 | `ctrl-q` | quit |
 | `ctrl-w v` · `ctrl-w s` | split beside · split below |

@@ -30,6 +30,20 @@ pub enum PromptKind {
     /// current name — a copy, a different extension — and retyping the directory is how you save it
     /// somewhere you did not mean to.
     SaveAs,
+    /// `ctrl-h` — find and replace, in this file.
+    ///
+    /// Two fields on one line rather than an ex-command: `:s/a/b/g` is Vim-shaped, and with the
+    /// grammar off no surface may teach it. It reports itself as a search, so the live highlighting,
+    /// the match counter and the step-to-next keys are the ones `/` and `ctrl-f` already have —
+    /// replace is search with somewhere to put the answer, not a second feature.
+    Replace,
+}
+
+/// Which half of a two-field prompt has the caret.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Field {
+    Query,
+    Replacement,
 }
 
 impl PromptKind {
@@ -43,6 +57,7 @@ impl PromptKind {
             PromptKind::OpenFolder => "open folder ",
             PromptKind::LoadTheme => "theme file ",
             PromptKind::SaveAs => "save as ",
+            PromptKind::Replace => "replace ",
         }
     }
 }
@@ -67,6 +82,10 @@ pub struct Prompt {
     /// match, being thrown back to where you started is not a cancel, it is losing your place, which
     /// is the exact thing `origin` was added to prevent.
     pub stepped: bool,
+    /// What to put in place of each match. Only a replace prompt has one.
+    pub replacement: String,
+    /// Which field the caret is in. `tab` moves it.
+    pub focus: Field,
 }
 
 impl Prompt {
@@ -78,11 +97,21 @@ impl Prompt {
             matches: Vec::new(),
             message: None,
             stepped: false,
+            replacement: String::new(),
+            focus: Field::Query,
         }
     }
 
+    /// Whether this prompt searches as you type.
+    ///
+    /// Replace says yes: it wants the same live highlighting, the same match counter and the same
+    /// step-to-next keys, and every caller that asks this question wants all three.
     pub fn is_search(&self) -> bool {
-        matches!(self.kind, PromptKind::Search { .. })
+        matches!(self.kind, PromptKind::Search { .. } | PromptKind::Replace)
+    }
+
+    pub fn is_replace(&self) -> bool {
+        self.kind == PromptKind::Replace
     }
 
     pub fn forward(&self) -> bool {
@@ -92,16 +121,60 @@ impl Prompt {
             | PromptKind::Rename
             | PromptKind::OpenFolder
             | PromptKind::LoadTheme
-            | PromptKind::SaveAs => true,
+            | PromptKind::SaveAs
+            | PromptKind::Replace => true,
+        }
+    }
+
+    /// The field the caret is in, for typing into.
+    pub fn field_mut(&mut self) -> &mut String {
+        match (self.kind, self.focus) {
+            (PromptKind::Replace, Field::Replacement) => &mut self.replacement,
+            _ => &mut self.input,
+        }
+    }
+
+    /// Moves between the two fields. A no-op for prompts with one.
+    pub fn toggle_field(&mut self) {
+        if self.is_replace() {
+            self.focus = match self.focus {
+                Field::Query => Field::Replacement,
+                Field::Replacement => Field::Query,
+            };
         }
     }
 
     /// What the statusline shows while the prompt is open.
     pub fn display(&self) -> String {
-        match &self.message {
-            Some(message) => message.clone(),
-            None => format!("{}{}", self.kind.sigil(), self.input),
+        self.display_with_caret().0
+    }
+
+    /// The line, and how many characters into it the caret sits.
+    ///
+    /// One function for both, because the caret is drawn by counting characters into the displayed
+    /// string. Computing the string in one place and the caret index in another is the same
+    /// duplication `layout.rs` exists to prevent, one line further down the window.
+    pub fn display_with_caret(&self) -> (String, usize) {
+        if let Some(message) = &self.message {
+            return (message.clone(), message.chars().count());
         }
+
+        if !self.is_replace() {
+            let line = format!("{}{}", self.kind.sigil(), self.input);
+            let caret = line.chars().count();
+            return (line, caret);
+        }
+
+        // `replace needle with something` — words rather than `s/needle/something/`, which is Vim's
+        // spelling of it and is exactly what the non-modal editor must never show.
+        let head = format!("{}{}", self.kind.sigil(), self.input);
+        let caret = match self.focus {
+            Field::Query => head.chars().count(),
+            Field::Replacement => {
+                head.chars().count() + " with ".chars().count() + self.replacement.chars().count()
+            }
+        };
+        (format!("{head} with {}", self.replacement), caret)
     }
 }
 

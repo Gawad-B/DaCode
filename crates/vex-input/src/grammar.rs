@@ -268,6 +268,7 @@ impl Grammar {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
                 KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
+                KeyCode::Char('h') => Some(Action::StartReplace),
                 KeyCode::Char('g') => Some(Action::StartCommand),
                 // `ctrl-d` is occurrence selection, not "a cursor below": it is the first shortcut a
                 // VSCode user reaches for, and having it do something else is worse than not having
@@ -399,6 +400,10 @@ impl Grammar {
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
+                // In both grammars. Vim's own answer is `:s/a/b/g`, which is a fine thing to know
+                // and a poor thing to be the only way — and the prompt it opens is the same one, so
+                // there is no second implementation to keep in step.
+                KeyCode::Char('h') => Some(Action::StartReplace),
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 KeyCode::Char(',') => Some(Action::ToggleSettings),

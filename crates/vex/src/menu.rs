@@ -86,6 +86,7 @@ const MENUS: [(&str, &[&str]); 5] = [
             "undo",
             "redo",
             "paste",
+            "replace",
             "toggle_comment",
             "duplicate_line_down",
             "delete_line",

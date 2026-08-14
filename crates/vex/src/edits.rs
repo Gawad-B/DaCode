@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 use vex_buffer::{Document, EditKind};
 use vex_lsp::lsp_types::{TextEdit, Uri, WorkspaceEdit};
 use vex_lsp::position;
-use vex_text::{Edit, Text, Transaction, Version};
+use std::ops::Range;
+use vex_text::{CharOffset, Edit, Text, Transaction, Version};
 
 /// What a set of edits changed, for reporting to the user.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -283,6 +284,73 @@ fn text_edit_of(
 mod tests {
     use super::*;
     use vex_lsp::lsp_types::{Position, Range};
+
+    #[test]
+    fn replacing_every_match_is_one_undo_and_the_offsets_do_not_drift() {
+        // The failure this prevents: applying matches one at a time, in order, so the second edit is
+        // expressed against text the first already moved. A longer replacement than what it replaces
+        // is what makes it visible — with equal lengths the bug hides.
+        let mut document = Document::from_str("one two one three one\n");
+        let matches = vex_buffer::find_all(
+            document.text(),
+            "one",
+            &vex_buffer::SearchOptions::default(),
+        );
+        assert_eq!(matches.len(), 3);
+
+        let count = replace_matches(&mut document, &matches, "ONE-LONGER").unwrap();
+        assert_eq!(count, 3);
+        assert_eq!(
+            document.text().to_string(),
+            "ONE-LONGER two ONE-LONGER three ONE-LONGER\n"
+        );
+
+        document.undo();
+        assert_eq!(
+            document.text().to_string(),
+            "one two one three one\n",
+            "forty replacements are one intent, so one undo puts all of them back"
+        );
+    }
+
+    #[test]
+    fn a_replacement_shorter_than_the_match_also_lands() {
+        let mut document = Document::from_str("aaa bbb aaa\n");
+        let matches = vex_buffer::find_all(
+            document.text(),
+            "aaa",
+            &vex_buffer::SearchOptions::default(),
+        );
+        replace_matches(&mut document, &matches, "x").unwrap();
+        assert_eq!(document.text().to_string(), "x bbb x\n");
+    }
+
+    #[test]
+    fn replace_one_acts_on_the_match_you_are_standing_in() {
+        // And on the next one when the caret is between matches, and wraps at the end — the same
+        // rule stepping already follows, because replacing your way down a file must not stop dead
+        // with matches still above the cursor.
+        let text = vex_text::Text::from_str("one two one three one\n");
+        let matches =
+            vex_buffer::find_all(&text, "one", &vex_buffer::SearchOptions::default());
+
+        assert_eq!(
+            target_at(&matches, CharOffset(1)).map(|range| range.start),
+            Some(CharOffset(0)),
+            "inside a match is that match"
+        );
+        assert_eq!(
+            target_at(&matches, CharOffset(4)).map(|range| range.start),
+            Some(CharOffset(8)),
+            "between matches is the next one"
+        );
+        assert_eq!(
+            target_at(&matches, CharOffset(21)).map(|range| range.start),
+            Some(CharOffset(0)),
+            "past the last one wraps to the first"
+        );
+        assert_eq!(target_at(&[], CharOffset(0)), None);
+    }
 
     /// A URI for a path, through the same conversion the client uses — so the tests exercise the
     /// round trip rather than a second implementation of it.
@@ -571,6 +639,60 @@ mod tests {
 ///
 /// The open buffer goes through its undo history; other files are written atomically and are not
 /// undoable — the same limitation a cross-file rename has, and reported the same way.
+/// Replaces the given match ranges in the open buffer, as one undoable change.
+///
+/// Built from ranges the caller already has — the same ones `vex_buffer::find_all` produced for the
+/// search box and the highlighting — rather than re-scanning with a different matcher. `find_all` is
+/// smart-case and has a whole-document path for a query spanning a newline; a second search here
+/// would replace a different set of matches from the ones highlighted, which is the worst possible
+/// answer for an operation this destructive.
+///
+/// One `Transaction`, so `Transaction::apply` carries the running delta and a replacement longer or
+/// shorter than what it replaces cannot disturb the matches after it. `EditKind::Discrete` because
+/// replacing forty occurrences is one *intent*, however many edits it makes: undo must put all of
+/// them back at once.
+pub fn replace_matches(
+    document: &mut Document,
+    matches: &[Range<CharOffset>],
+    replacement: &str,
+) -> Result<usize, EditError> {
+    if matches.is_empty() {
+        return Ok(0);
+    }
+
+    let edits: Vec<Edit> = matches
+        .iter()
+        .map(|range| Edit::replace(range.clone(), replacement))
+        .collect();
+
+    let count = edits.len();
+    let transaction = Transaction::new(edits);
+    // Validated first, so a bad set changes nothing at all.
+    transaction
+        .validate(document.text())
+        .map_err(|err| EditError::Invalid(err.to_string()))?;
+    document
+        .apply(transaction, EditKind::Discrete)
+        .map_err(|err| EditError::Invalid(err.to_string()))?;
+    Ok(count)
+}
+
+/// Which match a replace-one should act on: the one the caret is inside, else the next one after it.
+///
+/// Wrapping, like `find_next`, so replacing your way down a file does not stop dead at the bottom
+/// with matches still above the cursor.
+pub fn target_at(
+    matches: &[Range<CharOffset>],
+    cursor: CharOffset,
+) -> Option<Range<CharOffset>> {
+    matches
+        .iter()
+        .find(|range| range.start <= cursor && cursor < range.end)
+        .or_else(|| matches.iter().find(|range| range.start > cursor))
+        .or_else(|| matches.first())
+        .cloned()
+}
+
 pub fn replace_in_hits(
     document: &mut Document,
     open_path: Option<&Path>,

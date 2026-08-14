@@ -209,6 +209,12 @@ pub enum Action {
     RepeatSearch {
         forward: bool,
     },
+    /// `ctrl-h` — find and replace, in this file.
+    ///
+    /// Opens the prompt and stops there. The replacing itself is done by the prompt's own keys, as
+    /// stepping between matches already is: both need two strings and a match the cursor is sitting
+    /// on, neither of which a palette row or a macro replay can supply.
+    StartReplace,
     /// `:` — open the command line.
     StartCommand,
     /// Project-wide search for the word under the cursor, or via `:grep`.
@@ -402,6 +408,7 @@ impl Action {
         "search",
         "search_backward",
         "search_next",
+        "replace",
         "search_previous",
         "command",
         "search_project",
@@ -541,6 +548,7 @@ impl Action {
             "search_backward" => Action::StartSearch { forward: false },
             "search_next" => Action::RepeatSearch { forward: true },
             "search_previous" => Action::RepeatSearch { forward: false },
+            "replace" => Action::StartReplace,
             "command" => Action::StartCommand,
             "search_project" => Action::SearchProject,
 

@@ -3474,7 +3474,20 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         if prompt.is_search() && !prompt.input.is_empty() {
             // Words, not `↵`: the bundled font has no glyph for it, so it drew a tofu box — and the
             // whole point of this line is to be read by someone who does not yet know the keys.
-            let keys = "enter next · shift-enter back · ctrl-shift-f every file";
+            //
+            // A replace prompt teaches its own keys instead of the search ones, and which of them
+            // depends on where the caret is: naming "enter replaces" while the caret is in the field
+            // you find with would be teaching a key that does nothing yet.
+            let keys = if prompt.is_replace() {
+                match prompt.focus {
+                    crate::prompt::Field::Query => "tab to what replaces it",
+                    crate::prompt::Field::Replacement => {
+                        "enter replaces one · ctrl-enter replaces all · tab back"
+                    }
+                }
+            } else {
+                "enter next · shift-enter back · ctrl-shift-f every file"
+            };
             let (text, color) = match prompt.matches.len() {
                 0 => ("no matches".to_string(), theme.stale()),
                 total => match vex_buffer::index_of(&prompt.matches, state.cursor()) {
