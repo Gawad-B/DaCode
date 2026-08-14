@@ -125,12 +125,22 @@ pub struct DiffRequest {
 }
 
 /// What the worker sends back.
+///
+/// Every arm carries the **file** it is about, not just the document version it was computed
+/// against. A version alone is not an identity: it counts from `Version(1)` per document, so two
+/// buffers that have only been opened both hold `Version(1)` and a result for one passes a
+/// version check against the other. For a diff that means the wrong gutter marks; for a revert it
+/// means overwriting one file with another file's committed text.
 pub enum GitResult {
-    Diff(Diff),
+    Diff {
+        path: PathBuf,
+        diff: Diff,
+    },
     /// Lines `range` of the buffer should become `text` — the hunk as it was committed.
     ///
     /// `text` is empty when the change was purely an addition, which reverting means deleting.
     Revert {
+        path: PathBuf,
         version: Version,
         range: std::ops::Range<usize>,
         text: String,
@@ -146,6 +156,14 @@ pub enum GitResult {
 pub struct GitWorker {
     requests: Sender<DiffRequest>,
     results: Receiver<GitResult>,
+    /// How many requests have been sent and not yet answered.
+    ///
+    /// The event loop sleeps until input unless something says it is still working. Without this
+    /// the reply to a revert sat in the channel with nobody to read it: the key appeared to do
+    /// nothing at all until some unrelated keypress happened to wake the loop — and if that
+    /// keypress was a text edit, the revert was then refused as stale and lost. The format worker
+    /// was given this and git was not.
+    outstanding: std::cell::Cell<usize>,
 }
 
 impl GitWorker {
@@ -168,19 +186,29 @@ impl GitWorker {
 
                 let base = committed(&request.path);
                 let result = match request.revert {
-                    Some(line) => revert(base.as_deref(), &request.text, line, request.version),
-                    None => GitResult::Diff(match base {
-                        Some(base) => Diff {
-                            lines: diff_lines(&base, &request.text),
-                            version: Some(request.version),
+                    Some(line) => revert(
+                        base.as_deref(),
+                        &request.text,
+                        line,
+                        request.version,
+                        request.path.clone(),
+                    ),
+                    None => GitResult::Diff {
+                        path: request.path.clone(),
+                        diff: match base {
+                            Some(base) => Diff {
+                                lines: diff_lines(&base, &request.text),
+                                version: Some(request.version),
+                            },
+                            // Not in git, or not committed yet: no marks rather than every line
+                            // marked as added, which would make a scratch file look like a
+                            // catastrophe.
+                            None => Diff {
+                                lines: Vec::new(),
+                                version: Some(request.version),
+                            },
                         },
-                        // Not in git, or not committed yet: no marks rather than every line marked
-                        // as added, which would make a scratch file look like a catastrophe.
-                        None => Diff {
-                            lines: Vec::new(),
-                            version: Some(request.version),
-                        },
-                    }),
+                    },
                 };
 
                 if outgoing.send(result).is_err() {
@@ -189,16 +217,36 @@ impl GitWorker {
             }
         });
 
-        Self { requests, results }
+        Self {
+            requests,
+            results,
+            outstanding: std::cell::Cell::new(0),
+        }
     }
 
     pub fn request(&self, request: DiffRequest) {
-        let _ = self.requests.send(request);
+        if self.requests.send(request).is_ok() {
+            self.outstanding.set(self.outstanding.get() + 1);
+        }
     }
 
     /// The next result, if one is ready. Never blocks.
     pub fn poll(&self) -> Option<GitResult> {
-        self.results.try_recv().ok()
+        let result = self.results.try_recv().ok();
+        if result.is_some() {
+            self.outstanding
+                .set(self.outstanding.get().saturating_sub(1));
+        }
+        result
+    }
+
+    /// Whether a reply is still coming, so the event loop keeps waking to collect it.
+    ///
+    /// Not exact — the worker drops a queued diff when a revert arrives behind it, so the count
+    /// can sit one high until the next request answers. That costs a few extra 100ms wake-ups and
+    /// nothing else; the failure it replaces was a keypress that silently did nothing.
+    pub fn busy(&self) -> bool {
+        self.outstanding.get() > 0
     }
 }
 
@@ -207,7 +255,13 @@ impl GitWorker {
 /// Runs on the worker, not the UI thread, because it needs a second diff — and the version it was
 /// computed against goes back with it, so the editor can refuse a result for text that has since
 /// moved. The same contract every producer here follows.
-fn revert(base: Option<&str>, current: &str, line: usize, version: Version) -> GitResult {
+fn revert(
+    base: Option<&str>,
+    current: &str,
+    line: usize,
+    version: Version,
+    path: PathBuf,
+) -> GitResult {
     let Some(base) = base else {
         return GitResult::Refused(
             "this file is not in git, so there is nothing to go back to".into(),
@@ -252,15 +306,34 @@ fn revert(base: Option<&str>, current: &str, line: usize, version: Version) -> G
         .map(|(at, _)| at)
         .unwrap_or(old.len());
 
+    // The buffer's own line ending, not `\n`. `lines()` strips the `\r` from both sides, so
+    // rejoining with `\n` splices LF lines into a CRLF file — and because the diff strips `\r`
+    // too, the gutter then reports the file as unchanged while git sees every touched line as
+    // modified. Taken from the *buffer* rather than the commit, which is the side the text is
+    // being spliced into and is right even when `git show` hands back an LF blob for a CRLF
+    // worktree.
+    let eol = if current.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+
     let text = if to > from {
-        let mut joined = old[from..to].join("\n");
-        joined.push('\n');
+        let mut joined = old[from..to].join(eol);
+        // Terminated only when a terminator belongs there. Reverting the last hunk of a file whose
+        // committed form has no final newline must not add one — `apply_revert` extends the range
+        // to the end of the buffer for a final hunk, so this restores the missing newline in both
+        // directions rather than always adding it.
+        if to < old.len() || base.ends_with('\n') {
+            joined.push_str(eol);
+        }
         joined
     } else {
         String::new()
     };
 
     GitResult::Revert {
+        path,
         version,
         range: hunk,
         text,
@@ -587,11 +660,99 @@ mod tests {
     }
 
     #[test]
+    fn a_result_says_which_file_it_is_about() {
+        // A `Version` is not an identity — it counts from 1 per document, so two files that have
+        // only been opened both hold Version(1). Reverting a hunk in one and switching to the other
+        // before `git show` returned would have passed a version check and overwritten the second
+        // file with the first one's committed text, silently, as one undo group.
+        let result = revert(
+            Some("one\ntwo\n"),
+            "one\nTWO\n",
+            1,
+            Version(1),
+            PathBuf::from("a.rs"),
+        );
+        let GitResult::Revert { path, .. } = result else {
+            panic!("a modified line has a hunk");
+        };
+        assert_eq!(path, PathBuf::from("a.rs"));
+    }
+
+    #[test]
+    fn a_crlf_file_is_put_back_with_crlf() {
+        // `lines()` strips the `\r` from both sides, so rejoining with `\n` spliced LF lines into a
+        // CRLF file — and because the diff strips `\r` too, the gutter then reported the file as
+        // unchanged while git saw every touched line as modified.
+        let GitResult::Revert { text, .. } = revert(
+            Some("one\r\ntwo\r\nthree\r\n"),
+            "one\r\nTWO\r\nthree\r\n",
+            1,
+            Version(1),
+            PathBuf::from("x.rs"),
+        ) else {
+            panic!("a modified line has a hunk");
+        };
+        assert_eq!(text, "two\r\n", "the buffer's own line ending, not `\\n`");
+    }
+
+    #[test]
+    fn reverting_the_last_line_does_not_invent_a_trailing_newline() {
+        // The committed file has none, so putting the line back must not add one — git would then
+        // report the file as modified for a change nobody made.
+        let GitResult::Revert { text, .. } = revert(
+            Some("one\ntwo"),
+            "one\nTWO",
+            1,
+            Version(1),
+            PathBuf::from("x.rs"),
+        ) else {
+            panic!("a modified line has a hunk");
+        };
+        assert_eq!(text, "two");
+
+        // And a file that *does* end with one keeps it.
+        let GitResult::Revert { text, .. } = revert(
+            Some("one\ntwo\n"),
+            "one\nTWO\n",
+            1,
+            Version(1),
+            PathBuf::from("x.rs"),
+        ) else {
+            panic!("a modified line has a hunk");
+        };
+        assert_eq!(text, "two\n");
+    }
+
+    #[test]
+    fn the_worker_says_when_it_still_owes_an_answer() {
+        // Without this the event loop slept with a revert's reply sitting unread in the channel:
+        // the key appeared to do nothing until some unrelated keypress woke it, and if that
+        // keypress was an edit the revert was then refused as stale and lost.
+        let worker = GitWorker::spawn();
+        assert!(!worker.busy(), "nothing asked for yet");
+
+        worker.request(DiffRequest {
+            path: std::env::temp_dir().join("vex-not-a-repo-file.rs"),
+            text: "x\n".into(),
+            version: Version(1),
+            revert: None,
+        });
+        assert!(worker.busy(), "and now the loop must keep waking");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while worker.poll().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!worker.busy(), "until the answer has been collected");
+    }
+
+    #[test]
     fn reverting_a_modified_line_puts_the_committed_one_back() {
         let base = "one\ntwo\nthree\n";
         let current = "one\nCHANGED\nthree\n";
 
-        let GitResult::Revert { range, text, .. } = revert(Some(base), current, 1, Version(1))
+        let GitResult::Revert { range, text, .. } =
+            revert(Some(base), current, 1, Version(1), PathBuf::from("x.rs"))
         else {
             panic!("a modified line has a hunk");
         };
@@ -618,7 +779,8 @@ mod tests {
         let base = "one\ntwo\n";
         let current = "one\nnew\nalso new\ntwo\n";
 
-        let GitResult::Revert { range, text, .. } = revert(Some(base), current, 1, Version(1))
+        let GitResult::Revert { range, text, .. } =
+            revert(Some(base), current, 1, Version(1), PathBuf::from("x.rs"))
         else {
             panic!("added lines are a hunk");
         };
@@ -633,13 +795,16 @@ mod tests {
 
         assert!(
             matches!(
-                revert(Some(base), current, 2, Version(1)),
+                revert(Some(base), current, 2, Version(1), PathBuf::from("x.rs")),
                 GitResult::Refused(_)
             ),
             "line 2 is unchanged, so there is no hunk to undo"
         );
         assert!(
-            matches!(revert(None, current, 0, Version(1)), GitResult::Refused(_)),
+            matches!(
+                revert(None, current, 0, Version(1), PathBuf::from("x.rs")),
+                GitResult::Refused(_)
+            ),
             "and a file not in git has nothing to go back to"
         );
     }
@@ -651,7 +816,8 @@ mod tests {
         let base = "a\nb\nc\nd\ne\nf\n";
         let current = "a\nB!\nc\nd\nE!\nf\n";
 
-        let GitResult::Revert { range, text, .. } = revert(Some(base), current, 4, Version(1))
+        let GitResult::Revert { range, text, .. } =
+            revert(Some(base), current, 4, Version(1), PathBuf::from("x.rs"))
         else {
             panic!("the second hunk exists");
         };
@@ -720,7 +886,8 @@ mod live_tests {
         assert_eq!(diff.hunks(), vec![1..2], "one line differs");
 
         // And undoing it reproduces the committed file exactly.
-        let GitResult::Revert { range, text, .. } = revert(Some(&base), edited, 1, Version(1))
+        let GitResult::Revert { range, text, .. } =
+            revert(Some(&base), edited, 1, Version(1), PathBuf::from("x.rs"))
         else {
             panic!("there is a hunk to undo");
         };
@@ -747,7 +914,7 @@ mod live_tests {
 
         assert_eq!(committed(&fresh), None);
         assert!(matches!(
-            revert(None, "fn main() {}\n", 0, Version(1)),
+            revert(None, "fn main() {}\n", 0, Version(1), PathBuf::from("x.rs")),
             GitResult::Refused(_)
         ));
 

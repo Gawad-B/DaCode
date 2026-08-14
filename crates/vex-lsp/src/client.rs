@@ -70,6 +70,12 @@ pub enum Pending {
     /// says nothing about which item it is for.
     ResolveCompletion {
         at: usize,
+        /// The label of the item asked about. A reply carries no identity of its own, and a list
+        /// can be replaced while one is in flight — rust-analyzer marks nearly every list
+        /// incomplete, so typing one more character fetches a new one. Without this the reply
+        /// lands on whatever now sits at that index, and grafts one suggestion's import onto
+        /// another's name.
+        label: String,
     },
     /// Everything named in one file, for an outline. Carries the file, because the hierarchical
     /// form of the reply names no URI at all — it is all one document, and the server assumes the
@@ -119,6 +125,9 @@ pub enum ServerEvent {
     /// One suggestion, filled in. `at` is where it sat in the list that was offered.
     CompletionResolved {
         at: usize,
+        /// What the item was labelled when it was asked about, so a reply for a list that has
+        /// since been replaced can be told apart from one for the list on screen.
+        label: String,
         item: CompletionItem,
     },
     /// Everything named, in one file or across the project.
@@ -736,11 +745,19 @@ impl LspClient {
     ///
     /// The item goes back **exactly as it arrived**: the server put an opaque `data` blob on it
     /// that only it can read, and an item rebuilt from the parsed fields is a different request.
-    pub fn resolve_completion(&self, at: usize, item: &serde_json::Value) -> Result<i64> {
+    pub fn resolve_completion(
+        &self,
+        at: usize,
+        label: &str,
+        item: &serde_json::Value,
+    ) -> Result<i64> {
         self.request(
             "completionItem/resolve",
             item.clone(),
-            Pending::ResolveCompletion { at },
+            Pending::ResolveCompletion {
+                at,
+                label: label.to_string(),
+            },
         )
     }
 
@@ -1096,8 +1113,8 @@ fn interpret(
                     .unwrap_or(false),
             })
         }
-        Pending::ResolveCompletion { at } => {
-            completion_item(result).map(|item| ServerEvent::CompletionResolved { at, item })
+        Pending::ResolveCompletion { at, label } => {
+            completion_item(result).map(|item| ServerEvent::CompletionResolved { at, label, item })
         }
         Pending::DocumentSymbols { path } => Some(ServerEvent::Symbols {
             query: None,

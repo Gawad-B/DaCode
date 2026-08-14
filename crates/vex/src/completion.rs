@@ -98,17 +98,25 @@ impl Completion {
     /// on screen would be asking it to do a hundred times the work for the one answer that gets
     /// used. Asking as the selection moves means the item is nearly always filled in before it is
     /// accepted, and accepting one that is not simply goes without its import and says so.
-    pub fn wants_resolving(&mut self) -> Option<(usize, serde_json::Value)> {
+    pub fn wants_resolving(&mut self) -> Option<(usize, String, serde_json::Value)> {
         let at = self.items.get(self.selected)?.at;
         if !self.asked.insert(at) {
             return None;
         }
-        Some((at, self.all.get(at)?.raw.clone()))
+        let offer = self.all.get(at)?;
+        Some((at, offer.label.clone(), offer.raw.clone()))
     }
 
     /// Merges a resolved suggestion back into the list.
-    pub fn resolved(&mut self, at: usize, item: vex_lsp::CompletionItem) {
-        let Some(existing) = self.all.get_mut(at) else {
+    ///
+    /// Refused unless the item at that index is still the one that was asked about. An index is not
+    /// an identity: rust-analyzer marks nearly every list incomplete, so typing one more character
+    /// fetches a whole new list while a resolve is still in flight — and the reply would otherwise
+    /// write `HashMap`'s import onto whatever now sits at index 0, which might be `HashSet`.
+    /// Accepting it would then insert a `use` line for a type the user never chose, in the same
+    /// undo group as the name they did.
+    pub fn resolved(&mut self, at: usize, label: &str, item: vex_lsp::CompletionItem) {
+        let Some(existing) = self.all.get_mut(at).filter(|offer| offer.label == label) else {
             return;
         };
         // The reply is allowed to leave fields out, which means "unchanged" rather than "empty" —
@@ -388,6 +396,43 @@ mod tests {
             vec![0, 1],
             "and the highlight stays inside the label"
         );
+    }
+
+    #[test]
+    fn a_resolve_for_a_list_that_has_been_replaced_is_refused() {
+        // rust-analyzer marks nearly every list incomplete, so typing one more character fetches a
+        // whole new one while a resolve is still in flight. An index is not an identity: the reply
+        // would otherwise write `HashMap`'s import onto whatever now sits at index 0 — and
+        // accepting it inserts a `use` line for a type the user never chose, in the same undo group
+        // as the name they did.
+        let source = text("Ha");
+        let caret = source.len_chars();
+        let mut completion = Completion::new(&source, caret, Version(1));
+        completion.offer(offers(&["HashMap"]), true, &source, caret);
+
+        let (at, label, _) = completion.wants_resolving().expect("the selected one");
+        assert_eq!((at, label.as_str()), (0, "HashMap"));
+
+        // The list is replaced before the reply lands.
+        let longer = text("Has");
+        let caret = longer.len_chars();
+        completion.offer(offers(&["HashSet"]), true, &longer, caret);
+
+        let import = vex_lsp::CompletionItem {
+            label: "HashMap".into(),
+            additional: vec![vex_lsp::lsp_types::TextEdit {
+                range: Default::default(),
+                new_text: "use std::collections::HashMap;\n".into(),
+            }],
+            ..Default::default()
+        };
+        completion.resolved(0, "HashMap", import);
+
+        assert!(
+            completion.items[0].offer.additional.is_empty(),
+            "the import belongs to a suggestion that is no longer in the list"
+        );
+        assert_eq!(completion.items[0].label(), "HashSet");
     }
 
     #[test]

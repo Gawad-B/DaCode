@@ -2116,6 +2116,12 @@ impl App {
 
     /// Runs the first formatter that is actually on this machine, on the worker.
     fn format_externally(&mut self) {
+        // Taken up front and restored only when a request actually goes out. Every early return
+        // below is a format that will never happen, and a `save_after_format` left set behind one
+        // is a flag with no owner — the next server edit anywhere in the editor would see it and
+        // write *that* buffer to disk unasked.
+        let pending_save = std::mem::take(&mut self.save_after_format);
+
         let Some(path) = self.state.file_path.clone() else {
             self.warn("a scratch buffer has no language to format");
             return;
@@ -2159,6 +2165,7 @@ impl App {
 
         let version = self.state.document.version();
         self.formatting_version = Some(version);
+        self.save_after_format = pending_save;
         self.state.server_status = format!("{} formatting", formatter.program);
         self.formatter.request(vex::format::Request {
             formatter,
@@ -2175,7 +2182,11 @@ impl App {
         let Some(formatted) = self.formatter.poll() else {
             return false;
         };
-        self.formatting_version = None;
+        // Taken, not cleared: the check below needs to know which version was asked for, and
+        // clearing the field first made that comparison `None != Some(v)` — unconditionally true,
+        // so every external format was refused and the feature never applied a single edit.
+        let requested = self.formatting_version.take();
+
         if let Some(problem) = formatted.problem {
             self.state.server_status = "format failed".into();
             self.state.hover = Some(problem);
@@ -2189,7 +2200,7 @@ impl App {
         // The one rule, applied to the newest producer: text formatted against a document the user
         // has typed into since is discarded, not merged. Saying so matters — the alternative is a
         // format that appears to have done nothing.
-        if self.formatting_version != Some(formatted.version)
+        if requested != Some(formatted.version)
             || self.state.document.version() != formatted.version
         {
             self.state.server_status = "format refused: the file changed".into();
@@ -2199,7 +2210,15 @@ impl App {
 
         let before = self.state.document.text().to_string();
         match vex::format::narrow(&before, &text) {
-            None => self.state.server_status = "already formatted".into(),
+            // Nothing to change, so nothing to write — and *not* saving again is the point. The
+            // file on disk is already what the formatter would produce, and saving would re-arm
+            // `format_on_save`, which would format, which would find nothing, which would save:
+            // a loop with no fixed point. The language-server path already returns here for the
+            // same reason.
+            None => {
+                self.state.server_status = "already formatted".into();
+                self.save_after_format = false;
+            }
             Some((range, replacement)) => {
                 let edit = vex_text::Edit::replace(
                     vex_text::CharOffset(range.start)..vex_text::CharOffset(range.end),
@@ -2271,6 +2290,17 @@ impl App {
         self.route_format();
 
         let Some(name) = self.active_server.clone() else {
+            // A request nothing can answer must not be left sitting here. It would keep until some
+            // later buffer started a server and then fire against *that* file — a symbol palette
+            // opening by itself over a file the user never asked about, minutes after the key was
+            // pressed. Answered at the moment of the keypress instead, which is also the only way
+            // the key says anything at all in a project with no server.
+            if self.state.pending_request.take().is_some() {
+                self.state.hover = Some(format!(
+                    "{} — that needs a language server",
+                    self.state.server_status
+                ));
+            }
             return false;
         };
         // Taken before the client is borrowed mutably: the language a file is written in is a
@@ -2422,13 +2452,13 @@ impl App {
         // `Action` because it is not something a user asks for: it is the editor keeping the row
         // under the cursor filled in, so that accepting it can bring its import.
         if client.state() == vex_lsp::State::Ready {
-            if let Some((at, raw)) = self
+            if let Some((at, label, raw)) = self
                 .state
                 .completion
                 .as_mut()
                 .and_then(vex::completion::Completion::wants_resolving)
             {
-                if let Err(error) = client.resolve_completion(at, &raw) {
+                if let Err(error) = client.resolve_completion(at, &label, &raw) {
                     eprintln!("vex: resolve failed: {error:#}");
                 }
             }
@@ -2507,9 +2537,9 @@ impl App {
                         completion.offer(items, incomplete, &text, caret);
                     }
                 }
-                vex_lsp::ServerEvent::CompletionResolved { at, item } => {
+                vex_lsp::ServerEvent::CompletionResolved { at, label, item } => {
                     if let Some(completion) = &mut self.state.completion {
-                        completion.resolved(at, item);
+                        completion.resolved(at, &label, item);
                     }
                 }
                 vex_lsp::ServerEvent::Symbols { query, symbols } => {
@@ -2697,6 +2727,13 @@ impl App {
         if self.formatting_version.is_some() {
             return true;
         }
+        // The same for git. Without this a revert's reply sat unread until some unrelated key
+        // woke the loop, so `]C` in a file with no language server appeared to do nothing at all —
+        // and if the key that eventually woke it was a text edit, the revert was then refused as
+        // stale and lost outright.
+        if self.git.busy() {
+            return true;
+        }
         if let Some(client) = self.active_client() {
             // A live server always warrants a slow poll: replies arrive unprompted.
             return client.state() != vex_lsp::State::Stopped;
@@ -2843,7 +2880,11 @@ impl App {
                 self.state.completion = None;
             }
         }
-        if ask_again {
+        // Never over a request that is already waiting. `pending_request` is a single slot, and
+        // this runs on the way through the key handler *before* the sync that would send one — so
+        // a completion refresh landing on the same keystroke as a save would throw away the format
+        // that `format_on_save` had just queued, and the file would be written unformatted.
+        if ask_again && self.state.pending_request.is_none() {
             self.state.pending_request = Some(Action::RequestCompletion);
         }
     }
@@ -4842,14 +4883,12 @@ impl App {
             self.activate(Target::File(symbol.path.clone()));
         }
 
-        // Clamped, because a symbol list can outlive the file it describes: the server answered
-        // for the text it last saw, and landing past the end would be worse than landing late.
-        let text = self.state.document.text();
-        let line = (symbol.position.line as usize).min(text.last_line());
-        let offset = text.point_to_char(vex_text::Point::new(
-            line,
-            symbol.position.character as usize,
-        ));
+        // Through `from_lsp`, like every other jump. A server's `character` is a count of UTF-16
+        // code units, not of characters — an emoji earlier on the line is two of the first and one
+        // of the second — so handing it to `Point::new` as a column lands the caret past the name.
+        // That conversion also clamps both line and column, which is what a symbol list outliving
+        // the file it describes needs: the server answered for the text it last saw.
+        let offset = vex_lsp::from_lsp(self.state.document.text(), symbol.position);
         self.state.document.set_primary_caret(offset);
         self.jumps.push(here);
         self.reveal_cursor();
@@ -5167,24 +5206,44 @@ impl App {
         }
 
         match self.git.poll() {
-            Some(vex::git::GitResult::Diff(diff)) if diff.version() == Some(version) => {
+            Some(vex::git::GitResult::Diff { path, diff })
+                if diff.version() == Some(version) && self.is_active_file(&path) =>
+            {
                 self.state.diff = diff;
                 true
             }
-            // Stale: the buffer moved on while the diff ran. Dropped, and the newer request that
-            // caused the move is already queued.
-            Some(vex::git::GitResult::Diff(_)) => false,
+            // Stale: the buffer moved on, or the file did, while the diff ran. Dropped, and the
+            // newer request that caused the move is already queued.
+            Some(vex::git::GitResult::Diff { .. }) => false,
             Some(vex::git::GitResult::Refused(why)) => {
                 self.state.hover = Some(why);
                 true
             }
             Some(vex::git::GitResult::Revert {
+                path,
                 version: computed,
                 range,
                 text,
-            }) => self.apply_revert(computed, range, text),
+            }) => self.apply_revert(&path, computed, range, text),
             None => false,
         }
+    }
+
+    /// Whether a result computed for `path` is about the buffer now on screen.
+    ///
+    /// A `Version` is **not** an identity. It counts from `Version(1)` per document, so two files
+    /// that have only been opened both hold `Version(1)` — and a result for one passes a version
+    /// check against the other. Reverting a hunk in `a.rs` and switching to `b.rs` before `git
+    /// show` returned would have replaced lines of `b.rs` with `a.rs`'s committed text, silently
+    /// and as one undo group. Nothing about that is caught by comparing numbers.
+    /// Compared as written rather than canonicalised: the worker echoes back exactly the path the
+    /// request carried, which came from this same field, so they are equal or they are different
+    /// files. Canonicalising would touch the filesystem once per poll to learn nothing.
+    fn is_active_file(&self, path: &std::path::Path) -> bool {
+        self.state
+            .file_path
+            .as_ref()
+            .is_some_and(|open| std::path::Path::new(open) == path)
     }
 
     /// Asks the git worker what undoing the change under the cursor would put back.
@@ -5206,19 +5265,31 @@ impl App {
             version: self.state.document.version(),
             revert: Some(self.state.cursor_point().line),
         });
+        // The worker's drain loop stops at a revert, so a diff queued behind this one is dropped
+        // rather than computed. Forgetting what was asked for makes the next wake queue a fresh
+        // diff, which then runs straight after the revert — otherwise a revert that turns out to
+        // be refused leaves the gutter describing text that has already moved.
+        self.diffed_version = None;
     }
 
     /// Puts a hunk back to how it was committed.
     fn apply_revert(
         &mut self,
+        path: &std::path::Path,
         computed: vex_text::Version,
         range: std::ops::Range<usize>,
         text: String,
     ) -> bool {
         // The one rule again: worked out against a version the user has since typed past, so the
-        // line numbers no longer mean what they meant. Refused rather than applied to whatever is
-        // at those lines now — which for a *destructive* action is the difference between doing
+        // line numbers no longer mean what they meant — or worked out for a *different file*, if
+        // the buffer was switched while `git show` ran. Refused rather than applied to whatever is
+        // at those lines now, which for a destructive action is the difference between doing
         // nothing and destroying the wrong thing.
+        if !self.is_active_file(path) {
+            self.state.hover =
+                Some("the buffer changed while that was being worked out — ask again".into());
+            return true;
+        }
         if self.state.document.version() != computed {
             self.state.hover =
                 Some("the file changed while that was being worked out — ask again".into());

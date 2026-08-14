@@ -708,7 +708,7 @@ fn a_real_server_sends_types_a_ranking_and_an_import() {
                     if let Some((at, item)) = items.iter().enumerate().find(|(_, i)| is_hash_map(i))
                     {
                         client
-                            .resolve_completion(at, &item.raw)
+                            .resolve_completion(at, &item.label, &item.raw)
                             .expect("the resolve request is sent");
                     }
                     offered = Some(items);

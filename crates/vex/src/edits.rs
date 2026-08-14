@@ -736,13 +736,28 @@ pub fn accept_completion(
     let mut shift: isize = 0;
 
     if imports_ok {
+        // Every span already taken, so a second edit covering the same text can be dropped rather
+        // than rejected. A transaction whose edits overlap fails validation *whole*, so one
+        // malformed pair from a server would silently cost the user the completion itself — the
+        // name would not be inserted either.
+        let mut taken: Vec<std::ops::Range<CharOffset>> = vec![anchor..caret];
+
         for edit in &offer.additional {
             let range = position::range_from_lsp(text, edit.range);
-            // Never one that overlaps the word being replaced: two edits over one span is not
-            // something a transaction can resolve, and no server meant it.
-            if range.end > anchor && range.start < caret {
+            // Never one that overlaps the word being replaced, or one already accepted: two edits
+            // over one span is not something a transaction can resolve, and no server meant it.
+            if taken
+                .iter()
+                .any(|held| range.end > held.start && range.start < held.end)
+            {
                 continue;
             }
+            // A zero-width insertion at a point another edit already inserts at is the one overlap
+            // the check above cannot see, since neither range contains the other.
+            if range.start == range.end && taken.iter().any(|held| held.start == range.start) {
+                continue;
+            }
+            taken.push(range.start..range.end);
             if range.end <= anchor {
                 shift += edit.new_text.chars().count() as isize
                     - (range.end.get() - range.start.get()) as isize;
@@ -1004,6 +1019,33 @@ mod completion_tests {
             "use std::io;\n\nfn main() { HashMap }\n",
             "the word itself still completes"
         );
+    }
+
+    #[test]
+    fn two_extra_edits_over_the_same_span_do_not_cost_the_completion() {
+        // A transaction whose edits overlap fails validation *whole*, so one malformed pair from a
+        // server would have silently cost the user the completion itself — the name would not be
+        // inserted either, and nothing would say why.
+        let source = "use std::io;\n\nfn main() { Hash }\n";
+        let text = Text::from_str(source);
+        let mut item = offer("HashMap", "HashMap");
+        item.additional = vec![
+            import(1, "use std::collections::HashMap;\n"),
+            import(1, "use std::collections::HashSet;\n"),
+        ];
+
+        let anchor = CharOffset(source.find("Hash").unwrap());
+        let accepted = accept_completion(&text, &item, anchor, CharOffset(anchor.get() + 4), true);
+
+        assert_eq!(
+            accepted.imports, 1,
+            "the second one over that point is dropped"
+        );
+        assert!(
+            accepted.transaction.validate(&text).is_ok(),
+            "and what is left still applies, so the completion lands"
+        );
+        assert!(apply(source, &accepted).contains("HashMap }"));
     }
 
     #[test]
