@@ -72,6 +72,38 @@ impl Key {
         self
     }
 
+    /// Builds a key from what the window system reported, normalising the character.
+    ///
+    /// **A character with ctrl or alt held is a binding, not text.** Window systems apply shift to
+    /// the character before handing it over, so `ctrl-shift-p` arrives as `P` — and every binding
+    /// written as `Char('p') if shift` silently never matched. That is exactly what happened:
+    /// `ctrl-shift-p` opened nothing, and `ctrl-shift-k`, `ctrl-shift-l`, `ctrl-shift-z` and
+    /// `ctrl-shift-f` were dead with it. The shift is not lost — it is in `shift`, where a binding
+    /// can read it deliberately instead of by accident of letter case.
+    ///
+    /// Without a modifier the character is left exactly as it came: `A` is a letter someone typed,
+    /// and lowercasing it would insert the wrong text.
+    pub fn from_platform(code: KeyCode, ctrl: bool, alt: bool, shift: bool) -> Self {
+        let code = match code {
+            KeyCode::Char(c) if ctrl || alt => {
+                // `to_lowercase` yields a sequence for a few characters; a binding is one char, and
+                // anything that is not is left alone rather than mangled.
+                let mut lowered = c.to_lowercase();
+                match (lowered.next(), lowered.next()) {
+                    (Some(single), None) => KeyCode::Char(single),
+                    _ => KeyCode::Char(c),
+                }
+            }
+            other => other,
+        };
+        Self {
+            code,
+            ctrl,
+            alt,
+            shift,
+        }
+    }
+
     /// Parses a key sequence for tests and config: `"3dw"`, `"<esc>"`, `"<c-r>"`.
     ///
     /// Existing because a grammar is only testable if a test can express `d2f)` as literally
@@ -316,5 +348,42 @@ mod tests {
         let key = Key::parse_sequence("<f2>");
         assert_eq!(key[0].code, KeyCode::Function(2));
         assert!(Key::parse_sequence("<f13>")[0].code != KeyCode::Function(13));
+    }
+}
+
+#[cfg(test)]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn a_modified_letter_arrives_as_a_binding_not_as_typed_text() {
+        // The bug this exists for: window systems apply shift to the character, so `ctrl-shift-p`
+        // is reported as `P`. Every binding written as `Char('p') if shift` then misses, which is
+        // how the command palette, delete-line, select-all-occurrences, redo and project search all
+        // shipped dead in the same release.
+        let key = Key::from_platform(KeyCode::Char('P'), true, false, true);
+        assert_eq!(key.code, KeyCode::Char('p'), "lowercased for matching");
+        assert!(key.shift, "and the shift is still there to match on");
+    }
+
+    #[test]
+    fn an_unmodified_capital_is_left_alone() {
+        // `A` with no modifier is a letter someone typed. Lowercasing it would insert `a`, which is
+        // a far worse bug than the one above.
+        let key = Key::from_platform(KeyCode::Char('A'), false, false, true);
+        assert_eq!(key.code, KeyCode::Char('A'));
+    }
+
+    #[test]
+    fn alt_counts_as_a_modifier_too() {
+        let key = Key::from_platform(KeyCode::Char('D'), false, true, true);
+        assert_eq!(key.code, KeyCode::Char('d'));
+    }
+
+    #[test]
+    fn a_named_key_passes_through_untouched() {
+        let key = Key::from_platform(KeyCode::Function(12), false, false, true);
+        assert_eq!(key.code, KeyCode::Function(12));
+        assert!(key.shift);
     }
 }

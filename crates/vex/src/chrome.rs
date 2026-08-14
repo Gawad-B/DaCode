@@ -116,6 +116,20 @@ pub struct EditorState {
     /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
     /// a path in.
     pub tree: Option<crate::tree::FileTree>,
+    /// Write the file a moment after typing stops, rather than waiting to be asked.
+    ///
+    /// Off by default, because writing someone's file without being told to is not a default an
+    /// editor gets to choose for them — but on for anyone who says so, since half the people who
+    /// open an editor have never pressed ctrl-s in their lives and should not lose work for it.
+    pub autosave: bool,
+    /// What the gutter counts: absolute numbers, distance from the cursor, or nothing.
+    pub line_numbers: crate::config::LineNumbers,
+    /// Where the pointer is, in physical pixels.
+    ///
+    /// The chrome needs it to light a button under the cursor. A toolbar that does not react to the
+    /// pointer does not read as clickable, and a control nobody believes is clickable is one nobody
+    /// clicks — which would defeat the entire point of having it.
+    pub pointer: (f32, f32),
     /// The help panel, when open. `F1`, and the answer to "how does this thing work".
     pub help: Option<crate::help::Help>,
     /// The menu bar or a context menu, when one is open.
@@ -227,6 +241,7 @@ pub fn draw_welcome(
 
     y += px(52.0);
 
+    let geometry = crate::welcome::geometry(welcome, bounds, scale);
     let context = WelcomeFrame {
         welcome,
         typography,
@@ -235,6 +250,8 @@ pub fn draw_welcome(
         top: y,
         width: content_width,
         scale,
+        options: &geometry.options,
+        next: geometry.next,
     };
     match welcome.step {
         Step::Keys => draw_welcome_keys(frame, &context),
@@ -246,9 +263,11 @@ pub fn draw_welcome(
     // What the keys do, at the bottom. A wizard nobody can leave is a trap.
     frame.text(welcome_label(
         typography,
+        // Leads with the mouse, because the first question this screen asks is whether you want the
+        // editor that expects one — and it used to answer that question by being keyboard-only.
         match welcome.step {
-            Step::Import => "↑↓ move · enter tick · → finish · esc skip setup",
-            _ => "↑↓ move · enter choose · ← back · esc skip setup",
+            Step::Import => "click to tick · ↑↓ move · enter tick · → finish · esc skip setup",
+            _ => "click to choose · ↑↓ move · enter choose · ← back · esc skip setup",
         },
         Rect::new(left, bounds.bottom() - px(64.0), content_width, px(22.0)),
         theme.ink_faint,
@@ -266,6 +285,11 @@ struct WelcomeFrame<'a> {
     top: f32,
     width: f32,
     scale: f32,
+    /// Where each option is — from `welcome::geometry`, which the mouse reads too. Passed in rather
+    /// than recomputed per step, so a card cannot be drawn anywhere other than where it is clicked.
+    options: &'a [Rect],
+    /// The "continue" button, on the step that has one.
+    next: Option<Rect>,
 }
 
 /// The two ways of typing, as cards with a sentence each.
@@ -274,10 +298,8 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         welcome,
         typography,
         theme,
-        left,
-        top,
-        width,
         scale,
+        ..
     } = *context;
     let px = |v: f32| v * scale;
     let choices = [
@@ -293,14 +315,13 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
     ];
 
     for (index, (name, description)) in choices.iter().enumerate() {
-        let height = px(92.0);
-        let card = Rect::new(
-            left,
-            top + index as f32 * (height + px(16.0)),
-            width,
-            height,
-        );
-        let selected = index == welcome.selected;
+        let Some(card) = context.options.get(index).copied() else {
+            continue;
+        };
+        // Highlighted by the keyboard *or* by the pointer, so a card lights up under the mouse and
+        // reads as something you can click — which is the entire question this step is asking.
+        let selected = index == welcome.selected
+            || crate::layout::contains(card, welcome.pointer.0, welcome.pointer.1);
         draw_welcome_card(frame, theme, card, selected, scale);
 
         let mut title = typography.spec(Role::Prose);
@@ -350,16 +371,10 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         welcome,
         typography,
         theme: current,
-        left,
-        top,
-        width,
         scale,
+        ..
     } = *context;
     let px = |v: f32| v * scale;
-    let count = Theme::BUILT_IN.len();
-    let gap = px(14.0);
-    let card_width = ((width - gap * (count as f32 - 1.0)) / count as f32).floor();
-    let card_height = px(200.0);
 
     // A sample with one of everything the palette colours, so a card shows the whole theme rather
     // than whichever role happens to appear in a random line.
@@ -377,13 +392,13 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
 
     for (index, (name, build)) in Theme::BUILT_IN.iter().enumerate() {
         let theme = build();
-        let card = Rect::new(
-            left + index as f32 * (card_width + gap),
-            top,
-            card_width,
-            card_height,
-        );
-        let selected = index == welcome.selected;
+        let Some(card) = context.options.get(index).copied() else {
+            continue;
+        };
+        // Under the pointer counts as selected, so the theme previews as you move over it — the
+        // same "choosing is looking" the arrow keys give.
+        let selected = index == welcome.selected
+            || crate::layout::contains(card, welcome.pointer.0, welcome.pointer.1);
 
         // The card is painted in *its own* theme, which is what makes it a preview.
         frame.fill(card, theme.bg);
@@ -451,6 +466,7 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         top,
         width,
         scale,
+        ..
     } = *context;
     let px = |v: f32| v * scale;
     let present = crate::import_cli::vscode_is_present();
@@ -472,12 +488,14 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         scale,
     ));
 
-    let mut y = top + px(40.0);
     let line = px(34.0);
 
     for (index, item) in crate::settings_ui::Importable::ALL.iter().enumerate() {
-        let selected = index == welcome.selected;
-        let row = Rect::new(left, y, width, line);
+        let Some(row) = context.options.get(index).copied() else {
+            continue;
+        };
+        let selected = index == welcome.selected
+            || crate::layout::contains(row, welcome.pointer.0, welcome.pointer.1);
         if selected {
             frame.fill(row, theme.row_active);
         }
@@ -503,15 +521,19 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             layer: Layer::default(),
         });
 
-        y += line;
     }
 
-    // The finishing row, which is where the last option lands.
-    let selected = welcome.selected >= crate::settings_ui::Importable::ALL.len();
-    let row = Rect::new(left, y + px(10.0), width, line);
+    // The finishing row, which is where the last option lands — and the one thing on this screen
+    // that has to look like a button, because it is the only way out that is not a keyboard key.
+    let row = context.next.unwrap_or(Rect::new(left, top, width, line));
+    let selected = welcome.selected >= crate::settings_ui::Importable::ALL.len()
+        || crate::layout::contains(row, welcome.pointer.0, welcome.pointer.1);
     if selected {
         frame.fill(row, theme.row_active);
     }
+    frame.rule_top(row, theme.rule, border::BORDER);
+    frame.rule_bottom(row, theme.rule, border::BORDER);
+    frame.rule_left(row, theme.rule, border::BORDER);
     let mut body = typography.spec(Role::Value);
     body.size_px = px(14.0);
     frame.text(TextRun {
@@ -1835,8 +1857,10 @@ fn draw_settings(
         soft_wrap: state.display.mode == WrapMode::Word,
         format_on_save: state.format_on_save,
         theme: state.theme.name(),
+        line_numbers: state.line_numbers,
         sticky_scroll: state.sticky_scroll,
         inlay_hints: state.show_inlay_hints,
+        autosave: state.autosave,
     };
 
     for (index, entry) in crate::settings_ui::Settings::lines().iter().enumerate() {
@@ -1996,10 +2020,12 @@ fn draw_settings(
     let footer = Rect::new(rect.x + pad, rect.bottom() - line * 2.2, width, line);
     frame.text(label(
         state,
+        // Says click first: the panel is reachable from the toolbar by people who have not been
+        // told any keys, and a footer that only names keys is a footer that excludes them.
         if settings.dirty {
-            "h l change · w write to init.lua · esc close"
+            "click to change · w write to init.lua · esc close"
         } else {
-            "h l change · w write · esc close"
+            "click to change · h l adjust · w write · esc close"
         },
         footer,
         if settings.dirty {
@@ -2362,29 +2388,52 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         accent,
     );
 
-    // The most-read line in the window, and it advertised `i / v / R / esc mode` to people who had
-    // turned modes off — teaching keys that do nothing, to exactly the person least able to tell.
-    // It leads with f1 now, because "where is the list of keys" was a real question asked by someone
-    // holding the answer's own window.
-    let hint = if state.buffer_count > 1 {
-        format!(
-            "buffer {} of {} · ctrl-p files · ctrl-b buffers · f1 keys",
-            state.active_buffer + 1,
-            state.buffer_count
-        )
-    } else if state.modal {
-        "f1 keys · ctrl-p files · i / v / R / esc mode · u undo".to_string()
-    } else {
-        "f1 keys · ctrl-shift-p commands · ctrl-p files · ctrl-d select next".to_string()
-    };
-    frame.text(label(
-        state,
-        hint,
-        rest,
-        theme.ink_faint,
-        Align::Right,
-        scale,
-    ));
+    // Buttons rather than a line of advice. This row used to advertise `i / v / R / esc mode` to
+    // people who had turned modes off — keys that do nothing, shown to exactly the person least able
+    // to tell — and even at its best it was a list of shortcuts for someone who had just told the
+    // wizard they did not want to memorise shortcuts.
+    //
+    // Each one prints its own key beside it in the menu and the palette, so using the button twice
+    // teaches the shortcut and the third time it is not needed. That is the same bargain the menus
+    // make: the mouse path exists to make itself redundant, not to replace the keyboard.
+    let buttons = crate::layout::toolbar_buttons(rect, scale);
+    for (button, box_) in &buttons {
+        let hovered = crate::layout::contains(*box_, state.pointer.0, state.pointer.1);
+        if hovered {
+            frame.fill(*box_, theme.row_active);
+        }
+        frame.text(label(
+            state,
+            button.label,
+            *box_,
+            if hovered { accent } else { theme.ink_dim },
+            Align::Center,
+            scale,
+        ));
+    }
+
+    // What is left of the row says which buffer you are in, when there is more than one.
+    if state.buffer_count > 1 {
+        let left = Rect::new(
+            rest.x,
+            rest.y,
+            (buttons.first().map(|(_, b)| b.x).unwrap_or(rest.right()) - rest.x - space::LG * scale)
+                .max(0.0),
+            rest.height,
+        );
+        frame.text(label(
+            state,
+            format!(
+                "buffer {} of {}",
+                state.active_buffer + 1,
+                state.buffer_count
+            ),
+            left,
+            theme.ink_faint,
+            Align::Right,
+            scale,
+        ));
+    }
 }
 
 fn draw_code(
@@ -2629,8 +2678,13 @@ fn draw_code(
 
         // Gutter figure only on a line's first row: that blankness is how a wrap is told apart
         // from a new line at a glance.
-        if row.is_first() {
-            let number = if on_cursor_line {
+        //
+        // Relative numbering is Vim's, and it is there so `12j` can be read off the screen. Someone
+        // who turned the grammar off has no count to type, and a gutter full of numbers that are not
+        // the line's number is one more thing that felt wrong without being nameable.
+        if row.is_first() && state.line_numbers != crate::config::LineNumbers::Off {
+            let relative = state.line_numbers == crate::config::LineNumbers::Relative;
+            let number = if on_cursor_line || !relative {
                 (row.line + 1).to_string()
             } else {
                 row.line.abs_diff(cursor_line).to_string()

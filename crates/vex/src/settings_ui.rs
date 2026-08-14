@@ -46,20 +46,24 @@ pub enum Field {
     SoftWrap,
     FormatOnSave,
     Theme,
+    LineNumbers,
     StickyScroll,
     InlayHints,
+    Autosave,
 }
 
 impl Field {
-    pub const ALL: [Field; 8] = [
+    pub const ALL: [Field; 10] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
         Field::SoftWrap,
         Field::FormatOnSave,
         Field::Theme,
+        Field::LineNumbers,
         Field::StickyScroll,
         Field::InlayHints,
+        Field::Autosave,
     ];
 
     pub fn name(self) -> &'static str {
@@ -70,8 +74,10 @@ impl Field {
             Field::SoftWrap => "soft_wrap",
             Field::FormatOnSave => "format_on_save",
             Field::Theme => "theme",
+            Field::LineNumbers => "line_numbers",
             Field::StickyScroll => "sticky_scroll",
             Field::InlayHints => "inlay_hints",
+            Field::Autosave => "autosave",
         }
     }
 
@@ -83,8 +89,10 @@ impl Field {
             Field::SoftWrap => "wrap long lines instead of scrolling sideways",
             Field::FormatOnSave => "reformat through the language server after each save",
             Field::Theme => "one of the five that ship with vex",
+            Field::LineNumbers => "absolute, relative (vim's), or none at all",
             Field::StickyScroll => "pin enclosing block heads above the viewport",
             Field::InlayHints => "show inferred types and parameter names inline",
+            Field::Autosave => "write the file a moment after you stop typing",
         }
     }
 }
@@ -238,6 +246,8 @@ pub struct Values {
     pub theme: Option<&'static str>,
     pub sticky_scroll: bool,
     pub inlay_hints: bool,
+    pub autosave: bool,
+    pub line_numbers: crate::config::LineNumbers,
 }
 
 impl Values {
@@ -249,9 +259,34 @@ impl Values {
             Field::SoftWrap => on_off(self.soft_wrap),
             Field::FormatOnSave => on_off(self.format_on_save),
             Field::Theme => self.theme.unwrap_or("from a file").to_string(),
+            Field::LineNumbers => self.line_numbers.name().to_string(),
             Field::StickyScroll => on_off(self.sticky_scroll),
             Field::InlayHints => on_off(self.inlay_hints),
+            Field::Autosave => on_off(self.autosave),
         }
+    }
+
+    /// What a *click* on a row does: the same as `l`, except that a number at its limit wraps.
+    ///
+    /// The keyboard clamps, deliberately — holding `l` should stop at 32 rather than silently
+    /// starting again at 8. But a click has no other direction to go in, so a mouse user who
+    /// clicked font size up to 32 would be stuck there with no way back. Wrapping is the only
+    /// honest single-direction control, and it is why this is not simply `adjust(+1)`.
+    pub fn cycle(&mut self, field: Field) {
+        let at_limit = match field {
+            Field::FontSize => self.font_size >= 32.0,
+            Field::TabWidth => self.tab_width >= 16,
+            _ => false,
+        };
+        if at_limit {
+            match field {
+                Field::FontSize => self.font_size = 8.0,
+                Field::TabWidth => self.tab_width = 1,
+                _ => {}
+            }
+            return;
+        }
+        self.adjust(field, 1);
     }
 
     /// Changes a field. `delta` is +1 or -1; a toggle ignores its sign.
@@ -283,8 +318,22 @@ impl Values {
                 };
                 self.theme = Some(names[next]);
             }
+            Field::LineNumbers => {
+                let all = crate::config::LineNumbers::ALL;
+                let at = all
+                    .iter()
+                    .position(|value| *value == self.line_numbers)
+                    .unwrap_or(0);
+                let next = if delta < 0 {
+                    (at + all.len() - 1) % all.len()
+                } else {
+                    (at + 1) % all.len()
+                };
+                self.line_numbers = all[next];
+            }
             Field::StickyScroll => self.sticky_scroll = !self.sticky_scroll,
             Field::InlayHints => self.inlay_hints = !self.inlay_hints,
+            Field::Autosave => self.autosave = !self.autosave,
         }
     }
 }
@@ -320,15 +369,19 @@ pub fn write_back(existing: &str, values: &Values) -> String {
          soft_wrap = {},\n  \
          format_on_save = {},\n\
          {theme}  \
+         line_numbers = \"{}\",\n  \
          sticky_scroll = {},\n  \
-         inlay_hints = {},\n}}\n",
+         inlay_hints = {},\n  \
+         autosave = {},\n}}\n",
         values.modal,
         values.font_size,
         values.tab_width,
         values.soft_wrap,
         values.format_on_save,
+        values.line_numbers.name(),
         values.sticky_scroll,
         values.inlay_hints,
+        values.autosave,
     );
 
     match existing.find(MARKER) {
@@ -369,8 +422,10 @@ mod tests {
             soft_wrap: true,
             format_on_save: false,
             theme: Some("dark"),
+            line_numbers: crate::config::LineNumbers::Relative,
             sticky_scroll: true,
             inlay_hints: false,
+            autosave: false,
         }
     }
 
@@ -596,5 +651,74 @@ mod tests {
         let config = vex_lua::eval(&source, "settings.lua");
         assert!(config.problems.is_empty(), "{:?}", config.problems);
         assert_eq!(config.modal, Some(false));
+    }
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::*;
+
+    fn values() -> Values {
+        Values {
+            modal: true,
+            font_size: 13.5,
+            tab_width: 4,
+            soft_wrap: true,
+            format_on_save: false,
+            theme: Some("dark"),
+            line_numbers: crate::config::LineNumbers::Relative,
+            sticky_scroll: true,
+            inlay_hints: false,
+            autosave: false,
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_switch_flips_it() {
+        // The panel is reachable from the toolbar by someone who has been told no keys at all. If a
+        // click only highlighted the row, the panel would be unusable to exactly the people the
+        // toolbar exists for.
+        let mut values = values();
+        values.cycle(Field::Autosave);
+        assert!(values.autosave);
+        values.cycle(Field::Autosave);
+        assert!(!values.autosave);
+    }
+
+    #[test]
+    fn a_click_on_a_number_at_its_limit_wraps_rather_than_sticking() {
+        // A click has only one direction. Clamping at 32 would leave a mouse user stuck at the
+        // largest font with no way back — a control that has trapped the person using it.
+        let mut values = values();
+        values.font_size = 32.0;
+        values.cycle(Field::FontSize);
+        assert_eq!(values.font_size, 8.0);
+
+        values.tab_width = 16;
+        values.cycle(Field::TabWidth);
+        assert_eq!(values.tab_width, 1);
+    }
+
+    #[test]
+    fn the_keyboard_still_clamps() {
+        // Holding `l` should stop at the largest size, not silently start again at the smallest.
+        // The two paths differ on purpose, which is why `cycle` is not `adjust(+1)`.
+        let mut values = values();
+        for _ in 0..100 {
+            values.adjust(Field::FontSize, 1);
+        }
+        assert_eq!(values.font_size, 32.0);
+    }
+
+    #[test]
+    fn line_numbers_cycle_through_all_three() {
+        let mut values = values();
+        let seen: Vec<&str> = (0..3)
+            .map(|_| {
+                values.cycle(Field::LineNumbers);
+                values.line_numbers.name()
+            })
+            .collect();
+        assert_eq!(seen, vec!["off", "absolute", "relative"]);
     }
 }

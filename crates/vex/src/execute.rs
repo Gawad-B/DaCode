@@ -132,6 +132,20 @@ pub fn execute(
         }
 
         Action::Save => save(state),
+        Action::SaveAs => {
+            // Pre-filled with where the file already is, so "save a copy beside it" is an edit of
+            // the name rather than typing a path out.
+            let mut prompt = Prompt::new(PromptKind::SaveAs, state.cursor());
+            prompt.input = state.file_path.clone().unwrap_or_default();
+            state.prompt = Some(prompt);
+        }
+        Action::ToggleAutosave => {
+            state.autosave = !state.autosave;
+            state.hover = Some(match state.autosave {
+                true => "autosave on — the file is written a moment after you stop typing".into(),
+                false => "autosave off — ctrl-s writes the file".into(),
+            });
+        }
         Action::Quit => return Outcome::Quit,
 
         Action::StartSearch { forward } => {

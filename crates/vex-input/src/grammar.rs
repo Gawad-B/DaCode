@@ -263,6 +263,7 @@ impl Grammar {
                 KeyCode::Char('z') => Some(Action::Undo),
                 KeyCode::Char('y') => Some(Action::Redo),
                 KeyCode::Char('a') => Some(Action::SelectAll),
+                KeyCode::Char('s') if key.shift => Some(Action::SaveAs),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
@@ -929,6 +930,9 @@ impl Grammar {
             'v' => self.emit(Action::SplitPane { vertical: true }),
             's' => self.emit(Action::SplitPane { vertical: false }),
             'c' | 'q' => self.emit(Action::ClosePane),
+            // Backwards on shift as well as on `W`: someone holding ctrl through the whole chord
+            // sends `ctrl-shift-w`, which arrives lowercased with shift set rather than as `W`.
+            'w' if key.shift => self.emit(Action::FocusPane { forward: false }),
             'w' | 'l' | 'j' => self.emit(Action::FocusPane { forward: true }),
             'W' | 'h' | 'k' => self.emit(Action::FocusPane { forward: false }),
             _ => {

@@ -68,15 +68,24 @@ fn main() -> Result<()> {
         .map(std::path::PathBuf::from)
         .filter(|path| path.is_dir())
         .map(|path| vex_project::canonical(&path));
+    let named_something = argument.is_some();
     let path = if folder.is_some() { None } else { argument };
 
     // With no file named — including when a folder was — the last session for that project is what
     // to open. Naming a file explicitly wins: asking for one file and getting the last three back
     // would be surprising.
+    // Started with nothing at all — from a Start Menu entry, a desktop icon, a dock — the project to
+    // open is the last one worked in, not whatever directory the launcher happened to point at. On
+    // Windows that directory is where the program was installed, which is nobody's project.
+    let remembered = (!named_something && !args.iter().any(|arg| arg == "--no-session"))
+        .then(|| vex::session::last_project(&vex::session::session_dir()))
+        .flatten();
+
     let restore = (path.is_none() && !args.iter().any(|arg| arg == "--no-session"))
         .then(|| {
             let anchor = folder
                 .clone()
+                .or_else(|| remembered.clone())
                 .unwrap_or_else(|| find_root(&std::env::current_dir().unwrap_or_default()));
             vex::session::load(&vex::session::session_dir(), &anchor)
         })
@@ -90,13 +99,17 @@ fn main() -> Result<()> {
 
     // The project root anchors file discovery: the folder if one was named, otherwise a marker
     // search from the opened file, so opening a stray file does not index a home directory.
-    let root = match &folder {
-        Some(folder) => folder.clone(),
-        None => find_root(&std::path::PathBuf::from(
+    let root = match (&folder, &remembered) {
+        (Some(folder), _) => folder.clone(),
+        // Nothing named and nothing opened from a session: the last project is still the right place
+        // to be, even if its session has since been emptied.
+        (None, Some(remembered)) if file_path.is_none() => remembered.clone(),
+        _ => find_root(&std::path::PathBuf::from(
             file_path.clone().unwrap_or_else(|| ".".to_string()),
         )),
     };
     eprintln!("vex: project root {}", root.display());
+    vex::session::remember_project(&vex::session::session_dir(), &root);
 
     let event_loop = EventLoop::new().context("creating the event loop")?;
     // Wait, not Poll: an editor redraws in response to input, not continuously. Polling would
@@ -156,6 +169,7 @@ fn main() -> Result<()> {
         dragging: false,
         last_click: None,
         click_count: 1,
+        last_edit: None,
         wakes: 0,
         index: FileIndex::new(root.clone()),
         walk: Some(FileWalk::start(root.clone())),
@@ -288,6 +302,9 @@ fn new_state(
         settings: None,
         setting_sources: settings.sources.clone(),
         tree: None,
+        autosave: settings.autosave,
+        line_numbers: settings.line_numbers,
+        pointer: (0.0, 0.0),
         help: None,
         menu: None,
     };
@@ -924,6 +941,9 @@ struct App {
     /// 1, 2 or 3: caret, word, line. Kept for the whole gesture so a drag after a double-click is
     /// still a word-wise drag.
     click_count: u8,
+    /// When the document was last changed, so autosave can wait for a pause in typing rather than
+    /// writing a half-typed word to disk every few seconds.
+    last_edit: Option<std::time::Instant>,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Open panes, and which has focus. Always at least one — see `vex::panes`.
@@ -1056,6 +1076,7 @@ impl ApplicationHandler for App {
         changed |= self.sync_git();
         changed |= self.handle_file_changes();
         changed |= self.poll_folder_picker();
+        changed |= self.poll_autosave();
         if let Some(results) = &mut self.state.results {
             changed |= results.poll();
         }
@@ -1097,10 +1118,22 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
+                let was_over_toolbar = self.over_toolbar();
                 self.pointer = (position.x as f32, position.y as f32);
+                self.state.pointer = self.pointer;
+                if let Some(welcome) = &mut self.state.welcome {
+                    welcome.pointer = self.pointer;
+                    self.request_redraw();
+                }
+
                 // Dragging extends the selection, which is how every editor spells "select this".
                 if self.dragging {
                     self.click(true);
+                    self.request_redraw();
+                } else if was_over_toolbar || self.over_toolbar() {
+                    // Redraw only when a toolbar button lights up or stops being lit. Repainting on
+                    // every pointer move would spend a frame per mouse event on a window where
+                    // nothing changed — the one rule this editor has.
                     self.request_redraw();
                 }
             }
@@ -1276,12 +1309,16 @@ impl App {
             _ => return None,
         };
 
-        Some(Key {
+        // Through `from_platform`, which lowercases a character that has ctrl or alt on it: the
+        // window system applies shift before we see it, so `ctrl-shift-p` arrives as `P` and every
+        // binding spelled `Char('p') if shift` misses. Shift is still on the key for the bindings
+        // that mean it.
+        Some(Key::from_platform(
             code,
-            ctrl: self.modifiers.control_key(),
-            alt: self.modifiers.alt_key(),
-            shift: self.modifiers.shift_key(),
-        })
+            self.modifiers.control_key(),
+            self.modifiers.alt_key(),
+            self.modifiers.shift_key(),
+        ))
     }
 
     /// Returns true if the editor should quit.
@@ -1487,10 +1524,18 @@ impl App {
             }
         }
         let before = self.registers.get(None).to_string();
+        let version_before = self.state.document.version();
 
         let outcome = execute(&mut self.state, &mut self.registers, &action, rows);
         if let Outcome::Window(action) = &outcome {
             self.window_action(action);
+        }
+
+        // The clock autosave waits on. Read from the document's version rather than from a list of
+        // actions that change text, for the same reason the clipboard is: a list would be wrong the
+        // first time an action was added.
+        if self.state.document.version() != version_before {
+            self.last_edit = Some(std::time::Instant::now());
         }
 
         // Compared rather than predicted from the action: every path that yanks goes through the
@@ -2035,6 +2080,35 @@ impl App {
     ///
     /// Throttled by `recovery::INTERVAL`, so this is safe to call on every keystroke; `force` is for
     /// the moments where losing anything is unacceptable.
+    /// Writes the file if autosave is on and typing has paused. Returns whether anything happened.
+    ///
+    /// **A pause, not a timer.** Saving every N seconds while someone is mid-word writes broken
+    /// intermediate states to disk, and with `format_on_save` on it would reformat under them as
+    /// they type. Waiting for a second of quiet means the file on disk is always a state the author
+    /// stopped at.
+    ///
+    /// Nothing here blocks: it is a clock comparison and, at most, one write of a buffer already in
+    /// memory — the same write `ctrl-s` does, on the same thread, with the same cost.
+    fn poll_autosave(&mut self) -> bool {
+        const QUIET: std::time::Duration = std::time::Duration::from_millis(900);
+
+        if !self.state.autosave || !self.state.document.is_dirty() {
+            return false;
+        }
+        // A buffer with nowhere to go is left alone rather than prompting: autosave is the setting
+        // for people who do not want to be asked, and asking them where to put it is the one thing
+        // it must not do.
+        if self.state.file_path.is_none() {
+            return false;
+        }
+        if self.last_edit.is_none_or(|at| at.elapsed() < QUIET) {
+            return false;
+        }
+
+        self.save_active();
+        true
+    }
+
     fn persist_recovery(&mut self, force: bool) {
         if !self.state.document.is_dirty() {
             return;
@@ -2245,6 +2319,19 @@ impl App {
                             self.warn("rename cancelled: no name given");
                         } else {
                             self.request_rename(&name);
+                        }
+                    }
+                    PromptKind::SaveAs => {
+                        let path = prompt.input.trim().to_string();
+                        if path.is_empty() {
+                            self.warn("save cancelled: no path given");
+                        } else {
+                            // The buffer *becomes* the new file, as everywhere else: you keep
+                            // editing what you saved, not the thing you saved it from.
+                            self.state.file_path = Some(path.clone());
+                            self.state.path = relative_crumbs(&path);
+                            self.save_active();
+                            self.after_buffer_change();
                         }
                     }
                 }
@@ -2993,6 +3080,68 @@ impl App {
     /// Keys for the first-run setup. Returns true if the key was consumed — which is always, while it
     /// is showing: it is a modal screen, and letting keys through to a document nobody can see would
     /// be worse than ignoring them.
+    /// A click on the welcome screen. Returns whether the wizard took it.
+    ///
+    /// The wizard's first question is whether you want the conventional editor, and it could only be
+    /// answered with the arrow keys — so the person reaching for a mouse to choose *the mouse-shaped
+    /// option* found nothing to click. Hovering highlights, one click chooses.
+    fn click_welcome(&mut self, x: f32, y: f32) -> bool {
+        if self.state.welcome.is_none() {
+            return false;
+        }
+        let bounds = self.window_bounds();
+        let scale = self.scale();
+
+        let Some(welcome) = &mut self.state.welcome else {
+            return false;
+        };
+        let geometry = vex::welcome::geometry(welcome, bounds, scale);
+
+        if let Some(index) = geometry
+            .options
+            .iter()
+            .position(|option| vex::layout::contains(*option, x, y))
+        {
+            welcome.selected = index;
+            // On the theme row the highlight *is* the answer, so a click has to preview it too.
+            if welcome.step == vex::welcome::Step::Theme {
+                welcome.answers.theme = vex_theme::Theme::BUILT_IN[index].0;
+            }
+            welcome.choose();
+            if welcome.is_done() {
+                self.finish_welcome();
+            }
+            return true;
+        }
+
+        if geometry
+            .next
+            .is_some_and(|next| vex::layout::contains(next, x, y))
+        {
+            // The last row on the import step is "done", which is what this button is.
+            welcome.selected = welcome.options().saturating_sub(1);
+            welcome.choose();
+            if welcome.is_done() {
+                self.finish_welcome();
+            }
+            return true;
+        }
+
+        // A click on the background is not an answer, but it must not fall through to the buffer
+        // behind the wizard either.
+        true
+    }
+
+    /// The whole window, as a rectangle.
+    fn window_bounds(&self) -> Rect {
+        let (width, height) = self
+            .renderer
+            .as_ref()
+            .map(|renderer| renderer.size())
+            .unwrap_or((1280, 820));
+        Rect::new(0.0, 0.0, width as f32, height as f32)
+    }
+
     fn handle_welcome_key(&mut self, key: Key) -> bool {
         let Some(welcome) = &mut self.state.welcome else {
             return false;
@@ -3140,17 +3289,32 @@ impl App {
             format_on_save: self.state.format_on_save,
             modal: self.state.modal,
             theme: self.state.theme.name(),
+            line_numbers: self.state.line_numbers,
             sticky_scroll: self.state.sticky_scroll,
             inlay_hints: self.state.show_inlay_hints,
+            autosave: self.state.autosave,
         }
     }
 
     /// Applies a change immediately. A settings panel whose effect you cannot see is a form.
     fn adjust_setting(&mut self, field: vex::settings_ui::Field, delta: i32) {
+        self.change_setting(field, |values| values.adjust(field, delta));
+    }
+
+    /// The click path: like `adjust(+1)`, but a number at its limit wraps rather than sticking.
+    fn cycle_setting(&mut self, field: vex::settings_ui::Field) {
+        self.change_setting(field, |values| values.cycle(field));
+    }
+
+    fn change_setting(
+        &mut self,
+        field: vex::settings_ui::Field,
+        change: impl FnOnce(&mut vex::settings_ui::Values),
+    ) {
         use vex::settings_ui::Field;
 
         let mut values = self.setting_values();
-        values.adjust(field, delta);
+        change(&mut values);
 
         match field {
             Field::VimKeys => {
@@ -3189,12 +3353,14 @@ impl App {
                     self.state.theme = theme;
                 }
             }
+            Field::LineNumbers => self.state.line_numbers = values.line_numbers,
             Field::StickyScroll => self.state.sticky_scroll = values.sticky_scroll,
             Field::InlayHints => {
                 self.state.show_inlay_hints = values.inlay_hints;
                 self.state.inlay_hints.clear();
                 self.hinted_version = None;
             }
+            Field::Autosave => self.state.autosave = values.autosave,
         }
     }
 
@@ -3707,11 +3873,23 @@ impl App {
         let scale = self.scale();
         let layout = self.layout();
 
+        // The wizard owns the whole window while it is up, so it gets the click first.
+        if !extend && self.click_welcome(x, y) {
+            return;
+        }
+
         // An open menu takes the click, wherever it lands: on a row it runs it, on a title it opens
         // that menu, anywhere else it closes — which is what clicking away from a menu means
         // everywhere, and the only way out for someone who opened one by accident.
         if self.state.menu.is_some() && !extend {
             self.click_menu(x, y, scale);
+            return;
+        }
+
+        // The toolbar, before anything else in the tab strip: it is the mouse's way to the commands
+        // that otherwise need a shortcut, and it is the whole reason someone who chose the
+        // conventional editor can use this without being told anything.
+        if !extend && self.click_toolbar(x, y) {
             return;
         }
 
@@ -3831,6 +4009,34 @@ impl App {
         self.sync_syntax();
     }
 
+    /// Whether the pointer is over a toolbar button.
+    fn over_toolbar(&self) -> bool {
+        let (x, y) = self.pointer;
+        let layout = self.layout();
+        vex::layout::toolbar_buttons(layout.tabs, self.scale())
+            .iter()
+            .any(|(_, box_)| vex::layout::contains(*box_, x, y))
+    }
+
+    /// A click on a toolbar button, if that is where it landed.
+    fn click_toolbar(&mut self, x: f32, y: f32) -> bool {
+        let layout = self.layout();
+        let hit = vex::layout::toolbar_buttons(layout.tabs, self.scale())
+            .into_iter()
+            .find(|(_, box_)| vex::layout::contains(*box_, x, y))
+            .map(|(button, _)| button.command);
+
+        let Some(command) = hit else {
+            return false;
+        };
+        // Through the action, exactly as the key does: the button cannot drift from the shortcut it
+        // is teaching, because they are the same call.
+        if let Some(action) = Action::from_name(command) {
+            let _ = self.run(action);
+        }
+        true
+    }
+
     /// A click while a menu is open.
     fn click_menu(&mut self, x: f32, y: f32, scale: f32) {
         let bounds = {
@@ -3944,10 +4150,37 @@ impl App {
                 cursor += heading;
                 if y >= cursor && y < cursor + block {
                     settings.selected = index;
+                    // Selecting is not enough. A click that highlighted a row and then waited to be
+                    // told `l` is a panel a mouse user cannot operate at all — which is what this
+                    // was. A click *is* the change: switches flip, choices advance, and the action
+                    // rows run.
+                    let entry = *entry;
+                    self.activate_setting(entry);
                     return;
                 }
                 cursor += block + 4.0 * scale;
             }
+        }
+    }
+
+    /// What a click on a settings row does. The same paths `l` and `enter` take.
+    fn activate_setting(&mut self, line: vex::settings_ui::Line) {
+        match line {
+            vex::settings_ui::Line::Option(field) => {
+                if let Some(settings) = &mut self.state.settings {
+                    settings.dirty = true;
+                }
+                // Forward, and the numeric fields wrap at their limit, so a mouse can walk a font
+                // size all the way round rather than sticking at 32 with no way back.
+                self.cycle_setting(field);
+            }
+            vex::settings_ui::Line::Import(item) => {
+                if let Some(settings) = &mut self.state.settings {
+                    settings.tick(item);
+                }
+            }
+            vex::settings_ui::Line::RunImport => self.run_import(),
+            vex::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
         }
     }
 
@@ -4173,6 +4406,9 @@ impl App {
 
         self.index = FileIndex::new(root.clone());
         self.walk = Some(FileWalk::start(root.clone()));
+        // Recorded as you open it rather than on the way out, so it survives a crash and so the next
+        // launch lands here — which is the whole point of remembering it.
+        vex::session::remember_project(&vex::session::session_dir(), &root);
         self.state.project_root = root;
         self.state.results = None;
         self.show_tree();

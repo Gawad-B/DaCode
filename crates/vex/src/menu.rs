@@ -112,15 +112,28 @@ const MENUS: [(&str, &[&str]); 5] = [
     ),
 ];
 
-/// What a right-click offers: the things that are about the thing under the pointer.
-const CONTEXT: [&str; 8] = [
+/// What a right-click offers.
+///
+/// Two halves: what you do to the *text* you have — the clipboard verbs everyone reaches for first —
+/// and what you ask about the *code* under the pointer. It was only the second half, which meant the
+/// most common reason anybody right-clicks in an editor, cut and paste, was not there at all.
+///
+/// Long, deliberately. A context menu is where someone who does not know the shortcuts finds out
+/// what the editor can do at this spot, and every row prints the key that would have done it.
+const CONTEXT: [&str; 14] = [
+    "cut",
+    "copy",
+    "paste",
+    "select_all",
+    "select_next_occurrence",
+    "undo",
+    "redo",
+    "toggle_comment",
+    "duplicate_line_down",
     "goto_definition",
     "find_references",
     "rename",
     "code_action",
-    "select_next_occurrence",
-    "paste",
-    "toggle_comment",
     "format",
 ];
 
