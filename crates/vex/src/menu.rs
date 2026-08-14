@@ -349,6 +349,56 @@ mod tests {
     }
 
     #[test]
+    fn a_click_lands_on_the_row_it_looks_like_it_lands_on() {
+        // Drawing and hit-testing read the same geometry; this is the test that says so. The bug it
+        // prevents — clicking one row and getting its neighbour — is the classic symptom of two
+        // copies of the arithmetic, and it always gets blamed on something else.
+        let menu = Menu::bar();
+        let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
+        let geometry = menu.geometry(bounds, 1.0);
+
+        for (index, row) in geometry.rows.iter().enumerate() {
+            let middle = (row.x + row.width / 2.0, row.y + row.height / 2.0);
+            assert_eq!(
+                menu.row_at(&geometry, middle.0, middle.1),
+                Some(index),
+                "the middle of row {index} is not row {index}"
+            );
+        }
+
+        assert_eq!(
+            menu.row_at(&geometry, geometry.card.x - 10.0, geometry.card.y),
+            None,
+            "a click beside the card is not a click on a row"
+        );
+    }
+
+    #[test]
+    fn clicking_a_title_is_how_the_bar_is_walked_with_a_mouse() {
+        let menu = Menu::bar();
+        let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
+        let geometry = menu.geometry(bounds, 1.0);
+        let second = geometry.titles[1];
+
+        assert_eq!(
+            menu.title_at(&geometry, second.x + 2.0, second.y + 2.0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_context_menu_at_the_edge_is_pushed_back_onto_the_window() {
+        // Right-clicking near the bottom right is normal, and a menu that hung off the window there
+        // would be unusable exactly where people click most.
+        let menu = Menu::context((1275.0, 815.0), false);
+        let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
+        let geometry = menu.geometry(bounds, 1.0);
+
+        assert!(geometry.card.right() <= bounds.right(), "off the right edge");
+        assert!(geometry.card.bottom() <= bounds.bottom(), "off the bottom");
+    }
+
+    #[test]
     fn the_context_menu_is_about_the_code_under_the_pointer() {
         let menu = Menu::context((100.0, 200.0), false);
         assert_eq!(menu.kind, Kind::Context);

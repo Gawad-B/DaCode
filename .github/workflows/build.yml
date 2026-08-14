@@ -47,6 +47,10 @@ jobs:
             ./target/release/vex --$view --screenshot target/shots/$view.png $file || true
           done
           ./target/release/vex --which-key '<c-w>' --screenshot target/shots/which-key.png $file || true
+          # The same panel for the other grammar: it must show conventional keys, not Vim's, and
+          # that difference is the whole point of the change.
+          ./target/release/vex --help-panel --no-vim --screenshot target/shots/help-no-vim.png $file || true
+          ./target/release/vex --commands --no-vim --screenshot target/shots/commands-no-vim.png $file || true
           ./target/release/vex --screenshot target/shots/plain.png $file || true
           ./target/release/vex --empty --screenshot target/shots/empty.png || true
           ls -l target/shots

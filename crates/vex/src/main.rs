@@ -1373,7 +1373,9 @@ impl App {
         let modal = self.state.modal;
 
         match key.code {
-            KeyCode::Escape => self.state.menu = None,
+            // The key that opened it closes it. Only escape did, which is fine if you know that and
+            // a trap if you pressed f10 to find out what it was.
+            KeyCode::Escape | KeyCode::Function(10) => self.state.menu = None,
             KeyCode::Enter => {
                 let action = self
                     .state
@@ -1407,7 +1409,7 @@ impl App {
     fn handle_help_key(&mut self, key: Key) -> bool {
         let rows = self.code_rows();
         match key.code {
-            KeyCode::Escape => self.state.help = None,
+            KeyCode::Escape | KeyCode::Function(1) => self.state.help = None,
             code => {
                 if let Some(help) = &mut self.state.help {
                     match code {
