@@ -7,7 +7,7 @@
 //! The code area draws **display rows**, not buffer lines — with soft wrap one line can occupy
 //! several rows, and the gutter figure belongs only to the first of them.
 
-use crate::palette::Palette;
+use crate::palette::{Palette, PaletteKind};
 use crate::prompt::Prompt;
 use crate::results::Results;
 use vex_buffer::Document;
@@ -1803,6 +1803,23 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
         "ctrl-p  open a file",
         Rect::new(code.x, top + size, code.width, line_height),
         theme.ink_faint,
+        Align::Center,
+        scale,
+    ));
+
+    // The one line of teaching in the whole editor, and it goes here because this is the screen
+    // someone is looking at when they have no idea what to do next. Not a tips carousel, not a
+    // tour: one key, and it answers everything else.
+    frame.text(label(
+        state,
+        "f1  every key that works",
+        Rect::new(
+            code.x,
+            top + size + line_height * 1.4,
+            code.width,
+            line_height,
+        ),
+        theme.ink_faint.with_alpha(0.7),
         Align::Center,
         scale,
     ));

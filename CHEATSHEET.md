@@ -9,25 +9,52 @@ one stops resolving. That check found `ctrl-p` falling through to `p` and pastin
 
 ---
 
+## If you never want to learn any of this
+
+Press **F1**. It lists the keys that work right now — the ones for the grammar you are actually
+using — and you can type to filter it. **ctrl-shift-P** is every command the editor has, searchable,
+each with its key beside it, so using it twice teaches you the shortcut. **F10** is the menu bar and
+**right-click** is the context menu; both show their keys too. Nothing below this line is worth
+memorising until you want it to be.
+
 ## With Vim keys off
 
 Set `vim_keys = false` (settings panel, first row). There are no modes: typing inserts, and these are
-the keys.
+the keys — the ones you already know, because muscle memory is not something an editor gets to have
+opinions about.
 
 | Key | Does |
 |---|---|
-| `ctrl-c` `ctrl-x` `ctrl-v` | copy · cut · paste |
-| `ctrl-z` `ctrl-y` | undo · redo |
-| `ctrl-a` | select all |
-| `ctrl-f` | search · `ctrl-g` command line |
+| `ctrl-c` `ctrl-x` `ctrl-v` | copy · cut · paste — through the **system** clipboard |
+| `ctrl-z` `ctrl-y` / `ctrl-shift-z` | undo · redo |
+| `ctrl-a` `ctrl-l` | select all · select this line |
+| `ctrl-d` | select the word, then the next copy of it |
+| `ctrl-shift-l` | select every copy of it |
+| `ctrl-alt-↑` `ctrl-alt-↓` | add a cursor above · below |
+| `alt-↑` `alt-↓` | move these lines |
+| `shift-alt-↑` `shift-alt-↓` | copy these lines |
+| `ctrl-shift-k` | delete this line |
+| `ctrl-/` | comment or uncomment |
+| `tab` `shift-tab` | indent · outdent (over a multi-line selection) |
+| `ctrl-backspace` `ctrl-delete` | delete a word |
+| `ctrl-f` `ctrl-shift-f` | find here · find in every file |
+| `F3` `shift-F3` | next match · previous |
 | `ctrl-s` `ctrl-q` | save · quit |
-| `ctrl-d` | add a cursor below |
+| `F12` `shift-F12` | go to definition · find every use |
+| `F2` | rename everywhere |
+| `F8` `shift-F8` | next problem · previous |
+| `ctrl-space` | suggest a completion |
+| `alt-←` `alt-→` | back to where you were · forward again |
 | shift + arrows | extend the selection |
 | `ctrl-←` `ctrl-→` | by word · `ctrl-home` `ctrl-end` to the file's ends |
 | click · drag | place the cursor · select |
+| double-click · triple-click | select the word · the line |
+| alt-click | add a cursor there (click it again to take it away) |
+| ctrl-click | go to the definition |
 
-`ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …` and `ctrl-,` are vex's own and work in both
-modes. Everything below this line describes the Vim grammar, which is on by default.
+`ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …`, `ctrl-,`, `F1`, `F10` and `ctrl-shift-p` are
+vex's own and work in both modes. Everything below this line describes the Vim grammar, which is on
+by default.
 
 ## Modes
 

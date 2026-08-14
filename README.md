@@ -2,10 +2,17 @@
 
 A code editor. Rust, `winit` + `wgpu` + `glyphon` — no GUI framework, no web view.
 
-Vim's grammar if you want it, a conventional editor if you don't. Tree-sitter highlighting, language
-servers, splits, a file tree and a git gutter. One rule is enforced above the others: **nothing
-unbounded ever runs on the UI thread**, which is why a keystroke costs the same in a 100,000-line file
-as in a ten-line one.
+Vim's grammar if you want it, a conventional editor if you don't — and the second one is a real
+editor, not the first with the modes taken out: `ctrl-d` selects the next occurrence, `alt-↑` moves a
+line, `ctrl-/` comments, double-click takes a word, alt-click adds a cursor, and copy and paste use
+the system clipboard. Tree-sitter highlighting, language servers, splits, a file tree and a git
+gutter. One rule is enforced above the others: **nothing unbounded ever runs on the UI thread**, which
+is why a keystroke costs the same in a 100,000-line file as in a ten-line one.
+
+**You do not have to learn it first.** `F1` lists the keys that work right now, for whichever grammar
+you chose. `ctrl-shift-P` is every command, searchable, each with its key beside it. Half-typed chords
+show what can follow them. There is a menu bar on `F10` and a context menu on right-click, and both
+show their shortcuts — the interface is meant to teach itself and then get out of the way.
 
 `PLAN.md` has the architecture and the reasoning, including the decisions that turned out wrong.
 

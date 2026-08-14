@@ -79,8 +79,21 @@ format, a macro replay, a snippet expansion).
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
-headlessly. Adding a user-visible operation means adding an `Action` and a name in
-`Action::from_name` — the name is public API that config depends on.
+headlessly. Adding a user-visible operation means adding an `Action`, a name in `Action::from_name`,
+that name in `Action::NAMES`, and a row in `vex_input::commands::COMMANDS` — the name is public API
+that config depends on, and three tests fail until all four exist.
+
+**`commands::COMMANDS` is the only description of what the keys are.** The command palette, the help
+panel (F1), the menu bar and the which-key popup all read that one table, and a test feeds every
+non-modal key in it through the real grammar. Four features that each maintained their own list would
+disagree within a month, and a discoverability feature that lies is worse than none — it teaches a key
+that does nothing. If you add a binding to `feed_flat`, add its row, or the table is wrong.
+
+**The non-modal mode is a first-class editor, not the modal one with the modes removed.** `feed_flat`
+carries the whole conventional vocabulary — line moves, duplication, comment toggle, occurrence
+selection, word deletion — because Vim reaches those by *composition* (`ddp`, `yyp`) and with the
+grammar off there is nothing to compose with. It had thirteen keys once and that is exactly what it
+felt like.
 
 **The executor owns no processes.** `execute()` records a request on the state (`pending_request`) or
 returns `Outcome::Window(action)`; the event loop, which owns the LSP client and the pane list, carries
@@ -135,7 +148,8 @@ work on Wayland here, so this is the only way — and it is better anyway, being
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
---splash --empty --at LINE --columns N --no-vim`.
+--splash --empty --at LINE --columns N --no-vim --help-panel --menu --context-menu --commands
+--which-key PREFIX`.
 
 ## Style
 
@@ -178,7 +192,8 @@ anything platform-shaped:
 
 | Want to change | Look at |
 |---|---|
-| A key binding | `crates/vex-input/src/grammar.rs`, then `CHEATSHEET.md` + the example |
+| A key binding | `crates/vex-input/src/grammar.rs`, then `commands.rs`, `CHEATSHEET.md` + the example |
+| What the palette, help and menus say | `crates/vex-input/src/commands.rs` — one table, four readers |
 | What a command does | `crates/vex/src/execute.rs` |
 | How something looks | `crates/vex/src/chrome.rs` |
 | Where something is | `crates/vex/src/layout.rs` |
