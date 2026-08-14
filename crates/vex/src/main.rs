@@ -3803,10 +3803,34 @@ impl App {
 
     /// Opens a file without making it active — for restoring a session's other buffers.
     fn open_in_background(&mut self, path: &std::path::Path, line: usize, column: usize) {
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            return;
+        // Through the same reader every other open uses, so the size cap, the binary sniff and the
+        // non-UTF-8 refusal apply here too. A session lists whatever was open last time, and a file
+        // that has since become a 4GB log is exactly the case `open.rs` exists to bound.
+        let contents = match vex::open::read(path) {
+            vex::open::Opened::Text(contents) => contents,
+            vex::open::Opened::Refused(why) => {
+                eprintln!("vex: not restoring {}: {why}", path.display());
+                return;
+            }
         };
-        let mut document = Document::from_str(&contents);
+
+        // Unsaved work from a crash, for *this* file rather than only for whichever one ends up
+        // active. Restoring it clean was worse than losing it silently: the first save of that
+        // buffer called `recovery.discard`, deleting a copy the user was never shown.
+        let recovered = self
+            .recovery
+            .find(path)
+            .filter(|found| found.text != contents);
+        let mut document =
+            Document::from_str(recovered.as_ref().map_or(&contents, |found| &found.text));
+        if recovered.is_some() {
+            document.mark_dirty();
+            self.state.hover = Some(format!(
+                "{} has unsaved changes recovered from a crash",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+        }
+
         let offset = document
             .text()
             .point_to_char(vex_text::Point::new(line, column));

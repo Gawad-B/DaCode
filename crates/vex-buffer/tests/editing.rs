@@ -716,3 +716,45 @@ fn a_replaced_document_can_continue_the_old_version_numbering() {
     reloaded.insert("z");
     assert!(reloaded.version() > resumed);
 }
+
+#[test]
+fn a_line_whose_case_folding_moves_its_interior_does_not_panic() {
+    // The defect this exists for killed the editor from the search box. The fast path compared the
+    // *total* byte length of the folded line against the original, which looks equivalent to
+    // "offsets still line up" and is not: `İ` folds from 2 bytes to 3 and `Å` (U+212B) from 3 to 2,
+    // so `İxÅ` folds six bytes to six while every offset inside it moves. Searching it for `x` then
+    // sliced the original at a byte in the middle of `Å`:
+    //
+    //     end byte index 4 is not a char boundary; it is inside 'Å' (bytes 3..6 of string)
+    //
+    // On the UI thread, on a keystroke in the search prompt, taking every unsaved buffer with it.
+    let text = vex_text::Text::from_str("\u{130}x\u{212B}\n");
+    let matches = vex_buffer::find_all(&text, "x", &Default::default());
+
+    assert_eq!(
+        matches,
+        vec![vex_text::CharOffset(1)..vex_text::CharOffset(2)],
+        "and the answer is right, not merely non-fatal"
+    );
+}
+
+#[test]
+fn case_insensitive_search_still_finds_ordinary_accented_text() {
+    // The fix takes the slow path for any character that changes width when folded, so the common
+    // case — accented Latin, which folds in place — must not have been pushed onto it wrongly, and
+    // the uncommon case must still find its match rather than silently reporting none.
+    let text = vex_text::Text::from_str("Caf\u{c9} and CAF\u{c9}\n");
+    assert_eq!(
+        vex_buffer::find_all(&text, "caf\u{e9}", &Default::default()).len(),
+        2,
+        "É folds to é in place"
+    );
+
+    // `İ` is the width-changing one, and a query that matches it must still be found.
+    let text = vex_text::Text::from_str("\u{130}stanbul\n");
+    assert_eq!(
+        vex_buffer::find_all(&text, "stanbul", &Default::default()),
+        vec![vex_text::CharOffset(1)..vex_text::CharOffset(8)],
+        "the slow path has to be correct, not just safe"
+    );
+}

@@ -850,3 +850,72 @@ fn the_modal_grammar_is_unchanged_when_it_is_on() {
         }]
     );
 }
+
+#[test]
+fn a_count_after_an_operator_still_names_a_line_for_g() {
+    // `d5G` deletes to line five. It deleted to the **end of the file** instead: a count typed
+    // after an operator lands in `operator_count`, and `G` only read `count`, so it saw none and
+    // fell through to "the whole rest of the document". The same for `d5gg` upwards. Both are
+    // ordinary Vim, and both silently destroyed far more than was asked for.
+    for keys in ["5G", "d5G", "c5G", "y5G"] {
+        let action = normal(keys);
+        let motion = match &action {
+            Action::Move { motion, .. } | Action::Extend { motion, .. } => *motion,
+            Action::Apply {
+                target: Target::Motion { motion, .. },
+                ..
+            } => *motion,
+            other => panic!("{keys} resolved to {other:?}"),
+        };
+        assert_eq!(
+            motion,
+            Motion::ToLine(4),
+            "{keys} means line five, not the end of the file"
+        );
+    }
+
+    for keys in ["5gg", "d5gg"] {
+        let action = normal(keys);
+        let motion = match &action {
+            Action::Move { motion, .. } => *motion,
+            Action::Apply {
+                target: Target::Motion { motion, .. },
+                ..
+            } => *motion,
+            other => panic!("{keys} resolved to {other:?}"),
+        };
+        assert_eq!(motion, Motion::ToLine(4), "{keys} means line five");
+    }
+}
+
+#[test]
+fn g_and_gg_with_no_count_at_all_still_reach_the_ends() {
+    // The distinction the fix turns on: "no count" is not "a count of one". Losing it would send
+    // `G` to line one instead of to the last line, which is a worse defect than the one being
+    // fixed.
+    assert!(matches!(
+        normal("G"),
+        Action::Move {
+            motion: Motion::FileEnd,
+            ..
+        }
+    ));
+    assert!(matches!(
+        normal("gg"),
+        Action::Move {
+            motion: Motion::FileStart,
+            ..
+        }
+    ));
+    assert_eq!(
+        normal("dG"),
+        Action::Apply {
+            operator: Operator::Delete,
+            target: Target::Motion {
+                motion: Motion::FileEnd,
+                count: 1
+            },
+            register: None,
+        }
+    );
+}

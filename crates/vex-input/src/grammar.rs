@@ -156,6 +156,17 @@ impl Grammar {
         self.count.unwrap_or(1) * self.operator_count.unwrap_or(1)
     }
 
+    /// The line `G` or `gg` was aimed at, if any count was typed at all.
+    ///
+    /// **Either count**, which is the whole point. A count typed *after* an operator lands in
+    /// `operator_count`, so `G` reading only `count` saw nothing for `d5G` and fell through to "the
+    /// end of the file" — deleting from the cursor to the last line instead of to line five. The
+    /// same for `d5gg` upwards. A count is not the same question as whether one was given, so this
+    /// returns an `Option` rather than defaulting to 1 and losing the distinction.
+    fn target_line(&self) -> Option<usize> {
+        (self.count.is_some() || self.operator_count.is_some()).then(|| self.total_count())
+    }
+
     fn emit(&mut self, action: Action) -> Resolution {
         self.clear();
         Resolution::Action(action)
@@ -759,7 +770,7 @@ impl Grammar {
             '}' => Motion::ParagraphForward,
             'G' => {
                 // `G` with a count goes to that line; without one, to the end of the file.
-                return Some(match self.count {
+                return Some(match self.target_line() {
                     Some(line) => Motion::ToLine(line.saturating_sub(1)),
                     None => Motion::FileEnd,
                 });
@@ -967,7 +978,7 @@ impl Grammar {
         match c {
             'g' => {
                 // `gg` goes to the first line, or to the count-th line if one was typed.
-                let motion = match self.count {
+                let motion = match self.target_line() {
                     Some(line) => Motion::ToLine(line.saturating_sub(1)),
                     None => Motion::FileStart,
                 };

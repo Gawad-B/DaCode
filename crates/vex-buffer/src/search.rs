@@ -115,8 +115,10 @@ fn find_across_lines(
     let haystack = match &folded {
         // Case folding that changes byte lengths would misplace every offset taken from the folded
         // copy. Nothing sensible is left to do for a multi-line query, so report nothing rather
-        // than confident nonsense.
-        Some(folded) if folded.len() != raw.len() => return Vec::new(),
+        // than confident nonsense. Per character, not on the total: two foldings that shift length
+        // in opposite directions cancel out, and equal totals with moved interiors is the case that
+        // produces silently wrong offsets here and a panic in `find_in_line`.
+        Some(_) if !folds_in_place(&raw) => return Vec::new(),
         Some(folded) => folded.as_str(),
         None => raw.as_str(),
     };
@@ -147,6 +149,18 @@ fn find_across_lines(
 }
 
 /// Appends the matches in one line. Returns false when the caller should stop: the limit is full.
+/// Whether lowercasing leaves every character the same width, so byte offsets in the folded copy
+/// mean the same thing in the original.
+///
+/// ASCII is the whole answer for nearly every line, and is checked first because it is one pass of
+/// a byte comparison rather than a `to_lowercase` per character.
+fn folds_in_place(raw: &str) -> bool {
+    raw.is_ascii()
+        || raw
+            .chars()
+            .all(|c| c.to_lowercase().map(char::len_utf8).sum::<usize>() == c.len_utf8())
+}
+
 fn find_in_line(
     raw: &str,
     needle: &str,
@@ -158,9 +172,15 @@ fn find_in_line(
     // Case folding can change byte lengths (`İ` is the usual example), which would make offsets
     // taken from the folded copy point at the wrong place in the original. Only then is the slow
     // path needed, and now it is slow over one line rather than over the whole document.
+    //
+    // The test is **per character**, not on the total. Comparing whole lengths looks equivalent and
+    // is not: foldings that shift length in opposite directions cancel out, so `İxÅ` folds from six
+    // bytes to six bytes while every offset inside it moves. That line, searched for `x`, made this
+    // function slice `raw` at a byte in the middle of `Å` and panic — on the UI thread, from typing
+    // in the search box, taking every unsaved buffer with it.
     let folded = (!sensitive).then(|| raw.to_lowercase());
     let haystack = match &folded {
-        Some(folded) if folded.len() == raw.len() => folded.as_str(),
+        Some(folded) if folds_in_place(raw) => folded.as_str(),
         Some(folded) => return find_in_line_by_chars(raw, folded, needle, base, limit, matches),
         None => raw,
     };
