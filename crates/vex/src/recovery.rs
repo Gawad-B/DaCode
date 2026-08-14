@@ -203,8 +203,11 @@ mod tests {
         let one = sandbox.file("src/main.rs", "fn main() {}\n");
         let two = sandbox.file("tests/main.rs", "fn test() {}\n");
 
-        write_in(&sandbox.recovery, &one, "fn main() { edited }\n").unwrap();
-        write_in(&sandbox.recovery, &two, "fn test() { also }\n").unwrap();
+        // `write_newer`, not `write_in`: `find_in` only offers a copy that is newer than the saved
+        // file, and on a filesystem with coarse timestamps two writes in the same millisecond are
+        // not ordered. This passed on Windows and failed on Linux for exactly that reason.
+        sandbox.write_newer(&one, "fn main() { edited }\n");
+        sandbox.write_newer(&two, "fn test() { also }\n");
 
         assert_ne!(
             recovery_path_in(&sandbox.recovery, &one),
