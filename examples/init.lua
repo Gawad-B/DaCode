@@ -33,6 +33,14 @@ vex.set {
   -- Ask the language server for inferred types and parameter names, shown inline.
   inlay_hints = false,
 
+  -- What the gutter counts: "absolute", "relative" (vim's, so `12j` can be read off the screen),
+  -- or "off". Unset, it follows vim_keys — relative with the grammar on, plain numbers without it.
+  line_numbers = "absolute",
+
+  -- Write the file a moment after you stop typing, rather than waiting for ctrl-s. It waits for a
+  -- pause rather than running on a timer, so what lands on disk is a state you stopped at.
+  autosave = false,
+
   -- What <leader> means in the bindings below.
   leader = "<space>",
 }

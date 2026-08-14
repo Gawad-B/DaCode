@@ -10,6 +10,7 @@
 //! **Themes are shown, not named.** "rose-pine" tells you nothing; six lines of syntax-coloured code
 //! in it tells you everything. That is the whole reason this is a screen rather than a prompt.
 
+use vex_render::Rect;
 use vex_theme::Theme;
 
 /// Which question is on screen.
@@ -77,6 +78,12 @@ pub struct Welcome {
     pub answers: Answers,
     /// Set once the import has run, so the last step can report it.
     pub import_report: Option<String>,
+    /// Where the pointer is, so a card can light up under it.
+    ///
+    /// The wizard draws before there is an editor to ask, and a card that does not react to the
+    /// mouse does not look like something you can click — on the one screen where clicking is the
+    /// answer to the question being asked.
+    pub pointer: (f32, f32),
 }
 
 impl Default for Welcome {
@@ -92,6 +99,7 @@ impl Welcome {
             selected: 0,
             answers: Answers::default(),
             import_report: None,
+            pointer: (-1.0, -1.0),
         }
     }
 
@@ -212,6 +220,84 @@ impl Welcome {
     }
 }
 
+/// Where the wizard's clickable things are.
+///
+/// The first question is "do you want the conventional editor or Vim's keys", and the wizard asking
+/// it could only be answered with the arrow keys and return. Someone reaching for the mouse to pick
+/// *the mouse-friendly option* found nothing to click — the worst possible first impression, and one
+/// nobody who already knew the answer would ever notice.
+///
+/// One definition, read by the drawing code and by the click handler, like everything else here.
+pub struct Geometry {
+    /// One rectangle per option, in the order they are drawn.
+    pub options: Vec<Rect>,
+    /// The button that moves on: "continue" on the last step, absent elsewhere because choosing an
+    /// option already advances.
+    pub next: Option<Rect>,
+}
+
+/// The layout of the current step. `bounds` is the whole window.
+pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
+    let px = |v: f32| v * scale;
+    let content_width = px(1000.0).min(bounds.width - px(96.0));
+    let left = (bounds.x + (bounds.width - content_width) / 2.0).round();
+
+    // The same stack `draw_welcome` walks: mark, heading, then the step's own content.
+    let content_height = match welcome.step {
+        Step::Keys => px(200.0),
+        Step::Theme => px(200.0),
+        Step::Import => px(230.0),
+        Step::Done => 0.0,
+    };
+    let header = px(34.0) + px(48.0) + px(26.0) + px(52.0);
+    let mark = px(34.0);
+    let top = (bounds.y + ((bounds.height - header - content_height) / 2.0).max(px(56.0))).round()
+        + mark
+        + px(48.0)
+        + px(52.0);
+
+    let options = match welcome.step {
+        Step::Keys => (0..2)
+            .map(|index| {
+                let height = px(92.0);
+                Rect::new(
+                    left,
+                    top + index as f32 * (height + px(16.0)),
+                    content_width,
+                    height,
+                )
+            })
+            .collect(),
+        Step::Theme => {
+            let count = Theme::BUILT_IN.len();
+            let gap = px(14.0);
+            let card = ((content_width - gap * (count as f32 - 1.0)) / count as f32).floor();
+            (0..count)
+                .map(|index| Rect::new(left + index as f32 * (card + gap), top, card, px(200.0)))
+                .collect()
+        }
+        // The list starts below the "found a vscode installation" line.
+        Step::Import => (0..crate::settings_ui::Importable::ALL.len())
+            .map(|index| {
+                let line = px(34.0);
+                Rect::new(left, top + px(40.0) + index as f32 * line, content_width, line)
+            })
+            .collect(),
+        Step::Done => Vec::new(),
+    };
+
+    let next = (welcome.step == Step::Import).then(|| {
+        Rect::new(
+            left,
+            top + px(40.0) + px(34.0) * crate::settings_ui::Importable::ALL.len() as f32 + px(14.0),
+            px(200.0),
+            px(34.0),
+        )
+    });
+
+    Geometry { options, next }
+}
+
 /// The config the answers amount to.
 ///
 /// Written through the settings panel's own block so there is one format for machine-written
@@ -224,8 +310,15 @@ pub fn config_from(answers: &Answers, existing: &str) -> String {
         soft_wrap: true,
         format_on_save: false,
         theme: Some(answers.theme),
+        // The gutter follows the answer to the first question: someone who chose the conventional
+        // editor has no `12j` to type and no use for distances.
+        line_numbers: crate::config::LineNumbers::default_for(answers.modal),
         sticky_scroll: true,
         inlay_hints: false,
+        // Chosen for them, and it is the right choice: a person who picks the conventional editor is
+        // telling you they do not think about saving, and losing their work to that would be the
+        // editor's fault, not theirs. Someone who picked Vim knows where `:w` is.
+        autosave: !answers.modal,
     };
     crate::settings_ui::write_back(existing, &values)
 }

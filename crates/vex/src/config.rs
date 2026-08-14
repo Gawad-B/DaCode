@@ -101,6 +101,50 @@ impl Config {
     }
 }
 
+/// What the gutter counts.
+///
+/// Relative numbering is a *Vim* idea: it exists so `12j` is a thing you can read off the screen.
+/// With the grammar off there is no count to type, and a column of numbers that are not the line's
+/// number is one more thing that felt wrong without being nameable — so the default follows the
+/// grammar rather than being one answer for both.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LineNumbers {
+    Absolute,
+    Relative,
+    Off,
+}
+
+impl LineNumbers {
+    pub const ALL: [LineNumbers; 3] = [
+        LineNumbers::Absolute,
+        LineNumbers::Relative,
+        LineNumbers::Off,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            LineNumbers::Absolute => "absolute",
+            LineNumbers::Relative => "relative",
+            LineNumbers::Off => "off",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|value| value.name() == name.trim().to_ascii_lowercase())
+    }
+
+    /// What to use when nothing said: relative under Vim's grammar, plain numbers without it.
+    pub fn default_for(modal: bool) -> Self {
+        if modal {
+            LineNumbers::Relative
+        } else {
+            LineNumbers::Absolute
+        }
+    }
+}
+
 /// Everything config can influence at startup.
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -116,6 +160,10 @@ pub struct Settings {
     pub sticky_scroll: bool,
     /// Ask the language server for inlay hints.
     pub inlay_hints: bool,
+    /// Write the file a moment after typing stops.
+    pub autosave: bool,
+    /// What the gutter counts.
+    pub line_numbers: LineNumbers,
     /// Which theme file was loaded, for reporting.
     pub theme_source: Option<String>,
     /// User key bindings from `init.lua`.
@@ -145,6 +193,11 @@ impl Default for Settings {
             modal: true,
             sticky_scroll: true,
             inlay_hints: false,
+            // Off by default for the same reason `format_on_save` is: writing someone's file
+            // without being asked is not a decision to make on their behalf. It is one switch away
+            // for the many people who have never pressed ctrl-s and should not lose work for it.
+            autosave: false,
+            line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
             sources: std::collections::HashMap::new(),
@@ -264,6 +317,25 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
         settings.inlay_hints = hints;
         settings.sources.insert("inlay_hints".into(), from_config);
     }
+    if let Some(autosave) = config.autosave {
+        settings.autosave = autosave;
+        settings.sources.insert("autosave".into(), from_config);
+    }
+    // The gutter's default follows the grammar, so it has to be settled *after* `vim_keys` — which
+    // is why this is not a plain `unwrap_or`.
+    settings.line_numbers = match config.line_numbers.as_deref().map(LineNumbers::parse) {
+        Some(Some(numbers)) => {
+            settings.sources.insert("line_numbers".into(), from_config);
+            numbers
+        }
+        Some(None) => {
+            settings
+                .problems
+                .push("line_numbers must be \"absolute\", \"relative\" or \"off\"".into());
+            LineNumbers::default_for(settings.modal)
+        }
+        None => LineNumbers::default_for(settings.modal),
+    };
 
     // A named theme replaces the whole theme; `appearance` alone flips the built-in one. Either way
     // this happens before `paint`, so individual token overrides land on top of the right base.

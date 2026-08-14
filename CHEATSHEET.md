@@ -11,11 +11,17 @@ one stops resolving. That check found `ctrl-p` falling through to `p` and pastin
 
 ## If you never want to learn any of this
 
-Press **F1**. It lists the keys that work right now — the ones for the grammar you are actually
-using — and you can type to filter it. **ctrl-shift-P** is every command the editor has, searchable,
-each with its key beside it, so using it twice teaches you the shortcut. **F10** is the menu bar and
-**right-click** is the context menu; both show their keys too. Nothing below this line is worth
-memorising until you want it to be.
+**You do not have to touch the keyboard at all.** Along the top right there are buttons — *open,
+files, find, save, settings, commands, keys* — and every one of them does what the shortcut does.
+**Right-click** anywhere in the text for cut, copy, paste, go-to-definition and the rest. **F10**
+opens a menu bar. The settings panel changes with a click.
+
+When you want the keys: press **F1** for the ones that work right now, in the grammar you are
+actually using, filterable by typing. **ctrl-shift-P** is every command, searchable, each with its
+key beside it — use it twice and you will have learned the shortcut. Every menu and button prints
+its key, so the mouse teaches the keyboard and then gets out of the way.
+
+Nothing below this line is worth memorising until you want it to be.
 
 ## With Vim keys off
 
@@ -39,7 +45,8 @@ opinions about.
 | `ctrl-backspace` `ctrl-delete` | delete a word |
 | `ctrl-f` `ctrl-shift-f` | find here · find in every file |
 | `F3` `shift-F3` | next match · previous |
-| `ctrl-s` `ctrl-q` | save · quit |
+| `ctrl-s` `ctrl-shift-s` | save · save as |
+| `ctrl-q` | quit |
 | `F12` `shift-F12` | go to definition · find every use |
 | `F2` | rename everywhere |
 | `F8` `shift-F8` | next problem · previous |
@@ -51,6 +58,11 @@ opinions about.
 | double-click · triple-click | select the word · the line |
 | alt-click | add a cursor there (click it again to take it away) |
 | ctrl-click | go to the definition |
+| right-click | cut, copy, paste, definition, rename, format — with their keys |
+
+**Never want to press ctrl-s?** Turn on **autosave** in the settings panel (or the toolbar's
+*settings* button): the file is written a moment after you stop typing. It waits for a pause rather
+than running on a timer, so what lands on disk is always something you stopped at.
 
 `ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …`, `ctrl-,`, `F1`, `F10` and `ctrl-shift-p` are
 vex's own and work in both modes. Everything below this line describes the Vim grammar, which is on

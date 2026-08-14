@@ -90,6 +90,23 @@ non-modal key in it through the real grammar. Four features that each maintained
 disagree within a month, and a discoverability feature that lies is worse than none — it teaches a key
 that does nothing. If you add a binding to `feed_flat`, add its row, or the table is wrong.
 
+**A character with ctrl or alt held is a *binding*, not text.** Window systems apply shift before the
+key reaches us, so `ctrl-shift-p` arrives as `P` — and every binding written as `Char('p') if shift`
+silently never matched. That shipped: the command palette, delete-line, select-all-occurrences, redo
+and project search were all dead in 0.2.0. `Key::from_platform` lowercases the character when a
+modifier is held and leaves `shift` on the key for bindings that mean it. Never build a `Key` from a
+platform event any other way.
+
+**Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
+the chrome and the toolbar, `menu::geometry`, `welcome::geometry`. The drawing code reads the same
+function. A rectangle computed twice is a click that lands somewhere other than where it looks.
+
+**If a feature can only be reached by a key, it is not finished.** The toolbar, the menus, the context
+menu, the clickable settings rows and the clickable wizard all exist because someone who chose the
+conventional editor was handed a keyboard-only interface — including on the wizard screen *asking*
+whether they wanted the mouse-shaped editor. Every one of those surfaces prints the shortcut for what
+it does, so the mouse path teaches the keyboard rather than replacing it.
+
 **The non-modal mode is a first-class editor, not the modal one with the modes removed.** `feed_flat`
 carries the whole conventional vocabulary — line moves, duplication, comment toggle, occurrence
 selection, word deletion — because Vim reaches those by *composition* (`ddp`, `yyp`) and with the
@@ -203,6 +220,8 @@ anything platform-shaped:
 | How something looks | `crates/vex/src/chrome.rs` |
 | Where something is | `crates/vex/src/layout.rs` |
 | A config option | `vex-lua/src/lib.rs`, `vex/src/config.rs`, `vex/src/settings_ui.rs` (all three) |
+| What the toolbar offers | `crates/vex/src/layout.rs` — `TOOLBAR`, read by drawing and by the mouse |
+| What a right-click offers | `crates/vex/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/vex-theme/src/theme.rs` |
 | LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
 

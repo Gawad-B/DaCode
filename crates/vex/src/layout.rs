@@ -21,6 +21,85 @@ pub struct Layout {
     pub results: Option<Rect>,
 }
 
+/// A clickable button in the toolbar.
+///
+/// The toolbar exists because a keyboard-first editor that is *only* reachable by keyboard is an
+/// editor most people close. Someone who chose the conventional editor should be able to open a
+/// file, show the tree, search, save and reach the settings without having been told a single
+/// shortcut — and then learn the shortcut from the button's own tooltip when they are ready.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ToolButton {
+    /// The command it runs, by the name in `vex_input::commands`.
+    pub command: &'static str,
+    /// The short word drawn on it.
+    ///
+    /// A word rather than an icon glyph: the bundled font has no icon set, and an icon that renders
+    /// as a tofu box teaches nothing. Words also say what they do in the user's language, which a
+    /// hieroglyph of a floppy disk has not done for twenty years.
+    pub label: &'static str,
+}
+
+/// The toolbar, left to right.
+///
+/// Ordered by how often someone reaches for it, not by category: open, then the tree, then find,
+/// then save, then the two ways of finding out what else there is.
+pub const TOOLBAR: [ToolButton; 7] = [
+    ToolButton {
+        command: "open_folder",
+        label: "open",
+    },
+    ToolButton {
+        command: "toggle_tree",
+        label: "files",
+    },
+    ToolButton {
+        command: "search",
+        label: "find",
+    },
+    ToolButton {
+        command: "save",
+        label: "save",
+    },
+    ToolButton {
+        command: "settings",
+        label: "settings",
+    },
+    ToolButton {
+        command: "command_palette",
+        label: "commands",
+    },
+    ToolButton {
+        command: "help",
+        label: "keys",
+    },
+];
+
+/// Where each toolbar button is, given the tab strip it sits in.
+///
+/// Right-aligned, because the left of that row is the file's tabs and they are the thing you are
+/// looking at. One definition, read by the drawing code and by the mouse — the rule this module
+/// exists for.
+pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
+    let height = 22.0 * scale;
+    let gap = 6.0 * scale;
+    let y = tabs.y + (tabs.height - height) / 2.0;
+
+    // Width follows the label, so nothing is clipped and the row stays tight.
+    let widths: Vec<f32> = TOOLBAR
+        .iter()
+        .map(|button| (button.label.chars().count() as f32 + 2.0) * 7.5 * scale)
+        .collect();
+    let total: f32 = widths.iter().sum::<f32>() + gap * (TOOLBAR.len() as f32 - 1.0);
+
+    let mut x = tabs.right() - 16.0 * scale - total;
+    let mut placed = Vec::with_capacity(TOOLBAR.len());
+    for (button, width) in TOOLBAR.iter().zip(&widths) {
+        placed.push((*button, Rect::new(x, y, *width, height)));
+        x += width + gap;
+    }
+    placed
+}
+
 impl Layout {
     /// Computes the layout for a window of this size. The single definition of the chrome's stack.
     pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>) -> Self {

@@ -9,10 +9,13 @@ the system clipboard. Tree-sitter highlighting, language servers, splits, a file
 gutter. One rule is enforced above the others: **nothing unbounded ever runs on the UI thread**, which
 is why a keystroke costs the same in a 100,000-line file as in a ten-line one.
 
-**You do not have to learn it first.** `F1` lists the keys that work right now, for whichever grammar
-you chose. `ctrl-shift-P` is every command, searchable, each with its key beside it. Half-typed chords
-show what can follow them. There is a menu bar on `F10` and a context menu on right-click, and both
-show their shortcuts — the interface is meant to teach itself and then get out of the way.
+**You do not have to learn it first, and you do not have to use the keyboard at all.** There are
+buttons along the top — open, files, find, save, settings, commands, keys — a right-click menu with
+cut, copy, paste and the language-server verbs, a menu bar on `F10`, and a settings panel you change
+by clicking. Every one of them prints the shortcut for what it does, so the mouse teaches the
+keyboard and then gets out of the way. When you want the keys: `F1` lists the ones that work right
+now in whichever grammar you chose, `ctrl-shift-P` searches every command, and a half-typed chord
+shows what can follow it.
 
 `PLAN.md` has the architecture and the reasoning, including the decisions that turned out wrong.
 
@@ -67,8 +70,12 @@ Linux desktop entry needs an absolute `Exec` path, are in `packaging/README.md`.
 ```sh
 vex path/to/file.rs      # a file
 vex path/to/project      # a folder: indexes it and opens the file tree
-vex                      # nothing: reopens the last session for this directory
+vex                      # nothing: reopens the last project you worked in
 ```
+
+Started with no argument — from a Start Menu entry, a desktop icon, a dock — vex reopens **the last
+project you were in**, with the files you had open. Not the current working directory, which for a
+launcher is wherever the shortcut happened to point.
 
 Naming a **folder** makes it the project — and the folder you name is the root even if it sits inside a
 larger repository, because asking for one crate should not index the whole workspace. Inside the
@@ -102,6 +109,7 @@ conventional editor, not a modal one with the modes hidden:
 | Key | |
 |---|---|
 | `ctrl-c` · `ctrl-x` · `ctrl-v` | copy · cut · paste, through the **system** clipboard |
+| `ctrl-s` · `ctrl-shift-s` | save · save as (or turn on autosave and never think about it) |
 | `ctrl-d` · `ctrl-shift-l` | select the next copy of this word · every copy |
 | `alt-↑↓` · `shift-alt-↑↓` | move these lines · copy them |
 | `ctrl-/` · `ctrl-shift-k` | comment · delete the line |
@@ -135,11 +143,25 @@ the real grammar. A shortcut documented here that did nothing would fail the bui
 
 ## Settings
 
-`ctrl-,` opens a panel with every option, its value, and — the part a file cannot tell you — **which of
-default, `init.lua` or imported last set it**. `h`/`l` change a setting immediately; `w` writes the
-panel's values to `init.lua`.
+`ctrl-,` — or the *settings* button — opens a panel with every option, its value, and the part a file
+cannot tell you: **which of default, `init.lua` or imported last set it**. Click a row to change it,
+or `h`/`l`; `w` writes the panel's values to `init.lua`.
 
-It also holds the VSCode import checklist and a **load a theme file…** row, so neither needs a
+| | |
+|---|---|
+| `vim_keys` | modal editing, or typing that always inserts |
+| `font_size` · `tab_width` · `soft_wrap` | the obvious three |
+| `theme` | the five built in, cycled live |
+| `line_numbers` | absolute, relative (Vim's), or none — defaults to absolute without Vim keys |
+| `sticky_scroll` · `inlay_hints` | pin block heads · show inferred types |
+| `format_on_save` | reformat through the language server on every save |
+| `autosave` | write the file a moment after you stop typing |
+
+Autosave waits for a **pause in typing** rather than running on a timer, so what reaches the disk is
+always a state you stopped at — and with `format_on_save` on, it will not reformat under your hands
+mid-word.
+
+The panel also holds the VSCode import checklist and a **load a theme file…** row, so neither needs a
 terminal.
 
 Everything is also a Lua file, which is the same file the panel writes:

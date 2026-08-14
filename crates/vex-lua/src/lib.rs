@@ -38,6 +38,10 @@ pub struct Config {
     pub modal: Option<bool>,
     pub sticky_scroll: Option<bool>,
     pub inlay_hints: Option<bool>,
+    /// Write the file a moment after typing stops.
+    pub autosave: Option<bool>,
+    /// "absolute", "relative" or "off" — parsed by the caller, which owns the enum.
+    pub line_numbers: Option<String>,
     pub appearance: Option<Appearance>,
     /// A named theme file to load, resolved by the caller — this crate does no file I/O beyond
     /// reading the config itself.
@@ -65,6 +69,8 @@ impl Config {
             && self.modal.is_none()
             && self.sticky_scroll.is_none()
             && self.inlay_hints.is_none()
+            && self.autosave.is_none()
+            && self.line_numbers.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
             && self.colors.is_empty()
@@ -150,6 +156,14 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(hints) = boolean(&options, "inlay_hints") {
                 config.inlay_hints = Some(hints);
+            }
+            if let Some(autosave) = boolean(&options, "autosave") {
+                config.autosave = Some(autosave);
+            }
+            // Kept as a string here: this crate owns no editor types, and the caller that has the
+            // enum is also the one that can report a bad value in the user's terms.
+            if let Some(numbers) = string(&options, "line_numbers") {
+                config.line_numbers = Some(numbers);
             }
             if let Some(appearance) = string(&options, "appearance") {
                 match appearance.as_str() {

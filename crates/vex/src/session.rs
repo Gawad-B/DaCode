@@ -100,6 +100,36 @@ pub fn session_path(directory: &Path, root: &Path) -> PathBuf {
     directory.join(format!("{}.session", flattened.trim_matches('-')))
 }
 
+/// Where the name of the last project worked in is kept.
+///
+/// One line, beside the sessions. Sessions are keyed by root, which answers "what was I doing in
+/// *this* project" — but starting vex from a shortcut, a Start Menu entry or a desktop icon gives no
+/// project at all, and the working directory in that case is wherever the launcher happened to point
+/// (on Windows, the install directory). This is the answer to the other question: which project was
+/// I in last.
+fn last_project_path(directory: &Path) -> PathBuf {
+    directory.join("last-project")
+}
+
+/// Records the project as the one to reopen. Called when a project is opened, not on the way out, so
+/// it survives a crash — the whole point is to not have to navigate back.
+pub fn remember_project(directory: &Path, root: &Path) {
+    if std::fs::create_dir_all(directory).is_err() {
+        return;
+    }
+    let _ = std::fs::write(last_project_path(directory), root.to_string_lossy().as_ref());
+}
+
+/// The last project worked in, if it still exists.
+///
+/// A directory that has since been deleted or unmounted is not offered: opening vex into a folder
+/// that is not there would be worse than opening it where you are.
+pub fn last_project(directory: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(last_project_path(directory)).ok()?;
+    let path = PathBuf::from(text.trim());
+    (path.is_dir()).then_some(path)
+}
+
 /// Saves a session for a project. Failure is not reported: losing a session is a small
 /// inconvenience, and an error dialog on the way out is a larger one.
 pub fn save(directory: &Path, root: &Path, session: &Session) {

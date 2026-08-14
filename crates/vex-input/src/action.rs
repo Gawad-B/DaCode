@@ -195,6 +195,10 @@ pub enum Action {
     DecreaseFontSize,
 
     Save,
+    /// `ctrl-shift-s` — write this buffer somewhere else, and keep editing it there.
+    SaveAs,
+    /// Write the buffer whenever it has been dirty for a moment, without being asked.
+    ToggleAutosave,
     Quit,
 
     /// `/` and `?` — open the search prompt.
@@ -386,6 +390,8 @@ impl Action {
         "increase_font_size",
         "decrease_font_size",
         "save",
+        "save_as",
+        "toggle_autosave",
         "quit",
         "search",
         "search_backward",
@@ -429,6 +435,8 @@ impl Action {
         "select_all_occurrences",
         "delete_word_backward",
         "delete_word_forward",
+        "copy",
+        "cut",
         "delete_line",
         "indent",
         "outdent",
@@ -519,6 +527,8 @@ impl Action {
 
             // Files and search.
             "save" => Action::Save,
+            "save_as" => Action::SaveAs,
+            "toggle_autosave" => Action::ToggleAutosave,
             "quit" => Action::Quit,
             "search" => Action::StartSearch { forward: true },
             "search_backward" => Action::StartSearch { forward: false },
@@ -566,6 +576,19 @@ impl Action {
             "select_all_occurrences" => Action::SelectNextOccurrence { all: true },
             "delete_word_backward" => Action::DeleteWord { forward: false },
             "delete_word_forward" => Action::DeleteWord { forward: true },
+            // The clipboard verbs by the names everyone knows them by. `y` and `d` are Vim's words
+            // for these, and a menu row saying "yank" to someone who chose the conventional editor
+            // is the editor showing off rather than helping.
+            "copy" => Action::Apply {
+                operator: Operator::Yank,
+                target: Target::Selection,
+                register: None,
+            },
+            "cut" => Action::Apply {
+                operator: Operator::Delete,
+                target: Target::Selection,
+                register: None,
+            },
             "delete_line" => Action::Apply {
                 operator: Operator::Delete,
                 target: Target::WholeLine { count: 1 },

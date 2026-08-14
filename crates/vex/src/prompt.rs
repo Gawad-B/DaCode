@@ -24,6 +24,12 @@ pub enum PromptKind {
     /// almost always an edit of the existing name — retyping it from scratch is how you rename
     /// `value` to `vlaue`.
     Rename,
+    /// A path to write this buffer to, pre-filled with where it already is.
+    ///
+    /// Pre-filled for the same reason a rename is: "save as" is nearly always a small edit of the
+    /// current name — a copy, a different extension — and retyping the directory is how you save it
+    /// somewhere you did not mean to.
+    SaveAs,
 }
 
 impl PromptKind {
@@ -36,6 +42,7 @@ impl PromptKind {
             PromptKind::Rename => "rename to ",
             PromptKind::OpenFolder => "open folder ",
             PromptKind::LoadTheme => "theme file ",
+            PromptKind::SaveAs => "save as ",
         }
     }
 }
@@ -84,7 +91,8 @@ impl Prompt {
             PromptKind::Command
             | PromptKind::Rename
             | PromptKind::OpenFolder
-            | PromptKind::LoadTheme => true,
+            | PromptKind::LoadTheme
+            | PromptKind::SaveAs => true,
         }
     }
 

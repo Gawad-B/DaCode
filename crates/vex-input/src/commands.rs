@@ -109,10 +109,20 @@ use Group::*;
 pub const COMMANDS: &[Command] = &[
     // ---- files -------------------------------------------------------------------------
     command("save", "save this file", Files, ":w  <c-s>", "<c-s>"),
+    command("save_as", "save this file somewhere else", Files, "", "<c-s-s>"),
+    command(
+        "toggle_autosave",
+        "save automatically, or do not",
+        Files,
+        "",
+        "",
+    ),
     command("open_folder", "open a folder as the project", Files, "<c-k>o", "<c-k>o"),
     command("quit", "quit", Files, ":q  <c-q>", "<c-q>"),
 
     // ---- editing -----------------------------------------------------------------------
+    command("copy", "copy", Editing, "y", "<c-c>"),
+    command("cut", "cut", Editing, "d", "<c-x>"),
     command("undo", "undo", Editing, "u", "<c-z>"),
     command("redo", "redo", Editing, "<c-r>", "<c-y>  <c-s-z>"),
     command("paste", "paste after the cursor", Editing, "p", "<c-v>"),

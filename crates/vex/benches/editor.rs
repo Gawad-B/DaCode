@@ -78,6 +78,9 @@ fn state(lines: usize) -> EditorState {
         settings: None,
         setting_sources: std::collections::HashMap::new(),
         tree: None,
+        autosave: false,
+        line_numbers: vex::config::LineNumbers::Relative,
+        pointer: (0.0, 0.0),
         help: None,
         menu: None,
     }
