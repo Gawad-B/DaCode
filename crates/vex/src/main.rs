@@ -7028,6 +7028,10 @@ mod buffer_tests {
         // same file by a second spelling gave it two independent undo histories and two dirty
         // flags over one file on disk, and whichever was saved last won.
         let dir = scratch("identity");
+        // `sub` has to exist. Windows collapses `sub/..` lexically before the syscall, so a missing
+        // directory works there and nowhere else — this test passed on the machine it was written
+        // on and failed on CI, which is the same shape as the `sh` vs `cmd` slip in `picker.rs`.
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
         let mut app = editor(&dir, &["a.rs", "b.rs"]);
         let count = app.buffers.len();
 

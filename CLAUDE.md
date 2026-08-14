@@ -298,6 +298,11 @@ They are cleared on buffer change: they are line numbers and nothing more.
   to have. `picker.rs` asserted `which("sh")` and passed everywhere it had ever run — including the
   Windows runner, whose image ships Git's `sh.exe` — then failed on the first real Windows developer
   machine, which does not have one. `cmd` on Windows, `sh` elsewhere, as `paths.rs` already did.
+- **The same goes for a path.** A test opening `sub/../a.rs` without creating `sub` passes on Windows
+  and nowhere else: Win32 collapses `..` lexically before the syscall, and every other kernel walks
+  it and returns `ENOENT`. That asymmetry is the reason `vex_project::within` exists at all, and it
+  still caught a test written an hour after the function was. Create every directory a test path
+  names, even the ones it only passes through.
 - **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
   thread-safe against the `getenv` other tests do in parallel, and doing it deadlocked this suite
   inside glibc for twenty minutes. Take the value as a parameter instead — see
