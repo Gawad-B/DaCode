@@ -109,7 +109,7 @@ use Group::*;
 pub const COMMANDS: &[Command] = &[
     // ---- files -------------------------------------------------------------------------
     command("save", "save this file", Files, ":w  <c-s>", "<c-s>"),
-    command("open_folder", "open a folder as the project", Files, "<c-k><c-o>", "<c-k><c-o>"),
+    command("open_folder", "open a folder as the project", Files, "<c-k>o", "<c-k>o"),
     command("quit", "quit", Files, ":q  <c-q>", "<c-q>"),
 
     // ---- editing -----------------------------------------------------------------------
@@ -274,6 +274,38 @@ mod tests {
                 "`{name}` is an action but has no palette entry — add it to COMMANDS"
             );
         }
+    }
+
+    #[test]
+    fn every_advertised_non_modal_key_actually_does_something() {
+        // The check that makes the palette and the help panel trustworthy: a key printed beside a
+        // command has to resolve, in the grammar, to an action. An editor that tells a beginner to
+        // press something that does nothing has done worse than tell them nothing — and this table
+        // exists precisely because beginners were being told nothing.
+        use crate::grammar::{Grammar, Resolution};
+        use crate::key::Key;
+        use vex_theme::Mode;
+
+        let mut wrong = Vec::new();
+        for command in COMMANDS {
+            for keys in command.flat.split_whitespace() {
+                let mut grammar = Grammar::new();
+                grammar.set_modal(false);
+                let mut resolved = false;
+                for key in Key::parse_sequence(keys) {
+                    match grammar.feed(Mode::Insert, key) {
+                        Resolution::Action(_) => resolved = true,
+                        Resolution::Unhandled => break,
+                        Resolution::Pending(_) => {}
+                    }
+                }
+                if !resolved {
+                    wrong.push(format!("{} says {keys}", command.name));
+                }
+            }
+        }
+
+        assert!(wrong.is_empty(), "keys that do nothing: {wrong:#?}");
     }
 
     #[test]

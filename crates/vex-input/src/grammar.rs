@@ -401,6 +401,14 @@ impl Grammar {
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 KeyCode::Char(',') => Some(Action::ToggleSettings),
+                // The palette of every command works in both grammars. Vim's own vocabulary has no
+                // way to ask "what can this editor do?", and inventing a normal-mode key for it
+                // would put the answer behind the same problem it solves.
+                KeyCode::Char('p') if key.shift => Some(Action::ToggleCommandPalette),
+                // Extra cursors, where VSCode keeps them. Modal users have `s` and visual mode, but
+                // nobody arrives knowing that, and this costs nothing.
+                KeyCode::Up if key.alt => Some(Action::AddCaretAbove),
+                KeyCode::Down if key.alt => Some(Action::AddCaretBelow),
                 _ => None,
             };
         }

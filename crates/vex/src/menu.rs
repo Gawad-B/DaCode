@@ -108,7 +108,7 @@ const MENUS: [(&str, &[&str]); 5] = [
         "help",
         &["help", "command_palette", "toggle_diagnostics", "hover"],
     ),
-);
+];
 
 /// What a right-click offers: the things that are about the thing under the pointer.
 const CONTEXT: [&str; 8] = [

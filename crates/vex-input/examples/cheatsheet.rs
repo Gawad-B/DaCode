@@ -1,5 +1,5 @@
 //! Every key the cheat sheet claims, fed through the real grammar.
-use vex_input::{Grammar, Key, Resolution};
+use vex_input::{Grammar, Key, Resolution, commands};
 use vex_theme::Mode;
 
 fn resolves(mode: Mode, keys: &str) -> bool {
@@ -13,6 +13,42 @@ fn resolves(mode: Mode, keys: &str) -> bool {
         }
     }
     got
+}
+
+/// The same, with the modal grammar switched off.
+fn resolves_flat(keys: &str) -> bool {
+    let mut grammar = Grammar::new();
+    grammar.set_modal(false);
+    let mut got = false;
+    for key in Key::parse_sequence(keys) {
+        match grammar.feed(Mode::Insert, key) {
+            Resolution::Action(_) => got = true,
+            Resolution::Unhandled => return false,
+            _ => {}
+        }
+    }
+    got
+}
+
+/// Every non-modal binding the command table advertises, through the real non-modal grammar.
+///
+/// The table is what the command palette and the help panel read, so an entry whose key does not
+/// resolve is the editor telling a user to press something that does nothing — the one failure a
+/// discoverability feature cannot survive. This is the check that makes the table trustworthy, and
+/// it is why `to_display` and `parse_sequence` have to agree on how a key is spelled.
+fn unresolved_flat_bindings() -> Vec<String> {
+    let mut missing = Vec::new();
+    for command in commands::COMMANDS {
+        for keys in command.flat.split_whitespace() {
+            if keys.is_empty() {
+                continue;
+            }
+            if !resolves_flat(keys) {
+                missing.push(format!("{} ({keys})", command.name));
+            }
+        }
+    }
+    missing
 }
 
 fn main() {
@@ -153,10 +189,25 @@ fn main() {
         }
     }
 
-    if missing.is_empty() {
-        println!("all {} documented keys resolve", normal.len() + 5);
+    let flat = unresolved_flat_bindings();
+
+    if missing.is_empty() && flat.is_empty() {
+        println!(
+            "all {} documented keys resolve, and every one of the {} non-modal bindings in the \
+             command table",
+            normal.len() + 5,
+            commands::COMMANDS
+                .iter()
+                .filter(|command| !command.flat.is_empty())
+                .count()
+        );
     } else {
-        println!("UNRESOLVED: {missing:?}");
+        if !missing.is_empty() {
+            println!("UNRESOLVED: {missing:?}");
+        }
+        if !flat.is_empty() {
+            println!("UNRESOLVED (non-modal, from the command table): {flat:?}");
+        }
         std::process::exit(1);
     }
 }

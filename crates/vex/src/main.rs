@@ -330,7 +330,8 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 12] = [
+const VALUE_FLAGS: [&str; 13] = [
+    "--which-key",
     "--screenshot",
     "--mode",
     "--columns",
@@ -734,6 +735,24 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             welcome.move_selection(2);
         }
         chrome::draw_welcome(&mut frame, &welcome, &state.typography, bounds, 1.0);
+    } else if flag("--help-panel") {
+        state.help = Some(vex::help::Help::new(state.modal));
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--menu") {
+        state.menu = Some(vex::menu::Menu::bar());
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--context-menu") {
+        state.menu = Some(vex::menu::Menu::context((420.0, 300.0), state.modal));
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if let Some(prefix) = value("--which-key") {
+        // The popup is driven by the pending display, exactly as a half-typed chord drives it.
+        state.pending = prefix;
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--commands") {
+        let mut palette = vex::palette::Palette::new(vex::palette::PaletteKind::Commands);
+        palette.refresh_commands(state.modal);
+        state.palette = Some(palette);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--settings") {
         state.settings = Some(vex::settings_ui::Settings::new());
         state
@@ -1300,8 +1319,10 @@ impl App {
             return false;
         }
 
-        // Opening the palette is a Ctrl binding, so it works from any mode.
-        if key.ctrl {
+        // Opening a palette is a Ctrl binding, so it works from any mode. Shift matters here:
+        // `ctrl-shift-p` is the *command* palette and must not be eaten by the file one — which it
+        // was, because this intercept ran before the grammar and ignored the modifier.
+        if key.ctrl && !key.shift {
             match key.code {
                 KeyCode::Char('p') => {
                     self.open_palette(PaletteKind::Files);
@@ -1311,20 +1332,21 @@ impl App {
                     self.open_palette(PaletteKind::Buffers);
                     return false;
                 }
-                KeyCode::Char('f') => {
-                    // Project search for the word under the cursor, or a `:grep` prompt when there
-                    // is no word there.
-                    let rows = self.code_rows();
-                    execute(
-                        &mut self.state,
-                        &mut self.registers,
-                        &Action::SearchProject,
-                        rows,
-                    );
-                    return false;
-                }
                 _ => {}
             }
+        }
+        // `ctrl-f` finds in this file and `ctrl-shift-f` across the project, as everywhere else.
+        // They were the same key, and it was the project one — so the most-pressed shortcut in
+        // computing opened a background search of every file instead of a search box.
+        if key.ctrl && key.code == KeyCode::Char('f') {
+            let rows = self.code_rows();
+            let action = if key.shift {
+                Action::SearchProject
+            } else {
+                Action::StartSearch { forward: true }
+            };
+            execute(&mut self.state, &mut self.registers, &action, rows);
+            return false;
         }
 
         let resolution = self.grammar.feed(self.state.mode, key);
@@ -2647,6 +2669,27 @@ impl App {
     /// In that order, because each is what the key should mean when the one before it does not
     /// apply — and because `tab` has to keep being the indent key for everyone with no snippets.
     fn expand_snippet(&mut self) {
+        // Tab over a selection that covers more than one line indents the block, which is what tab
+        // means in every editor that is not Vim. Checked before the snippet lookup because there is
+        // no snippet in play when you have deliberately selected six lines — and because the
+        // alternative, replacing the selection with four spaces, destroys work.
+        let selection = *self.state.document.selections().primary();
+        let text = self.state.document.text();
+        if text.char_to_line(selection.start()) != text.char_to_line(selection.end()) {
+            let rows = self.code_rows();
+            execute(
+                &mut self.state,
+                &mut self.registers,
+                &Action::Apply {
+                    operator: vex_input::Operator::Indent,
+                    target: vex_input::Target::Selection,
+                    register: None,
+                },
+                rows,
+            );
+            return;
+        }
+
         // Already filling one in: move to the next stop.
         if let Some(session) = &mut self.snippet {
             if session.advance() {
