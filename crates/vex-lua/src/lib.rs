@@ -51,6 +51,9 @@ pub struct Config {
     pub keymap: Keymap,
     /// Language servers named by `vex.server(...)`, in the order they were written.
     pub servers: Vec<Server>,
+    /// Formatters named by `vex.formatter(...)`. Described exactly as a server is — a language, a
+    /// command, its arguments and the files it applies to — so one struct serves both.
+    pub formatters: Vec<Server>,
     /// Everything that went wrong, in the user's terms. Shown rather than swallowed.
     pub problems: Vec<String>,
 }
@@ -96,6 +99,7 @@ impl Config {
             // this out would have had the caller skip it entirely — the config would be read,
             // parsed, and then thrown away for looking empty.
             && self.servers.is_empty()
+            && self.formatters.is_empty()
     }
 }
 
@@ -279,6 +283,24 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             let mut config = target.borrow_mut();
             let command = string(&options, "command").unwrap_or_default();
             config.servers.push(Server {
+                language,
+                command,
+                args: strings(&options, "args"),
+                extensions: strings(&options, "extensions"),
+            });
+            Ok(())
+        })?,
+    )?;
+
+    // `vex.formatter(language, { command = …, args = {…}, extensions = {…} })` — an external
+    // formatter. The same shape as `vex.server`, because it is the same kind of fact.
+    let target = state.clone();
+    vex.set(
+        "formatter",
+        lua.create_function(move |_, (language, options): (String, Table)| {
+            let mut config = target.borrow_mut();
+            let command = string(&options, "command").unwrap_or_default();
+            config.formatters.push(Server {
                 language,
                 command,
                 args: strings(&options, "args"),

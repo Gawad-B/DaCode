@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-640 tests, clippy clean.
+652 tests, clippy clean.
 
 ## Commands
 
@@ -161,6 +161,14 @@ beside `resolve` for that one distinction: `PATH` is a list of directories, so l
 pylsp` up in it finds nothing, ever — and a venv's own server is the main reason to name one.
 Relative paths resolve against the **project root**, not the process's working directory, which for
 a windowed editor is wherever the desktop launched it from and never what the user meant.
+
+**Formatting has two answers, and the server is asked at the handshake which one applies.**
+`documentFormattingProvider` from the `initialize` reply decides whether `Action::Format` goes to the
+server or to `format::FormatWorker`. pyright says no, so a Python file formats through ruff or black;
+a plain JavaScript project has no server at all, and `sync_lsp` returns before it would ever take the
+request — which is why `route_format` runs at the *top* of that function rather than beside its five
+callers. A formatter is given text on stdin and never a path: one handed the file would rewrite it
+behind a dirty buffer.
 
 **A capability vex does not declare is a feature the server silently withholds.** rust-analyzer will
 not offer an out-of-scope name at all unless the client advertises `completionItem.resolveSupport`

@@ -306,6 +306,13 @@ vex.server("python", { command = ".venv/bin/pylsp" })
 vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
 ```
 
+A **formatter** is named the same way, and `gf` uses it when no language server can format — which
+is every plain JavaScript, CSS or Markdown project, and Python, since pyright does not format:
+
+```lua
+vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+```
+
 Yours is tried before vex's own list, which stays behind it as the fallback. A command with a slash
 in it is a path — resolved against the project root — rather than a name to look up on `PATH`, and
 `~/` is your home directory. A language vex already knows (`rust`, `typescript`, `python`, `cpp`,

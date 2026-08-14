@@ -33,6 +33,17 @@ pub fn command(program: &str) -> Command {
     command
 }
 
+/// The same, for a program already resolved to a path.
+///
+/// Separate from [`command`] rather than taking `AsRef<OsStr>` so the convention test can grep for
+/// one of two names and find every spawn in the editor. A path is what you have once `resolve` has
+/// run, and converting it to a `&str` to use [`command`] would mangle any path that is not UTF-8.
+pub fn command_at(program: &std::path::Path) -> Command {
+    let mut command = Command::new(program);
+    quiet(&mut command);
+    command
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

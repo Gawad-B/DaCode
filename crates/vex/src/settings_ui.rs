@@ -81,7 +81,7 @@ pub fn panel(rect: Rect, scale: f32, settings: &Settings) -> Panel {
         let block = match entry {
             Line::Option(_) => line * 2.0,
             // Two lines: what vex looked for, and what it found.
-            Line::Server(_) => line * 2.0,
+            Line::Server(_) | Line::Formatter(_) => line * 2.0,
             _ => line * 1.4,
         };
         blocks.push((heading, flow, block));
@@ -143,6 +143,7 @@ fn section(entry: Line) -> Option<&'static str> {
     match entry {
         Line::Import(Importable::Settings) => Some("import from vscode"),
         Line::Server(0) => Some("language servers"),
+        Line::Formatter(0) => Some("formatters"),
         _ => None,
     }
 }
@@ -300,6 +301,8 @@ pub enum Line {
     LoadTheme,
     /// An index into [`Settings::servers`].
     Server(usize),
+    /// An index into [`Settings::formatters`].
+    Formatter(usize),
 }
 
 /// What vex found when it looked for a language server.
@@ -383,6 +386,70 @@ pub fn detect(
     rows
 }
 
+/// The same, for external formatters.
+///
+/// A separate section rather than a column on the server rows: they are different programs, a
+/// language can have one without the other, and "format does nothing" is a different question from
+/// "completion does nothing" even when the answer is the same shape.
+pub fn detect_formatters(
+    root: &std::path::Path,
+    home: Option<&std::path::Path>,
+    configured: &[crate::format::Configured],
+) -> Vec<ServerRow> {
+    let mut rows = Vec::new();
+
+    for entry in configured {
+        let found = crate::format::resolve(&entry.formatter, root, home);
+        rows.push(ServerRow {
+            language: entry.formatter.language.clone(),
+            program: entry.formatter.program.clone(),
+            status: match &found {
+                Some(path) => path.display().to_string(),
+                None => "not found — check the path in init.lua".into(),
+            },
+            found: found.is_some(),
+            configured: true,
+        });
+    }
+
+    // One row per language vex knows a formatter for, keyed off a file name it would match — the
+    // table is private, and asking it the same question the editor asks keeps the report honest
+    // rather than a second description of the same list.
+    for probe in [
+        "x.rs", "x.ts", "x.py", "x.cpp", "x.go", "x.json", "x.css", "x.md",
+    ] {
+        let candidates = crate::format::formatters_for(probe, &[]);
+        let Some(first) = candidates.first() else {
+            continue;
+        };
+        let found = candidates.iter().find_map(|formatter| {
+            crate::format::resolve(formatter, root, home).map(|at| (formatter, at))
+        });
+        rows.push(match found {
+            Some((formatter, path)) => ServerRow {
+                language: formatter.language.clone(),
+                program: formatter.program.clone(),
+                status: path.display().to_string(),
+                found: true,
+                configured: false,
+            },
+            None => ServerRow {
+                language: first.language.clone(),
+                program: candidates
+                    .iter()
+                    .map(|formatter| formatter.program.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                status: first.install.clone(),
+                found: false,
+                configured: false,
+            },
+        });
+    }
+
+    rows
+}
+
 /// The panel's state: which row is selected, and whether anything is unsaved.
 pub struct Settings {
     pub selected: usize,
@@ -398,6 +465,8 @@ pub struct Settings {
     /// filesystem about every candidate, which is exactly the kind of unbounded work that must
     /// never happen while drawing.
     pub servers: Vec<ServerRow>,
+    /// The same, for external formatters.
+    pub formatters: Vec<ServerRow>,
 }
 
 impl Default for Settings {
@@ -414,6 +483,7 @@ impl Settings {
             ticked: Vec::new(),
             import_report: None,
             servers: Vec::new(),
+            formatters: Vec::new(),
         }
     }
 
@@ -429,6 +499,7 @@ impl Settings {
             .chain(Importable::ALL.iter().map(|item| Line::Import(*item)))
             .chain([Line::RunImport, Line::LoadTheme])
             .chain((0..self.servers.len()).map(Line::Server))
+            .chain((0..self.formatters.len()).map(Line::Formatter))
             .collect()
     }
 

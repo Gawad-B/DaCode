@@ -150,6 +150,10 @@ fn main() -> Result<()> {
         servers: std::collections::HashMap::new(),
         active_server: None,
         configured_servers: starting_settings.servers.clone(),
+        server_formats: std::collections::HashMap::new(),
+        configured_formatters: starting_settings.formatters.clone(),
+        formatter: vex::format::FormatWorker::spawn(),
+        formatting_version: None,
         missing_servers: std::collections::HashSet::new(),
         confirm_close: None,
         confirm_delete: None,
@@ -898,11 +902,12 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         // The real detection, against this machine — the section is a report, and a screenshot of a
         // report with invented contents would verify nothing about whether it can say the true
         // thing. `--at` scrolls to it, since it sits below the fold at every size.
-        settings.servers = vex::settings_ui::detect(
-            &find_root(&std::path::PathBuf::from(".")),
-            Some(&vex::paths::home()),
-            &vex::config::load().servers,
-        );
+        let root = find_root(&std::path::PathBuf::from("."));
+        let home = vex::paths::home();
+        let loaded = vex::config::load();
+        settings.servers = vex::settings_ui::detect(&root, Some(&home), &loaded.servers);
+        settings.formatters =
+            vex::settings_ui::detect_formatters(&root, Some(&home), &loaded.formatters);
         settings.selected = value("--row")
             .and_then(|at| at.parse::<usize>().ok())
             .map(|at| at.min(settings.lines().len() - 1))
@@ -1034,6 +1039,18 @@ struct App {
     active_server: Option<String>,
     /// Servers named by `vex.server(...)` in `init.lua`, tried before the ones vex knows about.
     configured_servers: Vec<vex_lsp::Configured>,
+    /// Whether each running server answers `textDocument/formatting`, keyed by program.
+    ///
+    /// Asked at the handshake rather than discovered by trying: pyright says no, and an editor that
+    /// asks anyway gets silence and has nothing to tell the user — where knowing means it can run
+    /// black instead.
+    server_formats: std::collections::HashMap<String, bool>,
+    /// Formatters named by `vex.formatter(...)`, tried before the ones vex knows about.
+    configured_formatters: Vec<vex::format::Configured>,
+    /// Runs external formatters off the UI thread.
+    formatter: vex::format::FormatWorker,
+    /// The version an external format was requested against, so a stale reply is refused.
+    formatting_version: Option<vex_text::Version>,
     /// Languages already reported as having no server, so the notice is shown once per session
     /// rather than every time a file of that language is opened.
     missing_servers: std::collections::HashSet<String>,
@@ -1237,6 +1254,7 @@ impl ApplicationHandler for App {
         }
         let mut changed = self.poll_walk();
         changed |= self.sync_lsp();
+        changed |= self.poll_formatter();
         changed |= self.sync_git();
         changed |= self.handle_file_changes();
         changed |= self.poll_folder_picker();
@@ -2025,6 +2043,167 @@ impl App {
         }
     }
 
+    /// Whether anything at all could format the buffer on screen.
+    ///
+    /// Asked before `format_on_save` queues a request, so a save in a project with neither a
+    /// formatting server nor a known formatter does not put one in flight that can only fail —
+    /// and, more importantly, does not report a failure on every save of a file nobody asked to
+    /// format.
+    fn can_format(&self) -> bool {
+        let by_server = self
+            .active_server
+            .as_ref()
+            .and_then(|name| self.server_formats.get(name))
+            .copied()
+            .unwrap_or(false);
+        by_server
+            || self.state.file_path.as_ref().is_some_and(|path| {
+                !vex::format::formatters_for(path, &self.configured_formatters).is_empty()
+            })
+    }
+
+    /// Sends a pending format to whichever thing can actually do it.
+    ///
+    /// Run before the language-server sync, and it takes the request away when the answer is a
+    /// program: `sync_lsp` returns immediately when no server is running, so a format left in
+    /// `pending_request` would sit there forever in exactly the projects — plain JavaScript, CSS,
+    /// Markdown — where an external formatter is the whole point.
+    ///
+    /// The server wins when it says it formats, because it is already running and already agrees
+    /// with the project's own configuration. pyright says it does not, which is why this is a
+    /// question asked at the handshake rather than assumed.
+    fn route_format(&mut self) {
+        if !matches!(self.state.pending_request, Some(Action::Format)) {
+            return;
+        }
+        let by_server = self
+            .active_server
+            .as_ref()
+            .and_then(|name| self.server_formats.get(name))
+            .copied()
+            .unwrap_or(false);
+        if by_server {
+            return;
+        }
+
+        self.state.pending_request = None;
+        self.format_externally();
+    }
+
+    /// Runs the first formatter that is actually on this machine, on the worker.
+    fn format_externally(&mut self) {
+        let Some(path) = self.state.file_path.clone() else {
+            self.warn("a scratch buffer has no language to format");
+            return;
+        };
+        let candidates = vex::format::formatters_for(&path, &self.configured_formatters);
+        let Some(first) = candidates.first().cloned() else {
+            self.warn("vex knows no formatter for this file — name one with vex.formatter(…)");
+            return;
+        };
+
+        let root = self.index.root().to_path_buf();
+        let home = vex::paths::home();
+        let home = (!home.as_os_str().is_empty()).then_some(home);
+        let found = candidates.iter().find_map(|formatter| {
+            vex::format::resolve(formatter, &root, home.as_deref())
+                .map(|at| (formatter.clone(), at))
+        });
+
+        let Some((formatter, executable)) = found else {
+            // Names the language and every program it looked for, the same shape as the missing
+            // language-server notice — "no formatter" is not something anyone can act on.
+            let names = candidates
+                .iter()
+                .map(|formatter| formatter.program.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.state.hover = Some(if first.configured {
+                format!(
+                    "init.lua asks for `{}` to format {}, and vex could not find it.",
+                    first.program, first.language
+                )
+            } else {
+                format!(
+                    "no {} formatter — vex looked for {names} on PATH. Install one with: {}",
+                    first.language, first.install
+                )
+            });
+            self.state.server_status = format!("no {} formatter", first.language.to_lowercase());
+            return;
+        };
+
+        let version = self.state.document.version();
+        self.formatting_version = Some(version);
+        self.state.server_status = format!("{} formatting", formatter.program);
+        self.formatter.request(vex::format::Request {
+            formatter,
+            executable,
+            path: std::path::PathBuf::from(&path),
+            root,
+            text: self.state.document.text().to_string(),
+            version,
+        });
+    }
+
+    /// Applies a finished external format, if it is still for the text on screen.
+    fn poll_formatter(&mut self) -> bool {
+        let Some(formatted) = self.formatter.poll() else {
+            return false;
+        };
+        self.formatting_version = None;
+        if let Some(problem) = formatted.problem {
+            self.state.server_status = "format failed".into();
+            self.state.hover = Some(problem);
+            self.save_after_format = false;
+            return true;
+        }
+        let Some(text) = formatted.text else {
+            return true;
+        };
+
+        // The one rule, applied to the newest producer: text formatted against a document the user
+        // has typed into since is discarded, not merged. Saying so matters — the alternative is a
+        // format that appears to have done nothing.
+        if self.formatting_version != Some(formatted.version)
+            || self.state.document.version() != formatted.version
+        {
+            self.state.server_status = "format refused: the file changed".into();
+            self.save_after_format = false;
+            return true;
+        }
+
+        let before = self.state.document.text().to_string();
+        match vex::format::narrow(&before, &text) {
+            None => self.state.server_status = "already formatted".into(),
+            Some((range, replacement)) => {
+                let edit = vex_text::Edit::replace(
+                    vex_text::CharOffset(range.start)..vex_text::CharOffset(range.end),
+                    replacement,
+                );
+                let applied = self.state.document.apply(
+                    vex_text::Transaction::new(vec![edit]),
+                    vex_buffer::EditKind::Discrete,
+                );
+                match applied {
+                    Ok(_) => self.state.server_status = "formatted".into(),
+                    Err(error) => {
+                        self.state.hover = Some(format!("formatting could not apply: {error}"));
+                        self.save_after_format = false;
+                    }
+                }
+            }
+        }
+
+        // Save-after-format, the same handshake the language-server path uses: `format_on_save`
+        // formats first and writes what came back, or the file on disk is the unformatted one.
+        if std::mem::take(&mut self.save_after_format) {
+            self.save_active();
+        }
+        self.reveal_cursor();
+        true
+    }
+
     /// What the settings panel reports about language servers.
     ///
     /// Gathered when the panel opens rather than while drawing: it walks `PATH` once per program,
@@ -2033,6 +2212,17 @@ impl App {
         let home = vex::paths::home();
         let home = (!home.as_os_str().is_empty()).then_some(home);
         vex::settings_ui::detect(self.index.root(), home.as_deref(), &self.configured_servers)
+    }
+
+    /// The same, for external formatters.
+    fn detect_formatters(&self) -> Vec<vex::settings_ui::ServerRow> {
+        let home = vex::paths::home();
+        let home = (!home.as_os_str().is_empty()).then_some(home);
+        vex::settings_ui::detect_formatters(
+            self.index.root(),
+            home.as_deref(),
+            &self.configured_formatters,
+        )
     }
 
     /// The server for the buffer on screen, if there is one.
@@ -2050,6 +2240,12 @@ impl App {
     /// The same contract as the syntax worker: send, poll, and refuse anything computed against a
     /// superseded version.
     fn sync_lsp(&mut self) -> bool {
+        // First, and inside this function rather than beside its callers: it takes a format request
+        // away when the answer is a program, and every one of the five places that syncs would
+        // otherwise have to remember to route first. The early return below is the other half —
+        // with no server running, nothing here would ever take the request at all.
+        self.route_format();
+
         let Some(name) = self.active_server.clone() else {
             return false;
         };
@@ -2132,6 +2328,8 @@ impl App {
                         Action::Hover => client.hover(&path, position),
                         Action::GotoDefinition => client.definition(&path, position),
                         Action::RequestCompletion => client.completion(&path, position),
+                        // Only reaches here when the server said it formats; `route_format` sends
+                        // everything else to a program instead.
                         Action::Format => {
                             // The version the reply will be checked against: edits computed for a
                             // document the user has since typed into are refused, not merged.
@@ -2225,9 +2423,15 @@ impl App {
         for event in polled {
             changed = true;
             match event {
-                vex_lsp::ServerEvent::Ready { server_name } => {
-                    eprintln!("vex: {server_name} ready");
+                vex_lsp::ServerEvent::Ready {
+                    server_name,
+                    formats,
+                } => {
+                    eprintln!("vex: {server_name} ready (formatting: {formats})");
                     self.state.server_status = server_name;
+                    // Keyed by the *program*, not by the name the server calls itself: those differ
+                    // — pyright-langserver reports "Pyright" — and `active_server` is the program.
+                    self.server_formats.insert(name.clone(), formats);
                     // The handshake finished after the last send, so open the document now.
                     self.sent_version = None;
                 }
@@ -2462,6 +2666,11 @@ impl App {
         }
         // A streaming search must keep being polled or its hits never appear.
         if self.state.results.as_ref().is_some_and(|r| !r.finished) {
+            return true;
+        }
+        // A format in flight, or its result would sit in the channel until the next keypress —
+        // which for `format_on_save` means the save that follows it never happens.
+        if self.formatting_version.is_some() {
             return true;
         }
         if let Some(client) = self.active_client() {
@@ -3419,6 +3628,7 @@ impl App {
                 } else {
                     let mut settings = vex::settings_ui::Settings::new();
                     settings.servers = self.detect_servers();
+                    settings.formatters = self.detect_formatters();
                     self.state.settings = Some(settings);
                     self.state.tree = None;
                     self.state.show_diagnostics = false;
@@ -4067,7 +4277,9 @@ impl App {
                 vex::settings_ui::Line::Import(item) => settings.tick(item),
                 vex::settings_ui::Line::RunImport => self.run_import(),
                 vex::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
-                vex::settings_ui::Line::Server(_) => self.activate_setting(line),
+                vex::settings_ui::Line::Server(_) | vex::settings_ui::Line::Formatter(_) => {
+                    self.activate_setting(line)
+                }
             },
             KeyCode::Char('h') | KeyCode::Left => match line {
                 vex::settings_ui::Line::Option(field) => {
@@ -4077,7 +4289,8 @@ impl App {
                 vex::settings_ui::Line::Import(item) => settings.tick(item),
                 vex::settings_ui::Line::RunImport
                 | vex::settings_ui::Line::LoadTheme
-                | vex::settings_ui::Line::Server(_) => {}
+                | vex::settings_ui::Line::Server(_)
+                | vex::settings_ui::Line::Formatter(_) => {}
             },
             // `w` writes; nothing is written without asking, because config is a file the user owns.
             KeyCode::Char('w') => self.write_settings(),
@@ -4404,11 +4617,12 @@ impl App {
                 // Formatting is a round trip, so it cannot come *before* the write without either
                 // blocking the UI thread or risking a save that never happens. The file is saved as
                 // asked, then reformatted and saved again when the reply arrives.
-                if self.state.format_on_save
-                    && self
-                        .active_client()
-                        .is_some_and(|client| client.state() == vex_lsp::State::Ready)
-                {
+                //
+                // No longer gated on a language server being up: for a plain JavaScript, CSS or
+                // Markdown project there is no server and never will be, and `format_on_save`
+                // silently doing nothing there was the whole shape of this defect. `route_format`
+                // decides which of the two can actually answer.
+                if self.state.format_on_save && self.can_format() {
                     self.save_after_format = true;
                     self.state.pending_request = Some(Action::Format);
                 }
@@ -5413,16 +5627,18 @@ impl App {
             vex::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
             // A report, not a control — so pressing it does the one useful thing a 292-pixel row
             // cannot: shows the whole line, which for a language server is a path that never fits.
-            vex::settings_ui::Line::Server(at) => {
-                if let Some(server) = self
-                    .state
-                    .settings
-                    .as_ref()
-                    .and_then(|settings| settings.servers.get(at))
-                {
+            vex::settings_ui::Line::Server(at) | vex::settings_ui::Line::Formatter(at) => {
+                let formatter = matches!(line, vex::settings_ui::Line::Formatter(_));
+                if let Some(row) = self.state.settings.as_ref().and_then(|settings| {
+                    if formatter {
+                        settings.formatters.get(at)
+                    } else {
+                        settings.servers.get(at)
+                    }
+                }) {
                     self.state.hover = Some(format!(
                         "{} — {} · {}",
-                        server.language, server.program, server.status
+                        row.language, row.program, row.status
                     ));
                 }
             }
@@ -5509,11 +5725,14 @@ impl App {
         // of rust-analyzer's indexing. The new table takes effect the next time one is started,
         // and the panel's report is refreshed so it does not describe the file as it used to be.
         self.configured_servers = settings.servers;
+        self.configured_formatters = settings.formatters;
         self.missing_servers.clear();
         if self.state.settings.is_some() {
-            let detected = self.detect_servers();
+            let servers = self.detect_servers();
+            let formatters = self.detect_formatters();
             if let Some(panel) = &mut self.state.settings {
-                panel.servers = detected;
+                panel.servers = servers;
+                panel.formatters = formatters;
             }
         }
 

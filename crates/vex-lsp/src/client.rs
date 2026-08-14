@@ -92,6 +92,8 @@ pub enum ServerEvent {
     /// The handshake completed; document notifications may now be sent.
     Ready {
         server_name: String,
+        /// Whether it answers `textDocument/formatting` at all.
+        formats: bool,
     },
     /// Diagnostics for a file, with the document version they were computed against when the
     /// server supplied one.
@@ -986,6 +988,16 @@ fn interpret(
                 .and_then(|name| name.as_str())
                 .unwrap_or("language server")
                 .to_string(),
+            // Whether asking it to format is worth doing at all. pyright — the most common Python
+            // server — says no, and an editor that asks anyway gets silence and has nothing to
+            // tell the user. Knowing up front is what lets it reach for an external formatter
+            // instead. Either `true` or an options object means yes.
+            formats: matches!(
+                result
+                    .get("capabilities")
+                    .and_then(|c| c.get("documentFormattingProvider")),
+                Some(serde_json::Value::Bool(true)) | Some(serde_json::Value::Object(_))
+            ),
         }),
         Pending::Hover => {
             let text = hover_text(result)?;

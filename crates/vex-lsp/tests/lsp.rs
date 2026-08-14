@@ -474,7 +474,7 @@ fn a_real_server_completes_the_handshake_and_reports_diagnostics() {
     while std::time::Instant::now() < deadline {
         for event in client.poll() {
             match event {
-                vex_lsp::ServerEvent::Ready { server_name } => {
+                vex_lsp::ServerEvent::Ready { server_name, .. } => {
                     assert!(!server_name.is_empty());
                     ready = true;
                     client

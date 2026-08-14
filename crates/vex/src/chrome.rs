@@ -2175,8 +2175,12 @@ fn draw_settings(
                     scale,
                 ));
             }
-            Line::Server(at) => {
-                let Some(server) = settings.servers.get(*at) else {
+            Line::Server(at) | Line::Formatter(at) => {
+                let list = match entry {
+                    Line::Formatter(_) => &settings.formatters,
+                    _ => &settings.servers,
+                };
+                let Some(server) = list.get(*at) else {
                     continue;
                 };
 

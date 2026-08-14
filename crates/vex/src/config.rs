@@ -170,6 +170,8 @@ pub struct Settings {
     pub keymap: Keymap,
     /// Language servers named by `vex.server(...)`, tried before the ones vex knows about.
     pub servers: Vec<vex_lsp::Configured>,
+    /// Formatters named by `vex.formatter(...)`, likewise.
+    pub formatters: Vec<crate::format::Configured>,
     /// Which options were set by something other than the built-in defaults, and by what.
     ///
     /// Recorded so the settings panel can say where a value came from. When a setting is not what you
@@ -203,6 +205,7 @@ impl Default for Settings {
             theme_source: None,
             keymap: Keymap::new(),
             servers: Vec::new(),
+            formatters: Vec::new(),
             sources: std::collections::HashMap::new(),
             problems: Vec::new(),
         }
@@ -377,6 +380,21 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     }
     if !settings.servers.is_empty() {
         settings.sources.insert("servers".into(), from_config);
+    }
+
+    for formatter in &config.formatters {
+        match crate::format::configure(
+            &formatter.language,
+            &formatter.command,
+            &formatter.args,
+            &formatter.extensions,
+        ) {
+            Ok(configured) => settings.formatters.push(configured),
+            Err(problem) => settings.problems.push(problem),
+        }
+    }
+    if !settings.formatters.is_empty() {
+        settings.sources.insert("formatters".into(), from_config);
     }
 
     config.paint(&mut settings.theme);
@@ -746,6 +764,34 @@ mod tests {
             settings.problems
         );
         assert_eq!(settings.servers.len(), 1, "and the valid one still loaded");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_named_formatter_reaches_the_settings() {
+        let dir = scratch("formatters");
+        std::fs::write(
+            dir.join("init.lua"),
+            "vex.formatter(\"python\", { command = \".venv/bin/black\", args = { \"-\" } })\n\
+             vex.formatter(\"nix\", { command = \"nixfmt\", extensions = { \"nix\" } })\n",
+        )
+        .unwrap();
+
+        let settings = load_from(&dir);
+        assert!(settings.problems.is_empty(), "{:?}", settings.problems);
+        assert_eq!(settings.formatters.len(), 2);
+        assert_eq!(settings.formatters[0].formatter.program, ".venv/bin/black");
+        assert_eq!(
+            settings.formatters[0].extensions,
+            vec!["py", "pyi"],
+            "vex's own table fills in what config did not say"
+        );
+        assert_eq!(settings.formatters[1].extensions, vec!["nix"]);
+        assert_eq!(
+            settings.sources.get("formatters"),
+            Some(&crate::settings_ui::Source::Config)
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
