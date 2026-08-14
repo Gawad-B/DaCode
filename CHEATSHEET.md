@@ -51,6 +51,7 @@ opinions about.
 | `ctrl-shift-o` `ctrl-t` | a symbol in this file · anywhere in the project |
 | `F2` | rename everywhere |
 | `F8` `shift-F8` | next problem · previous |
+| `F7` `shift-F7` | next change since the last commit · previous |
 | `ctrl-space` | suggest a completion |
 | `alt-←` `alt-→` | back to where you were · forward again |
 | shift + arrows | extend the selection |
@@ -204,6 +205,8 @@ again discards them. `ctrl-w` is the pane prefix here, which is why closing a fi
 | `ga` | code actions → palette |
 | `gi` | toggle inlay hints |
 | `]d` `[d` | next / previous diagnostic |
+| `]c` `[c` · `F7` `shift-F7` | next / previous change since the last commit |
+| `]C` | undo this change, back to how it was committed |
 | `gD` | diagnostics list in the sidebar |
 | `ctrl-space` | completion (works in insert mode too) |
 | `esc` | dismiss a hover or message box |

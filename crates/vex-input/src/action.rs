@@ -276,6 +276,12 @@ pub enum Action {
     CodeAction,
     /// `gu` — every use of the symbol under the cursor.
     FindReferences,
+    /// `]c` / `[c` — the next or previous region that differs from the last commit.
+    GotoChange {
+        forward: bool,
+    },
+    /// `]C` — put the change under the cursor back to how it was committed.
+    RevertHunk,
     /// `gs` — every name in this file, as a searchable outline.
     GotoSymbol,
     /// `gS` — every name in the project, searched as you type.
@@ -457,6 +463,9 @@ impl Action {
         "find_references",
         "goto_symbol",
         "goto_symbol_in_project",
+        "next_change",
+        "previous_change",
+        "revert_hunk",
         "toggle_inlay_hints",
         "toggle_diagnostics",
         "toggle_fold",
@@ -603,6 +612,9 @@ impl Action {
             "delete_file" => Action::DeleteFile,
             "code_action" => Action::CodeAction,
             "find_references" => Action::FindReferences,
+            "next_change" => Action::GotoChange { forward: true },
+            "previous_change" => Action::GotoChange { forward: false },
+            "revert_hunk" => Action::RevertHunk,
             "goto_symbol" => Action::GotoSymbol,
             "goto_symbol_in_project" => Action::GotoSymbolInProject,
             "toggle_inlay_hints" => Action::ToggleInlayHints,

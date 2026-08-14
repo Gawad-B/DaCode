@@ -391,6 +391,27 @@ pub const COMMANDS: &[Command] = &[
         "gS",
         "<c-t>",
     ),
+    command(
+        "next_change",
+        "next change since the last commit",
+        Language,
+        "]c",
+        "<f7>",
+    ),
+    command(
+        "previous_change",
+        "previous change since the last commit",
+        Language,
+        "[c",
+        "<s-f7>",
+    ),
+    command(
+        "revert_hunk",
+        "undo this change, back to how it was committed",
+        Language,
+        "]C",
+        "",
+    ),
     command("hover", "what is this?", Language, "K", ""),
     command("rename", "rename this everywhere", Language, "gr", "<f2>"),
     command(

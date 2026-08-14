@@ -6,8 +6,9 @@ Vim's grammar if you want it, a conventional editor if you don't — and the sec
 editor, not the first with the modes taken out: `ctrl-d` selects the next occurrence, `alt-↑` moves a
 line, `ctrl-/` comments, double-click takes a word, alt-click adds a cursor, and copy and paste use
 the system clipboard. Tree-sitter highlighting, language servers, splits, a file tree and a git
-gutter. One rule is enforced above the others: **nothing unbounded ever runs on the UI thread**, which
-is why a keystroke costs the same in a 100,000-line file as in a ten-line one.
+gutter you can walk with `]c` and undo one change at a time with `]C`. One rule is enforced above
+the others: **nothing unbounded ever runs on the UI thread**, which is why a keystroke costs the
+same in a 100,000-line file as in a ten-line one.
 
 **You do not have to learn it first, and you do not have to use the keyboard at all.** There are
 buttons along the top — open, files, find, save, settings, commands, keys — a right-click menu with
@@ -116,6 +117,7 @@ conventional editor, not a modal one with the modes hidden:
 | `tab` · `shift-tab` | indent · outdent a selection |
 | `ctrl-backspace` | delete a word |
 | `F2` · `F12` · `F8` | rename · go to definition · next problem |
+| `F7` · `]c` | next change since the last commit |
 | double-click · triple-click | select the word · the line |
 | alt-click · alt-drag | another cursor · a rectangular selection |
 | ctrl-click | go to the definition |
@@ -299,7 +301,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 659 tests
+cargo test --workspace                      # 667 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

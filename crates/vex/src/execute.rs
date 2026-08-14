@@ -168,6 +168,22 @@ pub fn execute(
         | Action::FindReferences
         | Action::GotoSymbol
         | Action::GotoSymbolInProject => state.pending_request = Some(action.clone()),
+
+        // Walking the diff needs nothing but the marks already on screen, so it happens here.
+        Action::GotoChange { forward } => {
+            let line = state.cursor_point().line;
+            match state.diff.change_near(line, *forward) {
+                Some(target) => {
+                    let text = state.document.text();
+                    let at =
+                        text.point_to_char(vex_text::Point::new(target.min(text.last_line()), 0));
+                    state.document.set_primary_caret(at);
+                }
+                None => state.hover = Some("nothing has changed since the last commit".into()),
+            }
+        }
+        // Reverting needs git, which the event loop owns.
+        Action::RevertHunk => return Outcome::Window(action.clone()),
         // The jumplist and macros need the editor's own history, which the executor does not hold —
         // the same split as the window actions.
         Action::OpenFolder

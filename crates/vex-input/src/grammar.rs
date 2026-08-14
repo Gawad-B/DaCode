@@ -1021,6 +1021,13 @@ impl Grammar {
         match c {
             // `]d` / `[d`, as LSP configurations spell it.
             'd' => self.emit(Action::NextDiagnostic { forward }),
+            // `]c` / `[c` is what Vim itself uses for the next change in a diff, and what every
+            // git-gutter plugin adopted from it.
+            'c' => self.emit(Action::GotoChange { forward }),
+            // `]C` for the destructive one: a shifted neighbour of the key that walks to it, so
+            // undoing the change you just stepped onto is one key away and not a key you can hit
+            // by accident while walking.
+            'C' => self.emit(Action::RevertHunk),
             _ => {
                 self.clear();
                 Resolution::Unhandled
@@ -1057,6 +1064,10 @@ fn function_key(key: Key) -> Option<Action> {
         (2, _) => Action::Rename,
         (3, false) => Action::RepeatSearch { forward: true },
         (3, true) => Action::RepeatSearch { forward: false },
+        // The two things you step through in a file: what is wrong with it, and what you changed.
+        // Neighbouring keys because they are the same gesture pointed at different marks.
+        (7, false) => Action::GotoChange { forward: true },
+        (7, true) => Action::GotoChange { forward: false },
         (8, false) => Action::NextDiagnostic { forward: true },
         (8, true) => Action::NextDiagnostic { forward: false },
         (10, false) => Action::ToggleMenu,

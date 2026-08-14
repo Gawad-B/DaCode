@@ -3706,6 +3706,7 @@ impl App {
                 self.state.document.end_undo_group();
                 self.reveal_cursor();
             }
+            Action::RevertHunk => self.request_revert(),
             Action::ToggleTree => {
                 if self.state.tree.is_some() {
                     self.state.tree = None;
@@ -5159,21 +5160,105 @@ impl App {
                     path: std::path::PathBuf::from(path),
                     text: self.state.document.text().to_string(),
                     version,
+                    revert: None,
                 });
                 self.diffed_version = Some(version);
             }
         }
 
         match self.git.poll() {
-            Some(diff) if diff.version() == Some(version) => {
+            Some(vex::git::GitResult::Diff(diff)) if diff.version() == Some(version) => {
                 self.state.diff = diff;
                 true
             }
             // Stale: the buffer moved on while the diff ran. Dropped, and the newer request that
             // caused the move is already queued.
-            Some(_) => false,
+            Some(vex::git::GitResult::Diff(_)) => false,
+            Some(vex::git::GitResult::Refused(why)) => {
+                self.state.hover = Some(why);
+                true
+            }
+            Some(vex::git::GitResult::Revert {
+                version: computed,
+                range,
+                text,
+            }) => self.apply_revert(computed, range, text),
             None => false,
         }
+    }
+
+    /// Asks the git worker what undoing the change under the cursor would put back.
+    ///
+    /// Not done here: it needs the committed file, a diff against it, and the hunk containing one
+    /// line — which is a `git show` plus an LCS, and neither belongs on the thread that draws.
+    fn request_revert(&mut self) {
+        let Some(path) = self.state.file_path.clone() else {
+            self.warn("a scratch buffer has nothing committed to go back to");
+            return;
+        };
+        if self.state.diff.is_empty() {
+            self.state.hover = Some("nothing has changed since the last commit".into());
+            return;
+        }
+        self.git.request(vex::git::DiffRequest {
+            path: std::path::PathBuf::from(path),
+            text: self.state.document.text().to_string(),
+            version: self.state.document.version(),
+            revert: Some(self.state.cursor_point().line),
+        });
+    }
+
+    /// Puts a hunk back to how it was committed.
+    fn apply_revert(
+        &mut self,
+        computed: vex_text::Version,
+        range: std::ops::Range<usize>,
+        text: String,
+    ) -> bool {
+        // The one rule again: worked out against a version the user has since typed past, so the
+        // line numbers no longer mean what they meant. Refused rather than applied to whatever is
+        // at those lines now — which for a *destructive* action is the difference between doing
+        // nothing and destroying the wrong thing.
+        if self.state.document.version() != computed {
+            self.state.hover =
+                Some("the file changed while that was being worked out — ask again".into());
+            return true;
+        }
+
+        let document = self.state.document.text();
+        let last = document.last_line();
+        let start = document.point_to_char(vex_text::Point::new(range.start.min(last), 0));
+        let end = if range.end > last {
+            document.len_chars()
+        } else {
+            document.point_to_char(vex_text::Point::new(range.end, 0))
+        };
+
+        let edit = vex_text::Edit::replace(start..end, text);
+        match self.state.document.apply(
+            vex_text::Transaction::new(vec![edit]),
+            vex_buffer::EditKind::Discrete,
+        ) {
+            Ok(_) => {
+                // One undo step, so a revert taken by mistake is one press of `u` away. That
+                // matters more here than anywhere else: this is the only action in the editor whose
+                // whole purpose is to throw work away.
+                self.state.hover = Some(format!(
+                    "put {} back to the committed version — {} undoes it",
+                    if range.len() == 1 {
+                        "1 line".to_string()
+                    } else {
+                        format!("{} lines", range.len())
+                    },
+                    self.key_for("undo")
+                ));
+                self.diffed_version = None;
+                self.sync_syntax();
+                self.reveal_cursor();
+            }
+            Err(error) => self.state.hover = Some(format!("could not undo that change: {error}")),
+        }
+        true
     }
 
     /// Opens the selected search hit, at its line. Shared by the keyboard and the mouse.
