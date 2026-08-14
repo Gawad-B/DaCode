@@ -3042,7 +3042,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vex"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3066,7 +3066,7 @@ dependencies = [
 
 [[package]]
 name = "vex-buffer"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "vex-text",
@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "vex-display"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "vex-text",
@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "vex-import"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "vex-input"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "vex-text",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "vex-lsp"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "lsp-types",
@@ -3113,7 +3113,7 @@ dependencies = [
 
 [[package]]
 name = "vex-lua"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "mlua",
@@ -3123,7 +3123,7 @@ dependencies = [
 
 [[package]]
 name = "vex-project"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "grep-matcher",
@@ -3137,7 +3137,7 @@ dependencies = [
 
 [[package]]
 name = "vex-render"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3152,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "vex-syntax"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "ropey",
@@ -3171,7 +3171,7 @@ dependencies = [
 
 [[package]]
 name = "vex-text"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "proptest",
  "ropey",
@@ -3182,7 +3182,7 @@ dependencies = [
 
 [[package]]
 name = "vex-theme"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "wait-timeout"

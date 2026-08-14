@@ -50,6 +50,17 @@ install -Dm644 %{_sourcedir}/init.lua %{buildroot}%{_docdir}/vex/examples/init.l
 %doc %{_docdir}/vex/examples/init.lua
 
 %changelog
+* Fri Aug 14 2026 vex - 0.3.0-1
+- Every ctrl-shift binding works again. Shift arrives applied to the character, so
+  ctrl-shift-p was seen as P and never matched: the command palette, delete-line,
+  select-all-occurrences, redo and project search were all dead in 0.2.0.
+- The editor can be driven with a mouse: a toolbar, a right-click menu with the
+  clipboard verbs in it, a settings panel that changes on a click, and a first-run
+  wizard whose cards can be clicked.
+- New settings: autosave, line_numbers, and save as on ctrl-shift-s.
+- Starting with no argument reopens the last project rather than the working
+  directory.
+
 * Fri Aug 14 2026 vex - 0.2.1-1
 - With Vim keys off, the chrome no longer reports a mode it does not have, and the
   hint line advertises f1 and the command palette instead of Vim's keys.
