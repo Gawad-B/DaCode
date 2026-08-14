@@ -695,7 +695,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         // At the end of the line and after a space, because a prefix typed into the middle of an
         // identifier would extend *that* word and match nothing.
         state.document.move_to_line_edge(true, false);
-        state.document.insert(&format!(" {prefix}"));
+        state.mutate(|document| document.insert(&format!(" {prefix}")));
         let caret = state.cursor();
         let mut session = vex::completion::Completion::new(
             state.document.text(),
@@ -1620,30 +1620,10 @@ impl App {
 
     fn scroll_by(&mut self, rows: isize) {
         let text = self.state.document.text().clone();
-        let mut anchor = self.state.scroll;
-
-        for _ in 0..rows.unsigned_abs() {
-            if rows > 0 {
-                let in_line = self.state.display.rows_in_line(&text, anchor.line);
-                if anchor.sub_row + 1 < in_line {
-                    anchor.sub_row += 1;
-                } else if anchor.line < text.last_line() {
-                    anchor.line += 1;
-                    anchor.sub_row = 0;
-                }
-            } else if anchor.sub_row > 0 {
-                anchor.sub_row -= 1;
-            } else if anchor.line > 0 {
-                anchor.line -= 1;
-                anchor.sub_row = self
-                    .state
-                    .display
-                    .rows_in_line(&text, anchor.line)
-                    .saturating_sub(1);
-            }
-        }
-
-        self.state.scroll = anchor;
+        // The walk lives in the display map, which is the only thing that knows what a fold hides.
+        // This function kept its own copy of it and did not, so the wheel stepped over closed
+        // blocks a line at a time and could not climb back up over one.
+        self.state.scroll = self.state.display.step(&text, self.state.scroll, rows);
     }
 
     /// Translates a platform key event into the editor's own key type. Keeping `winit` out of
@@ -2248,10 +2228,12 @@ impl App {
                     vex_text::CharOffset(range.start)..vex_text::CharOffset(range.end),
                     replacement,
                 );
-                let applied = self.state.document.apply(
-                    vex_text::Transaction::new(vec![edit]),
-                    vex_buffer::EditKind::Discrete,
-                );
+                let applied = self.state.mutate(|document| {
+                    document.apply(
+                        vex_text::Transaction::new(vec![edit]),
+                        vex_buffer::EditKind::Discrete,
+                    )
+                });
                 match applied {
                     Ok(_) => self.state.server_status = "formatted".into(),
                     Err(error) => {
@@ -2620,23 +2602,27 @@ impl App {
                         &format!("renamed to `{new_name}`"),
                         |state, version| {
                             let path = state.file_path.clone().map(std::path::PathBuf::from);
-                            vex::edits::apply_workspace_edit(
-                                &mut state.document,
-                                path.as_deref(),
-                                &edit,
-                                version,
-                            )
+                            state.mutate(|document| {
+                                vex::edits::apply_workspace_edit(
+                                    document,
+                                    path.as_deref(),
+                                    &edit,
+                                    version,
+                                )
+                            })
                         },
                     );
                 }
                 vex_lsp::ServerEvent::Formatting { edits } => {
                     self.apply_server_edit("formatted", |state, version| {
-                        vex::edits::apply_to_document(&mut state.document, &edits, version).map(
-                            |count| vex::edits::Applied {
+                        state
+                            .mutate(|document| {
+                                vex::edits::apply_to_document(document, &edits, version)
+                            })
+                            .map(|count| vex::edits::Applied {
                                 in_buffer: count,
                                 files: Vec::new(),
-                            },
-                        )
+                            })
                     });
                 }
                 vex_lsp::ServerEvent::CodeActions { actions } => {
@@ -2840,8 +2826,7 @@ impl App {
 
         if self
             .state
-            .document
-            .apply(accepted.transaction, vex_buffer::EditKind::Discrete)
+            .mutate(|document| document.apply(accepted.transaction, vex_buffer::EditKind::Discrete))
             .is_err()
         {
             return;
@@ -3345,11 +3330,9 @@ impl App {
             return;
         };
         let at = target.start;
-        match vex::edits::replace_matches(
-            &mut self.state.document,
-            std::slice::from_ref(&target),
-            &replacement,
-        ) {
+        match self.state.mutate(|document| {
+            vex::edits::replace_matches(document, std::slice::from_ref(&target), &replacement)
+        }) {
             Ok(_) => {
                 // Where the caret lands: after what was just written, so the next `↵` finds the
                 // *next* match rather than re-matching what the replacement happens to contain.
@@ -3374,7 +3357,10 @@ impl App {
             return;
         }
 
-        match vex::edits::replace_matches(&mut self.state.document, &matches, &replacement) {
+        match self
+            .state
+            .mutate(|document| vex::edits::replace_matches(document, &matches, &replacement))
+        {
             Ok(count) => {
                 self.state.hover = Some(format!(
                     "replaced {count} match{}",
@@ -3964,7 +3950,7 @@ impl App {
         let before = text.slice_to_string(line_start..cursor);
 
         let Some(snippet) = vex::snippet::trigger(&before, &self.snippets).cloned() else {
-            self.state.document.insert("    ");
+            self.state.mutate(|document| document.insert("    "));
             return;
         };
 
@@ -3981,8 +3967,7 @@ impl App {
         )]);
         if self
             .state
-            .document
-            .apply(transaction, vex_buffer::EditKind::Discrete)
+            .mutate(|document| document.apply(transaction, vex_buffer::EditKind::Discrete))
             .is_err()
         {
             return;
@@ -4159,13 +4144,9 @@ impl App {
         let hits = results.hits.clone();
         let path = self.state.file_path.clone().map(std::path::PathBuf::from);
 
-        match vex::edits::replace_in_hits(
-            &mut self.state.document,
-            path.as_deref(),
-            &hits,
-            pattern,
-            replacement,
-        ) {
+        match self.state.mutate(|document| {
+            vex::edits::replace_in_hits(document, path.as_deref(), &hits, pattern, replacement)
+        }) {
             Ok(applied) if applied.total() == 0 => self.warn("nothing matched"),
             Ok(applied) => {
                 let summary = applied.summary(&format!("replaced `{pattern}`"));
@@ -4963,12 +4944,9 @@ impl App {
         let title = action.title.clone();
         self.apply_server_edit(&title, move |state, version| {
             let path = state.file_path.clone().map(std::path::PathBuf::from);
-            vex::edits::apply_workspace_edit(
-                &mut state.document,
-                path.as_deref(),
-                &action.edit,
-                version,
-            )
+            state.mutate(|document| {
+                vex::edits::apply_workspace_edit(document, path.as_deref(), &action.edit, version)
+            })
         });
         self.code_actions.clear();
     }
@@ -5369,10 +5347,12 @@ impl App {
         };
 
         let edit = vex_text::Edit::replace(start..end, text);
-        match self.state.document.apply(
-            vex_text::Transaction::new(vec![edit]),
-            vex_buffer::EditKind::Discrete,
-        ) {
+        match self.state.mutate(|document| {
+            document.apply(
+                vex_text::Transaction::new(vec![edit]),
+                vex_buffer::EditKind::Discrete,
+            )
+        }) {
             Ok(_) => {
                 // One undo step, so a revert taken by mistake is one press of `u` away. That
                 // matters more here than anywhere else: this is the only action in the editor whose
@@ -6503,7 +6483,7 @@ mod wiring_tests {
             "the formatter's output is in the buffer"
         );
         // One undo step: a format is one intent however many lines it rewrote.
-        app.state.document.undo();
+        app.state.mutate(|document| document.undo());
         assert_eq!(app.state.document.text().to_string(), "untidy\n");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -6673,7 +6653,7 @@ mod wiring_tests {
         );
 
         // One undo step, because this is the one action whose purpose is to throw work away.
-        app.state.document.undo();
+        app.state.mutate(|document| document.undo());
         assert_eq!(
             app.state.document.text().to_string(),
             "one\nCHANGED\nthree\n"

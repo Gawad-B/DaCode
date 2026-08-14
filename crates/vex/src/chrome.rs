@@ -144,6 +144,48 @@ pub struct EditorState {
 }
 
 impl EditorState {
+    /// Mutates the document and moves everything outside it that names a position in it.
+    ///
+    /// [`Document::apply`] is the single funnel for changing text, but the folds live out here in
+    /// the display map, and nothing was moving them — so they went on naming lines the edit had
+    /// shifted or deleted. Since [`vex_display::Folds::is_hidden`] asks only whether a line falls
+    /// inside a range, a fold whose end had run off the end of the document hid *everything below
+    /// its head*: delete a function above a closed fold and the rest of the file disappeared.
+    ///
+    /// Takes a closure rather than a transaction because two of the mutation sites are in
+    /// [`crate::edits`], which builds the transaction itself and is tested against a bare
+    /// `Document`. `crates/vex/tests/conventions.rs` enforces going through here, since "remember
+    /// to call the other thing too" is not a rule that survives a year.
+    pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
+        // Nothing folded is the overwhelmingly common case, and then this costs one `is_empty`.
+        if self.display.folds.is_empty() {
+            return change(&mut self.document);
+        }
+
+        let mut before = self.document.text().clone();
+        let mark = self.document.version();
+        let outcome = change(&mut self.document);
+
+        let moved = self.document.version() != mark;
+        let folds = &mut self.display.folds;
+        let mut replayed = false;
+
+        // Each change's edits are expressed against the previous change's text, so they are walked
+        // in order rather than concatenated — the same reason the syntax worker replays them.
+        for applied in self.document.changes_since(mark) {
+            folds.transform(&before, &applied.text, &applied.edits);
+            before = applied.text.clone();
+            replayed = true;
+        }
+
+        if moved && !replayed {
+            // The queue was truncated, so how far the lines moved is no longer knowable. Folds that
+            // cannot be trusted are worse than no folds: they hide code silently.
+            folds.clear();
+        }
+        outcome
+    }
+
     pub fn cursor(&self) -> CharOffset {
         self.document.selections().primary().head
     }

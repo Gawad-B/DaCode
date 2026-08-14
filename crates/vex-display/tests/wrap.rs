@@ -2,7 +2,7 @@
 
 use proptest::prelude::*;
 use vex_display::{DisplayMap, ScrollAnchor, WrapMode};
-use vex_text::{CharOffset, DisplayPoint, Text};
+use vex_text::{CharOffset, DisplayPoint, Edit, Text, Transaction};
 
 fn map(columns: usize) -> DisplayMap {
     DisplayMap::new(WrapMode::Word, columns)
@@ -576,4 +576,159 @@ fn the_horizontal_offset_survives_a_vertical_scroll() {
 
     let after = map.scroll_to_reveal(&doc, anchor, 2, CharOffset(450), 1);
     assert_eq!(after.column, 50, "the vertical reveal must not reset it");
+}
+
+// ---- folds against a moving document ------------------------------------------------------
+
+/// Twelve numbered lines, so a fold's range and what it hides are both easy to state.
+fn numbered() -> Text {
+    Text::from_str(
+        &(0..12)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn unwrapped() -> DisplayMap {
+    DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    }
+}
+
+/// Applies one edit and returns the text on either side of it, the way the editor does.
+fn edited(text: &Text, range: std::ops::Range<usize>, replacement: &str) -> (Text, Vec<Edit>) {
+    let edits = vec![Edit::replace(
+        CharOffset(range.start)..CharOffset(range.end),
+        replacement,
+    )];
+    let mut after = text.clone();
+    Transaction::new(edits.clone())
+        .apply(&mut after)
+        .expect("the edit is in bounds");
+    (after, edits)
+}
+
+#[test]
+fn deleting_lines_above_a_fold_moves_it_down_the_same_number() {
+    // The whole point: a fold is a pair of line numbers, and line numbers only mean anything
+    // against the text they were taken from.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(6..9);
+
+    // Remove lines 0 and 1 entirely.
+    let cut = before.line_to_char(2).get();
+    let (after, edits) = edited(&before, 0..cut, "");
+    map.folds.transform(&before, &after, &edits);
+
+    assert_eq!(
+        map.folds.closed_at(4),
+        Some(4..7),
+        "the same block, two lines higher"
+    );
+}
+
+#[test]
+fn a_shrinking_edit_cannot_leave_a_fold_hiding_the_rest_of_the_file() {
+    // The defect this exists for. `is_hidden` asks only whether a line falls inside the range, so
+    // a fold whose end had run off the end of the document hid *everything below its head*: delete
+    // a function above a closed fold and the rest of the file silently disappeared, with a fold
+    // marker on one line as the only clue it was still there.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(8..11);
+
+    // Cut lines 0..8 — more than enough to run the old range past the new last line.
+    let cut = before.line_to_char(8).get();
+    let (after, edits) = edited(&before, 0..cut, "");
+    map.folds.transform(&before, &after, &edits);
+
+    let last = after.last_line();
+    for line in 0..=last {
+        assert!(
+            !map.folds.is_hidden(line) || line <= 3,
+            "line {line} of {last} is hidden by a fold that should have moved with it"
+        );
+    }
+    assert_eq!(map.folds.closed_at(0), Some(0..3));
+}
+
+#[test]
+fn a_fold_whose_block_was_deleted_is_dropped_rather_than_left_pointing_at_nothing() {
+    // Both anchors land on the same offset, so there is nothing left to hide — and a fold marker
+    // on a line with no block under it is a control that does nothing when clicked.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(4..7);
+
+    let (start, end) = (before.line_to_char(4).get(), before.line_to_char(8).get());
+    let (after, edits) = edited(&before, start..end, "");
+    map.folds.transform(&before, &after, &edits);
+
+    assert!(map.folds.is_empty(), "nothing left to fold");
+}
+
+#[test]
+fn typing_on_a_line_below_a_fold_leaves_it_where_it_was() {
+    // The common case, and the one a coarser fix — clearing every fold on any edit — would have
+    // got wrong: folding a block and then typing anywhere else must not unfold it.
+    let before = numbered();
+    let mut map = unwrapped();
+    map.folds.close(2..5);
+
+    let at = before.line_to_char(9).get();
+    let (after, edits) = edited(&before, at..at, "x");
+    map.folds.transform(&before, &after, &edits);
+
+    assert_eq!(map.folds.closed_at(2), Some(2..5));
+}
+
+#[test]
+fn moving_down_from_a_fold_head_lands_after_the_block_it_hides() {
+    // Arrow-down used to walk the caret into hidden lines, one row at a time. The caret sat on
+    // text nobody could see, and typing then edited it.
+    let text = numbered();
+    let mut map = unwrapped();
+    map.folds.close(3..7);
+
+    let head = text.line_to_char(3);
+    let moved = map.move_vertically(&text, head, 1, Some(0));
+    assert_eq!(
+        text.char_to_line(moved),
+        8,
+        "the first line the fold does not hide"
+    );
+}
+
+#[test]
+fn moving_up_into_a_fold_lands_on_its_head() {
+    let text = numbered();
+    let mut map = unwrapped();
+    map.folds.close(3..7);
+
+    let below = text.line_to_char(8);
+    let moved = map.move_vertically(&text, below, -1, Some(0));
+    assert_eq!(text.char_to_line(moved), 3, "the head, not the hidden tail");
+}
+
+#[test]
+fn the_wheel_steps_over_a_fold_and_can_climb_back_up_over_it() {
+    // Scrolling stepped by buffer lines with no idea folds existed, so a notch landed *inside* a
+    // closed block — where `rows_from` nudges the anchor forward again to avoid drawing hidden
+    // text. The view could go down past a fold and never come back up over it.
+    let text = numbered();
+    let mut map = unwrapped();
+    map.folds.close(2..8);
+
+    let top = ScrollAnchor::at_line(0);
+    let down = map.step(&text, top, 3);
+    assert_eq!(
+        down.line, 9,
+        "three rows: line 1, the fold's one row, then line 9"
+    );
+
+    let back = map.step(&text, down, -3);
+    assert_eq!(back.line, 0, "and the same three rows in reverse");
 }

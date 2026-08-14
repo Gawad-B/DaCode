@@ -146,6 +146,24 @@ impl Document {
         self.pending.drain(..).collect()
     }
 
+    /// The changes applied since `version`, borrowed rather than taken.
+    ///
+    /// The queue has one consumer that drains it — the syntax worker, which replays the changes in
+    /// order and cannot have any of them taken from underneath it. Anything else that needs the
+    /// same edits in the same coordinates has to look without touching, which is what this is for:
+    /// the display map's folds are line numbers, and only these edits say how far the lines moved.
+    ///
+    /// Empty when nothing changed. Also empty if the queue was truncated past `version`, which is
+    /// indistinguishable from here — callers that must know should compare
+    /// [`Document::version`] themselves and treat the gap as "start over", the same as
+    /// [`Document::take_needs_resync`].
+    pub fn changes_since(&self, version: Version) -> impl ExactSizeIterator<Item = &Change> {
+        let start = self
+            .pending
+            .partition_point(|change| change.version <= version);
+        self.pending.range(start..)
+    }
+
     /// Whether the change sequence was truncated, meaning a consumer must start over.
     pub fn take_needs_resync(&mut self) -> bool {
         std::mem::take(&mut self.needs_resync)

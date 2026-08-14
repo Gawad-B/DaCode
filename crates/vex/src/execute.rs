@@ -56,24 +56,26 @@ pub fn execute(
             match (chars.next(), chars.next()) {
                 (Some(single), None) => {
                     let config = state.pairs.clone();
-                    state.document.type_char(single, &config);
+                    state.mutate(|document| document.type_char(single, &config));
                 }
-                _ => state.document.insert(text),
+                _ => state.mutate(|document| document.insert(text)),
             }
         }
         Action::Newline => {
             let config = state.pairs.clone();
-            state.document.insert_newline_smart(&config);
+            state.mutate(|document| document.insert_newline_smart(&config));
         }
         Action::DeleteBackward => {
             let config = state.pairs.clone();
-            state.document.delete_backward_pairs(&config);
+            state.mutate(|document| document.delete_backward_pairs(&config));
         }
-        Action::DeleteForward => state.document.delete_forward(),
+        Action::DeleteForward => state.mutate(|document| document.delete_forward()),
         Action::ReplaceChar(c) => {
             // Overwrite: one intent, so the delete and insert land in one undo group.
-            state.document.delete_forward();
-            state.document.insert(&c.to_string());
+            state.mutate(|document| {
+                document.delete_forward();
+                document.insert(&c.to_string());
+            });
         }
 
         Action::Paste {
@@ -83,10 +85,10 @@ pub fn execute(
         } => paste(state, registers, *register, *before, *count),
 
         Action::Undo => {
-            state.document.undo();
+            state.mutate(|document| document.undo());
         }
         Action::Redo => {
-            state.document.redo();
+            state.mutate(|document| document.redo());
         }
         // Handled by the caller, which owns the last-change record.
         Action::RepeatChange => {}
@@ -492,8 +494,7 @@ fn apply_operator(
                 .map(|range| Edit::delete(range.clone()))
                 .collect();
             let _ = state
-                .document
-                .apply(Transaction::new(edits), EditKind::Discrete);
+                .mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
             if operator == Operator::Change {
                 state.mode = Mode::Insert;
@@ -516,8 +517,7 @@ fn apply_operator(
                 })
                 .collect();
             let _ = state
-                .document
-                .apply(Transaction::new(edits), EditKind::Discrete);
+                .mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
             if leaving_visual {
                 state.mode = Mode::Normal;
             }
@@ -569,9 +569,8 @@ fn indent(state: &mut EditorState, ranges: &[std::ops::Range<CharOffset>], forwa
     }
 
     if !edits.is_empty() {
-        let _ = state
-            .document
-            .apply(Transaction::new(edits), EditKind::Discrete);
+        let _ =
+            state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
     }
 }
 
@@ -591,11 +590,11 @@ fn enter_insert(state: &mut EditorState, position: InsertPosition) {
         InsertPosition::LineEnd => state.document.move_to_line_edge(true, false),
         InsertPosition::LineBelow => {
             state.document.move_to_line_edge(true, false);
-            state.document.insert_newline();
+            state.mutate(|document| document.insert_newline());
         }
         InsertPosition::LineAbove => {
             state.document.move_to_line_edge(false, false);
-            state.document.insert("\n");
+            state.mutate(|document| document.insert("\n"));
             state.document.move_grapheme(false, false);
         }
     }
@@ -647,9 +646,7 @@ fn paste(
         })
         .collect();
 
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 }
 
 fn split_into_lines(state: &mut EditorState) {
@@ -783,9 +780,7 @@ fn move_lines(state: &mut EditorState, down: bool) {
         })
         .collect();
 
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
     let text = state.document.text().clone();
     let selections: Vec<Selection> = moved
@@ -845,9 +840,7 @@ fn duplicate_lines(state: &mut EditorState, down: bool) {
         })
         .collect();
 
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
     if !down {
         let text = state.document.text().clone();
@@ -928,9 +921,8 @@ fn toggle_comment(state: &mut EditorState) {
     }
 
     if !edits.is_empty() {
-        let _ = state
-            .document
-            .apply(Transaction::new(edits), EditKind::Discrete);
+        let _ =
+            state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
     }
 }
 
@@ -988,9 +980,7 @@ fn delete_word(state: &mut EditorState, forward: bool) {
         .iter()
         .map(|range| Edit::delete(range.clone()))
         .collect();
-    let _ = state
-        .document
-        .apply(Transaction::new(edits), EditKind::Discrete);
+    let _ = state.mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 }
 
 /// `ctrl-d`, and `ctrl-shift-l` for every occurrence at once.

@@ -185,6 +185,97 @@ fn helper_processes_are_spawned_without_a_console_window() {
     );
 }
 
+/// Every `Document` method that changes the text, and so moves the lines folds are named by.
+const MUTATES_TEXT: [&str; 10] = [
+    "apply",
+    "insert",
+    "insert_newline",
+    "insert_newline_smart",
+    "type_char",
+    "delete_forward",
+    "delete_backward",
+    "delete_backward_pairs",
+    "undo",
+    "redo",
+];
+
+#[test]
+fn text_is_changed_only_through_the_state_that_owns_the_folds() {
+    // `Document::apply` is the single funnel for mutation, but the folds live outside the document,
+    // in the display map. Nothing moved them, so they went on naming lines an edit had shifted or
+    // deleted — and since a fold hides every line inside its range, one whose end had run off the
+    // document hid *everything below its head*. Deleting a function above a closed fold made the
+    // rest of the file vanish.
+    //
+    // `EditorState::mutate` replays the change queue over the folds afterwards. This is the grep
+    // that keeps the next mutation site from going straight to the document and quietly skipping
+    // it, because "remember to call the other thing too" is not a rule that survives a year.
+    let mut offenders = Vec::new();
+    let root = workspace_root();
+
+    for file in rust_files(&root) {
+        let relative = file.to_string_lossy().replace('\\', "/");
+        // Only the binary has an `EditorState` to go through. Everything below it — and the tests
+        // that drive a bare `Document` — legitimately holds the document directly.
+        if !relative.contains("/vex/src/") || relative.ends_with("conventions.rs") {
+            continue;
+        }
+
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        // Tests drive a bare `Document` on purpose — they are checking the document, not the
+        // editor around it.
+        let source = text.split("\nmod tests {").next().unwrap_or(&text);
+        let lines: Vec<&str> = source.lines().collect();
+
+        for (number, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+
+            // What is checked is the *receiver*, not a lookback window: inside a `mutate` closure
+            // the document is named plainly, `document.insert(…)`, and everywhere else it is
+            // reached through something — `state.document.insert(…)`. A window instead of this
+            // read as passing while the injected violation sat two lines under an unrelated
+            // `mutate` call, which is how a guard ends up checking nothing.
+            let mutates_through_a_field = MUTATES_TEXT
+                .iter()
+                .any(|method| line.contains(&format!(".document.{method}(")));
+
+            // The same call written over three lines, which rustfmt does whenever it is long
+            // enough: `state`, then `.document`, then `.apply(…)`.
+            let split_over_lines = trimmed == ".document"
+                && lines.get(number + 1).is_some_and(|next| {
+                    let next = next.trim_start();
+                    MUTATES_TEXT
+                        .iter()
+                        .any(|method| next.starts_with(&format!(".{method}(")))
+                });
+
+            // Handing the document to something else that will change it — every one of these is
+            // an `edits::` helper that builds its own transaction. Swapping a whole document is a
+            // buffer change rather than an edit, and clears the folds on its own.
+            let lent_out = (line.contains("&mut state.document")
+                || line.contains("&mut self.state.document"))
+                && !line.contains("mem::replace")
+                && !line.contains("mem::swap");
+
+            if mutates_through_a_field || split_over_lines || lent_out {
+                offenders.push(format!("{relative}:{}: {}", number + 1, trimmed));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "change text through EditorState::mutate, not the document directly — the folds are line \
+         numbers held outside the document and only that path moves them:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The workspace root, from the manifest directory rather than the working directory.
 ///
 /// `cargo test` runs with the *crate* as the working directory, so a relative path here found nothing
