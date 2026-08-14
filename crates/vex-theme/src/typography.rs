@@ -110,6 +110,27 @@ impl Typography {
         (self.code_size * self.code_line_height).round()
     }
 
+    /// Nominal width of one character in a role, in px.
+    ///
+    /// Derived from the type scale rather than measured from the shaper — the same approximation
+    /// the code grid already makes. It exists so a string can be shortened *before* it is handed to
+    /// the renderer: a run is clipped to its rectangle, so text too long for a narrow panel is cut
+    /// mid-word with nothing to say that anything is missing. That is what a real run in a small
+    /// window showed, and an approximate measure that ends in an ellipsis beats an exact one that
+    /// ends in silence.
+    ///
+    /// Only Mono has a true constant advance. The others use the average of lower case — which is
+    /// what these strings are — and labels add their tracking, which no other role has.
+    pub fn advance(&self, role: Role) -> f32 {
+        let spec = self.spec(role);
+        let ratio = match spec.family {
+            Family::Mono => 0.60,
+            _ if spec.uppercase => 0.62,
+            _ => 0.50,
+        };
+        spec.size_px * (ratio + spec.tracking_em)
+    }
+
     pub fn spec(&self, role: Role) -> FontSpec {
         let code = self.code_size;
         match role {

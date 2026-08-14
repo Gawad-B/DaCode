@@ -52,6 +52,89 @@ fn paths_are_resolved_through_one_function() {
     );
 }
 
+#[test]
+fn nothing_modal_reaches_a_non_modal_reader() {
+    // The rule the whole `flat`/`modal_only` split exists for, tested at the readers rather than at
+    // the table — because the table was always right and it was a reader that leaked. With Vim off
+    // the palette listed "start selecting", and choosing it put a non-modal editor into visual mode
+    // with no way out that the user's own grammar could type.
+    use vex_input::commands;
+
+    for command in commands::available(false) {
+        assert!(
+            !command.modal_only,
+            "`{}` is modal-only and reached the non-modal command list",
+            command.name
+        );
+    }
+
+    // The help panel filters on having a key, which reaches the same place by another route.
+    for line in vex::help::Help::new(false).lines() {
+        if let vex::help::Line::Binding { keys, what } = line {
+            assert!(!keys.is_empty(), "`{what}` is offered with no key to press");
+        }
+    }
+
+    // And the which-key popup, whose two Vim-only prefixes `feed_flat` cannot even produce.
+    for prefix in ["\"", "q", "g", "z"] {
+        assert!(
+            commands::continuations(prefix, false).is_empty(),
+            "the which-key popup offers `{prefix}` continuations with the grammar off"
+        );
+    }
+}
+
+#[test]
+fn no_ex_command_is_shown_without_asking_which_grammar_is_on() {
+    // Four messages told everyone to press `:q!`, `:wq`, `:w <path>` and `:e` — including the people
+    // who had turned Vim off, whose grammar cannot parse the leading `:`. Each is now behind a
+    // `state.modal` branch. This is the grep that keeps the fifth one from being written: an ex
+    // command may appear in a source line only where `modal` appears too.
+    let mut offenders = Vec::new();
+
+    for file in rust_files(&workspace_root()) {
+        let relative = file.to_string_lossy().replace('\\', "/");
+        if relative.ends_with("crates/vex/tests/conventions.rs") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+
+        let lines: Vec<&str> = text.lines().collect();
+        for (number, line) in lines.iter().enumerate() {
+            let trimmed = line.trim_start();
+            // Comments explain the history and are allowed to quote it.
+            if trimmed.starts_with("//") || trimmed.starts_with('*') {
+                continue;
+            }
+            let quotes_an_ex_command = [":q!", ":wq", ":w <path>", ":e to", ":w to"]
+                .iter()
+                .any(|needle| line.contains(needle));
+            if !quotes_an_ex_command {
+                continue;
+            }
+
+            // The branch is a few lines up — `if self.state.modal {` and then the string, or a
+            // multi-line format! whose second half carries the needle. A window rather than the one
+            // line, because what matters is that the decision was made nearby, not on which line.
+            const LOOKBACK: usize = 5;
+            let guarded = lines[number.saturating_sub(LOOKBACK)..=number]
+                .iter()
+                .any(|nearby| nearby.contains("modal"));
+            if !guarded {
+                offenders.push(format!("{relative}:{}: {}", number + 1, trimmed));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "an ex command is shown without checking whether the user has Vim's grammar on:\n{}",
+        offenders.join("\n")
+    );
+}
+
 /// The only places allowed to spawn a process with a bare `Command::new`.
 const MAY_SPAWN: [&str; 5] = [
     // Where the helper lives, and its counterpart in vex-lsp.

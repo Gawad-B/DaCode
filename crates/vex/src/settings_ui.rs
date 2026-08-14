@@ -11,7 +11,119 @@
 //! program to store a checkbox has overstepped. Appending wins because `init.lua` applies in order,
 //! so the panel's block is simply the last word.
 
-use vex_theme::Theme;
+use vex_render::Rect;
+use vex_theme::{Theme, space};
+
+/// One row of the panel, and the box it occupies.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placement {
+    pub line: Line,
+    /// Its index in [`Settings::lines`], which is what `selected` counts in.
+    pub index: usize,
+    /// The full-width block, for the highlight and for the hit test.
+    pub rect: Rect,
+}
+
+/// Where everything in the panel is.
+#[derive(Debug, Clone)]
+pub struct Panel {
+    /// Only the rows that fit. A row that would run into the footer is not drawn *and* not
+    /// clickable — the two must agree, which is the whole reason this type exists.
+    pub rows: Vec<Placement>,
+    /// The "import from vscode" heading, when it is on screen.
+    pub heading: Option<Rect>,
+    pub footer: Rect,
+    /// Whether anything is scrolled out of view, so the panel can say so.
+    pub scrolls: bool,
+    /// Content width inside the padding, for text.
+    pub width: f32,
+    pub pad: f32,
+    pub line: f32,
+}
+
+/// Lays the panel out.
+///
+/// **One definition, read by the drawing code and by the mouse.** The panel had two: the drawing
+/// walked the row list and the click handler walked it again. That was survivable while the list
+/// never moved, and stopped being survivable the moment it started scrolling — a click then
+/// selected whichever row *used* to be under the pointer. That is precisely the failure `layout.rs`
+/// exists to prevent, reproduced in the panel next door, and it is why this returns rectangles
+/// rather than a formula for them.
+pub fn panel(rect: Rect, scale: f32, selected: usize) -> Panel {
+    let pad = space::LG * scale;
+    let line = 20.0 * scale;
+    let width = rect.width - pad * 2.0;
+
+    // Under the heading, and above the footer.
+    let top = rect.y + pad + line * 1.7;
+    let footer = Rect::new(rect.x + pad, rect.bottom() - line * 2.2, width, line);
+    let bottom = footer.y - line * 0.6;
+
+    let entries = Settings::lines();
+    let mut flow = 0.0;
+    let mut blocks = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        // A heading before the import section, so the checklist does not read as more settings.
+        let heading = (*entry == Line::Import(Importable::Settings)).then(|| {
+            flow += line * 0.6;
+            let at = flow;
+            flow += line * 1.4;
+            at
+        });
+        let block = match entry {
+            Line::Option(_) => line * 2.0,
+            _ => line * 1.4,
+        };
+        blocks.push((heading, flow, block));
+        flow += block + 4.0 * scale;
+    }
+
+    // Scroll by as little as it takes to keep the selection in view: a list that jumps while you
+    // walk down it is harder to read than one that holds still.
+    let window = (bottom - top).max(line);
+    let scrolls = flow > window;
+    let scroll = if scrolls {
+        blocks
+            .get(selected)
+            .map(|(_, at, block)| (at + block - window).max(0.0).min(*at))
+            .unwrap_or(0.0)
+            .clamp(0.0, flow - window)
+    } else {
+        0.0
+    };
+
+    let mut heading = None;
+    let mut rows = Vec::with_capacity(entries.len());
+    for (index, (entry, (at_heading, at, block))) in entries.iter().zip(&blocks).enumerate() {
+        if let Some(at_heading) = at_heading {
+            let y = top - scroll + at_heading;
+            if y >= top && y + line <= bottom {
+                heading = Some(Rect::new(rect.x + pad, y, width, line));
+            }
+        }
+
+        // Half a row hanging into the footer is what this pass exists to stop.
+        let y = top - scroll + at;
+        if y < top || y + block > bottom {
+            continue;
+        }
+        rows.push(Placement {
+            line: *entry,
+            index,
+            rect: Rect::new(rect.x, y, rect.width, *block),
+        });
+    }
+
+    Panel {
+        rows,
+        heading,
+        footer,
+        scrolls,
+        width,
+        pad,
+        line,
+    }
+}
 
 /// Where a value came from. The point of the panel.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -81,15 +193,31 @@ impl Field {
         }
     }
 
-    pub fn help(self) -> &'static str {
+    /// What the panel calls the row.
+    ///
+    /// Separate from [`Field::name`], which is the key written to `init.lua` and read back, and so
+    /// cannot change. This is the label, and with the modal grammar off it stops saying "vim".
+    pub fn title(self, modal: bool) -> &'static str {
+        match (self, modal) {
+            (Field::VimKeys, false) => "modal editing",
+            _ => self.name(),
+        }
+    }
+
+    pub fn help(self, modal: bool) -> &'static str {
         match self {
-            Field::VimKeys => "modal editing; off means typing always inserts",
+            // The one row that must talk about Vim, since it is the switch. With the switch already
+            // off, though, describing what "off" means is describing where the reader already is —
+            // so it says what turning it *on* would do.
+            Field::VimKeys if modal => "vim's modal editing: normal, insert and visual",
+            Field::VimKeys => "off: typing always inserts. on: vim's modal editing",
             Field::FontSize => "size of the code face, in pixels",
             Field::TabWidth => "columns a tab stands for",
             Field::SoftWrap => "wrap long lines instead of scrolling sideways",
             Field::FormatOnSave => "reformat through the language server after each save",
             Field::Theme => "one of the five that ship with vex",
-            Field::LineNumbers => "absolute, relative (vim's), or none at all",
+            Field::LineNumbers if modal => "absolute, relative (vim's), or none at all",
+            Field::LineNumbers => "absolute, relative, or none at all",
             Field::StickyScroll => "pin enclosing block heads above the viewport",
             Field::InlayHints => "show inferred types and parameter names inline",
             Field::Autosave => "write the file a moment after you stop typing",
@@ -413,6 +541,59 @@ pub fn write_back(existing: &str, values: &Values) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_click_selects_the_row_it_looks_like_it_selects_at_every_height() {
+        // The regression this exists for: the drawing code was taught to scroll and the click
+        // handler was not, so in any window short enough to scroll the panel a click selected
+        // whichever row *used* to be under the pointer. One function now answers both, and this is
+        // the test that says so — at every height, and at every scroll position the panel can be in.
+        for height in [300.0_f32, 420.0, 560.0, 700.0, 860.0, 1000.0] {
+            for selected in 0..Settings::lines().len() {
+                let rect = Rect::new(1300.0, 120.0, 292.0, height);
+                let panel = panel(rect, 1.0, selected);
+
+                for row in &panel.rows {
+                    for probe in [row.rect.y + 1.0, row.rect.y + row.rect.height / 2.0] {
+                        let hit = panel
+                            .rows
+                            .iter()
+                            .find(|other| probe >= other.rect.y && probe < other.rect.bottom());
+                        assert_eq!(
+                            hit.map(|hit| hit.index),
+                            Some(row.index),
+                            "at height {height} with row {selected} selected, a click inside row \
+                             {} landed elsewhere",
+                            row.index
+                        );
+                    }
+                }
+
+                // Nothing may overlap the footer, which is what the original defect looked like.
+                for row in &panel.rows {
+                    assert!(
+                        row.rect.bottom() <= panel.footer.y,
+                        "a row runs into the footer at height {height}"
+                    );
+                }
+
+                // The selection is always reachable: a list that scrolls away from the thing you
+                // are changing is worse than one that does not scroll.
+                assert!(
+                    panel.rows.iter().any(|row| row.index == selected),
+                    "row {selected} is not visible at height {height}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tall_panel_does_not_scroll_at_all() {
+        let panel = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, 0);
+        assert!(!panel.scrolls);
+        assert_eq!(panel.rows.len(), Settings::lines().len(), "all of it fits");
+        assert!(panel.heading.is_some(), "including the import heading");
+    }
 
     fn values() -> Values {
         Values {

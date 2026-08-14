@@ -251,6 +251,76 @@ fn servers_are_chosen_by_extension() {
     assert_eq!(server_for("notes.md"), None);
 }
 
+#[test]
+fn a_language_may_have_more_than_one_server() {
+    // "The Python server" is not one program: pyright is an npm package and pylsp a pip one, and a
+    // machine has whichever its owner installed. Offering only the first and then reporting it
+    // missing is how an editor tells someone with a working language server that it has none.
+    let python = vex_lsp::servers_for("app.py");
+    assert!(python.len() > 1, "python should have alternatives");
+    assert!(python.iter().all(|spec| spec.language == "Python"));
+    assert!(
+        python.iter().all(|spec| !spec.install.is_empty()),
+        "every candidate has to be able to say how to install it"
+    );
+    assert!(vex_lsp::servers_for("notes.md").is_empty());
+}
+
+#[test]
+fn a_cmd_shim_resolves_on_windows_and_is_ignored_elsewhere() {
+    // The defect this exists for: the installed-check honoured PATHEXT and found
+    // `pyright-langserver.cmd`, while the spawn beside it passed the bare name — and Rust's Windows
+    // resolver appends only `.exe`, because PATHEXT is a shell concept std does not implement. The
+    // two disagreed, so every language server npm installs as a `.cmd` shim passed the check and
+    // then failed to start. Resolving to a path is what makes them agree.
+    //
+    // The platform is a parameter, so the Windows rules are tested wherever this runs.
+    let dir = std::env::temp_dir().join(format!("vex-resolve-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for name in [
+        "pyright-langserver.cmd",
+        "clangd.exe",
+        "pylsp",
+        "gopls.js",
+    ] {
+        std::fs::write(dir.join(name), "").unwrap();
+    }
+    let path = std::env::join_paths([&dir]).unwrap();
+    let on_windows = |program: &str, pathext: &str| {
+        vex_lsp::resolve_in(program, &path, Some(pathext), true)
+    };
+
+    assert_eq!(
+        on_windows("pyright-langserver", ".EXE;.CMD"),
+        Some(dir.join("pyright-langserver.cmd")),
+        "the npm shim is the whole point"
+    );
+    assert_eq!(on_windows("clangd", ".EXE;.CMD"), Some(dir.join("clangd.exe")));
+    assert_eq!(
+        on_windows("pylsp", ".EXE;.CMD"),
+        None,
+        "a file with no extension is not a program on Windows"
+    );
+    assert_eq!(
+        on_windows("gopls", ".EXE;.CMD;.JS"),
+        None,
+        "a real PATHEXT contains .JS, and a stray .js would satisfy the check and then not run"
+    );
+
+    assert_eq!(
+        vex_lsp::resolve_in("pylsp", &path, None, false),
+        Some(dir.join("pylsp")),
+        "off Windows the bare name is the program"
+    );
+    assert_eq!(
+        vex_lsp::resolve_in("pyright-langserver", &path, None, false),
+        None,
+        "and there is no PATHEXT to find the shim with"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The integration test: a real handshake with rust-analyzer.
 ///
 /// Skipped when the server is not installed — a test that fails on a machine without it would be
@@ -277,7 +347,13 @@ fn a_real_server_completes_the_handshake_and_reports_diagnostics() {
     std::fs::write(&source_path, source).unwrap();
 
     let mut client =
-        vex_lsp::LspClient::start("rust-analyzer", &[], &root).expect("rust-analyzer starts");
+        vex_lsp::LspClient::start(
+            &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
+            "rust-analyzer",
+            &[],
+            &root,
+        )
+        .expect("rust-analyzer starts");
 
     // Wait for the handshake, then open the file.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -355,7 +431,13 @@ fn a_real_server_renames_a_symbol() {
     std::fs::write(&source_path, source).unwrap();
 
     let mut client =
-        vex_lsp::LspClient::start("rust-analyzer", &[], &root).expect("rust-analyzer starts");
+        vex_lsp::LspClient::start(
+            &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
+            "rust-analyzer",
+            &[],
+            &root,
+        )
+        .expect("rust-analyzer starts");
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     let mut asked = false;

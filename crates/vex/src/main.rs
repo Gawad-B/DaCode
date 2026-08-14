@@ -142,6 +142,7 @@ fn main() -> Result<()> {
         requested_range: None,
         servers: std::collections::HashMap::new(),
         active_server: None,
+        missing_servers: std::collections::HashSet::new(),
         sent_version: None,
         folder_picker: None,
         snippets: load_snippets(),
@@ -347,7 +348,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 13] = [
+const VALUE_FLAGS: [&str; 14] = [
     "--which-key",
     "--screenshot",
     "--mode",
@@ -361,6 +362,7 @@ const VALUE_FLAGS: [&str; 13] = [
     "--at",
     "--theme",
     "--welcome",
+    "--size",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -414,16 +416,23 @@ fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
         return Ok((Text::from_str(""), vec!["untitled".to_string()], None));
     };
 
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => {
+    match vex::open::read(std::path::Path::new(&path)) {
+        vex::open::Opened::Text(contents) => {
             let crumbs = relative_crumbs(&path);
             Ok((Text::from_str(&contents), crumbs, Some(path)))
         }
-        // A missing file is a scratch buffer, not a fatal error — but it must not be silently
-        // saveable over some other path, so `file_path` stays `None`.
-        Err(err) => {
-            eprintln!("vex: could not read {path}: {err} — opening an empty buffer");
-            Ok((Text::from_str(""), vec!["untitled".to_string()], None))
+        // `vex newfile.rs` is meant to work, so a path that does not exist yet is a buffer that
+        // knows its name. Anything else — too large, binary, another encoding — keeps `file_path`
+        // as `None`, because a buffer that could be saved over a file it never managed to read is
+        // how an editor destroys something.
+        vex::open::Opened::Refused(why) => {
+            let missing = !std::path::Path::new(&path).exists();
+            if missing {
+                Ok((Text::from_str(""), relative_crumbs(&path), Some(path)))
+            } else {
+                eprintln!("vex: {why}");
+                Ok((Text::from_str(""), vec!["untitled".to_string()], None))
+            }
         }
     }
 }
@@ -460,7 +469,18 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     };
     let (text, crumbs, file_path) = load(opened)?;
 
-    let (width, height) = (1600u32, 1000u32);
+    // `--size WxH` renders at a chosen size. The harness was fixed at 1600x1000, which is why a
+    // whole class of defect had never appeared in a capture: the settings rows only collide with the
+    // footer below about 900px of client height, and the toolbar only runs off the left edge below
+    // about 450px of width. Both were reported from a real window and neither was reproducible here.
+    let (width, height) = value("--size")
+        .and_then(|size| {
+            let (w, h) = size.split_once(['x', 'X'])?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((1600u32, 1000u32));
+    let (width, height) = (width.max(200), height.max(200));
+
     let root = find_root(&std::path::PathBuf::from("."));
     let (mut state, _keymap) = new_state(text, crumbs, file_path, mode, theme, root);
 
@@ -593,6 +613,10 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     if flag("--no-vim") {
         state.modal = false;
         state.mode = Mode::Insert;
+        // The harness seeds a half-typed `3d` into the pending cell to show the statusline doing its
+        // job. There is no operator-count to be half-way through without the grammar, so every
+        // `--no-vim` capture was showing a Vim command in progress that could not exist.
+        state.pending.clear();
     }
 
     if let Some(line) = value("--at").and_then(|v| v.parse::<usize>().ok()) {
@@ -763,7 +787,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.help = Some(vex::help::Help::new(state.modal));
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--menu") {
-        state.menu = Some(vex::menu::Menu::bar());
+        state.menu = Some(vex::menu::Menu::bar(state.modal));
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--context-menu") {
         state.menu = Some(vex::menu::Menu::context((420.0, 300.0), state.modal));
@@ -855,6 +879,17 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether an offset falls inside a non-empty selection.
+///
+/// A free function so it can be tested without a window: the rule it encodes — a right-click inside
+/// a selection keeps it — is the difference between a context menu whose `cut` and `copy` mean
+/// something and one where they silently take a single character.
+fn selection_contains(selections: &vex_text::SelectionSet, offset: vex_text::CharOffset) -> bool {
+    selections
+        .iter()
+        .any(|selection| !selection.is_caret() && selection.range().contains(&offset))
+}
+
 /// Derives the wrap width from the code area's pixel width.
 ///
 /// Soft wrap is in columns, so the window size has to be translated once per resize rather than
@@ -891,6 +926,9 @@ struct App {
     servers: std::collections::HashMap<String, vex_lsp::LspClient>,
     /// Which one the buffer on screen belongs to.
     active_server: Option<String>,
+    /// Languages already reported as having no server, so the notice is shown once per session
+    /// rather than every time a file of that language is opened.
+    missing_servers: std::collections::HashSet<&'static str>,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
     /// Set when a save asked for formatting: the reply's edits are applied and the file written
@@ -1126,6 +1164,30 @@ impl ApplicationHandler for App {
                     self.request_redraw();
                 }
 
+                // An open menu owns the pointer: the row under it lights up, and a drag must not
+                // reach the buffer behind a card that is covering it.
+                //
+                // There was no branch here at all, so `selected` never moved and the first row
+                // stayed lit wherever the pointer went. A menu that does not respond to the mouse
+                // at all reads as a menu that cannot be clicked — which is exactly how it was
+                // reported, even though the hit test underneath was correct the whole time.
+                if self.state.menu.is_some() {
+                    let (x, y) = self.pointer;
+                    let (bounds, scale) = (self.window_bounds(), self.scale());
+                    let mut moved = false;
+                    if let Some(menu) = &mut self.state.menu {
+                        let geometry = menu.geometry(bounds, scale);
+                        if let Some(index) = menu.row_at(&geometry, x, y) {
+                            moved = menu.selected != index;
+                            menu.selected = index;
+                        }
+                    }
+                    if moved {
+                        self.request_redraw();
+                    }
+                    return;
+                }
+
                 // Dragging extends the selection, which is how every editor spells "select this".
                 if self.dragging {
                     self.click(true);
@@ -1141,7 +1203,12 @@ impl ApplicationHandler for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 match (button, state) {
                     (winit::event::MouseButton::Left, ElementState::Pressed) => {
-                        self.dragging = true;
+                        // Choosing a menu row is not the start of a drag. Leaving `dragging` set
+                        // meant the smallest jitter before the button came up re-entered
+                        // `click(true)`, which skips the menu branch, lands in the pane behind it
+                        // and replaces the selection — visibly undoing whatever the row had just
+                        // done, a moment after it did it.
+                        self.dragging = self.state.menu.is_none() && self.state.welcome.is_none();
                         self.click_count = self.count_click();
                         self.click(false);
                     }
@@ -1480,7 +1547,12 @@ impl App {
     fn open_context_menu(&mut self) {
         // The caret moves to the click first: every command in the menu is about the thing under the
         // pointer, and a "go to definition" that used the old cursor position would be a trap.
-        if self.state.menu.is_none() {
+        //
+        // Not when the pointer is *inside* a selection, though, which every editor reads as "this is
+        // what I mean". Moving the caret there collapsed it, so `cut` and `copy` — the two rows
+        // anybody opens a right-click menu for — ran against an empty range and did nothing at all.
+        // The menu looked unclickable when what was broken was the click that opened it.
+        if self.state.menu.is_none() && !self.pointer_is_in_a_selection() {
             self.click(false);
         }
         self.state.menu = Some(vex::menu::Menu::context(self.pointer, self.state.modal));
@@ -1599,7 +1671,8 @@ impl App {
             self.state.server_status = "scratch buffer".into();
             return;
         };
-        let Some(spec) = vex_lsp::server_for(&path) else {
+        let candidates = vex_lsp::servers_for(&path);
+        let Some(first) = candidates.first() else {
             self.active_server = None;
             self.state.server_status = "no server for this language".into();
             return;
@@ -1608,30 +1681,69 @@ impl App {
         // Already running for another buffer of the same language: switching to a TypeScript file
         // and back to Rust must not restart rust-analyzer, which would throw away minutes of
         // indexing every time you glance at another file.
-        if self.servers.contains_key(spec.program) {
-            self.active_server = Some(spec.program.to_string());
-            self.state.server_status = spec.program.to_string();
+        if let Some(running) = candidates
+            .iter()
+            .find(|spec| self.servers.contains_key(spec.program))
+        {
+            self.active_server = Some(running.program.to_string());
+            self.state.server_status = running.program.to_string();
             return;
         }
 
-        if !vex_lsp::is_installed(spec.program) {
+        // The first one that is actually on this machine. "The Python server" is not one program —
+        // pyright comes from npm and pylsp from pip — so offering only the first and reporting it
+        // missing is how an editor tells someone with a working language server that it cannot
+        // find one.
+        let found = candidates
+            .iter()
+            .find_map(|spec| vex_lsp::resolve(spec.program).map(|path| (spec, path)));
+
+        let Some((spec, executable)) = found else {
             self.active_server = None;
-            self.state.server_status = format!("{} not installed", spec.program);
+            // Names the *language*, not a binary nobody has heard of. The old text was
+            // `pyright-langserver not installed`, which someone with Python installed reads —
+            // reasonably — as "vex cannot see my Python".
+            self.state.server_status = format!("no {} server", first.language.to_lowercase());
+
+            // The statusline cell is one narrow line, so the part that actually helps — what vex
+            // looked for and how to install it — goes in the info box, the same place config
+            // problems are reported. Once per language per session: useful the first time you open
+            // a .py file, nagging by the third.
+            let names = candidates
+                .iter()
+                .map(|spec| spec.program)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if self.missing_servers.insert(first.language) {
+                self.state.hover = Some(format!(
+                    "no {} language server. A language server is separate from the {} you have \
+                     installed — vex looked for {names} on PATH. Install one with: {}",
+                    first.language, first.language, first.install
+                ));
+            }
+            eprintln!("vex: no {} language server; looked for {names}", first.language);
             return;
-        }
+        };
 
         let root = self.index.root().to_path_buf();
-        match vex_lsp::LspClient::start(spec.program, spec.args, &root) {
+        match vex_lsp::LspClient::start(&executable, spec.program, spec.args, &root) {
             Ok(client) => {
-                eprintln!("vex: starting {} in {}", spec.program, root.display());
+                eprintln!(
+                    "vex: starting {} ({}) in {}",
+                    spec.program,
+                    executable.display(),
+                    root.display()
+                );
                 self.state.server_status = format!("{} starting", spec.program);
                 self.servers.insert(spec.program.to_string(), client);
                 self.active_server = Some(spec.program.to_string());
             }
+            // Resolution succeeded and the spawn still failed: this is the case where the user is
+            // right and vex is wrong, and it should read that way rather than blaming their PATH.
             Err(error) => {
                 eprintln!("vex: {error:#}");
                 self.active_server = None;
-                self.state.server_status = format!("{} failed to start", spec.program);
+                self.state.server_status = format!("{} found but would not start", spec.program);
             }
         }
     }
@@ -2137,8 +2249,9 @@ impl App {
         };
 
         eprintln!(
-            "vex: recovered unsaved changes for {path} from {} — the buffer is dirty, :w to keep them",
-            found.recovery.display()
+            "vex: recovered unsaved changes for {path} from {} — the buffer is dirty; {} keeps them",
+            found.recovery.display(),
+            self.key_for("save")
         );
         self.state.document = Document::from_str(&found.text);
         // Mark it modified by touching the document through its own edit path would add an undo
@@ -2420,7 +2533,12 @@ impl App {
             }
             Command::Quit { force } => {
                 if self.state.document.is_dirty() && !force {
-                    self.warn("unsaved changes — :q! to discard, :wq to save");
+                    let message = if self.state.modal {
+                        "unsaved changes — :q! to discard, :wq to save".to_string()
+                    } else {
+                        format!("unsaved changes — {} saves first", self.key_for("save"))
+                    };
+                    self.warn(&message);
                     return false;
                 }
                 return true;
@@ -2616,7 +2734,7 @@ impl App {
             Action::ToggleMenu => {
                 self.state.menu = match self.state.menu {
                     Some(_) => None,
-                    None => Some(vex::menu::Menu::bar()),
+                    None => Some(vex::menu::Menu::bar(self.state.modal)),
                 };
             }
             Action::ToggleContextMenu => self.open_context_menu(),
@@ -2663,11 +2781,13 @@ impl App {
                 match target {
                     Some(jump) => self.go_to(jump),
                     None => {
+                        // "Jumplist" is Vim's word for it, and this is bound to alt-left and
+                        // alt-right in the conventional grammar, where nobody has heard it.
                         self.state.hover = Some(
                             if *forward {
-                                "no newer position in the jumplist"
+                                "nowhere newer to jump forward to"
                             } else {
-                                "no older position in the jumplist"
+                                "nowhere older to jump back to"
                             }
                             .into(),
                         )
@@ -3077,6 +3197,18 @@ impl App {
         self.state.prompt = Some(prompt);
     }
 
+    /// The key that runs a command *in the grammar the user is actually using*.
+    ///
+    /// For the messages that told people what to press next. Several of them named ex-commands —
+    /// `:q!`, `:wq`, `:w <path>` — to everyone, including the people who had turned Vim off and
+    /// whose grammar cannot parse the leading `:`. Read from the command table, so a message cannot
+    /// drift from the binding it is teaching.
+    fn key_for(&self, command: &str) -> &'static str {
+        vex_input::commands::by_name(command)
+            .map(|command| command.keys_for(self.state.modal))
+            .unwrap_or_default()
+    }
+
     /// Keys for the first-run setup. Returns true if the key was consumed — which is always, while it
     /// is showing: it is a modal screen, and letting keys through to a document nobody can see would
     /// be worse than ignoring them.
@@ -3246,6 +3378,14 @@ impl App {
         let Some(settings) = &mut self.state.settings else {
             return false;
         };
+
+        // ctrl-s writes, as it does everywhere else in the editor. The panel only had `w`, which is
+        // Vim's letter for it and is the wrong thing to teach someone who turned Vim off — and who
+        // is looking at a panel they reached from a toolbar button.
+        if key.ctrl && !key.alt && key.code == KeyCode::Char('s') {
+            self.write_settings();
+            return true;
+        }
         if key.ctrl || key.alt {
             return false;
         }
@@ -3567,7 +3707,15 @@ impl App {
     /// Writes the active buffer, keeping the recovery copy in step.
     fn save_active(&mut self) {
         let Some(path) = self.state.file_path.clone() else {
-            self.warn("no file name — use :w <path>");
+            let message = if self.state.modal {
+                "this buffer has no file name — use :w <path>".to_string()
+            } else {
+                format!(
+                    "this buffer has no file name — {} to choose one",
+                    self.key_for("save_as")
+                )
+            };
+            self.warn(&message);
             return;
         };
         let text = self.state.document.text().to_string();
@@ -3712,13 +3860,18 @@ impl App {
                     return;
                 }
 
-                match std::fs::read_to_string(&path) {
-                    Ok(contents) => self.open_document(
+                match vex::open::read(&path) {
+                    vex::open::Opened::Text(contents) => self.open_document(
                         Document::from_str(&contents),
                         relative_crumbs(&path_string),
                         Some(path_string),
                     ),
-                    Err(err) => eprintln!("vex: could not open {}: {err}", path.display()),
+                    // On screen, not to a console: a release build on Windows has none, so this
+                    // was a click on a file in the tree that appeared to do nothing at all.
+                    vex::open::Opened::Refused(why) => {
+                        eprintln!("vex: {why}");
+                        self.state.hover = Some(why);
+                    }
                 }
             }
             Target::Buffer(index) => self.switch_to(index),
@@ -3927,24 +4080,7 @@ impl App {
         }
 
         let rects = layout.pane(index, count, vertical, scale);
-        let row_height = self.state.typography.row_height() * scale;
-        let advance = self.state.typography.code_size * 0.6 * scale;
-
-        // Rows and columns from the position, clamped: a click below the last line means the last
-        // line, not nothing.
-        let row = ((y - rects.code.y) / row_height).floor().max(0.0) as usize;
-        let column = (((x - rects.code.x - 8.0 * scale) / advance).round()).max(0.0) as usize;
-
-        let height = self
-            .state
-            .visible_rows(rects.code.height, row_height)
-            .max(1);
-        let offset = self.state.display.offset_at_display_point(
-            self.state.document.text(),
-            self.state.scroll,
-            height,
-            vex_text::DisplayPoint { row, column },
-        );
+        let offset = self.offset_at(rects.code, x, y, scale);
 
         // A drag, or shift-click, keeps the anchor and moves the head — the same gesture, and
         // shift-click is the one every editor offers to people who do not like dragging.
@@ -4009,6 +4145,50 @@ impl App {
         self.sync_syntax();
     }
 
+    /// The buffer offset a point inside a pane's code area names.
+    ///
+    /// One definition, because two would drift and the symptom — a click landing a line off — gets
+    /// blamed on the display map rather than on the copy that drifted.
+    fn offset_at(&self, code: Rect, x: f32, y: f32, scale: f32) -> vex_text::CharOffset {
+        let row_height = self.state.typography.row_height() * scale;
+        let advance = self.state.typography.code_size * 0.6 * scale;
+
+        // Rows and columns from the position, clamped: a click below the last line means the last
+        // line, not nothing.
+        let row = ((y - code.y) / row_height).floor().max(0.0) as usize;
+        let column = (((x - code.x - 8.0 * scale) / advance).round()).max(0.0) as usize;
+
+        let height = self.state.visible_rows(code.height, row_height).max(1);
+        self.state.display.offset_at_display_point(
+            self.state.document.text(),
+            self.state.scroll,
+            height,
+            vex_text::DisplayPoint { row, column },
+        )
+    }
+
+    /// Whether the pointer sits inside a selection in the focused pane.
+    ///
+    /// The question a right-click has to ask before it moves the caret. Only the focused pane: a
+    /// selection in another one is not what a menu opened here would act on.
+    fn pointer_is_in_a_selection(&self) -> bool {
+        let (x, y) = self.pointer;
+        let scale = self.scale();
+        let layout = self.layout();
+        let count = self.panes.len();
+        let vertical = self.panes.layout == chrome::PaneLayout::Vertical;
+
+        let Some(index) = layout.pane_at(x, y, count, vertical, scale) else {
+            return false;
+        };
+        if index != self.panes.active() {
+            return false;
+        }
+
+        let offset = self.offset_at(layout.pane(index, count, vertical, scale).code, x, y, scale);
+        selection_contains(self.state.document.selections(), offset)
+    }
+
     /// Whether the pointer is over a toolbar button.
     fn over_toolbar(&self) -> bool {
         let (x, y) = self.pointer;
@@ -4039,14 +4219,7 @@ impl App {
 
     /// A click while a menu is open.
     fn click_menu(&mut self, x: f32, y: f32, scale: f32) {
-        let bounds = {
-            let (width, height) = self
-                .renderer
-                .as_ref()
-                .map(|renderer| renderer.size())
-                .unwrap_or((1280, 820));
-            Rect::new(0.0, 0.0, width as f32, height as f32)
-        };
+        let bounds = self.window_bounds();
         let modal = self.state.modal;
 
         let Some(menu) = &mut self.state.menu else {
@@ -4065,6 +4238,14 @@ impl App {
             .row_at(&geometry, x, y)
             .and_then(|index| menu.items.get(index))
             .map(|item| item.action.clone());
+
+        // The card is padded, and the pointer sits on its top-left corner the instant a context
+        // menu opens — inside the card, above the first row. Treating that strip as "clicked away"
+        // meant a right-click followed by a left-click without moving the mouse dismissed the menu
+        // and did nothing, which is the first thing anybody tries.
+        if chosen.is_none() && vex::layout::contains(geometry.card, x, y) {
+            return;
+        }
 
         self.state.menu = None;
         if let Some(action) = chosen {
@@ -4127,39 +4308,27 @@ impl App {
             return;
         }
 
-        if self.state.settings.is_some() {
-            let top = sidebar.y + space::LG * scale + 20.0 * scale * 1.7;
-            let Some(settings) = &mut self.state.settings else {
+        if let Some(settings) = &self.state.settings {
+            // The same rectangles the drawing code uses, from the same function. This walked the
+            // list itself once, which was survivable until the panel started scrolling and the two
+            // walks stopped agreeing — a click then selected the row that used to be there.
+            let panel = vex::settings_ui::panel(sidebar, scale, settings.selected);
+            let Some(hit) = panel
+                .rows
+                .iter()
+                .find(|row| y >= row.rect.y && y < row.rect.bottom())
+            else {
                 return;
             };
-            // Option rows are two lines tall, import rows one and a bit; walking the list is more
-            // honest than a formula that would drift from the drawing code.
-            let mut cursor = top;
-            for (index, entry) in vex::settings_ui::Settings::lines().iter().enumerate() {
-                let block = match entry {
-                    vex::settings_ui::Line::Option(_) => 20.0 * scale * 2.0,
-                    _ => 20.0 * scale * 1.4,
-                };
-                let heading = if *entry
-                    == vex::settings_ui::Line::Import(vex::settings_ui::Importable::Settings)
-                {
-                    20.0 * scale * 2.0
-                } else {
-                    0.0
-                };
-                cursor += heading;
-                if y >= cursor && y < cursor + block {
-                    settings.selected = index;
-                    // Selecting is not enough. A click that highlighted a row and then waited to be
-                    // told `l` is a panel a mouse user cannot operate at all — which is what this
-                    // was. A click *is* the change: switches flip, choices advance, and the action
-                    // rows run.
-                    let entry = *entry;
-                    self.activate_setting(entry);
-                    return;
-                }
-                cursor += block + 4.0 * scale;
+            let (index, entry) = (hit.index, hit.line);
+
+            if let Some(settings) = &mut self.state.settings {
+                settings.selected = index;
             }
+            // Selecting is not enough. A click that highlighted a row and then waited to be told
+            // `l` is a panel a mouse user cannot operate at all — which is what this was. A click
+            // *is* the change: switches flip, choices advance, and the action rows run.
+            self.activate_setting(entry);
         }
     }
 
@@ -4335,11 +4504,19 @@ impl App {
             }
 
             if self.state.document.is_dirty() {
-                self.state.hover = Some(format!(
-                    "{} changed on disk, and this buffer has unsaved changes — :e to discard yours, \
-                     :w to overwrite theirs",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                ));
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                self.state.hover = Some(if self.state.modal {
+                    format!(
+                        "{name} changed on disk, and this buffer has unsaved changes — \
+                         :e to discard yours, :w to overwrite theirs"
+                    )
+                } else {
+                    format!(
+                        "{name} changed on disk, and this buffer has unsaved changes — {} \
+                         overwrites theirs",
+                        self.key_for("save")
+                    )
+                });
                 redraw = true;
                 continue;
             }
@@ -4491,6 +4668,15 @@ impl App {
         let Some(renderer) = &mut self.renderer else {
             return;
         };
+        // Minimised: there is nothing to draw into, and building a frame for it is the same waste
+        // as submitting one.
+        if !renderer.is_visible() {
+            return;
+        }
+
+        // The clock starts here, not inside `render`: building the frame is the half of the work
+        // this project has optimised hardest, and it was not in the number the statusline showed.
+        renderer.timer.begin();
 
         let (width, height) = renderer.size();
         let scale = self
@@ -4542,6 +4728,27 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_right_click_inside_a_selection_is_about_that_selection() {
+        // Opening the context menu moved the caret unconditionally, which collapsed the selection
+        // the menu was about. `Target::Selection` on a bare caret is one character, so `copy` put a
+        // single character on the clipboard and `cut` deleted one — both indistinguishable from a
+        // menu row that does nothing, which is how it was reported.
+        use vex_text::{CharOffset, Selection, SelectionSet};
+
+        let selected = SelectionSet::single(Selection::new(CharOffset(10), CharOffset(20)));
+        assert!(selection_contains(&selected, CharOffset(15)), "inside");
+        assert!(selection_contains(&selected, CharOffset(10)), "at the start");
+        assert!(!selection_contains(&selected, CharOffset(20)), "the end is exclusive");
+        assert!(!selection_contains(&selected, CharOffset(4)), "before it");
+
+        let caret = SelectionSet::single(Selection::caret(CharOffset(10)));
+        assert!(
+            !selection_contains(&caret, CharOffset(10)),
+            "a caret is not a selection, so a right-click on one still moves it"
+        );
+    }
 
     #[test]
     fn breadcrumbs_split_on_either_separator() {

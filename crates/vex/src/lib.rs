@@ -16,6 +16,7 @@ pub mod icon;
 pub mod import_cli;
 pub mod layout;
 pub mod menu;
+pub mod open;
 pub mod palette;
 pub mod panes;
 pub mod paths;

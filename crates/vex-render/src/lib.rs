@@ -31,6 +31,24 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     painter: Painter,
+    /// Set when the surface asked to be reconfigured while a frame was still in hand.
+    ///
+    /// It cannot be done at that moment. wgpu requires the surface texture to be **dropped before**
+    /// the surface is configured, and configuring while holding one is a validation error — which
+    /// the default handler turns into a panic, whose unwind drops the texture, whose drop is a
+    /// second validation error, which panics again. A panic during a panic aborts.
+    ///
+    /// That was the whole mechanism behind "minimise vex and it closes": minimising is precisely
+    /// what makes the surface start reporting `Suboptimal`, and the branch that handled it
+    /// reconfigured with the texture still alive. It died on the first minimise, every time.
+    reconfigure: bool,
+    /// False while the window has no area — which on Windows means minimised.
+    ///
+    /// Rendering then is not just wasted: the config still holds the last real size, so every frame
+    /// acquires, fails, and reconfigures a surface that has no size to be configured to. Skipping it
+    /// entirely is both correct and the difference between an idle process and one spinning a GPU
+    /// queue behind an icon in the taskbar.
+    visible: bool,
     pub timer: FrameTimer,
 }
 
@@ -74,13 +92,30 @@ impl Renderer {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
 
+        // A GPU error must not take the editor with it. wgpu's default handler panics, and a panic
+        // on the UI thread of a Windows GUI build — which has no console — is a window that
+        // vanishes with nothing said anywhere. Unsaved text is written to the recovery file every
+        // couple of seconds and so survives, but a dropped frame is still an incomparably better
+        // outcome than a lost session, and an editor that can be closed by a driver quirk is not
+        // one anybody should trust their work to.
+        device.on_uncaptured_error(Arc::new(|error| {
+            eprintln!("vex: gpu error, frame dropped: {error}");
+        }));
+
         let format = config.format;
         Ok(Self {
             surface,
             config,
             painter: Painter::new(device, queue, format),
+            reconfigure: false,
+            visible: true,
             timer: FrameTimer::new(),
         })
+    }
+
+    /// Whether there is anything to draw into.
+    pub fn is_visible(&self) -> bool {
+        self.visible
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -92,30 +127,46 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+        // A minimised window reports 0x0, and a surface cannot be configured to no size at all. The
+        // last real size is kept, so restoring redraws at the size it had rather than at a default.
+        self.visible = width > 0 && height > 0;
+        if !self.visible {
             return;
         }
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.painter.device, &self.config);
+        self.reconfigure = false;
     }
 
     /// Draws a frame. `clear` is painted before anything else; the design requires the window
     /// background to be set before the first paint so startup never flashes light.
     pub fn render(&mut self, frame: &Frame, clear: Oklch) -> Result<()> {
-        self.timer.begin();
+        // A minimised window has nothing to draw into, and trying costs a failed acquire and a
+        // reconfigure per frame for as long as it stays minimised.
+        if !self.visible {
+            return Ok(());
+        }
+
+        // Whatever the last frame asked for, now that nothing is held.
+        if std::mem::take(&mut self.reconfigure) {
+            self.surface.configure(&self.painter.device, &self.config);
+        }
 
         let surface_texture = match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(texture) => texture,
-            // Suboptimal still hands back a usable texture; reconfigure so the *next* frame is
-            // optimal instead of dropping this one.
+            // Suboptimal still hands back a usable texture, so this frame is drawn rather than
+            // dropped — but the reconfigure it is asking for has to wait for the next one, when the
+            // texture is no longer in hand. See `reconfigure`: doing it here killed the process.
             CurrentSurfaceTexture::Suboptimal(texture) => {
-                self.surface.configure(&self.painter.device, &self.config);
+                self.reconfigure = true;
                 texture
             }
-            // Routine, not errors: resize, monitor change, minimized window. Skip the frame.
+            // Routine, not errors: resize, monitor change, minimized window. Skip the frame, and
+            // reconfigure at the top of the next one rather than here — the same rule as
+            // `Suboptimal`, since nothing guarantees the acquire left nothing behind.
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.painter.device, &self.config);
+                self.reconfigure = true;
                 self.timer.end();
                 return Ok(());
             }

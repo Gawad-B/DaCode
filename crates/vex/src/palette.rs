@@ -160,7 +160,11 @@ impl Palette {
     /// dimmed column the design already draws for a file's directory.
     pub fn refresh_commands(&mut self, modal: bool) {
         let query = self.query.trim().to_lowercase();
-        let commands = vex_input::commands::COMMANDS;
+        // Only what this grammar has. The palette listed the whole table regardless, so someone who
+        // had turned Vim off could still find "start selecting", "repeat the last change" and
+        // "replay a recorded macro" in the one surface whose entire job is to say what the editor
+        // they chose can do.
+        let commands: Vec<_> = vex_input::commands::available(modal).collect();
         self.total = commands.len();
 
         let mut scored: Vec<(u32, Row)> = commands

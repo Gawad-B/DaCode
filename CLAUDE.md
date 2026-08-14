@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-567 tests, clippy clean.
+597 tests, clippy clean.
 
 ## Commands
 
@@ -117,6 +117,34 @@ felt like.
 returns `Outcome::Window(action)`; the event loop, which owns the LSP client and the pane list, carries
 it out. That split is what lets hover and rename be tested with no server running.
 
+**Never configure the surface while holding a frame.** wgpu requires the acquired `SurfaceOutput` to
+be dropped *before* `Surface::configure`. Doing both at once is a validation error, which the default
+handler turns into a panic, whose unwind drops the texture, whose drop is a second validation error,
+which panics again — and a panic during a panic aborts. That was the whole of "minimise vex and it
+closes": minimising is what makes the surface start reporting `Suboptimal`, and that branch
+reconfigured inline. `Renderer` now sets a `reconfigure` flag and acts on it at the top of the *next*
+frame. The device also has an uncaptured-error handler that reports instead of panicking, because a
+GPU error must never take unsaved work with it — a release build on Windows has no console to say so
+in.
+
+**Nothing draws without being measured against its box.** `run()`/`label()` set `wrap: false` and
+glyphon clips a run to its rectangle, so text that is too long simply stops mid-word with nothing to
+say it was cut. Anything user-supplied or variable-length goes through `chrome::elide`, which uses
+`Typography::advance` — a type-scale estimate, not the shaper, so it can be a character out either
+way. Better an approximate ellipsis than an exact guillotine.
+
+**A panel that scrolls must hand its rectangles to the mouse.** `settings_ui::panel` returns the
+visible rows and their boxes; drawing and hit-testing both read it. Teaching the drawing half to
+scroll while the click handler kept its own copy of the walk immediately produced clicks landing on
+the row that *used* to be there — the same failure `layout.rs` exists to prevent, one panel over.
+
+**Resolve a program to a path before spawning it.** `vex_lsp::resolve` returns the `PathBuf`, not a
+yes/no, because on Windows the two are different questions: the check honours `PATHEXT` and finds
+`pyright-langserver.cmd`, while `Command::new` on a bare name only ever appends `.exe`. They
+disagreed, so no npm-installed language server could start at all. Hand the resolved path to
+`Command::new` and std routes a `.cmd` through `cmd.exe` itself with the escaping CVE-2024-24576
+added; hand-rolling `cmd /c` would reopen that hole.
+
 **Paint layers.** The renderer draws all quads then all glyphs *per layer*, so an overlay on a higher
 layer occludes text below it. Within one layer it cannot. Panels go on `Layer::Panel`, the palette on
 `Layer::Modal`. Forgetting this is how the completion popup shipped transparent.
@@ -170,8 +198,14 @@ work on Wayland here, so this is the only way — and it is better anyway, being
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
---splash --empty --at LINE --columns N --no-vim --help-panel --menu --context-menu --commands
---which-key PREFIX`.
+--splash --empty --at LINE --columns N --size WxH --no-vim --help-panel --menu --context-menu
+--commands --which-key PREFIX`.
+
+**Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
+and a whole family of defects lives below that: the settings rows collided with the footer under
+~900px of height, the toolbar was laid out at a negative x under ~450px of width, and neither was
+reproducible here. Four overflow defects shipped for exactly this reason. Anything with a panel in
+it gets captured at a small size too.
 
 ## Style
 
@@ -224,6 +258,9 @@ anything platform-shaped:
 | What a right-click offers | `crates/vex/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/vex-theme/src/theme.rs` |
 | LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
+| Which language server runs | `crates/vex-lsp/src/lib.rs` — `servers_for`, a list per language |
+| Where the settings rows are | `crates/vex/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
+| Whether a file may be opened | `crates/vex/src/open.rs` — every refusal is a sentence for the screen |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
 panel. If you add it to fewer, it will silently not work somewhere.
@@ -238,3 +275,11 @@ Smaller ones, from the non-modal work: a drag after a double-click extends by ch
 word; the which-key popup sits at the top left of the code area rather than following the cursor,
 because a popup that moved as you typed would be harder to read than a still one; and the palette and
 help panel take the keyboard only — their rows are not clickable, though the menus' are.
+
+Known and stated rather than hidden: **buffer search is still linear in the document**. `find_all`
+no longer copies the rope — it scans a line at a time, so the memory is bounded and a query
+containing a newline falls back to the whole-document path — but a rare query in a very large file
+still walks all of it on the UI thread. The fix is the same shape as syntax and git: a worker with a
+`Version` tag. **Opening a file is still synchronous** for the same reason; what changed is that it
+is now *bounded* (`open::MAX_BYTES`) and that binary files and non-UTF-8 files are refused with a
+sentence rather than mangled. Neither is asynchronous yet, and the doc comments say so.

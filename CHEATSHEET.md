@@ -228,9 +228,9 @@ what `vex import --snippets` writes.
 | Key | Does |
 |---|---|
 | `ctrl-,` · `ctrl-k s` | settings panel |
-| `j` `k` | move between settings |
-| `h` `l` · `enter` | change the selected setting — applies immediately |
-| `w` | write the panel's values into `init.lua` |
+| `j` `k` · `↑` `↓` | move between settings |
+| `h` `l` · `←` `→` · `enter` | change the selected setting — applies immediately |
+| `w` · `ctrl-s` | write the panel's values into `init.lua` |
 | `l` on an import row | tick what to bring over from VSCode; `import now` runs it |
 | `enter` on the last row | load a colour scheme file — `.json`, `.tmTheme`, `.yaml`, `.toml` |
 | `esc` | close |

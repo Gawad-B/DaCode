@@ -362,6 +362,73 @@ fn search_finds_multi_byte_queries() {
 }
 
 #[test]
+fn search_offsets_survive_multi_byte_lines_above_the_match() {
+    // The rewrite that made search scan a line at a time computes offsets relative to the line's
+    // own start. Get that base wrong — by a byte count rather than a character count — and every
+    // match below the first non-ASCII line silently points somewhere else.
+    let text = vex_text::Text::from_str("héllo 👋\n日本語のテキスト\n\nneedle here\nneedle again");
+    let matches = vex_buffer::find_all(&text, "needle", &Default::default());
+
+    assert_eq!(matches.len(), 2);
+    for found in &matches {
+        assert_eq!(
+            text.slice_to_string(found.clone()),
+            "needle",
+            "a range that does not cover its own match means the line base was wrong"
+        );
+    }
+}
+
+#[test]
+fn search_finds_matches_at_both_ends_of_a_line() {
+    // Line-scoped scanning is where off-by-ones live: the first character of a line and the last
+    // one before the newline are the two it would drop.
+    let text = vex_text::Text::from_str("xa\nbx\ncxc");
+    let matches = vex_buffer::find_all(&text, "x", &Default::default());
+
+    assert_eq!(matches.len(), 3);
+    assert_eq!(matches[0].start.get(), 0, "first character of the file");
+    assert_eq!(matches[1].start.get(), 4, "last character before a newline");
+    assert_eq!(matches[2].start.get(), 7, "middle of the last line");
+    for found in &matches {
+        assert_eq!(text.slice_to_string(found.clone()), "x");
+    }
+}
+
+#[test]
+fn a_query_spanning_a_newline_still_matches() {
+    // Line-scoped scanning cannot see across a newline, so a query that contains one takes the
+    // whole-document path. It is not reachable from the search prompt, which is a single line —
+    // but replace can produce one, and finding nothing would be a silent wrong answer.
+    let text = vex_text::Text::from_str("alpha\nbeta\ngamma\nbeta\n");
+    let matches = vex_buffer::find_all(&text, "alpha\nbeta", &Default::default());
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(text.slice_to_string(matches[0].clone()), "alpha\nbeta");
+}
+
+#[test]
+fn searching_a_large_document_does_not_copy_it() {
+    // Not an allocation assertion — it is a timing one in disguise. This used to build one String
+    // of the whole document, and a second lowercased one, per keystroke; at this size that was
+    // enough to be felt. The test's real job is to fail loudly if the whole-document path is ever
+    // made the default again, because it takes an order of magnitude longer than the line scan.
+    let line = "the quick brown fox jumps over the lazy dog\n";
+    let text = vex_text::Text::from_str(&line.repeat(20_000));
+
+    let started = std::time::Instant::now();
+    let matches = vex_buffer::find_all(&text, "fox", &Default::default());
+    let elapsed = started.elapsed();
+
+    assert_eq!(matches.len(), 10_000, "capped by the default match limit");
+    assert_eq!(text.slice_to_string(matches[0].clone()), "fox");
+    assert!(
+        elapsed < std::time::Duration::from_millis(750),
+        "searching 860KB took {elapsed:?}, which is not a keystroke's worth of work"
+    );
+}
+
+#[test]
 fn an_empty_query_matches_nothing() {
     let text = vex_text::Text::from_str("anything");
     assert!(vex_buffer::find_all(&text, "", &Default::default()).is_empty());

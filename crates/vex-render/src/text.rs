@@ -38,6 +38,35 @@ struct Cached {
     /// Widest laid-out line, needed for right alignment.
     width: f32,
     last_used: u64,
+    /// What was shaped, so a hash collision cannot serve the wrong text.
+    ///
+    /// The key is 64 bits of `DefaultHasher` and nothing else, which is fine as an index and
+    /// worthless as proof: two different runs that collide would have rendered *one another's*
+    /// glyphs, silently, and only on the machine and the document where the collision happened.
+    /// The comparison costs a string equality on a cache hit — nothing beside the shaping it
+    /// avoids — and it turns an unreproducible visual corruption into an ordinary re-shape.
+    identity: Identity,
+}
+
+/// Everything that decides how a run is shaped. Compared on a cache hit.
+#[derive(PartialEq)]
+struct Identity {
+    text: String,
+    spec: vex_theme::FontSpec,
+    wrap: bool,
+    /// Only meaningful when `wrap` is set; a wrapped run is shaped against its box.
+    width: f32,
+}
+
+impl Identity {
+    fn of(run: &TextRun) -> Self {
+        Self {
+            text: run.text.clone(),
+            spec: run.spec,
+            wrap: run.wrap,
+            width: if run.wrap { run.rect.width } else { 0.0 },
+        }
+    }
 }
 
 /// Which concrete font family name to use for each of the design's three roles, resolved once
@@ -154,9 +183,18 @@ impl TextStack {
             let key = run_key(run);
             keys.push(key);
 
-            if let Some(cached) = self.buffers.get_mut(&key) {
-                cached.last_used = self.frame;
-                continue;
+            let identity = Identity::of(run);
+            match self.buffers.get_mut(&key) {
+                // The identity check is what makes the key safe to be only 64 bits wide.
+                Some(cached) if cached.identity == identity => {
+                    cached.last_used = self.frame;
+                    continue;
+                }
+                // A collision: two different runs hashed the same. Re-shape and take the slot.
+                Some(_) => {
+                    self.buffers.remove(&key);
+                }
+                None => {}
             }
 
             let metrics = Metrics::new(run.spec.size_px, run.spec.size_px * run.spec.line_height);
@@ -196,6 +234,7 @@ impl TextStack {
                     buffer,
                     width,
                     last_used: self.frame,
+                    identity,
                 },
             );
         }

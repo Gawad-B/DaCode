@@ -79,9 +79,17 @@ pub const TOOLBAR: [ToolButton; 7] = [
 /// Right-aligned, because the left of that row is the file's tabs and they are the thing you are
 /// looking at. One definition, read by the drawing code and by the mouse — the rule this module
 /// exists for.
+///
+/// A narrow window cannot hold all seven, and the first version simply subtracted the full width
+/// from the right edge — so in a window around 400px the leftmost buttons were laid out at negative
+/// x and drawn off the side of the window, which is what a real Windows run showed. Buttons that do
+/// not fit are dropped from the end instead: [`TOOLBAR`] is ordered by how often each is reached
+/// for, so the tail is the part that can be spared, and a shorter toolbar is honest where half a
+/// button hanging past the edge is not.
 pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
     let height = 22.0 * scale;
     let gap = 6.0 * scale;
+    let margin = 16.0 * scale;
     let y = tabs.y + (tabs.height - height) / 2.0;
 
     // Width follows the label, so nothing is clipped and the row stays tight.
@@ -89,11 +97,20 @@ pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
         .iter()
         .map(|button| (button.label.chars().count() as f32 + 2.0) * 7.5 * scale)
         .collect();
-    let total: f32 = widths.iter().sum::<f32>() + gap * (TOOLBAR.len() as f32 - 1.0);
 
-    let mut x = tabs.right() - 16.0 * scale - total;
-    let mut placed = Vec::with_capacity(TOOLBAR.len());
-    for (button, width) in TOOLBAR.iter().zip(&widths) {
+    let span = |count: usize| -> f32 {
+        widths[..count].iter().sum::<f32>() + gap * (count.saturating_sub(1) as f32)
+    };
+
+    let available = (tabs.width - margin * 2.0).max(0.0);
+    let mut count = TOOLBAR.len();
+    while count > 0 && span(count) > available {
+        count -= 1;
+    }
+
+    let mut x = tabs.right() - margin - span(count);
+    let mut placed = Vec::with_capacity(count);
+    for (button, width) in TOOLBAR.iter().take(count).zip(&widths) {
         placed.push((*button, Rect::new(x, y, *width, height)));
         x += width + gap;
     }
@@ -252,6 +269,45 @@ mod tests {
             layout.editor.right(),
             layout.sidebar.x,
             "and none between the code and the sidebar"
+        );
+    }
+
+    #[test]
+    fn a_narrow_window_drops_toolbar_buttons_rather_than_drawing_them_off_the_edge() {
+        // A real Windows run in a narrow window laid the first buttons out at a negative x, so
+        // `open` and `files` were painted past the left edge — and since the mouse reads the same
+        // rectangles, they could not be clicked either. Every button that is drawn must be inside
+        // the strip it belongs to, at every width.
+        for width in [120.0, 200.0, 320.0, 434.0, 700.0, 1600.0] {
+            let tabs = Rect::new(0.0, 72.0, width, 34.0);
+            for (button, box_) in toolbar_buttons(tabs, 1.0) {
+                assert!(
+                    box_.x >= tabs.x,
+                    "`{}` starts left of the strip in a {width}px window",
+                    button.label
+                );
+                assert!(
+                    box_.right() <= tabs.right(),
+                    "`{}` runs past the right edge in a {width}px window",
+                    button.label
+                );
+            }
+        }
+
+        let wide = toolbar_buttons(Rect::new(0.0, 72.0, 1600.0, 34.0), 1.0);
+        assert_eq!(wide.len(), TOOLBAR.len(), "a wide window shows all of it");
+        assert_eq!(
+            wide[0].0.command,
+            TOOLBAR[0].command,
+            "and shows it in order"
+        );
+
+        let narrow = toolbar_buttons(Rect::new(0.0, 72.0, 200.0, 34.0), 1.0);
+        assert!(narrow.len() < TOOLBAR.len(), "a narrow one cannot");
+        assert_eq!(
+            narrow.first().map(|(button, _)| button.command),
+            Some(TOOLBAR[0].command),
+            "what survives is the front of the row — the buttons reached for most"
         );
     }
 

@@ -212,8 +212,22 @@ most of what makes VSCode heavy. Extension *data* — themes, snippets, keybindi
 configuration — imports; anything whose value is its own JavaScript does not. §5a of `PLAN.md` has the
 full account.
 
-Language support is not extensions here: install `rust-analyzer`, `pyright-langserver`,
-`typescript-language-server` and vex drives them over LSP directly.
+Language support is not extensions here: install a language server and vex drives it over LSP
+directly. It looks for these, in this order, and starts the first one it finds:
+
+| Language | Servers vex looks for | Install |
+|---|---|---|
+| Rust | `rust-analyzer` | `rustup component add rust-analyzer` |
+| Python | `pyright-langserver`, `basedpyright-langserver`, `pylsp` | `npm i -g pyright` |
+| TypeScript, JavaScript | `typescript-language-server` | `npm i -g typescript-language-server typescript` |
+| C, C++ | `clangd` | install LLVM |
+| Go | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| Lua | `lua-language-server` | your package manager |
+| Dart | `dart` | the Dart SDK |
+
+A language server is a separate program from the language itself — having Python installed does not
+give you a Python language server. When vex cannot find one it says which language it wanted and how
+to install it, rather than naming a binary you have never heard of.
 
 ## Where files live
 
@@ -233,7 +247,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 567 tests
+cargo test --workspace                      # 597 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

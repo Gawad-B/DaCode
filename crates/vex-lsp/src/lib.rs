@@ -20,6 +20,8 @@ pub mod client;
 pub mod position;
 pub mod transport;
 
+use std::path::PathBuf;
+
 pub use client::{CodeActionItem, Diagnostics, LspClient, Pending, ServerEvent, State};
 /// Re-exported so consumers can name severities and ranges without depending on the crate directly.
 pub use lsp_types;
@@ -32,42 +34,125 @@ pub struct ServerSpec {
     pub args: &'static [&'static str],
     /// The protocol's `languageId`.
     pub language_id: &'static str,
+    /// What the language is called in a sentence: "Python", not "py".
+    ///
+    /// The statusline used to say `pyright-langserver not installed`, which names a program most
+    /// people have never heard of, does not say it is a *Python* server, does not say it is a
+    /// separate thing from the Python interpreter, and offers no way forward. Someone with Python
+    /// installed reads that as "vex cannot see my Python", and they are not being unreasonable.
+    pub language: &'static str,
+    /// One line that installs it.
+    pub install: &'static str,
 }
 
-/// The servers vex knows how to start, by file extension.
+const fn spec(
+    program: &'static str,
+    args: &'static [&'static str],
+    language_id: &'static str,
+    language: &'static str,
+    install: &'static str,
+) -> ServerSpec {
+    ServerSpec {
+        program,
+        args,
+        language_id,
+        language,
+        install,
+    }
+}
+
+/// The servers vex knows how to start for a file, best first.
 ///
-/// These are the languages from the plan. A server that is not installed is reported at startup
-/// rather than silently skipped, because "no diagnostics" and "no server" look identical otherwise.
+/// A list rather than one, because "the Python server" is not a single program: pyright is an npm
+/// package, pylsp is a pip package, and a given machine has whichever its owner happened to install.
+/// Offering one and reporting it missing is how an editor tells someone with a perfectly good
+/// language server that it cannot find one.
+pub fn servers_for(path: &str) -> &'static [ServerSpec] {
+    const RUST: [ServerSpec; 1] = [spec(
+        "rust-analyzer",
+        &[],
+        "rust",
+        "Rust",
+        "rustup component add rust-analyzer",
+    )];
+    const TYPESCRIPT: [ServerSpec; 1] = [spec(
+        "typescript-language-server",
+        &["--stdio"],
+        "typescript",
+        "TypeScript",
+        "npm i -g typescript-language-server typescript",
+    )];
+    // Three, in preference order. pyright comes from npm, pylsp from pip, and a machine has
+    // whichever its owner happened to install — which is the whole reason this is a list.
+    const PYTHON: [ServerSpec; 3] = [
+        spec(
+            "pyright-langserver",
+            &["--stdio"],
+            "python",
+            "Python",
+            "npm i -g pyright",
+        ),
+        spec(
+            "basedpyright-langserver",
+            &["--stdio"],
+            "python",
+            "Python",
+            "pip install basedpyright",
+        ),
+        spec(
+            "pylsp",
+            &[],
+            "python",
+            "Python",
+            "pip install python-lsp-server",
+        ),
+    ];
+    const C_FAMILY: [ServerSpec; 1] = [spec(
+        "clangd",
+        &[],
+        "cpp",
+        "C and C++",
+        "install LLVM, or `apt install clangd`",
+    )];
+    const GO: [ServerSpec; 1] = [spec(
+        "gopls",
+        &[],
+        "go",
+        "Go",
+        "go install golang.org/x/tools/gopls@latest",
+    )];
+    const LUA: [ServerSpec; 1] = [spec(
+        "lua-language-server",
+        &[],
+        "lua",
+        "Lua",
+        "install lua-language-server from your package manager",
+    )];
+    const DART: [ServerSpec; 1] = [spec(
+        "dart",
+        &["language-server", "--protocol=lsp"],
+        "dart",
+        "Dart",
+        "install the Dart SDK",
+    )];
+
+    match path.rsplit('.').next().unwrap_or_default() {
+        "rs" => &RUST,
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => &TYPESCRIPT,
+        "py" | "pyi" => &PYTHON,
+        "c" | "h" | "cpp" | "hpp" | "cc" | "cxx" | "hh" => &C_FAMILY,
+        "go" => &GO,
+        "lua" => &LUA,
+        "dart" => &DART,
+        _ => &[],
+    }
+}
+
+/// The first server vex would try for a file.
+///
+/// Kept for callers that only want to know whether the language is supported at all.
 pub fn server_for(path: &str) -> Option<ServerSpec> {
-    let extension = path.rsplit('.').next()?;
-    Some(match extension {
-        "rs" => ServerSpec {
-            program: "rust-analyzer",
-            args: &[],
-            language_id: "rust",
-        },
-        "ts" | "tsx" | "js" | "jsx" => ServerSpec {
-            program: "typescript-language-server",
-            args: &["--stdio"],
-            language_id: "typescript",
-        },
-        "py" => ServerSpec {
-            program: "pyright-langserver",
-            args: &["--stdio"],
-            language_id: "python",
-        },
-        "c" | "h" | "cpp" | "hpp" | "cc" => ServerSpec {
-            program: "clangd",
-            args: &[],
-            language_id: "cpp",
-        },
-        "dart" => ServerSpec {
-            program: "dart",
-            args: &["language-server", "--protocol=lsp"],
-            language_id: "dart",
-        },
-        _ => return None,
-    })
+    servers_for(path).first().copied()
 }
 
 /// Whether a program exists on `PATH`.
@@ -92,10 +177,12 @@ pub fn server_for(path: &str) -> Option<ServerSpec> {
 /// later when the server it launched exits. Used by tests to decide whether there is a server to test
 /// against at all.
 pub fn can_start(program: &str) -> bool {
-    if !is_installed(program) {
+    let Some(resolved) = resolve(program) else {
         return false;
-    }
-    std::process::Command::new(program)
+    };
+    let mut command = std::process::Command::new(resolved);
+    client::no_window(&mut command);
+    command
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -104,29 +191,60 @@ pub fn can_start(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn is_installed(program: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
+/// Where a program is on `PATH`, if it is there at all.
+///
+/// Returns the **path**, not a yes-or-no, and that is the whole point. The old check honoured
+/// `PATHEXT` and so found `pyright-langserver.cmd`; the spawn beside it did `Command::new` on the
+/// bare name, and Rust's Windows resolver appends only `.exe` — `PATHEXT` is a shell concept it
+/// deliberately does not implement. So the two disagreed, and every language server that npm
+/// installs as a `.cmd` shim — pyright and typescript-language-server, the two most common servers
+/// in the world — passed the check and then failed to spawn. Handing the resolved path to
+/// `Command::new` fixes both halves: std detects a `.bat`/`.cmd` and routes it through `cmd.exe`
+/// itself, with the argument escaping that CVE-2024-24576 added. Wrapping it in `cmd /c` by hand
+/// would reopen exactly that hole.
+///
+/// Takes its environment as parameters so the Windows rules have tests that run anywhere — the same
+/// reason `paths::resolve` and `position::encode_uri` do.
+pub fn resolve_in(
+    program: &str,
+    path: &std::ffi::OsStr,
+    pathext: Option<&str>,
+    windows: bool,
+) -> Option<PathBuf> {
+    // Only the extensions that name something executable. A real machine's PATHEXT includes `.JS`,
+    // and a stray `pyright-langserver.js` would satisfy the check and then not run.
+    const RUNNABLE: [&str; 4] = ["exe", "cmd", "bat", "com"];
 
-    // On Windows the file is `name.exe`, `name.cmd` or `name.bat`, and several language servers ship
-    // as `.cmd` shims. A bare-name check finds none of them, which would report every server as
-    // missing while they were all installed.
-    let extensions: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".EXE;.CMD;.BAT;.COM".to_string())
+    let extensions: Vec<String> = if windows {
+        pathext
+            .unwrap_or(".EXE;.CMD;.BAT;.COM")
             .split(';')
-            .filter(|extension| !extension.is_empty())
             .map(|extension| extension.trim_start_matches('.').to_ascii_lowercase())
+            .filter(|extension| RUNNABLE.contains(&extension.as_str()))
             .collect()
     } else {
         Vec::new()
     };
 
-    std::env::split_paths(&path).any(|directory| {
-        directory.join(program).is_file()
-            || extensions
-                .iter()
-                .any(|extension| directory.join(format!("{program}.{extension}")).is_file())
+    std::env::split_paths(path).find_map(|directory| {
+        let bare = directory.join(program);
+        if bare.is_file() && (!windows || bare.extension().is_some()) {
+            return Some(bare);
+        }
+        extensions
+            .iter()
+            .map(|extension| directory.join(format!("{program}.{extension}")))
+            .find(|candidate| candidate.is_file())
     })
+}
+
+/// [`resolve_in`] against this process's environment.
+pub fn resolve(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let pathext = std::env::var("PATHEXT").ok();
+    resolve_in(program, &path, pathext.as_deref(), cfg!(windows))
+}
+
+pub fn is_installed(program: &str) -> bool {
+    resolve(program).is_some()
 }

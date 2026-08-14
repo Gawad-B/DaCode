@@ -28,7 +28,7 @@ use vex_text::Version;
 /// appearing over the editor a second after it starts. The same rule as `vex::process::quiet`, which
 /// is the copy to keep in step with this one: `vex-lsp` is below the binary in the dependency order
 /// and cannot borrow it.
-fn no_window(command: &mut Command) {
+pub fn no_window(command: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -177,8 +177,12 @@ pub struct LspClient {
 impl LspClient {
     /// Spawns a server and sends `initialize`. Returns as soon as the process is running — the
     /// handshake completes asynchronously, announced by [`ServerEvent::Ready`].
-    pub fn start(program: &str, args: &[&str], root: &Path) -> Result<Self> {
-        let mut command = Command::new(program);
+    ///
+    /// `executable` is a **resolved path**, not a bare name, and `name` is what to call it in the
+    /// interface. Passing the bare name is what broke every npm-installed server on Windows: see
+    /// [`crate::resolve_in`].
+    pub fn start(executable: &Path, name: &str, args: &[&str], root: &Path) -> Result<Self> {
+        let mut command = Command::new(executable);
         no_window(&mut command);
         let mut child = command
             .args(args)
@@ -188,7 +192,12 @@ impl LspClient {
             // Kept, not inherited: a chatty server must not scribble over the editor's own output.
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("could not start {program} — is it on PATH?"))?;
+            .with_context(|| {
+                format!(
+                    "could not start {name} from {} — it resolved on PATH but would not run",
+                    executable.display()
+                )
+            })?;
 
         let stdin = child.stdin.take().context("no stdin pipe")?;
         let stdout = child.stdout.take().context("no stdout pipe")?;
@@ -271,7 +280,7 @@ impl LspClient {
             stopping,
             state: State::Starting,
             root: root.to_path_buf(),
-            server_name: program.to_string(),
+            server_name: name.to_string(),
         };
 
         client.send_initialize()?;
