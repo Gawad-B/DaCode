@@ -273,3 +273,38 @@ fn every_frame_a_panel_adds_is_still_bounded_by_the_viewport() {
         );
     }
 }
+
+/// Electric dedent: what `}` on a blank line costs, measured against the *end* of the document.
+///
+/// Measured on the function rather than through `execute`, deliberately. Routing it through a
+/// keystroke looks more realistic and cannot fail: `median` reuses one `EditorState`, so the first
+/// iteration inserts the `}` and every one after it finds a non-blank line before the caret and
+/// returns three lines in. The scan under test would never run again, and restoring the
+/// whole-document walk would leave the test green — a guard that checks nothing, which is the exact
+/// failure `conventions.rs` records.
+fn dedent(lines: usize) -> Duration {
+    let text = vex_text::Text::from_str(&source(lines));
+    let config = vex_buffer::PairConfig::default();
+    // A blank line at the very end: the worst case, and the one a walk back to the start of the
+    // document pays in full.
+    let caret = text.len_chars();
+
+    median(2_000, || {
+        std::hint::black_box(vex_buffer::pairs::dedent_for_closer(
+            &text, caret, '}', &config,
+        ));
+    })
+}
+
+#[test]
+fn typing_a_closing_brace_costs_the_same_in_a_huge_file_as_in_a_small_one() {
+    // It did not. Finding the `{` a `}` belongs to walked back to the start of the document, on the
+    // UI thread, from a keystroke — and paid a fresh rope descent per character on the way, so it
+    // was worse than linear. Nothing here caught it, because the keystroke test types `x`, which is
+    // not a closer and returns before the scan.
+    let small = dedent(SMALL);
+    let large = dedent(LARGE);
+
+    assert_flat("typing a closing brace", small, large);
+    assert_under("typing a closing brace", large, Duration::from_micros(500));
+}

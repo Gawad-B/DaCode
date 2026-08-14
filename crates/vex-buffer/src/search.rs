@@ -135,12 +135,10 @@ fn find_across_lines(
         if matches.len() >= options.limit {
             break;
         }
-        from = start
-            + haystack[start..]
-                .chars()
-                .next()
-                .map(char::len_utf8)
-                .unwrap_or(1);
+        // Disjoint, for the reason `find_in_line` gives at length: this is the path a *replace*
+        // with a newline in its query takes, so it is the one that most needs the ranges to be
+        // applicable as edits.
+        from = end;
         if from >= haystack.len() {
             break;
         }
@@ -204,13 +202,22 @@ fn find_in_line(
             return false;
         }
 
-        // Advance one character past the start, so overlapping matches are still found.
-        from = start
-            + haystack[start..]
-                .chars()
-                .next()
-                .map(char::len_utf8)
-                .unwrap_or(1);
+        // Past the whole match, not one character past its start.
+        //
+        // This used to advance by a character so that a query overlapping itself found every
+        // position — `aa` in `aaaa` gave three matches rather than two. The matches are not only
+        // highlighted: `refresh_prompt` builds one vector and hands the *same* one to the
+        // highlighter and to replace-all, which turns each into an `Edit`. Overlapping edits are
+        // exactly what `Transaction::validate` refuses, so replace-all on such a query failed
+        // whole, reporting "the server sent edits that cannot apply" — from a search prompt, with
+        // no server anywhere near it. Re-scanning inside replace is not the alternative: it would
+        // replace a different set from the one highlighted, which is the worst possible answer for
+        // an operation this destructive.
+        //
+        // Overlap buys the highlighting nothing either. Three quads over `aaaa` paint the pixels
+        // one does, while making `3 of 5` disagree with every other editor and `n` stop three times
+        // inside one run.
+        from = end;
         if from >= haystack.len() {
             break;
         }
@@ -234,7 +241,11 @@ fn find_in_line_by_chars(
         return true;
     }
 
-    for start in 0..=chars.len() - needle.len() {
+    // A while loop rather than a range, so a hit can skip its own width. Leaving this one walking a
+    // character at a time would mean a line containing `İ` — the only way to reach this path — kept
+    // producing the overlapping ranges that break replace.
+    let mut start = 0usize;
+    while start + needle.len() <= chars.len() {
         let candidate: String = chars[start..start + needle.len()]
             .iter()
             .flat_map(|c| c.to_lowercase())
@@ -246,6 +257,9 @@ fn find_in_line_by_chars(
             if matches.len() >= limit {
                 return false;
             }
+            start += needle.len();
+        } else {
+            start += 1;
         }
     }
 

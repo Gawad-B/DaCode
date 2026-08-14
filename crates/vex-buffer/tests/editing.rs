@@ -758,3 +758,116 @@ fn case_insensitive_search_still_finds_ordinary_accented_text() {
         "the slow path has to be correct, not just safe"
     );
 }
+
+// ---- backspace with more than one caret --------------------------------------------------------
+
+/// A selection set from carets at the given offsets, primary first.
+fn carets(offsets: &[usize]) -> SelectionSet {
+    SelectionSet::from_iter(
+        offsets
+            .iter()
+            .map(|at| Selection::caret(CharOffset(*at)))
+            .collect::<Vec<_>>(),
+        0,
+    )
+}
+
+#[test]
+fn only_the_carets_actually_sitting_on_a_pair_delete_both_halves() {
+    // The decision used to be taken once, from the *primary* caret, and then applied to every
+    // caret. `type_char` does that deliberately — every caret inserts the same text, so following
+    // the primary is predictable. It does not carry over to deleting: a caret in the middle of a
+    // word ate the character *after* it because a caret somewhere else happened to be inside `()`.
+    let mut document = doc("call() and word");
+    document.set_selections(carets(&[5, 15]));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(
+        document.text().to_string(),
+        "call and wor",
+        "the pair caret takes both halves, the word caret takes one character"
+    );
+}
+
+#[test]
+fn a_caret_at_the_start_of_the_document_deletes_nothing_rather_than_forwards() {
+    // `prev_grapheme(0)` clamps to 0, so the old two-grapheme range became `0..1` and backspace at
+    // the very start of the file deleted the character in front of it.
+    let mut document = doc("(hello)");
+    document.set_selections(carets(&[0, 7]));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(document.text().to_string(), "(hello");
+}
+
+#[test]
+fn adjacent_carets_delete_rather_than_being_refused_whole() {
+    // Two carets one character apart both wanted `n-1..n+1` and `n..n+2` — overlapping edits, which
+    // `Transaction::validate` refuses. The result was discarded by a `let _ =`, so backspace did
+    // nothing at all for the entire selection set, silently. `edits_for_deletion` clamps the second
+    // range against the first, which is why one of them deletes only partially: that is the
+    // helper's existing contract for adjacent carets, and it beats doing nothing.
+    let mut document = doc("a()b");
+    document.set_selections(carets(&[2, 3]));
+    document.delete_backward_pairs(&config());
+
+    assert_ne!(
+        document.text().to_string(),
+        "a()b",
+        "the transaction was rejected and backspace silently did nothing"
+    );
+}
+
+#[test]
+fn backspace_deletes_a_selected_range_whoever_else_is_on_a_pair() {
+    // The pair branch filtered range selections out entirely and the other branch handled them, so
+    // what backspace did to selected text depended on whether an unrelated caret was inside `()`.
+    let mut document = doc("call() and word");
+    document.set_selections(SelectionSet::from_iter(
+        vec![
+            Selection::caret(CharOffset(5)),
+            Selection::new(CharOffset(11), CharOffset(15)),
+        ],
+        0,
+    ));
+    document.delete_backward_pairs(&config());
+
+    assert_eq!(document.text().to_string(), "call and ");
+}
+
+#[test]
+fn a_query_that_overlaps_itself_reports_each_occurrence_once() {
+    // `find_all` advanced one character past the start of each hit, so `aa` in `aaaa` came back as
+    // three ranges — 0..2, 1..3, 2..4. They are not only highlighted: the same vector is handed to
+    // replace-all, which turns each range into an edit, and overlapping edits are exactly what
+    // `Transaction::validate` refuses. Replace-all on such a query failed whole and reported "the
+    // server sent edits that cannot apply", from a search prompt, with no server involved.
+    let text = vex_text::Text::from_str("aaaa");
+    let found = vex_buffer::find_all(&text, "aa", &vex_buffer::SearchOptions::default());
+
+    assert_eq!(
+        found,
+        vec![CharOffset(0)..CharOffset(2), CharOffset(2)..CharOffset(4)]
+    );
+
+    // And the ranges are usable as edits, which is the property that actually mattered.
+    let edits: Vec<vex_text::Edit> = found
+        .iter()
+        .map(|range| vex_text::Edit::replace(range.clone(), "b"))
+        .collect();
+    assert!(Transaction::new(edits).validate(&text).is_ok());
+}
+
+#[test]
+fn the_case_folding_fallback_does_not_overlap_either() {
+    // The slow path, reached only by a line whose lowercasing changes its byte widths. Left on the
+    // old character-at-a-time walk it would keep producing the overlapping ranges that break
+    // replace — in exactly the files nobody tests with.
+    let text = vex_text::Text::from_str("İxxxx");
+    let found = vex_buffer::find_all(&text, "xx", &vex_buffer::SearchOptions::default());
+
+    assert_eq!(
+        found,
+        vec![CharOffset(1)..CharOffset(3), CharOffset(3)..CharOffset(5)]
+    );
+}
