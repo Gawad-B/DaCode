@@ -29,6 +29,36 @@ jobs:
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --release
+      # Renders each overlay offscreen and keeps the PNGs. The project's rule is that visual work is
+      # verified by looking at a render, not by reading the drawing code — that rule has caught a
+      # transparent popup, tofu glyphs and a 2px misalignment. Doing it here means it also applies to
+      # whoever cannot run a GPU locally. Software rendering, since a runner has no display.
+      - name: Render the interface
+        continue-on-error: true
+        env:
+          VEX_NO_SYSTEM_FONTS: "1"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          WGPU_BACKEND: vulkan
+        run: |
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          mkdir -p target/shots
+          file=crates/vex/src/execute.rs
+          for view in help-panel menu context-menu commands tree settings; do
+            ./target/release/vex --$view --screenshot target/shots/$view.png $file || true
+          done
+          ./target/release/vex --which-key '<c-w>' --screenshot target/shots/which-key.png $file || true
+          # The same panel for the other grammar: it must show conventional keys, not Vim's, and
+          # that difference is the whole point of the change.
+          ./target/release/vex --help-panel --no-vim --screenshot target/shots/help-no-vim.png $file || true
+          ./target/release/vex --commands --no-vim --screenshot target/shots/commands-no-vim.png $file || true
+          ./target/release/vex --screenshot target/shots/plain.png $file || true
+          ./target/release/vex --empty --screenshot target/shots/empty.png || true
+          ls -l target/shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots
+          path: target/shots/*
       - name: Package
         run: |
           packaging/build-deb.sh

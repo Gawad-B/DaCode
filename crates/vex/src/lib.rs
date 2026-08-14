@@ -5,14 +5,17 @@
 //! the same path the keyboard drives is the path the tests drive.
 
 pub mod chrome;
+pub mod clipboard;
 pub mod completion;
 pub mod config;
 pub mod edits;
 pub mod execute;
 pub mod git;
+pub mod help;
 pub mod icon;
 pub mod import_cli;
 pub mod layout;
+pub mod menu;
 pub mod palette;
 pub mod panes;
 pub mod paths;

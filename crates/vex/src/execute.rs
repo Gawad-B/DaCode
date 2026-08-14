@@ -267,6 +267,21 @@ pub fn execute(
             return Outcome::Window(action.clone());
         }
 
+        Action::MoveLine { down } => move_lines(state, *down),
+        Action::DuplicateLine { down } => duplicate_lines(state, *down),
+        Action::ToggleComment => toggle_comment(state),
+        Action::DeleteWord { forward } => delete_word(state, *forward),
+        Action::SelectNextOccurrence { all } => select_occurrence(state, *all),
+
+        // The overlays belong to the caller: it owns the palette, the help panel and the menu, and
+        // each of them takes the keyboard away from the buffer while it is open.
+        Action::ToggleCommandPalette
+        | Action::ToggleHelp
+        | Action::ToggleMenu
+        | Action::ToggleContextMenu => {
+            return Outcome::Window(action.clone());
+        }
+
         Action::SearchProject => {
             // The word under the cursor is the query people actually want from a bare invocation.
             let query = word_under_cursor(state);
@@ -609,6 +624,388 @@ fn select_lines(state: &mut EditorState, count: usize) {
         Selection::new(range.start, range.end)
     });
     state.document.set_selections(selections);
+}
+
+/// The lines each selection touches, merged and sorted.
+///
+/// Merged because two cursors on the same line are one line's worth of work, and a line moved twice
+/// would move two rows. Every line-wise command below starts here.
+fn selected_line_spans(state: &EditorState) -> Vec<(usize, usize)> {
+    let text = state.document.text();
+    let mut spans: Vec<(usize, usize)> = state
+        .document
+        .selections()
+        .iter()
+        .map(|selection| {
+            let first = text.char_to_line(selection.start());
+            // A selection ending exactly at a line start has not touched that line — it stops at the
+            // break before it. Without this, selecting one whole line acts on two.
+            let end = selection.end();
+            let mut last = text.char_to_line(end);
+            if last > first && end == text.line_to_char(last) {
+                last -= 1;
+            }
+            (first, last)
+        })
+        .collect();
+
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+    for (first, last) in spans {
+        match merged.last_mut() {
+            Some(previous) if first <= previous.1 + 1 => previous.1 = previous.1.max(last),
+            _ => merged.push((first, last)),
+        }
+    }
+    merged
+}
+
+/// A line's text without its break.
+fn line_text(text: &vex_text::Text, line: usize) -> String {
+    text.slice_to_string(text.line_range(line))
+}
+
+/// Rewrites whole lines `first..=last` and keeps the trailing break right.
+///
+/// The break is the whole difficulty: `line_range` includes it for every line but the last one in
+/// the file, so a naive replacement either eats the final newline or grows one.
+fn replace_lines(text: &vex_text::Text, first: usize, last: usize, lines: &[String]) -> Edit {
+    let region = line_range(text, first, last);
+    let mut replacement = lines.join("\n");
+    if last < text.last_line() {
+        replacement.push('\n');
+    }
+    Edit::replace(region, replacement)
+}
+
+/// Moves the selected lines up or down by one — `alt-↑` / `alt-↓`.
+///
+/// The selection travels with the text. Anything else makes the second press act on lines you are no
+/// longer looking at, which is the version of this feature that gets called broken.
+fn move_lines(state: &mut EditorState, down: bool) {
+    let text = state.document.text().clone();
+    let spans = selected_line_spans(state);
+    let mut edits = Vec::new();
+
+    for (first, last) in &spans {
+        let (first, last) = (*first, *last);
+        // Already against the edge: that span does not move, and the others still do.
+        if (down && last >= text.last_line()) || (!down && first == 0) {
+            continue;
+        }
+
+        let (from, to) = if down { (first, last + 1) } else { (first - 1, last) };
+        let mut contents: Vec<String> = (from..=to).map(|line| line_text(&text, line)).collect();
+        if down {
+            contents.rotate_right(1);
+        } else {
+            contents.rotate_left(1);
+        }
+        edits.push(replace_lines(&text, from, to, &contents));
+    }
+
+    if edits.is_empty() {
+        return;
+    }
+
+    // The new selections are computed against the *old* text, in line and column, because a
+    // whole-line swap leaves every column exactly where it was.
+    let delta: isize = if down { 1 } else { -1 };
+    let moved: Vec<(Point, Point)> = state
+        .document
+        .selections()
+        .iter()
+        .map(|selection| {
+            let anchor = text.char_to_point(selection.anchor);
+            let head = text.char_to_point(selection.head);
+            (shift_line(anchor, delta), shift_line(head, delta))
+        })
+        .collect();
+
+    let _ = state
+        .document
+        .apply(Transaction::new(edits), EditKind::Discrete);
+
+    let text = state.document.text().clone();
+    let selections: Vec<Selection> = moved
+        .iter()
+        .map(|(anchor, head)| {
+            Selection::new(clamp_point(&text, *anchor), clamp_point(&text, *head))
+        })
+        .collect();
+    if !selections.is_empty() {
+        let primary = state.document.selections().primary_index();
+        state
+            .document
+            .set_selections(SelectionSet::from_iter(selections, primary));
+    }
+}
+
+fn shift_line(point: Point, delta: isize) -> Point {
+    Point::new(point.line.saturating_add_signed(delta), point.column)
+}
+
+fn clamp_point(text: &vex_text::Text, point: Point) -> CharOffset {
+    let line = point.line.min(text.last_line());
+    let column = point.column.min(text.line_len(line));
+    text.point_to_char(Point::new(line, column))
+}
+
+/// Copies the selected lines above or below themselves — `shift-alt-↑` / `shift-alt-↓`.
+fn duplicate_lines(state: &mut EditorState, down: bool) {
+    let text = state.document.text().clone();
+    let spans = selected_line_spans(state);
+    if spans.is_empty() {
+        return;
+    }
+
+    let mut edits = Vec::new();
+    for (first, last) in &spans {
+        let block: Vec<String> = (*first..=*last).map(|line| line_text(&text, line)).collect();
+        let mut copy = block.join("\n");
+        copy.push('\n');
+        edits.push(Edit::insert(text.line_to_char(*first), copy));
+    }
+
+    // Both copies are before the cursor's line after the insert, so the cursor ends up on the lower
+    // one. That is what "duplicate down" means; for "up" the cursor belongs on the copy above, which
+    // is the same row it started on.
+    let points: Vec<(Point, Point)> = state
+        .document
+        .selections()
+        .iter()
+        .map(|selection| {
+            (
+                text.char_to_point(selection.anchor),
+                text.char_to_point(selection.head),
+            )
+        })
+        .collect();
+
+    let _ = state
+        .document
+        .apply(Transaction::new(edits), EditKind::Discrete);
+
+    if !down {
+        let text = state.document.text().clone();
+        let primary = state.document.selections().primary_index();
+        let selections: Vec<Selection> = points
+            .iter()
+            .map(|(anchor, head)| {
+                Selection::new(clamp_point(&text, *anchor), clamp_point(&text, *head))
+            })
+            .collect();
+        state
+            .document
+            .set_selections(SelectionSet::from_iter(selections, primary));
+    }
+}
+
+/// Comments or uncomments the selected lines — `ctrl-/`.
+///
+/// Uncommenting wins when *every* non-blank line is already commented, which is the rule that makes
+/// the key a toggle over a mixed selection: a block where you commented half the lines by hand
+/// becomes fully commented, and pressing again clears it.
+fn toggle_comment(state: &mut EditorState) {
+    let Some(language) = state
+        .file_path
+        .as_deref()
+        .and_then(vex_syntax::Language::from_path)
+    else {
+        // No language, no idea what a comment looks like here. Doing nothing beats guessing `//`
+        // and writing it into a file where it means something else.
+        return;
+    };
+
+    let text = state.document.text().clone();
+    let spans = selected_line_spans(state);
+    let lines: Vec<usize> = spans
+        .iter()
+        .flat_map(|(first, last)| *first..=*last)
+        .collect();
+
+    let content: Vec<(usize, String)> = lines
+        .iter()
+        .map(|line| (*line, line_text(&text, *line)))
+        .collect();
+    let interesting: Vec<&(usize, String)> = content
+        .iter()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .collect();
+    if interesting.is_empty() {
+        return;
+    }
+
+    let comment = language.comment();
+    let commented = interesting.iter().all(|(_, text)| is_commented(text, comment));
+
+    // Added at the shallowest indent of the block, not at each line's own, so the comment column
+    // stays straight and the relative indentation inside the block survives.
+    let column = interesting
+        .iter()
+        .map(|(_, text)| text.len() - text.trim_start().len())
+        .min()
+        .unwrap_or(0);
+
+    let mut edits = Vec::new();
+    for (line, source) in &content {
+        if source.trim().is_empty() {
+            continue;
+        }
+        let updated = if commented {
+            uncomment(source, comment)
+        } else {
+            add_comment(source, comment, column)
+        };
+        if updated != *source {
+            edits.push(Edit::replace(text.line_range(*line), updated));
+        }
+    }
+
+    if !edits.is_empty() {
+        let _ = state
+            .document
+            .apply(Transaction::new(edits), EditKind::Discrete);
+    }
+}
+
+fn is_commented(source: &str, comment: vex_syntax::Comment) -> bool {
+    let trimmed = source.trim_start();
+    match comment {
+        vex_syntax::Comment::Line(token) => trimmed.starts_with(token),
+        vex_syntax::Comment::Wrap(open, close) => {
+            trimmed.starts_with(open) && source.trim_end().ends_with(close)
+        }
+    }
+}
+
+fn add_comment(source: &str, comment: vex_syntax::Comment, column: usize) -> String {
+    let (indent, rest) = source.split_at(column.min(source.len()));
+    match comment {
+        vex_syntax::Comment::Line(token) => format!("{indent}{token} {rest}"),
+        vex_syntax::Comment::Wrap(open, close) => format!("{indent}{open} {rest} {close}"),
+    }
+}
+
+fn uncomment(source: &str, comment: vex_syntax::Comment) -> String {
+    let indent: String = source.chars().take_while(|c| c.is_whitespace()).collect();
+    let body = source.trim_start();
+    match comment {
+        vex_syntax::Comment::Line(token) => {
+            let rest = body.strip_prefix(token).unwrap_or(body);
+            // The space this editor inserted after the token comes back off with it; one the user
+            // typed does not, because their formatting is theirs.
+            format!("{indent}{}", rest.strip_prefix(' ').unwrap_or(rest))
+        }
+        vex_syntax::Comment::Wrap(open, close) => {
+            let rest = body.strip_prefix(open).unwrap_or(body);
+            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+            let rest = rest.trim_end();
+            let rest = rest.strip_suffix(close).unwrap_or(rest);
+            format!("{indent}{}", rest.strip_suffix(' ').unwrap_or(rest))
+        }
+    }
+}
+
+/// `ctrl-backspace` / `ctrl-delete`. The word motions already know where a word ends; this is the
+/// same range an operator would take, deleted.
+fn delete_word(state: &mut EditorState, forward: bool) {
+    let motion = if forward {
+        Motion::WordForward
+    } else {
+        Motion::WordBackward
+    };
+    let ranges = operator_ranges(state, Target::Motion { motion, count: 1 });
+    if ranges.is_empty() {
+        return;
+    }
+    let edits = ranges
+        .iter()
+        .map(|range| Edit::delete(range.clone()))
+        .collect();
+    let _ = state
+        .document
+        .apply(Transaction::new(edits), EditKind::Discrete);
+}
+
+/// `ctrl-d`, and `ctrl-shift-l` for every occurrence at once.
+///
+/// Three behaviours in one key, which is what makes it feel like one gesture: from a caret it takes
+/// the word, from a selection it adds the next copy of that selection, and it wraps at the end of
+/// the file rather than stopping — the same reason `n` wraps.
+fn select_occurrence(state: &mut EditorState, all: bool) {
+    let text = state.document.text().clone();
+    let selections = state.document.selections().clone();
+    let primary = *selections.primary();
+
+    // From a caret: take the word under it, and stop. The first press selects; the second adds.
+    if primary.is_empty() {
+        let object = vex_input::TextObject::Word {
+            around: false,
+            big: false,
+        };
+        let mut updated: Vec<Selection> = Vec::new();
+        for selection in selections.iter() {
+            match vex_input::resolve_object(&text, selection.head, object) {
+                Some(range) if range.start < range.end => {
+                    updated.push(Selection::new(range.start, range.end))
+                }
+                _ => updated.push(*selection),
+            }
+        }
+        let index = selections.primary_index();
+        state
+            .document
+            .set_selections(SelectionSet::from_iter(updated, index));
+        return;
+    }
+
+    let query = text.slice_to_string(primary.start()..primary.end());
+    let options = vex_buffer::SearchOptions {
+        case_sensitive: Some(true),
+        ..Default::default()
+    };
+    let matches = vex_buffer::find_all(&text, &query, &options);
+    if matches.is_empty() {
+        return;
+    }
+
+    if all {
+        let found: Vec<Selection> = matches
+            .iter()
+            .map(|range| Selection::new(range.start, range.end))
+            .collect();
+        let last = found.len() - 1;
+        state
+            .document
+            .set_selections(SelectionSet::from_iter(found, last));
+        return;
+    }
+
+    let taken: Vec<(CharOffset, CharOffset)> = selections
+        .iter()
+        .map(|selection| (selection.start(), selection.end()))
+        .collect();
+    let next = matches
+        .iter()
+        .find(|range| range.start > primary.start() && !taken.contains(&(range.start, range.end)))
+        .or_else(|| {
+            matches
+                .iter()
+                .find(|range| !taken.contains(&(range.start, range.end)))
+        });
+
+    // Every occurrence is already selected: pressing again is a no-op rather than a surprise.
+    let Some(next) = next else {
+        return;
+    };
+
+    let mut updated: Vec<Selection> = selections.iter().copied().collect();
+    updated.push(Selection::new(next.start, next.end));
+    let last = updated.len() - 1;
+    state
+        .document
+        .set_selections(SelectionSet::from_iter(updated, last));
 }
 
 /// Moves to the next or previous match of the last search.

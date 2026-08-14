@@ -154,6 +154,8 @@ fn main() -> Result<()> {
         save_after_format: false,
         pointer: (0.0, 0.0),
         dragging: false,
+        last_click: None,
+        click_count: 1,
         wakes: 0,
         index: FileIndex::new(root.clone()),
         walk: Some(FileWalk::start(root.clone())),
@@ -286,6 +288,8 @@ fn new_state(
         settings: None,
         setting_sources: settings.sources.clone(),
         tree: None,
+        help: None,
+        menu: None,
     };
 
     (state, settings.keymap)
@@ -326,7 +330,8 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 12] = [
+const VALUE_FLAGS: [&str; 13] = [
+    "--which-key",
     "--screenshot",
     "--mode",
     "--columns",
@@ -730,6 +735,24 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             welcome.move_selection(2);
         }
         chrome::draw_welcome(&mut frame, &welcome, &state.typography, bounds, 1.0);
+    } else if flag("--help-panel") {
+        state.help = Some(vex::help::Help::new(state.modal));
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--menu") {
+        state.menu = Some(vex::menu::Menu::bar());
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--context-menu") {
+        state.menu = Some(vex::menu::Menu::context((420.0, 300.0), state.modal));
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if let Some(prefix) = value("--which-key") {
+        // The popup is driven by the pending display, exactly as a half-typed chord drives it.
+        state.pending = prefix;
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--commands") {
+        let mut palette = vex::palette::Palette::new(vex::palette::PaletteKind::Commands);
+        palette.refresh_commands(state.modal);
+        state.palette = Some(palette);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--settings") {
         state.settings = Some(vex::settings_ui::Settings::new());
         state
@@ -885,6 +908,15 @@ struct App {
     pointer: (f32, f32),
     /// Whether the left button is held, so a move extends the selection.
     dragging: bool,
+    /// When and where the last click landed, for recognising a double or triple one.
+    ///
+    /// The platform does not tell us: `winit` reports presses, and the "is this the second click of
+    /// a double?" question is the application's. Both halves are needed — a second click a second
+    /// later, or an inch away, is a new click and not a word selection.
+    last_click: Option<(std::time::Instant, f32, f32)>,
+    /// 1, 2 or 3: caret, word, line. Kept for the whole gesture so a drag after a double-click is
+    /// still a word-wise drag.
+    click_count: u8,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Open panes, and which has focus. Always at least one — see `vex::panes`.
@@ -1061,17 +1093,22 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::MouseInput {
-                state,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                match state {
-                    ElementState::Pressed => {
+            WindowEvent::MouseInput { state, button, .. } => {
+                match (button, state) {
+                    (winit::event::MouseButton::Left, ElementState::Pressed) => {
                         self.dragging = true;
+                        self.click_count = self.count_click();
                         self.click(false);
                     }
-                    ElementState::Released => self.dragging = false,
+                    (winit::event::MouseButton::Left, ElementState::Released) => {
+                        self.dragging = false
+                    }
+                    // The context menu, which is where a mouse user looks for cut, copy and "go to
+                    // definition" before they look for a keyboard shortcut.
+                    (winit::event::MouseButton::Right, ElementState::Pressed) => {
+                        self.open_context_menu()
+                    }
+                    _ => {}
                 }
                 self.request_redraw();
             }
@@ -1208,6 +1245,21 @@ impl App {
             WinitKey::Named(NamedKey::PageUp) => KeyCode::PageUp,
             WinitKey::Named(NamedKey::PageDown) => KeyCode::PageDown,
             WinitKey::Named(NamedKey::Space) => KeyCode::Char(' '),
+            // The function keys, which carry the bindings every editor agrees on: F2 rename, F12
+            // definition, F8 next error. Written out rather than computed because `NamedKey` has no
+            // ordering to compute from.
+            WinitKey::Named(NamedKey::F1) => KeyCode::Function(1),
+            WinitKey::Named(NamedKey::F2) => KeyCode::Function(2),
+            WinitKey::Named(NamedKey::F3) => KeyCode::Function(3),
+            WinitKey::Named(NamedKey::F4) => KeyCode::Function(4),
+            WinitKey::Named(NamedKey::F5) => KeyCode::Function(5),
+            WinitKey::Named(NamedKey::F6) => KeyCode::Function(6),
+            WinitKey::Named(NamedKey::F7) => KeyCode::Function(7),
+            WinitKey::Named(NamedKey::F8) => KeyCode::Function(8),
+            WinitKey::Named(NamedKey::F9) => KeyCode::Function(9),
+            WinitKey::Named(NamedKey::F10) => KeyCode::Function(10),
+            WinitKey::Named(NamedKey::F11) => KeyCode::Function(11),
+            WinitKey::Named(NamedKey::F12) => KeyCode::Function(12),
             WinitKey::Character(text) => KeyCode::Char(text.chars().next()?),
             _ => return None,
         };
@@ -1251,6 +1303,15 @@ impl App {
         if self.handle_welcome_key(key) {
             return false;
         }
+        // The menu and the help panel own the keyboard while they are open — they are things you are
+        // reading or choosing from, and a key that fell through would type into the file behind
+        // them. Both return whether the editor should quit, which a menu entry can ask for.
+        if self.state.menu.is_some() {
+            return self.handle_menu_key(key);
+        }
+        if self.state.help.is_some() {
+            return self.handle_help_key(key);
+        }
         if self.handle_settings_key(key) {
             return false;
         }
@@ -1258,8 +1319,10 @@ impl App {
             return false;
         }
 
-        // Opening the palette is a Ctrl binding, so it works from any mode.
-        if key.ctrl {
+        // Opening a palette is a Ctrl binding, so it works from any mode. Shift matters here:
+        // `ctrl-shift-p` is the *command* palette and must not be eaten by the file one — which it
+        // was, because this intercept ran before the grammar and ignored the modifier.
+        if key.ctrl && !key.shift {
             match key.code {
                 KeyCode::Char('p') => {
                     self.open_palette(PaletteKind::Files);
@@ -1269,20 +1332,21 @@ impl App {
                     self.open_palette(PaletteKind::Buffers);
                     return false;
                 }
-                KeyCode::Char('f') => {
-                    // Project search for the word under the cursor, or a `:grep` prompt when there
-                    // is no word there.
-                    let rows = self.code_rows();
-                    execute(
-                        &mut self.state,
-                        &mut self.registers,
-                        &Action::SearchProject,
-                        rows,
-                    );
-                    return false;
-                }
                 _ => {}
             }
+        }
+        // `ctrl-f` finds in this file and `ctrl-shift-f` across the project, as everywhere else.
+        // They were the same key, and it was the project one — so the most-pressed shortcut in
+        // computing opened a background search of every file instead of a search box.
+        if key.ctrl && key.code == KeyCode::Char('f') {
+            let rows = self.code_rows();
+            let action = if key.shift {
+                Action::SearchProject
+            } else {
+                Action::StartSearch { forward: true }
+            };
+            execute(&mut self.state, &mut self.registers, &action, rows);
+            return false;
         }
 
         let resolution = self.grammar.feed(self.state.mode, key);
@@ -1299,6 +1363,78 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Keys for the menu bar and the context menu, which own the keyboard while open.
+    ///
+    /// Returns whether the editor should quit — `file ▸ quit` is a menu entry, and a menu that
+    /// swallowed it would be a menu with a broken row in it.
+    fn handle_menu_key(&mut self, key: Key) -> bool {
+        let modal = self.state.modal;
+
+        match key.code {
+            // The key that opened it closes it. Only escape did, which is fine if you know that and
+            // a trap if you pressed f10 to find out what it was.
+            KeyCode::Escape | KeyCode::Function(10) => self.state.menu = None,
+            KeyCode::Enter => {
+                let action = self
+                    .state
+                    .menu
+                    .as_ref()
+                    .and_then(|menu| menu.selection().map(|item| item.action.clone()));
+                // Closed before running: a command that opens something of its own — the palette, a
+                // prompt — must not find the menu still sitting on top of it.
+                self.state.menu = None;
+                if let Some(action) = action {
+                    return self.run(action);
+                }
+            }
+            code => {
+                if let Some(menu) = &mut self.state.menu {
+                    match code {
+                        KeyCode::Up => menu.move_selection(-1),
+                        KeyCode::Down => menu.move_selection(1),
+                        KeyCode::Left => menu.move_menu(-1, modal),
+                        KeyCode::Right => menu.move_menu(1, modal),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Keys for the help panel. Typing filters it, which is the only way a list this long answers a
+    /// question rather than presenting one.
+    fn handle_help_key(&mut self, key: Key) -> bool {
+        let rows = self.code_rows();
+        match key.code {
+            KeyCode::Escape | KeyCode::Function(1) => self.state.help = None,
+            code => {
+                if let Some(help) = &mut self.state.help {
+                    match code {
+                        KeyCode::Up => help.scroll_by(-1, rows),
+                        KeyCode::Down => help.scroll_by(1, rows),
+                        KeyCode::PageUp => help.scroll_by(-(rows as isize), rows),
+                        KeyCode::PageDown => help.scroll_by(rows as isize, rows),
+                        KeyCode::Backspace => help.backspace(),
+                        KeyCode::Char(c) if !key.ctrl && !key.alt => help.type_char(c),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Opens the context menu where the pointer is.
+    fn open_context_menu(&mut self) {
+        // The caret moves to the click first: every command in the menu is about the thing under the
+        // pointer, and a "go to definition" that used the old cursor position would be a trap.
+        if self.state.menu.is_none() {
+            self.click(false);
+        }
+        self.state.menu = Some(vex::menu::Menu::context(self.pointer, self.state.modal));
     }
 
     fn run(&mut self, action: Action) -> bool {
@@ -1330,9 +1466,26 @@ impl App {
             self.jumps.push(here);
         }
 
+        // The unnamed register *is* the system clipboard, so it is filled from outside before a
+        // paste and pushed outside after anything that changed it. Done here rather than in
+        // `execute`, which must stay free of the machine it runs on to be testable.
+        if matches!(action, Action::Paste { register: None, .. }) {
+            if let Some(outside) = vex::clipboard::get() {
+                self.registers.set(None, outside);
+            }
+        }
+        let before = self.registers.get(None).to_string();
+
         let outcome = execute(&mut self.state, &mut self.registers, &action, rows);
         if let Outcome::Window(action) = &outcome {
             self.window_action(action);
+        }
+
+        // Compared rather than predicted from the action: every path that yanks goes through the
+        // register, and a list of which actions those are would drift the first time one was added.
+        let after = self.registers.get(None);
+        if after != before {
+            vex::clipboard::set(after);
         }
 
         // Font size changes the column advance, so the wrap width has to be recomputed or text
@@ -2307,6 +2460,28 @@ impl App {
                 }
             }
             Action::ExpandSnippet => self.expand_snippet(),
+            // The three ways of finding out what the editor can do. Each is a toggle, because the
+            // key that opened it is the key someone presses again to get rid of it.
+            Action::ToggleCommandPalette => {
+                if self.state.palette.is_some() {
+                    self.state.palette = None;
+                } else {
+                    self.open_palette(PaletteKind::Commands);
+                }
+            }
+            Action::ToggleHelp => {
+                self.state.help = match self.state.help {
+                    Some(_) => None,
+                    None => Some(vex::help::Help::new(self.state.modal)),
+                };
+            }
+            Action::ToggleMenu => {
+                self.state.menu = match self.state.menu {
+                    Some(_) => None,
+                    None => Some(vex::menu::Menu::bar()),
+                };
+            }
+            Action::ToggleContextMenu => self.open_context_menu(),
             Action::OpenFolder => {
                 // The desktop's own folder chooser when there is one — that is what "open a folder"
                 // means to everyone who did not come from Vim. Typing a path is the fallback, not the
@@ -2496,6 +2671,27 @@ impl App {
     /// In that order, because each is what the key should mean when the one before it does not
     /// apply — and because `tab` has to keep being the indent key for everyone with no snippets.
     fn expand_snippet(&mut self) {
+        // Tab over a selection that covers more than one line indents the block, which is what tab
+        // means in every editor that is not Vim. Checked before the snippet lookup because there is
+        // no snippet in play when you have deliberately selected six lines — and because the
+        // alternative, replacing the selection with four spaces, destroys work.
+        let selection = *self.state.document.selections().primary();
+        let text = self.state.document.text();
+        if text.char_to_line(selection.start()) != text.char_to_line(selection.end()) {
+            let rows = self.code_rows();
+            execute(
+                &mut self.state,
+                &mut self.registers,
+                &Action::Apply {
+                    operator: vex_input::Operator::Indent,
+                    target: vex_input::Target::Selection,
+                    register: None,
+                },
+                rows,
+            );
+            return;
+        }
+
         // Already filling one in: move to the next stop.
         if let Some(session) = &mut self.snippet {
             if session.advance() {
@@ -3194,6 +3390,7 @@ impl App {
         match kind {
             PaletteKind::Files => palette.refresh_files(&mut self.index),
             PaletteKind::Buffers => palette.refresh_buffers(&self.buffer_names()),
+            PaletteKind::Commands => palette.refresh_commands(self.state.modal),
             PaletteKind::CodeActions => {}
         }
         self.state.palette = Some(palette);
@@ -3262,10 +3459,12 @@ impl App {
 
     fn refresh_palette(&mut self) {
         let names = self.buffer_names();
+        let modal = self.state.modal;
         if let Some(palette) = &mut self.state.palette {
             match palette.kind {
                 PaletteKind::Files => palette.refresh_files(&mut self.index),
                 PaletteKind::Buffers => palette.refresh_buffers(&names),
+                PaletteKind::Commands => palette.refresh_commands(modal),
                 // Filtered against the list already fetched: the server is asked once per
                 // invocation, and typing narrows what it offered.
                 PaletteKind::CodeActions => {
@@ -3307,6 +3506,14 @@ impl App {
             }
             Target::Buffer(index) => self.switch_to(index),
             Target::CodeAction(index) => self.apply_code_action(index),
+            // Chosen from the palette, run exactly as if its key had been pressed — same action,
+            // same executor, same macro recording. A palette that had its own path to each command
+            // would be a second implementation of every one of them.
+            Target::Command(name) => {
+                if let Some(action) = Action::from_name(name) {
+                    let _ = self.run(action);
+                }
+            }
         }
     }
 
@@ -3449,6 +3656,14 @@ impl App {
         let scale = self.scale();
         let layout = self.layout();
 
+        // An open menu takes the click, wherever it lands: on a row it runs it, on a title it opens
+        // that menu, anywhere else it closes — which is what clicking away from a menu means
+        // everywhere, and the only way out for someone who opened one by accident.
+        if self.state.menu.is_some() && !extend {
+            self.click_menu(x, y, scale);
+            return;
+        }
+
         // The sidebar owns its own clicks: choosing a file in the tree is the whole reason someone
         // reaches for the mouse there.
         if vex::layout::contains(layout.sidebar, x, y) && !extend {
@@ -3502,17 +3717,130 @@ impl App {
             vex_text::DisplayPoint { row, column },
         );
 
-        if extend {
+        // A drag, or shift-click, keeps the anchor and moves the head — the same gesture, and
+        // shift-click is the one every editor offers to people who do not like dragging.
+        if extend || self.modifiers.shift_key() {
             let anchor = self.state.document.selections().primary().anchor;
             self.state
                 .document
                 .set_selections(vex_text::SelectionSet::single(Selection::new(
                     anchor, offset,
                 )));
-        } else {
-            self.state.document.set_primary_caret(offset);
+            self.sync_syntax();
+            return;
         }
+
+        // Alt-click adds a cursor rather than replacing the set. This is how multi-cursor editing is
+        // *discovered*: nobody reads a manual to find ctrl-alt-↓, but everybody tries alt-click.
+        if self.modifiers.alt_key() {
+            let mut selections: Vec<Selection> =
+                self.state.document.selections().iter().copied().collect();
+            // Alt-clicking an existing cursor removes it, which is how you undo the one you put in
+            // the wrong place without starting the whole set again.
+            match selections
+                .iter()
+                .position(|selection| selection.is_caret() && selection.head == offset)
+            {
+                Some(at) if selections.len() > 1 => {
+                    selections.remove(at);
+                }
+                _ => selections.push(Selection::caret(offset)),
+            }
+            let primary = selections.len() - 1;
+            self.state
+                .document
+                .set_selections(vex_text::SelectionSet::from_iter(selections, primary));
+            self.sync_syntax();
+            return;
+        }
+
+        self.state.document.set_primary_caret(offset);
+
+        // Ctrl-click is "go to definition", as it is in every editor with a language server. The
+        // caret moves first, because the request is about where the caret is.
+        if self.modifiers.control_key() {
+            let _ = self.run(Action::GotoDefinition);
+            return;
+        }
+
+        match self.click_count {
+            // Double-click takes the word; triple takes the line. Their absence was the most
+            // obviously broken-feeling thing about using vex with a mouse. Both go through the
+            // action they share with the keyboard rather than reaching into the selection set here,
+            // so the mouse cannot drift from what `ctrl-d` and `ctrl-l` do.
+            2 => {
+                let _ = self.run(Action::SelectNextOccurrence { all: false });
+            }
+            count if count >= 3 => {
+                let _ = self.run(Action::SelectLine { count: 1 });
+            }
+            _ => {}
+        }
+
         self.sync_syntax();
+    }
+
+    /// A click while a menu is open.
+    fn click_menu(&mut self, x: f32, y: f32, scale: f32) {
+        let bounds = {
+            let (width, height) = self
+                .renderer
+                .as_ref()
+                .map(|renderer| renderer.size())
+                .unwrap_or((1280, 820));
+            Rect::new(0.0, 0.0, width as f32, height as f32)
+        };
+        let modal = self.state.modal;
+
+        let Some(menu) = &mut self.state.menu else {
+            return;
+        };
+        let geometry = menu.geometry(bounds, scale);
+
+        if let Some(index) = menu.title_at(&geometry, x, y) {
+            menu.open = index;
+            menu.selected = 0;
+            menu.fill(modal);
+            return;
+        }
+
+        let chosen = menu
+            .row_at(&geometry, x, y)
+            .and_then(|index| menu.items.get(index))
+            .map(|item| item.action.clone());
+
+        self.state.menu = None;
+        if let Some(action) = chosen {
+            let _ = self.run(action);
+        }
+    }
+
+    /// Which click of a multi-click this is.
+    ///
+    /// The window system does not answer this, so the rule is the usual one: within half a second
+    /// and within a few pixels of the last press. The distance test matters as much as the time —
+    /// two deliberate clicks in different places are two clicks however fast you are.
+    fn count_click(&mut self) -> u8 {
+        const INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+        const SLOP: f32 = 4.0;
+
+        let (x, y) = self.pointer;
+        let now = std::time::Instant::now();
+        let count = match self.last_click {
+            Some((when, at_x, at_y))
+                if now.duration_since(when) < INTERVAL
+                    && (at_x - x).abs() < SLOP
+                    && (at_y - y).abs() < SLOP =>
+            {
+                // Wraps at three: a fourth click starts again at a caret, which is what every editor
+                // does and what stops a rapid series from getting stuck selecting whole lines.
+                (self.click_count % 3) + 1
+            }
+            _ => 1,
+        };
+
+        self.last_click = Some((now, x, y));
+        count
     }
 
     /// A click in the sidebar: the tree, the settings panel, or nothing.

@@ -180,6 +180,15 @@ impl Grammar {
             };
         }
 
+        // Function keys are the editor's, not the grammar's: F2 renames and F12 goes to a
+        // definition in both modes, the way they do in every other editor. Checked only when
+        // nothing is half-typed, so they cannot land in the middle of `d3` or `f`.
+        if self.is_idle() {
+            if let Some(action) = function_key(key) {
+                return self.emit(action);
+            }
+        }
+
         // Without the modal grammar there is one behavior, not four: text goes in, and the
         // non-modal shortcuts do the rest. `Mode::Insert` is passed along because that is what the
         // rest of the editor reads to mean "typing inserts".
@@ -198,6 +207,13 @@ impl Grammar {
     /// The shortcuts are the ones every other editor has, because that is the entire point of the
     /// switch: someone who turns Vim off is telling you they expect `ctrl-c` to copy. Selection is
     /// still a set and the actions are still the same actions — only the way in differs.
+    ///
+    /// This was thirteen keys once — copy, paste, undo, save and the arrows — and that was the
+    /// whole non-modal editor. It read as the modal one with the good parts deleted, which is
+    /// exactly what it was: Vim reaches "move this line down" by composing `ddp`, and with the
+    /// grammar off there is nothing to compose with. Every line below is a verb Vim never needed
+    /// to name. The vocabulary is VSCode's rather than invented, because muscle memory is not a
+    /// thing an editor gets to have opinions about.
     fn feed_flat(&mut self, key: Key) -> Resolution {
         // A chord already in progress owns the key. Without this the second press of `ctrl-w v` is
         // taken as text and types a `v` into the document.
@@ -205,6 +221,23 @@ impl Grammar {
             Stage::WindowPrefix => return self.take_window_prefix(key),
             Stage::ChordPrefix => return self.take_chord(key),
             _ => {}
+        }
+
+        // Alt with the vertical arrows is line surgery, and with the horizontal ones it is the
+        // jumplist — the back button every editor with a "go to definition" needs.
+        if key.alt && !key.ctrl {
+            let action = match key.code {
+                KeyCode::Up if key.shift => Some(Action::DuplicateLine { down: false }),
+                KeyCode::Down if key.shift => Some(Action::DuplicateLine { down: true }),
+                KeyCode::Up => Some(Action::MoveLine { down: false }),
+                KeyCode::Down => Some(Action::MoveLine { down: true }),
+                KeyCode::Left => Some(Action::Jump { forward: false }),
+                KeyCode::Right => Some(Action::Jump { forward: true }),
+                _ => None,
+            };
+            if let Some(action) = action {
+                return self.emit(action);
+            }
         }
 
         if key.ctrl {
@@ -224,32 +257,40 @@ impl Grammar {
                     before: false,
                     count: 1,
                 }),
+                // ctrl-y and ctrl-shift-z both redo: Windows learned the first, everywhere else the
+                // second, and someone who tries the wrong one is not making a mistake worth punishing.
+                KeyCode::Char('z') if key.shift => Some(Action::Redo),
                 KeyCode::Char('z') => Some(Action::Undo),
                 KeyCode::Char('y') => Some(Action::Redo),
                 KeyCode::Char('a') => Some(Action::SelectAll),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
                 KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
                 KeyCode::Char('g') => Some(Action::StartCommand),
-                KeyCode::Char('d') => Some(Action::AddCaretBelow),
+                // `ctrl-d` is occurrence selection, not "a cursor below": it is the first shortcut a
+                // VSCode user reaches for, and having it do something else is worse than not having
+                // it. The cursor-below gesture is ctrl-alt-↑/↓, which is where VSCode keeps it.
+                KeyCode::Char('d') => Some(Action::SelectNextOccurrence { all: false }),
+                KeyCode::Char('l') if key.shift => Some(Action::SelectNextOccurrence { all: true }),
+                KeyCode::Char('l') => Some(Action::SelectLine { count: 1 }),
+                KeyCode::Char('/') => Some(Action::ToggleComment),
+                KeyCode::Char('k') if key.shift => Some(Action::Apply {
+                    operator: Operator::Delete,
+                    target: Target::WholeLine { count: 1 },
+                    register: None,
+                }),
+                KeyCode::Char('p') if key.shift => Some(Action::ToggleCommandPalette),
                 KeyCode::Char(' ') => Some(Action::RequestCompletion),
-                // Word-wise motion, as ctrl-arrow does everywhere.
-                KeyCode::Left => Some(Action::Move {
-                    motion: Motion::WordBackward,
-                    count: 1,
-                }),
-                KeyCode::Right => Some(Action::Move {
-                    motion: Motion::WordForward,
-                    count: 1,
-                }),
-                KeyCode::Home => Some(Action::Move {
-                    motion: Motion::FileStart,
-                    count: 1,
-                }),
-                KeyCode::End => Some(Action::Move {
-                    motion: Motion::FileEnd,
-                    count: 1,
-                }),
+                KeyCode::Backspace => Some(Action::DeleteWord { forward: false }),
+                KeyCode::Delete => Some(Action::DeleteWord { forward: true }),
+                // Word-wise motion, as ctrl-arrow does everywhere, and extending with shift.
+                KeyCode::Left => Some(motion_or_extend(Motion::WordBackward, key.shift)),
+                KeyCode::Right => Some(motion_or_extend(Motion::WordForward, key.shift)),
+                KeyCode::Home => Some(motion_or_extend(Motion::FileStart, key.shift)),
+                KeyCode::End => Some(motion_or_extend(Motion::FileEnd, key.shift)),
+                KeyCode::Up if key.alt => Some(Action::AddCaretAbove),
+                KeyCode::Down if key.alt => Some(Action::AddCaretBelow),
                 _ => None,
             };
             if let Some(action) = action {
@@ -271,16 +312,19 @@ impl Grammar {
             _ => None,
         };
         if let Some(motion) = motion {
-            return self.emit(if key.shift {
-                Action::Extend { motion, count: 1 }
-            } else {
-                Action::Move { motion, count: 1 }
-            });
+            return self.emit(motion_or_extend(motion, key.shift));
         }
 
         match key.code {
             KeyCode::Char(c) => self.emit(Action::InsertText(c.to_string())),
             KeyCode::Enter => self.emit(Action::Newline),
+            // Shift-tab is always outdent. Plain tab expands a snippet or indents, which is what
+            // `ExpandSnippet` already falls back to — so a selection spanning lines still indents.
+            KeyCode::Tab if key.shift => self.emit(Action::Apply {
+                operator: Operator::Outdent,
+                target: Target::Selection,
+                register: None,
+            }),
             KeyCode::Tab => self.emit(Action::ExpandSnippet),
             KeyCode::Backspace => self.emit(Action::DeleteBackward),
             KeyCode::Delete => self.emit(Action::DeleteForward),
@@ -357,6 +401,14 @@ impl Grammar {
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 KeyCode::Char(',') => Some(Action::ToggleSettings),
+                // The palette of every command works in both grammars. Vim's own vocabulary has no
+                // way to ask "what can this editor do?", and inventing a normal-mode key for it
+                // would put the answer behind the same problem it solves.
+                KeyCode::Char('p') if key.shift => Some(Action::ToggleCommandPalette),
+                // Extra cursors, where VSCode keeps them. Modal users have `s` and visual mode, but
+                // nobody arrives knowing that, and this costs nothing.
+                KeyCode::Up if key.alt => Some(Action::AddCaretAbove),
+                KeyCode::Down if key.alt => Some(Action::AddCaretBelow),
                 _ => None,
             };
         }
@@ -952,6 +1004,48 @@ impl Grammar {
                 Resolution::Unhandled
             }
         }
+    }
+}
+
+/// What a function key does, in either grammar.
+///
+/// These are the bindings that are the same in VSCode, Visual Studio, IntelliJ and Eclipse, which
+/// makes them the closest thing this industry has to a standard: F2 renames, F12 goes to the
+/// definition, F8 walks the errors. Someone who has used any editor knows these without being told,
+/// and that is the whole argument for spending four keys on them.
+///
+/// F1 is help rather than the command palette — VSCode's F1 — on purpose. A user who is lost presses
+/// F1, and a panel listing every key that works right now answers the question they actually have,
+/// including where the command palette is. The reverse is not true: a palette answers nothing if you
+/// do not yet know what to search for.
+fn function_key(key: Key) -> Option<Action> {
+    let KeyCode::Function(number) = key.code else {
+        return None;
+    };
+
+    Some(match (number, key.shift) {
+        (1, _) => Action::ToggleHelp,
+        (2, _) => Action::Rename,
+        (3, false) => Action::RepeatSearch { forward: true },
+        (3, true) => Action::RepeatSearch { forward: false },
+        (8, false) => Action::NextDiagnostic { forward: true },
+        (8, true) => Action::NextDiagnostic { forward: false },
+        (10, false) => Action::ToggleMenu,
+        (10, true) => Action::ToggleContextMenu,
+        (12, false) => Action::GotoDefinition,
+        (12, true) => Action::FindReferences,
+        _ => return None,
+    })
+}
+
+/// A motion, or the same motion extending the selection when shift is held. Every arrow and
+/// word-motion binding needs this pair, and writing it out twice is how one of them ends up not
+/// extending.
+fn motion_or_extend(motion: Motion, shift: bool) -> Action {
+    if shift {
+        Action::Extend { motion, count: 1 }
+    } else {
+        Action::Move { motion, count: 1 }
     }
 }
 

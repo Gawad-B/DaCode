@@ -65,6 +65,8 @@ impl Session {
                 settings: None,
                 setting_sources: std::collections::HashMap::new(),
                 tree: None,
+                help: None,
+                menu: None,
             },
             grammar: Grammar::new(),
             registers: Registers::new(),
@@ -691,4 +693,147 @@ fn shift_arrow_extends_a_selection_without_modes() {
             .slice_to_string(selection.start()..selection.end()),
         "hello"
     );
+}
+
+// ---- the non-modal editor -----------------------------------------------------------------
+//
+// The complaint these answer: with Vim off, the editor was the modal one with the good parts
+// removed. Every test below is a key a person coming from any other editor presses on their first
+// day, driven through the same grammar-then-executor path the window uses.
+
+/// A session with the modal grammar off, which is what `vim_keys = false` produces.
+fn flat(contents: &str) -> Session {
+    let mut session = Session::new(contents);
+    session.grammar.set_modal(false);
+    session.state.mode = Mode::Insert;
+    session.state.modal = false;
+    session
+}
+
+#[test]
+fn alt_down_moves_the_line_and_takes_the_cursor_with_it() {
+    // The cursor travelling with the text is the whole feature: pressing it twice has to move the
+    // same line twice, not two different lines.
+    let mut session = flat("first\nsecond\nthird\n").at(0);
+    session.press(alt(vex_input::KeyCode::Down));
+    assert_eq!(session.text(), "second\nfirst\nthird\n");
+    assert_eq!(session.cursor_line(), 1, "the cursor followed the line");
+
+    session.press(alt(vex_input::KeyCode::Down));
+    assert_eq!(session.text(), "second\nthird\nfirst\n");
+}
+
+#[test]
+fn a_line_at_the_edge_does_not_move_or_vanish() {
+    let mut session = flat("only\nlines\n").at(0);
+    session.press(alt(vex_input::KeyCode::Up));
+    assert_eq!(session.text(), "only\nlines\n", "nothing above the first line");
+}
+
+#[test]
+fn shift_alt_down_leaves_two_copies_and_the_cursor_on_the_lower_one() {
+    let mut session = flat("line\n").at(0);
+    session.press(alt(vex_input::KeyCode::Down).with_shift());
+    assert_eq!(session.text(), "line\nline\n");
+    assert_eq!(session.cursor_line(), 1);
+}
+
+#[test]
+fn ctrl_slash_comments_and_uncomments_the_same_lines() {
+    // Round-tripping matters more than either direction alone: a toggle that leaves a stray space
+    // or an extra token behind rewrites files it was only asked to look at.
+    let mut session = flat("fn main() {}\n").at(0);
+    session.state.file_path = Some("main.rs".into());
+
+    session.press(Key::ctrl('/'));
+    assert_eq!(session.text(), "// fn main() {}\n");
+
+    session.press(Key::ctrl('/'));
+    assert_eq!(session.text(), "fn main() {}\n", "back to exactly what it was");
+}
+
+#[test]
+fn commenting_a_block_lines_the_tokens_up_at_the_shallowest_indent() {
+    let mut session = flat("if x {\n    body()\n}\n").at(0);
+    session.state.file_path = Some("main.rs".into());
+    // Select the whole thing, then comment it.
+    session.press(Key::ctrl('a'));
+    session.press(Key::ctrl('/'));
+
+    assert_eq!(session.text(), "// if x {\n//     body()\n// }\n");
+}
+
+#[test]
+fn a_file_in_a_language_with_no_comment_syntax_is_left_alone() {
+    // Better to do nothing than to write `//` into a file where it means something else.
+    let mut session = flat("plain text\n").at(0);
+    session.press(Key::ctrl('/'));
+    assert_eq!(session.text(), "plain text\n");
+}
+
+#[test]
+fn ctrl_d_takes_the_word_then_the_next_copy_of_it() {
+    // The first shortcut a VSCode user reaches for, and the reason it is not "add a cursor below".
+    let mut session = flat("total = total + 1\n").at(0);
+
+    session.press(Key::ctrl('d'));
+    assert_eq!(session.state.document.selections().len(), 1);
+    let first = *session.state.document.selections().primary();
+    assert_eq!(
+        session.state.document.text().slice_to_string(first.start()..first.end()),
+        "total"
+    );
+
+    session.press(Key::ctrl('d'));
+    assert_eq!(
+        session.state.document.selections().len(),
+        2,
+        "the second press adds the next occurrence as another cursor"
+    );
+}
+
+#[test]
+fn ctrl_shift_l_takes_every_copy_at_once() {
+    let mut session = flat("a b a b a\n").at(0);
+    session.press(Key::ctrl('d'));
+    session.press(Key::ctrl('l').with_shift());
+    assert_eq!(session.state.document.selections().len(), 3, "three a's");
+}
+
+#[test]
+fn ctrl_backspace_deletes_a_word_rather_than_a_letter() {
+    let mut session = flat("hello world\n").at(11);
+    session.press(Key {
+        code: vex_input::KeyCode::Backspace,
+        ctrl: true,
+        alt: false,
+        shift: false,
+    });
+    assert_eq!(session.text(), "hello \n");
+}
+
+#[test]
+fn ctrl_shift_k_takes_the_whole_line_out() {
+    let mut session = flat("keep\ndelete me\nkeep\n").at(5);
+    session.press(Key::ctrl('k').with_shift());
+    assert_eq!(session.text(), "keep\nkeep\n");
+}
+
+#[test]
+fn a_function_key_is_not_typed_into_the_file() {
+    // The bug this guards is the obvious one: F2 arriving as text and inserting "F2" — or worse, a
+    // character — into the document. It must resolve to an action, and the document must not change.
+    let mut session = flat("text\n").at(0);
+    session.press(Key::named(vex_input::KeyCode::Function(2)));
+    assert_eq!(session.text(), "text\n");
+}
+
+/// A key with alt held, which the conventional bindings need and `Key` has no shorthand for.
+fn alt(code: vex_input::KeyCode) -> Key {
+    Key {
+        code,
+        ctrl: false,
+        alt: true,
+        shift: false,
+    }
 }

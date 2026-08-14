@@ -37,6 +37,15 @@ impl<'a> TextProvider<&'a [u8]> for RopeText<'a> {
     }
 }
 
+/// How a language writes a comment.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Comment {
+    /// The token that comments out the rest of the line.
+    Line(&'static str),
+    /// Opening and closing tokens, for languages with no line comment.
+    Wrap(&'static str, &'static str),
+}
+
 /// A language the editor knows how to parse.
 ///
 /// The set from the plan's locked decisions, minus Dart: no maintained `tree-sitter-dart` crate is
@@ -86,6 +95,27 @@ impl Language {
             "css" => Language::Css,
             _ => return None,
         })
+    }
+
+    /// How this language spells a comment, for the toggle every conventional editor puts on
+    /// `ctrl-/`.
+    ///
+    /// Line comments where the language has them. CSS and HTML have none, so their block form is
+    /// wrapped around each line individually rather than around the selection: wrapping the block
+    /// would nest on a second press and uncommenting would have to parse, while one wrapper per
+    /// line is trivially reversible — which is what a *toggle* has to be.
+    pub fn comment(self) -> Comment {
+        match self {
+            Language::Rust
+            | Language::JavaScript
+            | Language::TypeScript
+            | Language::Tsx
+            | Language::C
+            | Language::Cpp => Comment::Line("//"),
+            Language::Python => Comment::Line("#"),
+            Language::Css => Comment::Wrap("/*", "*/"),
+            Language::Html => Comment::Wrap("<!--", "-->"),
+        }
     }
 
     pub fn name(self) -> &'static str {
