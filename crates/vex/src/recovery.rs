@@ -98,6 +98,16 @@ impl Recovery {
         false
     }
 
+    /// Whether any file has unsaved work waiting in this directory.
+    ///
+    /// Not used by the editor, which asks per path — this is for tests and for anything that wants
+    /// to know whether a crash left anything behind at all.
+    pub fn is_empty(&self) -> bool {
+        std::fs::read_dir(&self.directory)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(true)
+    }
+
     /// Called after a successful save: the on-disk file is now authoritative.
     pub fn discard(&mut self, path: &Path) {
         self.last_written = None;
@@ -182,6 +192,35 @@ pub fn find_in(directory: &Path, path: &Path) -> Option<Found> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn several_dirty_files_each_keep_their_own_copy() {
+        // The defect this covers: only the *active* document was ever written, so editing three
+        // files and crashing gave one of them back. Each path has its own recovery file, and one
+        // must not overwrite another — the flattened naming scheme is what guarantees that, and two
+        // files with the same basename in different directories are how it would fail.
+        let sandbox = Sandbox::new("several");
+        let one = sandbox.file("src/main.rs", "fn main() {}\n");
+        let two = sandbox.file("tests/main.rs", "fn test() {}\n");
+
+        write_in(&sandbox.recovery, &one, "fn main() { edited }\n").unwrap();
+        write_in(&sandbox.recovery, &two, "fn test() { also }\n").unwrap();
+
+        assert_ne!(
+            recovery_path_in(&sandbox.recovery, &one),
+            recovery_path_in(&sandbox.recovery, &two),
+            "two files called main.rs must not share a recovery file"
+        );
+        assert_eq!(
+            find_in(&sandbox.recovery, &one).map(|found| found.text),
+            Some("fn main() { edited }\n".to_string())
+        );
+        assert_eq!(
+            find_in(&sandbox.recovery, &two).map(|found| found.text),
+            Some("fn test() { also }\n".to_string())
+        );
+        std::fs::remove_dir_all(&sandbox.root).ok();
+    }
 
     /// A disposable project directory plus its own recovery directory.
     struct Sandbox {

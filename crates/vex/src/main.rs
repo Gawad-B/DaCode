@@ -145,6 +145,7 @@ fn main() -> Result<()> {
         missing_servers: std::collections::HashSet::new(),
         confirm_close: None,
         restore_window: None,
+        confirm_quit: false,
         sent_version: None,
         folder_picker: None,
         snippets: load_snippets(),
@@ -941,6 +942,8 @@ struct App {
     confirm_close: Option<usize>,
     /// The size the last session's window had, applied when this one is created.
     restore_window: Option<(u32, u32)>,
+    /// Whether closing the window has already been refused once for unsaved work.
+    confirm_quit: bool,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
     /// Set when a save asked for formatting: the reply's edits are applied and the file written
@@ -1158,6 +1161,26 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
+                // Closing the window with unsaved work used to exit immediately. Recovery would have
+                // held it — it is written on the way out — but "your work is in a recovery file
+                // somewhere" is not an answer anybody wants to be given by a window that has already
+                // gone.
+                //
+                // The same shape as closing a buffer: refuse once, say what saves it, and let the
+                // second attempt through. A dialog would be better and is a larger change; this
+                // cannot lose anything, which is the property that matters.
+                let unsaved = self.unsaved_count();
+                if unsaved > 0 && !self.confirm_quit {
+                    self.confirm_quit = true;
+                    self.state.hover = Some(format!(
+                        "{unsaved} unsaved file{} — {} saves this one, or close again to leave them \
+                         in the recovery file",
+                        if unsaved == 1 { "" } else { "s" },
+                        self.key_for("save")
+                    ));
+                    self.request_redraw();
+                    return;
+                }
                 self.persist_recovery(true);
                 self.save_session();
                 event_loop.exit();
@@ -1302,6 +1325,20 @@ impl ApplicationHandler for App {
                 self.poll_walk();
 
                 if self.handle_key(logical_key) {
+                    // The same refusal `CloseRequested` makes, for the same reason: ctrl-q with
+                    // three dirty buffers must not be one keystroke away from leaving them.
+                    let unsaved = self.unsaved_count();
+                    if unsaved > 0 && !self.confirm_quit {
+                        self.confirm_quit = true;
+                        self.state.hover = Some(format!(
+                            "{unsaved} unsaved file{} — {} saves this one, or quit again to leave \
+                             them in the recovery file",
+                            if unsaved == 1 { "" } else { "s" },
+                            self.key_for("save")
+                        ));
+                        self.request_redraw();
+                        return;
+                    }
                     // Quitting is the last chance to save unsaved work, and to remember where we
                     // were.
                     self.persist_recovery(true);
@@ -2275,17 +2312,42 @@ impl App {
     }
 
     fn persist_recovery(&mut self, force: bool) {
-        if !self.state.document.is_dirty() {
-            return;
-        }
-        let Some(path) = self.state.file_path.clone() else {
+        // The active buffer, on the throttle: it is the one being typed into, and the timer exists
+        // so a keystroke does not cost a file write.
+        if self.state.document.is_dirty() {
             // A scratch buffer has no identity to recover to. Rather than invent one, it is left
             // alone — and that limitation is stated in the plan rather than hidden.
+            if let Some(path) = self.state.file_path.clone() {
+                let text = self.state.document.text().to_string();
+                self.recovery
+                    .maybe_write(std::path::Path::new(&path), &text, force);
+            }
+        }
+
+        if !force {
             return;
-        };
-        let text = self.state.document.text().to_string();
-        self.recovery
-            .maybe_write(std::path::Path::new(&path), &text, force);
+        }
+
+        // Every *other* dirty buffer, but only when it matters. This wrote the active document and
+        // nothing else, so a file edited and then switched away from was lost entirely in a crash —
+        // the one failure the whole recovery mechanism exists to prevent, in the case where the user
+        // has done the most work.
+        //
+        // Only on `force` — quitting, or switching buffers — because a background buffer cannot
+        // change without one of those happening first. There is nothing to write on a keystroke.
+        for buffer in &self.buffers {
+            if !buffer.document.is_dirty() {
+                continue;
+            }
+            let Some(path) = &buffer.file_path else {
+                continue;
+            };
+            let _ = vex::recovery::write_in(
+                self.recovery.directory(),
+                std::path::Path::new(path),
+                &buffer.document.text().to_string(),
+            );
+        }
     }
 
     /// Offers unsaved work from a previous session.
@@ -4016,11 +4078,33 @@ impl App {
                 }
 
                 match vex::open::read(&path) {
-                    vex::open::Opened::Text(contents) => self.open_document(
-                        Document::from_str(&contents),
-                        relative_crumbs(&path_string),
-                        Some(path_string),
-                    ),
+                    vex::open::Opened::Text(contents) => {
+                        // Unsaved work from a crash, if there is any for this file. Only the file
+                        // open at startup was ever offered it, so a crash that took three dirty
+                        // buffers gave one of them back — and the other two sat in the recovery
+                        // directory unmentioned, which is the same as losing them.
+                        let recovered = self
+                            .recovery
+                            .find(&path)
+                            .filter(|found| found.text != contents);
+
+                        let mut document = Document::from_str(
+                            recovered.as_ref().map_or(&contents, |found| &found.text),
+                        );
+                        if recovered.is_some() {
+                            document.mark_dirty();
+                            self.state.hover = Some(format!(
+                                "recovered unsaved changes for {} — {} keeps them",
+                                path.file_name().unwrap_or_default().to_string_lossy(),
+                                self.key_for("save")
+                            ));
+                        }
+                        self.open_document(
+                            document,
+                            relative_crumbs(&path_string),
+                            Some(path_string),
+                        );
+                    }
                     // On screen, not to a console: a release build on Windows has none, so this
                     // was a click on a file in the tree that appeared to do nothing at all.
                     vex::open::Opened::Refused(why) => {
@@ -4161,6 +4245,16 @@ impl App {
         }
         self.state.buffer_count = self.buffers.len() + 1;
         self.refresh_buffer_tabs();
+    }
+
+    /// How many open buffers have unsaved changes.
+    fn unsaved_count(&self) -> usize {
+        usize::from(self.state.document.is_dirty())
+            + self
+                .buffers
+                .iter()
+                .filter(|buffer| buffer.document.is_dirty())
+                .count()
     }
 
     /// What the tab strip draws. Refreshed whenever the buffer list changes.
