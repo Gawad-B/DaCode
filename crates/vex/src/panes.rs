@@ -163,6 +163,7 @@ mod tests {
         panes.focused_mut().scroll = ScrollAnchor {
             line: 40,
             sub_row: 1,
+            column: 0,
         };
 
         panes.split(PaneLayout::Vertical);

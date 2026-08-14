@@ -229,6 +229,11 @@ pub const COMMANDS: &[Command] = &[
     command("toggle_tree", "show or hide the file tree", View, "<c-e>", "<c-e>"),
     command("toggle_theme", "switch between light and dark", View, "", ""),
     command("toggle_soft_wrap", "wrap long lines, or do not", View, "", ""),
+    // No non-modal key by design: no conventional editor binds horizontal scroll to one, the wheel
+    // and reveal-on-cursor cover it, and inventing a chord is worse than the palette saying
+    // honestly that there is none.
+    command("scroll_left", "look left along a long line", View, "zh", ""),
+    command("scroll_right", "look right along a long line", View, "zl", ""),
     command("increase_font_size", "bigger text", View, "", ""),
     command("decrease_font_size", "smaller text", View, "", ""),
     command("menu", "the menu bar", View, "<f10>", "<f10>"),
@@ -300,6 +305,9 @@ pub fn continuations(prefix: &str, modal: bool) -> &'static [(&'static str, &'st
             ("a", "fold or unfold this block"),
             ("R", "unfold everything"),
             ("M", "fold everything"),
+            ("w", "wrap long lines, or do not"),
+            ("h", "look left along a long line"),
+            ("l", "look right along a long line"),
         ],
         "]" => &[("d", "next problem")],
         "[" => &[("d", "previous problem")],

@@ -2348,6 +2348,33 @@ fn draw_tree(
 /// Derived from the type scale for now. At the point where a proportional fallback glyph can
 /// appear in code, this must come from the shaper's measured advance, or the gutter and the text
 /// will drift out of registration.
+/// The part of `content` inside the grid's visible columns, and the x it starts at.
+///
+/// `content` must already have been through `expand_tabs`, so one char is one column. Returns
+/// `None` when the segment is entirely off screen — the common case for the left of a long line
+/// once the view has scrolled, and the reason this is worth doing at all rather than drawing
+/// everything and letting the clip sort it out.
+fn visible_slice(grid: &crate::layout::CodeGrid, start_column: usize, content: &str) -> Option<(f32, String)> {
+    let first = grid.offset();
+    let last = first + grid.columns() + 1;
+    let end = start_column + content.chars().count();
+
+    if end <= first || start_column >= last {
+        return None;
+    }
+    if start_column >= first && end <= last {
+        return Some((grid.x_of(start_column), content.to_string()));
+    }
+
+    let skip = first.saturating_sub(start_column);
+    let take = (last.min(end)).saturating_sub(start_column.max(first));
+    let sliced: String = content.chars().skip(skip).take(take).collect();
+    if sliced.is_empty() {
+        return None;
+    }
+    Some((grid.x_of(start_column + skip), sliced))
+}
+
 fn column_advance(state: &EditorState, scale: f32) -> f32 {
     advance_for(state.typography.code_size * scale)
 }
@@ -2644,7 +2671,23 @@ fn draw_code(
     let height = state.visible_rows(code.height, row_height);
     let rows = state.display.rows_from(text, pane.scroll, height);
     let advance = column_advance(state, scale);
-    let text_left = code.x + space::SM * scale;
+    // One grid, read by every x below and by the mouse. The horizontal scroll offset enters the
+    // arithmetic here and nowhere else — a second copy is a click landing in a different column
+    // from the one under the pointer the instant the view moves sideways.
+    let grid = crate::layout::CodeGrid::new(
+        code,
+        advance,
+        row_height,
+        // Ignored while wrap is on: there is nothing to the right of the viewport then, and the
+        // remembered column must not affect anything while it is invisible.
+        if state.display.mode == WrapMode::None {
+            pane.scroll.column
+        } else {
+            0
+        },
+        scale,
+    );
+    let text_left = grid.x_of(0);
     let em = state.typography.code_size * scale;
 
     // Diagnostics, search matches and inlay hints, narrowed to what is on screen — once per frame
@@ -2753,7 +2796,7 @@ fn draw_code(
                     y + row_height - border::ACCENT_BORDER * scale - 1.0,
                     ((to_column - from_column) as f32 * advance).max(advance),
                     border::ACCENT_BORDER * scale,
-                ),
+                ).intersect(code),
                 color,
             );
         }
@@ -2774,7 +2817,7 @@ fn draw_code(
                     y,
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
-                ),
+                ).intersect(code),
                 // The visual hue at low alpha: a found-text wash that is not the selection and not
                 // the cursor line.
                 theme
@@ -2803,7 +2846,7 @@ fn draw_code(
                     y,
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
-                ),
+                ).intersect(code),
                 theme.selection_fill(if pane.focused {
                     state.mode
                 } else {
@@ -2912,10 +2955,20 @@ fn draw_code(
         let mut column = 0usize;
 
         for segment in segments(pane.highlights, row.range.clone()) {
-            let x = text_left + indent_px + column as f32 * advance;
             let raw = text.slice_to_string(segment.range.clone());
             let content = expand_tabs(state, &raw);
+            let at = row.indent + column;
             column += content.chars().count();
+
+            // Sliced to the visible columns rather than drawn at a negative x and left to clip. A
+            // run *is* clipped by glyphon — but to its own rect, which is the one starting at that
+            // negative x, and glyphs are drawn after all quads within a layer. So a row scrolled
+            // sideways would paint its code over the line numbers. Slicing also keeps shaping
+            // bounded by the viewport, which is what a minified file needs.
+            let Some((x, content)) = visible_slice(&grid, at, &content) else {
+                continue;
+            };
+            let _ = indent_px;
 
             frame.text(run(
                 state,

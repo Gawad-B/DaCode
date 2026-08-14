@@ -269,6 +269,23 @@ pub fn execute(
             ));
             state.pending_request = Some(action.clone());
         }
+        // The window action list owns this: the clamp needs the rows on screen, which the caller
+        // has and the executor's `rows` argument gives it.
+        Action::ScrollHorizontally { right } => {
+            if state.display.mode == vex_display::WrapMode::None {
+                const STEP: usize = 8;
+                let visible =
+                    state
+                        .display
+                        .rows_from(state.document.text(), state.scroll, rows.max(1));
+                let longest = visible.iter().map(|row| row.len()).max().unwrap_or(0);
+                state.scroll.column = if *right {
+                    (state.scroll.column + STEP).min(longest.saturating_add(STEP))
+                } else {
+                    state.scroll.column.saturating_sub(STEP)
+                };
+            }
+        }
         Action::StartReplace => {
             state.prompt = Some(Prompt::new(PromptKind::Replace, state.cursor()));
             state.search_matches.clear();

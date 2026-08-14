@@ -36,6 +36,22 @@ impl Rect {
         self.width > 0.0 && self.height > 0.0
     }
 
+    /// The overlap of two rects, empty when they do not touch.
+    ///
+    /// `Frame::fill` clips nothing — it only drops rects with no area — so anything positioned from
+    /// a display column has to be measured against the code area before it is pushed, or a row
+    /// scrolled sideways paints its selection over the line numbers.
+    pub fn intersect(self, other: Rect) -> Self {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        Self::new(
+            x,
+            y,
+            (self.right().min(other.right()) - x).max(0.0),
+            (self.bottom().min(other.bottom()) - y).max(0.0),
+        )
+    }
+
     /// Inset on all sides. Negative values grow the rect.
     pub fn inset(self, by: f32) -> Self {
         Self::new(

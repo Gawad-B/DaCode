@@ -190,6 +190,13 @@ pub enum Action {
     SelectAll,
 
     ToggleSoftWrap,
+    /// `zh` / `zl` — slide the view sideways along a long line, without moving the caret.
+    ///
+    /// Only means anything with soft wrap off; with it on there is nothing to the right of the
+    /// viewport to look at.
+    ScrollHorizontally {
+        right: bool,
+    },
     ToggleTheme,
     IncreaseFontSize,
     DecreaseFontSize,
@@ -398,6 +405,8 @@ impl Action {
         "select_line",
         "select_all",
         "toggle_soft_wrap",
+        "scroll_left",
+        "scroll_right",
         "toggle_theme",
         "increase_font_size",
         "decrease_font_size",
@@ -535,6 +544,8 @@ impl Action {
 
             // Appearance.
             "toggle_soft_wrap" => Action::ToggleSoftWrap,
+            "scroll_left" => Action::ScrollHorizontally { right: false },
+            "scroll_right" => Action::ScrollHorizontally { right: true },
             "toggle_theme" => Action::ToggleTheme,
             "increase_font_size" => Action::IncreaseFontSize,
             "decrease_font_size" => Action::DecreaseFontSize,

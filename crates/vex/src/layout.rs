@@ -117,6 +117,70 @@ pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
     placed
 }
 
+/// The mapping between a pane's code area and the display grid inside it.
+///
+/// **The single definition of where a column is in pixels and which column a pixel is in.**
+/// `draw_code` reads it to place every glyph, underline and highlight; `App::offset_at` reads it to
+/// turn a click into an offset. There were two copies of that mapping before this existed, and they
+/// already disagreed — drawing padded by `space::SM` (12) and the mouse subtracted 8, so a click
+/// landed most of a character out. Adding a horizontal scroll offset to two copies would have made
+/// a click land in a different column from the one under the pointer the moment the view moved.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeGrid {
+    /// The code area itself, after sticky scroll has taken its share.
+    pub code: Rect,
+    pad: f32,
+    advance: f32,
+    row_height: f32,
+    /// Leftmost visible column. Always 0 while soft wrap is on.
+    offset: usize,
+}
+
+impl CodeGrid {
+    pub fn new(code: Rect, advance: f32, row_height: f32, offset: usize, scale: f32) -> Self {
+        Self {
+            code,
+            pad: vex_theme::space::SM * scale,
+            advance,
+            row_height,
+            offset,
+        }
+    }
+
+    pub fn advance(&self) -> f32 {
+        self.advance
+    }
+
+    pub fn row_height(&self) -> f32 {
+        self.row_height
+    }
+
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
+    /// The left edge of a display column, in pixels.
+    pub fn x_of(&self, column: usize) -> f32 {
+        self.code.x + self.pad + (column as f32 - self.offset as f32) * self.advance
+    }
+
+    /// Which display column a pixel is in. The exact inverse of [`CodeGrid::x_of`].
+    pub fn column_at(&self, x: f32) -> usize {
+        let columns = ((x - self.code.x - self.pad) / self.advance).round();
+        (columns.max(0.0) as usize) + self.offset
+    }
+
+    /// Which visible row a pixel is in, counted from the top of the code area.
+    pub fn row_at(&self, y: f32) -> usize {
+        ((y - self.code.y) / self.row_height).floor().max(0.0) as usize
+    }
+
+    /// How many whole columns fit across the code area.
+    pub fn columns(&self) -> usize {
+        (((self.code.width - self.pad * 2.0) / self.advance).floor()).max(1.0) as usize
+    }
+}
+
 /// One open file in the tab strip.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tab {
@@ -372,6 +436,49 @@ mod tests {
             Some(TOOLBAR[0].command),
             "what survives is the front of the row — the buttons reached for most"
         );
+    }
+
+    #[test]
+    fn a_column_and_the_pixel_it_sits_at_are_exact_inverses() {
+        // The defect this exists for: drawing and hit-testing each had their own copy of this
+        // mapping, and they already disagreed about the left pad — drawing used 12, the mouse used
+        // 8 — so a click landed most of a character out before any horizontal scroll existed.
+        // Adding an offset to two copies would have made it a whole column, and growing.
+        let code = Rect::new(300.0, 120.0, 900.0, 600.0);
+
+        for offset in [0usize, 1, 17, 240] {
+            let grid = CodeGrid::new(code, 8.1, 26.0, offset, 1.0);
+            for column in offset..offset + 40 {
+                assert_eq!(
+                    grid.column_at(grid.x_of(column)),
+                    column,
+                    "column {column} at offset {offset} did not survive the round trip"
+                );
+            }
+            assert!(
+                grid.x_of(offset) >= code.x,
+                "the leftmost visible column must not be drawn left of the code area"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_sideways_moves_the_pixels_and_nothing_else() {
+        let code = Rect::new(0.0, 0.0, 800.0, 400.0);
+        let still = CodeGrid::new(code, 8.0, 26.0, 0, 1.0);
+        let moved = CodeGrid::new(code, 8.0, 26.0, 10, 1.0);
+
+        assert_eq!(
+            moved.x_of(10),
+            still.x_of(0),
+            "column 10 at an offset of 10 sits where column 0 sat"
+        );
+        assert_eq!(
+            still.row_at(30.0),
+            moved.row_at(30.0),
+            "the vertical axis is untouched"
+        );
+        assert_eq!(still.columns(), moved.columns());
     }
 
     #[test]

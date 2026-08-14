@@ -250,6 +250,7 @@ writes into a marked block at the end of `init.lua`; your own lines are never re
 | Key | Does |
 |---|---|
 | `zw` | toggle soft wrap |
+| `zh` `zl` | with wrap off, look left / right along a long line — 8 columns a press |
 | `gt` | toggle light / dark |
 | `=` `+` · `-` | larger · smaller font |
 

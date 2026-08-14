@@ -38,11 +38,28 @@ pub enum WrapMode {
 pub struct ScrollAnchor {
     pub line: usize,
     pub sub_row: usize,
+    /// Leftmost visible display column.
+    ///
+    /// Only means anything with [`WrapMode::None`]: with wrap on there is nothing to the right of
+    /// the viewport to scroll to. It is *remembered* rather than reset while wrapping, so turning
+    /// wrap off returns you to where you were looking — and everything that draws or hit-tests
+    /// ignores it while wrap is on, which is one rule in one place rather than a reset in the
+    /// toggle, the settings panel and the config reader.
+    ///
+    /// It lives here rather than beside it because of what this struct already travels through: it
+    /// is the field a buffer switch swaps and a pane save/restore carries, so the column comes with
+    /// them for free. On `EditorState` it would draw every unfocused pane at the focused pane's
+    /// offset.
+    pub column: usize,
 }
 
 impl ScrollAnchor {
     pub fn at_line(line: usize) -> Self {
-        Self { line, sub_row: 0 }
+        Self {
+            line,
+            sub_row: 0,
+            column: 0,
+        }
     }
 }
 
@@ -534,6 +551,7 @@ impl DisplayMap {
         let target = ScrollAnchor {
             line: target_line,
             sub_row: target_sub_row,
+            column: anchor.column,
         };
 
         // Above the viewport: put the target `margin` rows below the top.
@@ -578,7 +596,65 @@ impl DisplayMap {
             remaining -= 1;
         }
 
-        ScrollAnchor { line, sub_row }
+        ScrollAnchor {
+            line,
+            sub_row,
+            // The horizontal position is not this function's business. Dropping it here would snap
+            // the view back to column zero every time the cursor moved a row.
+            column: from.column,
+        }
+    }
+
+    /// The display column `offset` sits at within its own row.
+    ///
+    /// The horizontal counterpart of the row index [`DisplayMap::display_point`] returns — and
+    /// unlike it, this answers even when the position is off screen, which is exactly when the
+    /// horizontal reveal needs it.
+    pub fn column_of(&self, text: &Text, offset: CharOffset) -> usize {
+        let line = text.char_to_line(offset);
+        let rows = self.wrap_line(text, line);
+        let Some(row) = rows
+            .iter()
+            .find(|row| offset >= row.range.start && offset <= row.range.end)
+        else {
+            return 0;
+        };
+        let chars: Vec<char> = text
+            .slice_to_string(row.range.start..offset.min(row.range.end))
+            .chars()
+            .collect();
+        row.indent + self.columns_of(&chars)
+    }
+
+    /// Slides the view sideways the least amount that brings `offset` into view.
+    ///
+    /// Returns the anchor untouched when soft wrap is on: there is nothing to the right of the
+    /// viewport then, and the remembered column must not drift while it is invisible.
+    ///
+    /// `margin` is in columns and is capped at half the viewport, so a narrow pane still resolves
+    /// rather than fighting itself.
+    pub fn scroll_to_reveal_column(
+        &self,
+        text: &Text,
+        anchor: ScrollAnchor,
+        width: usize,
+        offset: CharOffset,
+        margin: usize,
+    ) -> ScrollAnchor {
+        if self.mode != WrapMode::None || width == 0 {
+            return anchor;
+        }
+
+        let column = self.column_of(text, offset);
+        let margin = margin.min(width / 2);
+        let mut moved = anchor;
+
+        if column < anchor.column.saturating_add(margin) {
+            moved.column = column.saturating_sub(margin);
+        } else if column + margin >= anchor.column + width {
+            moved.column = (column + margin + 1).saturating_sub(width);
+        }
+        moved
     }
 
     /// Vertical motion that follows *display* rows, so moving down a wrapped line lands on the

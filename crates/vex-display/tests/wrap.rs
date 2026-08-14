@@ -131,6 +131,7 @@ fn an_anchor_can_sit_mid_line_so_long_lines_scroll_smoothly() {
         ScrollAnchor {
             line: 0,
             sub_row: 2,
+            column: 0,
         },
         2,
     );
@@ -401,6 +402,7 @@ fn an_anchor_inside_a_fold_is_nudged_out_rather_than_drawing_hidden_text() {
         ScrollAnchor {
             line: 2,
             sub_row: 0,
+            column: 0,
         },
         3,
     );
@@ -484,4 +486,94 @@ fn a_blank_line_borrows_the_context_of_the_code_above_it() {
         vec![0],
         "standing on a blank line inside a function still shows the function"
     );
+}
+
+// ---- horizontal scrolling ---------------------------------------------------------------
+
+#[test]
+fn a_caret_past_the_right_edge_drags_the_view_to_it() {
+    // The defect: with soft wrap off there was no horizontal offset at all, so anything past the
+    // viewport's right edge was permanently invisible *and* unreachable — the caret could be there
+    // and you could not see it.
+    let text = Text::from_str(&format!("{}END\n", "x".repeat(300)));
+    let map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor::at_line(0);
+
+    let near_the_end = CharOffset(299);
+    let moved = map.scroll_to_reveal_column(&text, anchor, 80, near_the_end, 8);
+    assert!(moved.column > 0, "the view must follow the caret sideways");
+    assert!(
+        moved.column <= 299,
+        "and must not scroll past the caret itself"
+    );
+
+    // Back at the start, it comes back.
+    let home = map.scroll_to_reveal_column(&text, moved, 80, CharOffset(0), 8);
+    assert_eq!(home.column, 0);
+}
+
+#[test]
+fn a_caret_already_comfortably_visible_does_not_move_the_view() {
+    // A view that re-centres on every keystroke is unusable, which is why the reveal is "the least
+    // amount that brings it into view" rather than "put it in the middle".
+    let text = Text::from_str(&format!("{}\n", "y".repeat(300)));
+    let map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor {
+        line: 0,
+        sub_row: 0,
+        column: 100,
+    };
+
+    let inside = map.scroll_to_reveal_column(&text, anchor, 80, CharOffset(140), 8);
+    assert_eq!(inside.column, 100, "nothing to do");
+}
+
+#[test]
+fn soft_wrap_leaves_the_horizontal_offset_alone() {
+    // With wrap on there is nothing to the right of the viewport, so the remembered column must not
+    // drift while it is invisible — otherwise turning wrap off returns you somewhere you never were.
+    let text = Text::from_str(&format!("{}\n", "z".repeat(300)));
+    let map = DisplayMap {
+        mode: WrapMode::Word,
+        columns: 40,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor {
+        line: 0,
+        sub_row: 0,
+        column: 77,
+    };
+
+    let after = map.scroll_to_reveal_column(&text, anchor, 40, CharOffset(250), 8);
+    assert_eq!(after.column, 77, "remembered, not reset and not moved");
+}
+
+#[test]
+fn the_horizontal_offset_survives_a_vertical_scroll() {
+    // `scroll_to_reveal` builds a fresh anchor, and dropping the column there would snap the view
+    // back to the left every time the cursor changed row.
+    let doc = Text::from_str(&format!(
+        "{}\n{}\n{}\n",
+        "a".repeat(200),
+        "b".repeat(200),
+        "c".repeat(200)
+    ));
+    let map = DisplayMap {
+        mode: WrapMode::None,
+        ..Default::default()
+    };
+    let anchor = ScrollAnchor {
+        line: 0,
+        sub_row: 0,
+        column: 50,
+    };
+
+    let after = map.scroll_to_reveal(&doc, anchor, 2, CharOffset(450), 1);
+    assert_eq!(after.column, 50, "the vertical reveal must not reset it");
 }

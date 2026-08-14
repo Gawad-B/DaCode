@@ -914,6 +914,10 @@ impl Grammar {
             'M' => self.emit(Action::FoldAll { close: true }),
             // vex's own: soft wrap has no Vim spelling to collide with.
             'w' => self.emit(Action::ToggleSoftWrap),
+            // Vim's, but eight columns a press rather than one — one is unusable on a screen 200
+            // columns wide, and the cheat sheet says which it is.
+            'h' => self.emit(Action::ScrollHorizontally { right: false }),
+            'l' => self.emit(Action::ScrollHorizontally { right: true }),
             _ => {
                 self.clear();
                 Resolution::Unhandled

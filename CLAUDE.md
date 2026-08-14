@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-597 tests, clippy clean.
+611 tests, clippy clean.
 
 ## Commands
 
@@ -133,6 +133,17 @@ say it was cut. Anything user-supplied or variable-length goes through `chrome::
 `Typography::advance` — a type-scale estimate, not the shaper, so it can be a character out either
 way. Better an approximate ellipsis than an exact guillotine.
 
+**The horizontal scroll offset enters pixel arithmetic only through `layout::CodeGrid`.** That type
+is the single mapping between a display column and an x, read by `draw_code` to place every glyph and
+by `App::offset_at` to turn a click into an offset. There were two copies before it existed and they
+already disagreed about the left pad — drawing used `space::SM` (12) and the mouse subtracted 8 — so
+a click landed most of a character out. A second copy plus an offset is a click landing in a
+different column from the one under the pointer, growing as you scroll. Text is *sliced* to the
+visible columns rather than drawn at a negative x: a run is clipped to its own rect, which is the one
+starting at that negative x, and glyphs are drawn after all quads in a layer — so scrolled code would
+paint over the line numbers. Quads positioned from a column go through `Rect::intersect(code)` for
+the same reason; `Frame::fill` clips nothing.
+
 **A panel that scrolls must hand its rectangles to the mouse.** `settings_ui::panel` returns the
 visible rows and their boxes; drawing and hit-testing both read it. Teaching the drawing half to
 scroll while the click handler kept its own copy of the walk immediately produced clicks landing on
@@ -198,8 +209,8 @@ work on Wayland here, so this is the only way — and it is better anyway, being
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
---splash --empty --at LINE --columns N --size WxH --no-vim --help-panel --menu --context-menu
---commands --which-key PREFIX`.
+--splash --empty --at LINE --at-column N --columns N --no-wrap --size WxH --no-vim --help-panel
+--menu --context-menu --commands --which-key PREFIX`.
 
 **Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
 and a whole family of defects lives below that: the settings rows collided with the footer under

@@ -37,6 +37,13 @@ use winit::window::{Window, WindowId};
 /// Rows of context kept between the cursor and the edge of the viewport.
 const SCROLL_MARGIN: usize = 3;
 
+/// Columns of context kept beside the cursor when the view scrolls sideways.
+///
+/// Eight, where the vertical margin is three: a row of context is a whole line, a column is one
+/// character, and a caret pinned to the exact right edge shows nothing of what it is typing
+/// towards. `scroll_to_reveal_column` caps it at half the viewport, so a narrow pane still works.
+const H_SCROLL_MARGIN: usize = 8;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -357,7 +364,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 14] = [
+const VALUE_FLAGS: [&str; 15] = [
     "--which-key",
     "--screenshot",
     "--mode",
@@ -372,6 +379,7 @@ const VALUE_FLAGS: [&str; 14] = [
     "--theme",
     "--welcome",
     "--size",
+    "--at-column",
 ];
 
 /// The first non-flag argument: the file to open.
@@ -628,6 +636,14 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.pending.clear();
     }
 
+    // `--at-column N` parks the view sideways, with wrap off. Without it the horizontal axis is
+    // unrenderable, and an axis that cannot be captured is one whose defects ship — which is
+    // exactly what happened to the four overflow bugs before `--size` existed.
+    if let Some(column) = value("--at-column").and_then(|v| v.parse::<usize>().ok()) {
+        state.display.mode = WrapMode::None;
+        state.scroll.column = column;
+    }
+
     if let Some(line) = value("--at").and_then(|v| v.parse::<usize>().ok()) {
         let text = state.document.text();
         let line = line.min(text.last_line());
@@ -853,6 +869,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 scroll: ScrollAnchor {
                     line: index * 14,
                     sub_row: 0,
+                    column: 0,
                 },
                 path: &state.path,
                 focused: index == 0,
@@ -1299,7 +1316,20 @@ impl ApplicationHandler for App {
                     self.scroll_by(lines);
                     self.sync_syntax();
                 }
-                let _ = dx;
+
+                // Sideways. A trackpad and a tilt wheel send an x delta directly; shift plus a
+                // plain wheel is the conventional way to send one from a mouse that cannot. Reading
+                // only y, and ignoring the modifier, is why a horizontal gesture did nothing.
+                let sideways = if self.modifiers.shift_key() && dx == 0.0 {
+                    -dy
+                } else {
+                    -dx
+                };
+                if sideways != 0.0 && self.state.display.mode == WrapMode::None {
+                    let columns = (sideways * 6.0) as isize;
+                    self.scroll_sideways(columns);
+                }
+
                 self.request_redraw();
             }
 
@@ -1399,6 +1429,40 @@ impl App {
             cursor,
             SCROLL_MARGIN,
         );
+
+        // And sideways. Without this, with soft wrap off, the caret walks off the right edge and
+        // the text it is in is both invisible and unreachable — the defect this whole axis exists
+        // for. Inert while wrapping, since there is nothing to the right of the viewport then.
+        let width = self.focused_grid().columns();
+        self.state.scroll = self.state.display.scroll_to_reveal_column(
+            self.state.document.text(),
+            self.state.scroll,
+            width,
+            cursor,
+            H_SCROLL_MARGIN,
+        );
+    }
+
+    /// Slides the view sideways, clamped to what is actually on screen.
+    ///
+    /// Clamped against the longest *visible* row rather than the longest in the file: the bound is
+    /// per-frame work and must stay bounded by the viewport, and scrolling past the end of what you
+    /// can see into empty space is not useful anyway.
+    fn scroll_sideways(&mut self, columns: isize) {
+        if self.state.display.mode != WrapMode::None {
+            return;
+        }
+        let rows = self.code_rows().max(1);
+        let visible = self
+            .state
+            .display
+            .rows_from(self.state.document.text(), self.state.scroll, rows);
+        let longest = visible.iter().map(|row| row.len()).max().unwrap_or(0);
+
+        let current = self.state.scroll.column as isize;
+        self.state.scroll.column = current
+            .saturating_add(columns)
+            .clamp(0, longest.saturating_add(8) as isize) as usize;
     }
 
     fn scroll_by(&mut self, rows: isize) {
@@ -4518,21 +4582,53 @@ impl App {
     /// One definition, because two would drift and the symptom — a click landing a line off — gets
     /// blamed on the display map rather than on the copy that drifted.
     fn offset_at(&self, code: Rect, x: f32, y: f32, scale: f32) -> vex_text::CharOffset {
-        let row_height = self.state.typography.row_height() * scale;
-        let advance = self.state.typography.code_size * 0.6 * scale;
-
-        // Rows and columns from the position, clamped: a click below the last line means the last
-        // line, not nothing.
-        let row = ((y - code.y) / row_height).floor().max(0.0) as usize;
-        let column = (((x - code.x - 8.0 * scale) / advance).round()).max(0.0) as usize;
-
-        let height = self.state.visible_rows(code.height, row_height).max(1);
+        // The same arithmetic that placed the glyph the pointer is over. It used to be a second
+        // copy, and the two already disagreed about the left pad — drawing used 12, this used 8 —
+        // so a click landed most of a character out before any of the horizontal work existed.
+        let grid = self.code_grid(code, scale);
+        let height = self
+            .state
+            .visible_rows(code.height, grid.row_height())
+            .max(1);
         self.state.display.offset_at_display_point(
             self.state.document.text(),
             self.state.scroll,
             height,
-            vex_text::DisplayPoint { row, column },
+            vex_text::DisplayPoint {
+                // Rows and columns clamped: a click below the last line means the last line, not
+                // nothing.
+                row: grid.row_at(y),
+                column: grid.column_at(x),
+            },
         )
+    }
+
+    /// The grid for a pane's code area, at the focused buffer's scroll position.
+    fn code_grid(&self, code: Rect, scale: f32) -> vex::layout::CodeGrid {
+        vex::layout::CodeGrid::new(
+            code,
+            self.state.typography.code_size * 0.6 * scale,
+            self.state.typography.row_height() * scale,
+            if self.state.display.mode == WrapMode::None {
+                self.state.scroll.column
+            } else {
+                0
+            },
+            scale,
+        )
+    }
+
+    /// The focused pane's grid, for the wheel and the horizontal reveal.
+    fn focused_grid(&self) -> vex::layout::CodeGrid {
+        let layout = self.layout();
+        let scale = self.scale();
+        let rects = layout.pane(
+            self.panes.active(),
+            self.panes.len(),
+            self.panes.layout == chrome::PaneLayout::Vertical,
+            scale,
+        );
+        self.code_grid(rects.code, scale)
     }
 
     /// Whether the pointer sits inside a selection in the focused pane.
