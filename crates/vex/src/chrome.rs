@@ -283,7 +283,8 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
     let choices = [
         (
             "like every other editor",
-            "typing inserts. ctrl-c, ctrl-v, ctrl-z. the mouse selects. pick this if you are unsure.",
+            "typing inserts. ctrl-c, ctrl-v, ctrl-z, ctrl-d, alt-arrows. double-click a word, \
+             alt-click for another cursor. pick this if you are unsure — f1 shows every key.",
         ),
         (
             "vim keys",

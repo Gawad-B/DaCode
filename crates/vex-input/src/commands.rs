@@ -264,14 +264,66 @@ mod tests {
         }
     }
 
+    /// Names that are deliberately not commands.
+    ///
+    /// Motions, mode switches and the single-character edits are the *grammar*, not things anybody
+    /// would choose from a list — "move left" in a command palette is a joke about command palettes.
+    /// They stay bindable by name in config, which is what they are for. Everything else must
+    /// appear, and the test below is what makes forgetting impossible.
+    const NOT_COMMANDS: &[&str] = &[
+        "move_left",
+        "move_right",
+        "move_up",
+        "move_down",
+        "move_word_forward",
+        "move_word_backward",
+        "move_word_end",
+        "move_line_start",
+        "move_line_end",
+        "move_first_non_blank",
+        "move_paragraph_forward",
+        "move_paragraph_backward",
+        "normal_mode",
+        "insert_mode",
+        "replace_mode",
+        "insert_before",
+        "insert_after",
+        "insert_line_start",
+        "insert_line_end",
+        "open_below",
+        "open_above",
+        "newline",
+        "delete_backward",
+        "delete_forward",
+        "dismiss_info",
+        "search_backward",
+    ];
+
     #[test]
-    fn every_action_name_is_in_the_palette() {
-        // The other direction, and the one that rots: adding an action and forgetting the table
-        // leaves a command nobody can find. `NAMES` is the list `from_name` accepts.
+    fn every_action_name_is_in_the_palette_or_deliberately_not() {
+        // The direction that rots: adding an action and forgetting the table leaves a command nobody
+        // can find, which is how every generated palette ends up incomplete. `NAMES` is the list
+        // `from_name` accepts; the exclusions above are a decision, written down.
         for name in Action::NAMES {
             assert!(
-                by_name(name).is_some(),
-                "`{name}` is an action but has no palette entry — add it to COMMANDS"
+                by_name(name).is_some() || NOT_COMMANDS.contains(name),
+                "`{name}` is an action with no palette entry — add it to COMMANDS, or to \
+                 NOT_COMMANDS with a reason"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_is_excluded_that_does_not_exist() {
+        // An exclusion list is a place where dead names accumulate. This one cannot.
+        for name in NOT_COMMANDS {
+            assert!(
+                Action::NAMES.contains(name),
+                "`{name}` is excluded from the palette but is not an action any more"
+            );
+            assert!(
+                by_name(name).is_none(),
+                "`{name}` is both excluded and listed"
             );
         }
     }

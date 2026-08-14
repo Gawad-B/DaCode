@@ -139,15 +139,17 @@ impl Key {
         }
 
         // `<f1>` … `<f12>`, before the table: they are the one family with a number in the name.
-        if let Some(number) = lower.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()) {
-            if (1..=12).contains(&number) {
-                return Some(Key {
-                    code: KeyCode::Function(number),
-                    ctrl,
-                    alt,
-                    shift,
-                });
-            }
+        if let Some(number) = lower
+            .strip_prefix('f')
+            .and_then(|rest| rest.parse::<u8>().ok())
+            .filter(|number| (1..=12).contains(number))
+        {
+            return Some(Key {
+                code: KeyCode::Function(number),
+                ctrl,
+                alt,
+                shift,
+            });
         }
 
         // A single character with modifiers on it: `<c-s>`, `<a-x>`, and the arrow glyphs the
@@ -194,39 +196,58 @@ impl Key {
         })
     }
 
-    /// How the key appears in the statusline's pending display.
+    /// How the key appears in the statusline's pending display, the cheatsheet and the command table.
+    ///
+    /// The name is written *without* its brackets and wrapped exactly once at the end. Building it
+    /// with them and then wrapping again produced `<s-<tab>>`, which nothing can read back — the
+    /// round-trip test found it, and it had been latent in `<c-<tab>>` since the day this was
+    /// written, because nobody had bound a modified named key before.
     pub fn to_display(self) -> String {
         let base = match self.code {
-            KeyCode::Char(' ') => "<space>".to_string(),
+            KeyCode::Char(' ') => "space".to_string(),
             KeyCode::Char(c) => c.to_string(),
-            KeyCode::Escape => "<esc>".into(),
-            KeyCode::Enter => "<cr>".into(),
-            KeyCode::Tab => "<tab>".into(),
-            KeyCode::Backspace => "<bs>".into(),
-            KeyCode::Delete => "<del>".into(),
+            KeyCode::Escape => "esc".into(),
+            KeyCode::Enter => "cr".into(),
+            KeyCode::Tab => "tab".into(),
+            KeyCode::Backspace => "bs".into(),
+            KeyCode::Delete => "del".into(),
+            // The arrows keep their glyphs: they read better in a statusline hint, and
+            // `parse_sequence` takes them bare.
             KeyCode::Left => "←".into(),
             KeyCode::Right => "→".into(),
             KeyCode::Up => "↑".into(),
             KeyCode::Down => "↓".into(),
-            KeyCode::Home => "<home>".into(),
-            KeyCode::End => "<end>".into(),
-            KeyCode::PageUp => "<pgup>".into(),
-            KeyCode::PageDown => "<pgdn>".into(),
-            KeyCode::Function(number) => format!("<f{number}>"),
+            KeyCode::Home => "home".into(),
+            KeyCode::End => "end".into(),
+            KeyCode::PageUp => "pgup".into(),
+            KeyCode::PageDown => "pgdn".into(),
+            KeyCode::Function(number) => format!("f{number}"),
+        };
+        let arrow = matches!(
+            self.code,
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+        );
+
+        // Shift is shown unless it is already in the character. `<s-a>` would be a confusing way to
+        // write `A` — but `<c-s-k>` is *not* `<c-K>`: with another modifier held, shift is part of
+        // the binding and dropping it would silently merge two different keys into one.
+        let plain_char = matches!(self.code, KeyCode::Char(c) if c != ' ');
+        let shifted = self.shift && (!plain_char || self.ctrl || self.alt);
+        let modifiers = match (self.ctrl, self.alt, shifted) {
+            (true, true, true) => "c-a-s-",
+            (true, true, false) => "c-a-",
+            (true, false, true) => "c-s-",
+            (true, false, false) => "c-",
+            (false, true, true) => "a-s-",
+            (false, true, false) => "a-",
+            (false, false, true) => "s-",
+            (false, false, false) => "",
         };
 
-        // Shift is shown only for the keys where it is not already in the character: `<s-f12>` is
-        // meaningful, `<s-a>` would be a confusing way to write `A`.
-        let shifted = self.shift && !matches!(self.code, KeyCode::Char(_));
-        match (self.ctrl, self.alt, shifted) {
-            (true, true, _) => format!("<c-a-{base}>"),
-            (true, _, true) => format!("<c-s-{base}>"),
-            (true, _, _) => format!("<c-{base}>"),
-            (_, true, true) => format!("<a-s-{base}>"),
-            (_, true, _) => format!("<a-{base}>"),
-            (_, _, true) => format!("<s-{base}>"),
-            _ => base,
+        if modifiers.is_empty() && (arrow || plain_char) {
+            return base;
         }
+        format!("<{modifiers}{base}>")
     }
 }
 
