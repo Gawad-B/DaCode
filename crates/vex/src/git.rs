@@ -147,6 +147,14 @@ pub enum GitResult {
     },
     /// A revert that could not be worked out, with the reason in the user's terms.
     Refused(String),
+    /// A request the worker skipped because a newer one had already arrived.
+    ///
+    /// Sent rather than silently dropped so that **one request always produces one result**. The
+    /// editor keeps the loop awake while anything is outstanding, and a coalesced request that
+    /// answered nothing left that count permanently one high — which does not merely delay a reply,
+    /// it stops the editor ever going back to sleep. The editor ignores this arm; it exists to be
+    /// counted.
+    Superseded,
 }
 
 /// A background thread that diffs buffers against `HEAD`.
@@ -177,10 +185,21 @@ impl GitWorker {
                 // has already been superseded. A revert is not a stream sampled at keystroke rate —
                 // it is something the user asked for once — so it is never dropped for a newer one.
                 let mut request = request;
+                let mut skipped = 0usize;
                 while request.revert.is_none() {
                     match incoming.try_recv() {
-                        Ok(newer) => request = newer,
+                        Ok(newer) => {
+                            request = newer;
+                            skipped += 1;
+                        }
                         Err(_) => break,
+                    }
+                }
+                // One result per request, even for the ones whose work was skipped. See
+                // `GitResult::Superseded`.
+                for _ in 0..skipped {
+                    if outgoing.send(GitResult::Superseded).is_err() {
+                        return;
                     }
                 }
 
@@ -242,9 +261,10 @@ impl GitWorker {
 
     /// Whether a reply is still coming, so the event loop keeps waking to collect it.
     ///
-    /// Not exact — the worker drops a queued diff when a revert arrives behind it, so the count
-    /// can sit one high until the next request answers. That costs a few extra 100ms wake-ups and
-    /// nothing else; the failure it replaces was a keypress that silently did nothing.
+    /// Exact, and it has to be: the loop stays awake while this is true, so a count that could not
+    /// return to zero would mean an editor that never sleeps — a permanent 10Hz wake-up burning
+    /// battery in an idle window. That is why the worker answers *every* request, coalesced ones
+    /// included, with `GitResult::Superseded`.
     pub fn busy(&self) -> bool {
         self.outstanding.get() > 0
     }

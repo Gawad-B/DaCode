@@ -137,64 +137,8 @@ fn main() -> Result<()> {
     grammar.set_keymap(keymap);
     grammar.set_modal(starting_settings.modal);
 
-    let mut app = App {
-        window: None,
-        renderer: None,
-        frame: Frame::default(),
-        modifiers: ModifiersState::empty(),
-        grammar,
-        registers: Registers::new(),
-        last_change: None,
-        syntax: None,
-        requested_range: None,
-        servers: std::collections::HashMap::new(),
-        active_server: None,
-        configured_servers: starting_settings.servers.clone(),
-        server_formats: std::collections::HashMap::new(),
-        configured_formatters: starting_settings.formatters.clone(),
-        formatter: vex::format::FormatWorker::spawn(),
-        formatting_version: None,
-        missing_servers: std::collections::HashSet::new(),
-        confirm_close: None,
-        confirm_delete: None,
-        restore_window: None,
-        confirm_quit: false,
-        sent_version: None,
-        folder_picker: None,
-        snippets: load_snippets(),
-        snippet: None,
-        jumps: vex_input::JumpList::default(),
-        macros: vex_input::Macros::default(),
-        code_actions: Vec::new(),
-        symbols: Vec::new(),
-        hinted_version: None,
-        recovery: Recovery::new(),
-        git: vex::git::GitWorker::spawn(),
-        diffed_version: None,
-        watcher: match vex_project::FileWatcher::new() {
-            Ok(watcher) => Some(watcher),
-            Err(error) => {
-                // Not fatal: the editor works, it just will not notice outside edits.
-                eprintln!("vex: file watching unavailable: {error}");
-                None
-            }
-        },
-        self_written: std::collections::HashSet::new(),
-        panes: Panes::new(),
-        edit_version: None,
-        save_after_format: false,
-        pointer: (0.0, 0.0),
-        dragging: false,
-        block_origin: None,
-        last_click: None,
-        click_count: 1,
-        last_edit: None,
-        wakes: 0,
-        index: FileIndex::new(root.clone()),
-        walk: Some(FileWalk::start(root.clone())),
-        buffers: Vec::new(),
-        state,
-    };
+    let mut app = App::new(root.clone(), state, grammar, &starting_settings);
+    app.walk = Some(FileWalk::start(root.clone()));
 
     // First run: no configuration means nobody has answered the two questions that decide whether
     // this editor is usable for them at all.
@@ -1522,6 +1466,86 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    /// Builds the editor's state machine, with no window and no renderer.
+    ///
+    /// **One construction site**, shared by `run` and by the tests, so a test cannot be exercising
+    /// a differently-assembled editor from the real one. The window and the renderer are already
+    /// `Option` because winit creates them on `resumed` — and that is what makes the whole machine
+    /// drivable headlessly: everything below `window_event` is ordinary code over ordinary data.
+    ///
+    /// Worth having for one reason. An adversarial review of this layer found thirteen defects the
+    /// tests could not have caught, because every test stopped at the pure functions the wiring
+    /// calls and none of them drove the wiring: a formatter that never applied its result, a revert
+    /// that could overwrite a different file, a flag that made a later unrelated edit save a buffer
+    /// nobody asked to save. Each is one `poll` and one assertion away from being caught.
+    fn new(
+        root: std::path::PathBuf,
+        state: EditorState,
+        grammar: Grammar,
+        settings: &vex::config::Settings,
+    ) -> Self {
+        Self {
+            window: None,
+            renderer: None,
+            frame: Frame::default(),
+            modifiers: ModifiersState::empty(),
+            grammar,
+            registers: Registers::new(),
+            last_change: None,
+            syntax: None,
+            requested_range: None,
+            servers: std::collections::HashMap::new(),
+            active_server: None,
+            configured_servers: settings.servers.clone(),
+            server_formats: std::collections::HashMap::new(),
+            configured_formatters: settings.formatters.clone(),
+            formatter: vex::format::FormatWorker::spawn(),
+            formatting_version: None,
+            missing_servers: std::collections::HashSet::new(),
+            confirm_close: None,
+            confirm_delete: None,
+            restore_window: None,
+            confirm_quit: false,
+            sent_version: None,
+            folder_picker: None,
+            snippets: load_snippets(),
+            snippet: None,
+            jumps: vex_input::JumpList::default(),
+            macros: vex_input::Macros::default(),
+            code_actions: Vec::new(),
+            symbols: Vec::new(),
+            hinted_version: None,
+            recovery: Recovery::new(),
+            git: vex::git::GitWorker::spawn(),
+            diffed_version: None,
+            watcher: match vex_project::FileWatcher::new() {
+                Ok(watcher) => Some(watcher),
+                Err(error) => {
+                    // Not fatal: the editor works, it just will not notice outside edits.
+                    eprintln!("vex: file watching unavailable: {error}");
+                    None
+                }
+            },
+            self_written: std::collections::HashSet::new(),
+            panes: Panes::new(),
+            edit_version: None,
+            save_after_format: false,
+            pointer: (0.0, 0.0),
+            dragging: false,
+            block_origin: None,
+            last_click: None,
+            click_count: 1,
+            last_edit: None,
+            wakes: 0,
+            index: FileIndex::new(root),
+            // The project walk is started by `run`, not here: a test wants an editor, not an
+            // indexing thread over whatever directory it was handed.
+            walk: None,
+            buffers: Vec::new(),
+            state,
+        }
+    }
+
     fn scale(&self) -> f32 {
         self.window
             .as_ref()
@@ -2241,7 +2265,7 @@ impl App {
         // Save-after-format, the same handshake the language-server path uses: `format_on_save`
         // formats first and writes what came back, or the file on disk is the unformatted one.
         if std::mem::take(&mut self.save_after_format) {
-            self.save_active();
+            self.write_active(false);
         }
         self.reveal_cursor();
         true
@@ -4066,8 +4090,10 @@ impl App {
                 self.state.document.mark_dirty();
                 self.sync_syntax();
                 self.state.hover = Some(applied.summary(what));
+                // Not `save_active`: a save that follows a format must not arm another one, or a
+                // formatter that is not idempotent rewrites the file forever.
                 if std::mem::take(&mut self.save_after_format) {
-                    self.save_active();
+                    self.write_active(false);
                 }
                 if !applied.files.is_empty() {
                     let names: Vec<String> = applied
@@ -4652,6 +4678,17 @@ impl App {
 
     /// Writes the active buffer, keeping the recovery copy in step.
     fn save_active(&mut self) {
+        self.write_active(true);
+    }
+
+    /// The same, without arming another format.
+    ///
+    /// Used by the save that *follows* a format. Arming there is a loop with no fixed point when
+    /// the formatter is not idempotent: format changes the text, save writes it, `format_on_save`
+    /// arms again, format changes it again. A misconfigured prettier or a formatter with a bug is
+    /// enough, and the symptom is an editor rewriting your file forever — which is exactly what a
+    /// test of the whole path did, twenty seconds of it, before this existed.
+    fn write_active(&mut self, then_format: bool) {
         let Some(path) = self.state.file_path.clone() else {
             let message = if self.state.modal {
                 "this buffer has no file name — use :w <path>".to_string()
@@ -4688,7 +4725,7 @@ impl App {
                 // Markdown project there is no server and never will be, and `format_on_save`
                 // silently doing nothing there was the whole shape of this defect. `route_format`
                 // decides which of the two can actually answer.
-                if self.state.format_on_save && self.can_format() {
+                if then_format && self.state.format_on_save && self.can_format() {
                     self.save_after_format = true;
                     self.state.pending_request = Some(Action::Format);
                 }
@@ -5219,6 +5256,8 @@ impl App {
                 self.state.hover = Some(why);
                 true
             }
+            // Counted, not read: it exists so one request always produces one result.
+            Some(vex::git::GitResult::Superseded) => false,
             Some(vex::git::GitResult::Revert {
                 path,
                 version: computed,
@@ -6304,5 +6343,344 @@ mod tests {
     fn a_leading_dot_slash_is_not_a_crumb() {
         assert_eq!(relative_crumbs("./src/main.rs"), vec!["src", "main.rs"]);
         assert_eq!(relative_crumbs(r".\src\main.rs"), vec!["src", "main.rs"]);
+    }
+}
+
+/// Driving the editor's **wiring** — the paths between the pure functions.
+///
+/// Every one of these exists because an adversarial review found a defect there that no test could
+/// have caught. The pattern was consistent and worth stating: the pure pieces were tested well
+/// (`format::run`, `format::narrow`, `git::revert`, `edits::accept_completion` all had tests that
+/// passed), and the code that *calls* them had none — so a formatter that never applied its result
+/// and a revert that could overwrite a different file both shipped green.
+///
+/// No window, no renderer, no event loop. `App::new` builds the same editor `run` does; these drive
+/// it by calling the methods `window_event` and `about_to_wait` would.
+#[cfg(test)]
+mod wiring_tests {
+    use super::*;
+
+    /// A directory of this test's own, so no two can interfere.
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vex-wiring-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An editor with one file open, rooted at `dir`.
+    fn editor(dir: &std::path::Path, name: &str, contents: &str) -> App {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+
+        let text = Text::from_str(contents);
+        let file = path.to_string_lossy().to_string();
+        let (state, _) = new_state(
+            text,
+            vec![name.to_string()],
+            Some(file),
+            Mode::Insert,
+            None,
+            dir.to_path_buf(),
+        );
+        App::new(
+            dir.to_path_buf(),
+            state,
+            Grammar::new(),
+            &vex::config::Settings::default(),
+        )
+    }
+
+    /// Runs the editor's idle work until `done`, or gives up. Never spins forever: a wiring defect
+    /// that hangs must fail the test rather than the suite.
+    fn settle(app: &mut App, mut done: impl FnMut(&App) -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            app.route_format();
+            app.poll_formatter();
+            app.sync_git();
+            if done(app) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// A program that behaves like a formatter: reads stdin, writes stdout.
+    fn tidy_formatter() -> Option<vex::format::Configured> {
+        let (program, args) = if cfg!(windows) {
+            ("cmd", vec!["/c".to_string(), "more".to_string()])
+        } else {
+            ("cat", Vec::new())
+        };
+        vex_lsp::resolve(program)?;
+        vex::format::configure("text", program, &args, &["txt".to_string()]).ok()
+    }
+
+    #[test]
+    fn an_external_format_actually_reaches_the_buffer() {
+        // The defect this exists for: `poll_formatter` cleared the version it was about to compare
+        // against, so the guard read `None != Some(v)` and every format was refused as stale on a
+        // buffer nobody had touched. The whole feature was inert and four unit tests passed.
+        let Some(formatter) = tidy_formatter() else {
+            eprintln!("skipping: no pass-through program on this machine");
+            return;
+        };
+        let dir = scratch("format-applies");
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\n");
+        app.configured_formatters = vec![formatter];
+
+        // A pass-through leaves the text alone or rewrites its line endings depending on the
+        // platform, so the status is "formatted" or "already formatted" — both mean the reply was
+        // *used*. The failure being guarded against is the third answer, "refused", which is what
+        // every format reported before the fix.
+        app.state.pending_request = Some(Action::Format);
+        assert!(
+            settle(&mut app, |app| app
+                .state
+                .server_status
+                .starts_with("formatted")
+                || app.state.server_status == "already formatted"),
+            "the format was never applied — status was {:?}",
+            app.state.server_status
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_external_format_that_changes_the_text_applies_it() {
+        // The other half: a formatter whose output differs has to reach the document.
+        let (program, args) = if cfg!(windows) {
+            ("cmd", vec!["/c".to_string(), "echo tidied".to_string()])
+        } else {
+            ("sh", vec!["-c".to_string(), "echo tidied".to_string()])
+        };
+        if vex_lsp::resolve(program).is_none() {
+            eprintln!("skipping: no {program} on this machine");
+            return;
+        }
+        let formatter =
+            vex::format::configure("text", program, &args, &["txt".to_string()]).unwrap();
+
+        let dir = scratch("format-changes");
+        let mut app = editor(&dir, "notes.txt", "untidy\n");
+        app.configured_formatters = vec![formatter];
+
+        app.state.pending_request = Some(Action::Format);
+        assert!(
+            settle(&mut app, |app| app.state.server_status == "formatted"),
+            "status was {:?}",
+            app.state.server_status
+        );
+        assert!(
+            app.state.document.text().to_string().contains("tidied"),
+            "the formatter's output is in the buffer"
+        );
+        // One undo step: a format is one intent however many lines it rewrote.
+        app.state.document.undo();
+        assert_eq!(app.state.document.text().to_string(), "untidy\n");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_format_that_cannot_run_does_not_leave_a_save_armed() {
+        // The defect: the "no formatter on this machine" early return kept `save_after_format`,
+        // and the next server edit anywhere in the editor took it and wrote *that* buffer to disk —
+        // a different file, with whatever unsaved work was in it.
+        let dir = scratch("format-no-program");
+        let mut app = editor(&dir, "notes.txt", "one\n");
+        app.configured_formatters = vec![
+            vex::format::configure("text", "vex-no-such-formatter", &[], &["txt".to_string()])
+                .unwrap(),
+        ];
+
+        app.save_after_format = true;
+        app.state.pending_request = Some(Action::Format);
+        app.route_format();
+
+        assert!(
+            !app.save_after_format,
+            "a save that can never happen must not stay armed"
+        );
+        assert!(
+            app.state.hover.is_some(),
+            "and the user is told why nothing happened"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn formatting_an_already_tidy_file_does_not_loop() {
+        // The defect: the "already formatted" branch fell through to the save-after-format
+        // handshake, which re-armed `format_on_save`, which formatted, which found nothing, which
+        // saved. No fixed point.
+        let Some(formatter) = tidy_formatter() else {
+            eprintln!("skipping: no pass-through program on this machine");
+            return;
+        };
+        let dir = scratch("format-fixed-point");
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\n");
+        app.configured_formatters = vec![formatter];
+        app.state.format_on_save = true;
+
+        // Settled until nothing is outstanding. Termination is the whole assertion: a save that
+        // re-arms a format that finds nothing and saves again has no fixed point, and the deadline
+        // inside `settle` is what a genuine loop trips.
+        app.save_after_format = true;
+        app.state.pending_request = Some(Action::Format);
+        assert!(
+            settle(&mut app, |app| !app.save_after_format
+                && app.state.pending_request.is_none()
+                && !app.services_busy()),
+            "save -> format -> save never reached a fixed point (status {:?})",
+            app.state.server_status
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_request_nothing_can_answer_is_answered_rather_than_kept() {
+        // The defect: with no language server, `sync_lsp` returned before taking the request, so
+        // ctrl-shift-o did nothing and said nothing — and the request stayed, firing unbidden
+        // against whichever file next started a server.
+        let dir = scratch("no-server");
+        let mut app = editor(&dir, "notes.txt", "one\n");
+
+        app.state.pending_request = Some(Action::GotoSymbol);
+        app.sync_lsp();
+
+        assert!(
+            app.state.pending_request.is_none(),
+            "a request that cannot be answered must not outlive the keypress"
+        );
+        assert!(
+            app.state.hover.is_some(),
+            "and the key has to say something rather than appearing broken"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_git_result_for_another_file_is_refused() {
+        // The worst defect the review found. A `Version` counts from 1 per document, so two files
+        // that have only been opened both hold `Version(1)` — reverting a hunk in one and switching
+        // to the other before `git show` returned passed the version check and replaced lines of
+        // the second file with the first one's committed text.
+        let dir = scratch("git-identity");
+        let mut app = editor(&dir, "a.txt", "one\ntwo\n");
+        let before = app.state.document.text().to_string();
+
+        // A result that is perfectly valid, for a file that is not the one on screen.
+        let version = app.state.document.version();
+        let applied = app.apply_revert(
+            &dir.join("somewhere-else.txt"),
+            version,
+            0..1,
+            "REPLACED\n".to_string(),
+        );
+
+        assert!(applied, "it was handled");
+        assert_eq!(
+            app.state.document.text().to_string(),
+            before,
+            "and it did not touch the buffer it was not about"
+        );
+        assert!(app.state.hover.is_some(), "with a sentence saying so");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_revert_puts_the_committed_text_back_in_the_real_editor() {
+        // The whole path, against a real repository: key -> worker -> `git show` -> diff -> hunk ->
+        // one Discrete edit in the buffer.
+        if vex::process::command("git")
+            .arg("--version")
+            .output()
+            .map(|out| !out.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("skipping: no git on this machine");
+            return;
+        }
+        let dir = scratch("git-revert");
+        let git = |args: &[&str]| {
+            vex::process::command("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+        };
+        std::fs::write(dir.join("notes.txt"), "one\ntwo\nthree\n").unwrap();
+        if git(&["init", "-q"]).is_none()
+            || git(&["config", "user.email", "vex@example.invalid"]).is_none()
+            || git(&["config", "user.name", "vex"]).is_none()
+            || git(&["add", "."]).is_none()
+            || git(&["commit", "-q", "-m", "first"]).is_none()
+        {
+            eprintln!("skipping: could not build a repository here");
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        let mut app = editor(&dir, "notes.txt", "one\nCHANGED\nthree\n");
+        app.state.document.set_primary_caret(CharOffset(4));
+
+        // The gutter first, which is also what `request_revert` checks before asking.
+        assert!(
+            settle(&mut app, |app| !app.state.diff.is_empty()),
+            "the diff never arrived"
+        );
+
+        app.request_revert();
+        assert!(
+            settle(&mut app, |app| app.state.document.text().to_string()
+                == "one\ntwo\nthree\n"),
+            "the revert never landed — buffer is {:?}",
+            app.state.document.text().to_string()
+        );
+
+        // One undo step, because this is the one action whose purpose is to throw work away.
+        app.state.document.undo();
+        assert_eq!(
+            app.state.document.text().to_string(),
+            "one\nCHANGED\nthree\n"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_editor_does_not_sleep_while_a_worker_still_owes_an_answer() {
+        // The defect: `services_busy` had no git clause, so a revert's reply sat unread in the
+        // channel until some unrelated keypress woke the loop — and if that keypress was an edit,
+        // the revert was then refused as stale and lost outright.
+        let dir = scratch("busy");
+        let mut app = editor(&dir, "notes.txt", "one\n");
+        assert!(!app.services_busy(), "nothing outstanding to start with");
+
+        let version = app.state.document.version();
+        app.git.request(vex::git::DiffRequest {
+            path: dir.join("notes.txt"),
+            text: "one\n".to_string(),
+            version,
+            revert: None,
+        });
+        assert!(
+            app.services_busy(),
+            "a git request in flight must keep the loop awake"
+        );
+
+        assert!(settle(&mut app, |app| !app.services_busy()));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
