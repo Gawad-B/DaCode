@@ -156,30 +156,7 @@ fn main() -> Result<()> {
 
     // The rest of the session's files, opened behind the active one so `ctrl-b` finds them.
     if let Some(session) = restore {
-        let active = session
-            .files
-            .get(session.active)
-            .map(|file| file.path.clone());
-        let others = session.files.len().saturating_sub(1);
-
-        for file in session.files.iter().rev() {
-            if Some(&file.path) == active.as_ref() {
-                continue;
-            }
-            app.open_in_background(&file.path, file.line, file.column);
-        }
-        // Cursor restoration for the active file, which was opened before the app existed.
-        if let Some(file) = session.files.get(session.active) {
-            app.restore_cursor(file.line, file.column);
-        }
-        // The strip is built once, from one buffer, before any of this ran. Restoring five files
-        // drew five tabs of which four said "untitled" — the drawing code falls back to that name
-        // for a tab the list is too short to cover, so nothing failed and it simply looked like the
-        // session had not come back.
-        app.refresh_buffer_tabs();
-        if others > 0 {
-            eprintln!("vex: restored {} more from the last session", others);
-        }
+        app.restore_session(&session);
         app.restore_window = session.window;
     }
 
@@ -1030,6 +1007,13 @@ struct App {
     confirm_quit: bool,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
+    /// The server, and the document it currently believes is open on it.
+    ///
+    /// Every `didOpen` owes a `didClose`, and none was ever sent. The editor announced each file it
+    /// visited and never took one back, so a server accumulated every document of a whole session —
+    /// each frozen at the version last sent, each still answering requests and publishing
+    /// diagnostics for a buffer that may have been closed an hour before.
+    opened_document: Option<(String, std::path::PathBuf)>,
     /// Set when a save asked for formatting: the reply's edits are applied and the file written
     /// again. The first write already happened — a save must land on disk when asked, not when a
     /// language server gets around to answering.
@@ -1512,6 +1496,7 @@ impl App {
             restore_window: None,
             confirm_quit: false,
             sent_version: None,
+            opened_document: None,
             folder_picker: None,
             snippets: load_snippets(),
             snippet: None,
@@ -1978,6 +1963,11 @@ impl App {
     /// Failure is reported in the statusline rather than being fatal or silent: "no diagnostics" and
     /// "no server" look identical to a user, so they must not read the same.
     fn start_language_server(&mut self) {
+        // The buffer that was live has stopped being the document the server is told about, so it
+        // is closed before the next one is opened. This is the single hook for it: switching
+        // buffers, closing one, renaming the file out from under it and deleting it all reach here
+        // through `after_buffer_change`.
+        self.close_open_document();
         self.sent_version = None;
         self.state.diagnostics.clear();
 
@@ -2302,6 +2292,25 @@ impl App {
     ///
     /// The same contract as the syntax worker: send, poll, and refuse anything computed against a
     /// superseded version.
+    /// Tells the server that the document it was told about is no longer open.
+    ///
+    /// Quietly does nothing when there is none, when the server has gone away, or when it never
+    /// finished its handshake — a `didClose` for a document a server never heard about is worse
+    /// than none, and there is nothing useful to say on screen about either case.
+    fn close_open_document(&mut self) {
+        let Some((server, path)) = self.opened_document.take() else {
+            return;
+        };
+        let Some(client) = self.servers.get_mut(&server) else {
+            return;
+        };
+        if client.state() == vex_lsp::State::Ready {
+            if let Err(error) = client.did_close(&path) {
+                eprintln!("vex: didClose failed: {error:#}");
+            }
+        }
+    }
+
     fn sync_lsp(&mut self) -> bool {
         // First, and inside this function rather than beside its callers: it takes a format request
         // away when the answer is a program, and every one of the five places that syncs would
@@ -2344,10 +2353,11 @@ impl App {
                         let language = vex_lsp::server_for(&path.to_string_lossy(), configured)
                             .map(|spec| spec.language_id)
                             .unwrap_or_else(|| "plaintext".to_string());
-                        if let Err(error) =
-                            client.did_open(&path, &language, buffer_version.0 as i32, &text)
-                        {
-                            eprintln!("vex: didOpen failed: {error:#}");
+                        match client.did_open(&path, &language, buffer_version.0 as i32, &text) {
+                            // Recorded only on success, so a failed open cannot leave a close owing
+                            // for a document the server never heard about.
+                            Ok(()) => self.opened_document = Some((name.clone(), path.clone())),
+                            Err(error) => eprintln!("vex: didOpen failed: {error:#}"),
                         }
                         self.sent_version = Some(buffer_version);
                     }
@@ -3902,13 +3912,57 @@ impl App {
     /// kill, a session is only interesting when the editor closed properly.
     fn save_session(&mut self) {
         self.save_pane();
+        let session = self.session_snapshot();
+        vex::session::save(&vex::session::session_dir(), self.index.root(), &session);
+    }
 
+    /// Reopens the rest of the last session, behind the file already live.
+    ///
+    /// A method rather than a block inside `main` so a test can drive the real one. Written as a
+    /// loop inside `main`, it was untestable, and the test that would have caught the ordering
+    /// defect below had to keep its own copy of the walk — which passes whatever `main` does.
+    fn restore_session(&mut self, session: &vex::session::Session) {
+        let active = session
+            .files
+            .get(session.active)
+            .map(|file| file.path.clone());
+
+        // Forward. `open_in_background` *appends*, so walking the session backwards restored the
+        // other files in the opposite order to the one they were written in — the tab strip came
+        // back mirrored, and every buffer number named a different file than it had last time.
+        for file in &session.files {
+            if Some(&file.path) == active.as_ref() {
+                continue;
+            }
+            self.open_in_background(&file.path, file.line, file.column);
+        }
+
+        // Cursor restoration for the active file, which was opened before the app existed.
+        if let Some(file) = session.files.get(session.active) {
+            self.restore_cursor(file.line, file.column);
+        }
+
+        // The strip is built once, from one buffer, before any of this ran. Restoring five files
+        // drew five tabs of which four said "untitled" — the drawing code falls back to that name
+        // for a tab the list is too short to cover, so nothing failed and it simply looked like the
+        // session had not come back.
+        self.refresh_buffer_tabs();
+
+        let others = session.files.len().saturating_sub(1);
+        if others > 0 {
+            eprintln!("vex: restored {others} more from the last session");
+        }
+    }
+
+    /// What the session file would say. Separate from writing it so the buffer walk — which is
+    /// where both of this function's defects lived — can be tested without a window or a disk.
+    fn session_snapshot(&self) -> vex::session::Session {
         let mut files = Vec::new();
         let mut active = 0;
 
         for index in 0..=self.buffers.len() {
-            let (path, offset, text) = if index == self.state.active_buffer {
-                active = files.len();
+            let live = index == self.state.active_buffer;
+            let (path, offset, text) = if live {
                 (
                     self.state.file_path.clone(),
                     self.state.cursor(),
@@ -3930,6 +3984,14 @@ impl App {
             // Only files with a path: a scratch buffer has nothing to reopen, and crash recovery is
             // what protects its contents.
             let Some(path) = path else { continue };
+
+            // *After* that skip, not before it. `active` is an index into `files`, and recording it
+            // for a buffer that then turns out to have no path left it pointing at whichever file
+            // was written next — so having an untitled buffer in front meant the session came back
+            // on the wrong file.
+            if live {
+                active = files.len();
+            }
             let point = text.char_to_point(offset);
             files.push(vex::session::OpenFile {
                 path: std::path::PathBuf::from(path),
@@ -3938,7 +4000,7 @@ impl App {
             });
         }
 
-        let session = vex::session::Session {
+        vex::session::Session {
             files,
             active,
             // Only when there is a real window and it is not minimised: saving 0x0 would reopen
@@ -3949,8 +4011,7 @@ impl App {
                 .map(|window| window.inner_size())
                 .filter(|size| size.width > 0 && size.height > 0)
                 .map(|size| (size.width, size.height)),
-        };
-        vex::session::save(&vex::session::session_dir(), self.index.root(), &session);
+        }
     }
 
     /// `tab` in insert mode: move to the next stop, expand a snippet, or indent.
@@ -7033,5 +7094,156 @@ mod buffer_tests {
             "a stored buffer still points at the deleted file"
         );
         assert_eq!(names(&app)[0], "untitled");
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("vex-session-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An editor with `names` open in order, the last one live.
+    fn editor(dir: &std::path::Path, names: &[&str]) -> App {
+        for name in names {
+            std::fs::write(dir.join(name), format!("contents of {name}\n")).unwrap();
+        }
+        let (state, _) = new_state(
+            Text::from_str(&format!("contents of {}\n", names[0])),
+            vec![names[0].to_string()],
+            Some(dir.join(names[0]).to_string_lossy().to_string()),
+            Mode::Insert,
+            None,
+            dir.to_path_buf(),
+        );
+        let mut app = App::new(
+            dir.to_path_buf(),
+            state,
+            Grammar::new(),
+            &vex::config::Settings::default(),
+        );
+        for name in &names[1..] {
+            app.activate(Target::File(dir.join(name)));
+        }
+        app
+    }
+
+    fn file_names(session: &vex::session::Session) -> Vec<String> {
+        session
+            .files
+            .iter()
+            .map(|file| file.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_untitled_buffer_in_front_does_not_make_the_session_reopen_on_the_wrong_file() {
+        // `active` indexes the *written* list, and it was recorded before the buffer was checked
+        // for having a path at all. A scratch buffer numbered below the live one therefore left
+        // `active` naming whichever file happened to be written next — so a session with an
+        // untitled buffer open came back on someone else's file.
+        let dir = scratch("untitled");
+        let mut app = editor(&dir, &["a.rs", "b.rs", "c.rs"]);
+
+        // The live buffer is untitled, and a file follows it. This is the only shape that breaks:
+        // `active` was recorded for the live buffer *before* it turned out to have no path, so the
+        // slot it reserved was filled by the next file written.
+        app.switch_to(1);
+        app.state.file_path = None;
+        app.state.path = vec!["untitled".to_string()];
+
+        let session = app.session_snapshot();
+        let names = file_names(&session);
+        assert_eq!(
+            names,
+            ["a.rs", "c.rs"],
+            "the untitled buffer is not written"
+        );
+        assert_eq!(
+            session.active,
+            0,
+            "no file was active, so the session must fall back to the first rather than name \
+             `{:?}` — which the user was not looking at",
+            names.get(session.active)
+        );
+    }
+
+    #[test]
+    fn an_untitled_buffer_ahead_of_the_active_one_does_not_shift_it() {
+        // The case that already worked, pinned so the fix above cannot break it: `active` counts
+        // *written* files, so a skipped buffer before the live one must not move it.
+        let dir = scratch("ahead");
+        let mut app = editor(&dir, &["a.rs", "b.rs", "c.rs"]);
+        app.buffers[0].file_path = None;
+        app.buffers[0].path = vec!["untitled".to_string()];
+
+        let session = app.session_snapshot();
+        let names = file_names(&session);
+        assert_eq!(names, ["b.rs", "c.rs"]);
+        assert_eq!(
+            names.get(session.active).map(String::as_str),
+            Some("c.rs"),
+            "the active file moved because a buffer ahead of it was skipped"
+        );
+    }
+
+    #[test]
+    fn restoring_a_session_keeps_the_order_it_was_written_in() {
+        // `open_in_background` appends, so walking the session backwards restored the other files
+        // in the opposite order — the tab strip came back mirrored and every buffer number named a
+        // different file than it had last time.
+        let dir = scratch("order");
+        let app = editor(&dir, &["a.rs", "b.rs", "c.rs", "d.rs"]);
+        let session = app.session_snapshot();
+        assert_eq!(file_names(&session), ["a.rs", "b.rs", "c.rs", "d.rs"]);
+
+        // The real restore path, not a copy of it: a second walk written here would pass whatever
+        // `main` did, which is how the defect survived in the first place.
+        let mut restored = editor(&dir, &["d.rs"]);
+        restored.restore_session(&session);
+
+        let order: Vec<String> = (0..=restored.buffers.len())
+            .filter_map(|index| restored.buffer_file(index))
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["d.rs", "a.rs", "b.rs", "c.rs"],
+            "the restored buffers are not in the order the session wrote them"
+        );
+    }
+
+    #[test]
+    fn switching_files_closes_the_one_the_server_was_told_about() {
+        // Every `didOpen` owes a `didClose`, and none was ever sent: the editor announced each file
+        // it visited and never took one back, so a server accumulated every document of a whole
+        // session — each frozen at the version last sent, each still answering against a buffer the
+        // user may have closed an hour before.
+        //
+        // Asserted on `opened_document`, which is the editor's record of what the server believes.
+        // The notification itself is one line in `close_open_document`; what kept going wrong is
+        // knowing *when* to send it.
+        let dir = scratch("didclose");
+        let mut app = editor(&dir, &["a.rs", "b.rs"]);
+
+        // Pretend the handshake finished and a.rs was announced.
+        app.opened_document = Some(("test".to_string(), dir.join("a.rs")));
+        app.switch_to(0);
+
+        assert_eq!(
+            app.opened_document, None,
+            "the server still believes a file is open that the editor has moved off"
+        );
     }
 }
