@@ -58,6 +58,7 @@ opinions about.
 | click · drag | place the cursor · select |
 | double-click · triple-click | select the word · the line |
 | alt-click | add a cursor there (click it again to take it away) |
+| alt-drag | select a **rectangle** — one cursor per line, same columns |
 | ctrl-click | go to the definition |
 | right-click | cut, copy, paste, definition, rename, format — with their keys |
 
@@ -135,6 +136,7 @@ Prefix `i` for inner, `a` for around.
 
 | Key | Does |
 |---|---|
+| alt-drag | a rectangle — one cursor per line, over the same columns |
 | `gA` · `C` | add a cursor above · below |
 | `S` | one cursor per selected line |
 | `,` | keep only the primary cursor |

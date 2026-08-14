@@ -185,6 +185,7 @@ fn main() -> Result<()> {
         save_after_format: false,
         pointer: (0.0, 0.0),
         dragging: false,
+        block_origin: None,
         last_click: None,
         click_count: 1,
         last_edit: None,
@@ -660,6 +661,22 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.scroll = ScrollAnchor::at_line(line.saturating_sub(2));
     }
 
+    // `--block LINE:COLUMN` draws a rectangular selection from the cursor to there, so the one
+    // gesture that has no key can still be captured. Over ragged text on purpose: whether short
+    // lines take part is the thing worth looking at.
+    if let Some(corner) = value("--block") {
+        let (line, column) = corner.split_once(':').unwrap_or((corner.as_str(), "0"));
+        let text = state.document.text();
+        let head = vex_text::Point::new(
+            line.parse::<usize>().unwrap_or(0).min(text.last_line()),
+            column.parse::<usize>().unwrap_or(0),
+        );
+        let anchor = text.char_to_point(state.cursor());
+        state
+            .document
+            .set_selections(vex_text::SelectionSet::column(text, anchor, head));
+    }
+
     // `--diagnostics-list` fills the file with a spread of diagnostics so the sidebar list can be
     // checked. Several, of both severities: a list of one proves nothing about how a list reads.
     if flag("--diagnostics-list") {
@@ -1105,6 +1122,12 @@ struct App {
     pointer: (f32, f32),
     /// Whether the left button is held, so a move extends the selection.
     dragging: bool,
+    /// Where an alt-drag started, in buffer coordinates.
+    ///
+    /// Recorded separately from the selection set because the alt-*click* that begins the gesture
+    /// has already added a cursor by the time the pointer moves, so the set no longer says where
+    /// the rectangle's corner was.
+    block_origin: Option<vex_text::Point>,
     /// When and where the last click landed, for recognising a double or triple one.
     ///
     /// The platform does not tell us: `winit` reports presses, and the "is this the second click of
@@ -1377,7 +1400,8 @@ impl ApplicationHandler for App {
                         self.click(false);
                     }
                     (winit::event::MouseButton::Left, ElementState::Released) => {
-                        self.dragging = false
+                        self.dragging = false;
+                        self.block_origin = None;
                     }
                     // The context menu, which is where a mouse user looks for cut, copy and "go to
                     // definition" before they look for a keyboard shortcut.
@@ -5257,6 +5281,26 @@ impl App {
 
         let rects = layout.pane(index, count, vertical, scale);
         let offset = self.offset_at(rects.code, x, y, scale);
+
+        // Alt-drag draws a rectangle. Held before the button goes down it means "another cursor";
+        // held while the pointer moves it means "a cursor on every line between these two columns",
+        // which is the same idea at a different scale and is why one modifier serves both.
+        //
+        // The cursor the opening alt-click added is simply replaced — the whole set is rebuilt from
+        // the rectangle each time the pointer moves, so there is nothing left over from the press.
+        if extend {
+            if let Some(origin) = self.block_origin {
+                let text = self.state.document.text();
+                let head = text.char_to_point(offset);
+                self.state
+                    .document
+                    .set_selections(vex_text::SelectionSet::column(text, origin, head));
+                self.sync_syntax();
+                return;
+            }
+        } else if self.modifiers.alt_key() {
+            self.block_origin = Some(self.state.document.text().char_to_point(offset));
+        }
 
         // A drag, or shift-click, keeps the anchor and moves the head — the same gesture, and
         // shift-click is the one every editor offers to people who do not like dragging.

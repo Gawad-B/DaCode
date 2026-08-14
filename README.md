@@ -117,7 +117,8 @@ conventional editor, not a modal one with the modes hidden:
 | `ctrl-backspace` | delete a word |
 | `F2` · `F12` · `F8` | rename · go to definition · next problem |
 | double-click · triple-click | select the word · the line |
-| alt-click · ctrl-click | another cursor · go to the definition |
+| alt-click · alt-drag | another cursor · a rectangular selection |
+| ctrl-click | go to the definition |
 
 **With Vim keys on**, the grammar composes as you expect: `3dw`, `d2f)`, `ci"`, `"ayy`, `.` to repeat.
 Vertical motion follows *display* rows, so it moves through soft-wrapped lines the way they look.
@@ -298,7 +299,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 652 tests
+cargo test --workspace                      # 659 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

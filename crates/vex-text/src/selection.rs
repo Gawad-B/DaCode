@@ -6,7 +6,7 @@
 //! resolves its motion into a range per selection.
 
 use crate::anchor::{Bias, transform_offset};
-use crate::coords::CharOffset;
+use crate::coords::{CharOffset, Point};
 use crate::edit::Edit;
 use crate::text::Text;
 use smallvec::{SmallVec, smallvec};
@@ -138,6 +138,49 @@ impl SelectionSet {
         };
         set.normalize();
         set
+    }
+
+    /// A rectangular selection: one selection per line, all covering the same columns.
+    ///
+    /// The gesture every editor calls column or block selection, and the one thing the multi-cursor
+    /// model here makes almost free — a rectangle *is* a set of selections that happen to line up,
+    /// so nothing downstream needs to know it was made this way. Typing, deleting and every
+    /// operator already map over the set.
+    ///
+    /// **Lines too short for the block still take part**, as a caret clamped to their end. That is
+    /// what makes typing down the right-hand edge of ragged text work, which is most of why anyone
+    /// draws a rectangle in the first place; skipping them would silently drop lines out of an
+    /// edit the user believes covers everything they dragged over.
+    ///
+    /// Direction is preserved, so a block drawn right-to-left has its heads on the left and
+    /// `shift`-extending it afterwards grows the side the pointer was on.
+    pub fn column(text: &Text, anchor: Point, head: Point) -> Self {
+        let (top, bottom) = (anchor.line.min(head.line), anchor.line.max(head.line));
+        let (left, right) = (
+            anchor.column.min(head.column),
+            anchor.column.max(head.column),
+        );
+        let reversed = head.column < anchor.column;
+
+        let last = text.last_line();
+        let mut selections: SmallVec<[Selection; 1]> = SmallVec::new();
+        for line in top..=bottom.min(last) {
+            let len = text.line_len(line);
+            let (start, end) = (left.min(len), right.min(len));
+            let (from, to) = if reversed { (end, start) } else { (start, end) };
+            selections.push(Selection::new(
+                text.point_to_char(Point::new(line, from)),
+                text.point_to_char(Point::new(line, to)),
+            ));
+        }
+        if selections.is_empty() {
+            return Self::default();
+        }
+
+        // The primary is the line the pointer is on, so the statusline reports where you are
+        // rather than where the block happens to start.
+        let primary = head.line.clamp(top, bottom).saturating_sub(top);
+        Self::from_iter(selections, primary)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Selection> {

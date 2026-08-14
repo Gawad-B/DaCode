@@ -324,3 +324,113 @@ fn overlapping_edits_are_rejected() {
     ]);
     assert!(tx.validate(&text).is_err());
 }
+
+// ---- column selection --------------------------------------------------------------------------
+
+/// The text every block test uses: three lines of different lengths, so the ragged case is not a
+/// separate fixture but the ordinary one.
+fn ragged() -> Text {
+    Text::from_str("alpha beta\nxy\ngamma delta\n")
+}
+
+#[test]
+fn a_block_covers_the_same_columns_on_every_line() {
+    let text = ragged();
+    let set = SelectionSet::column(&text, Point::new(0, 2), Point::new(2, 5));
+
+    assert_eq!(set.len(), 3, "one selection per line the rectangle spans");
+    let covered: Vec<String> = set
+        .iter()
+        .map(|s| text.slice_to_string(s.start()..s.end()))
+        .collect();
+    assert_eq!(covered, vec!["pha", "", "mma"]);
+}
+
+#[test]
+fn lines_too_short_for_the_block_still_take_part() {
+    // As a caret clamped to their end. That is what makes typing down the right edge of ragged text
+    // work — and skipping them would silently drop lines out of an edit the user believes covers
+    // everything they dragged over.
+    let text = ragged();
+    let set = SelectionSet::column(&text, Point::new(0, 6), Point::new(2, 9));
+
+    assert_eq!(set.len(), 3);
+    let short = set.iter().nth(1).expect("the middle line");
+    assert!(
+        short.is_caret(),
+        "`xy` is two characters, so there is nothing to select"
+    );
+    assert_eq!(
+        text.char_to_point(short.head),
+        Point::new(1, 2),
+        "and its caret sits at the end of the line rather than nowhere"
+    );
+
+    // Typing into the block is then one transaction across all three lines, which is the whole
+    // point of drawing one.
+    let edits = set.replace_edits("#");
+    assert!(Transaction::new(edits).validate(&text).is_ok());
+}
+
+#[test]
+fn a_block_drawn_backwards_keeps_its_direction() {
+    // So that extending it afterwards grows the side the pointer was on, rather than flipping.
+    let text = ragged();
+    let set = SelectionSet::column(&text, Point::new(0, 5), Point::new(2, 1));
+
+    assert!(
+        set.iter().all(|s| s.is_reversed()),
+        "heads on the left, where the pointer finished"
+    );
+    assert_eq!(
+        text.slice_to_string(set.iter().next().unwrap().range()),
+        "lpha"
+    );
+}
+
+#[test]
+fn a_block_dragged_upwards_spans_the_same_lines() {
+    let text = ragged();
+    let down = SelectionSet::column(&text, Point::new(0, 1), Point::new(2, 4));
+    let up = SelectionSet::column(&text, Point::new(2, 1), Point::new(0, 4));
+
+    let ranges = |set: &SelectionSet| -> Vec<_> { set.iter().map(|s| s.range()).collect() };
+    assert_eq!(
+        ranges(&down),
+        ranges(&up),
+        "a rectangle has no preferred corner"
+    );
+}
+
+#[test]
+fn the_primary_is_the_line_the_pointer_is_on() {
+    // The statusline reports the primary, and a block whose primary was always its first line would
+    // say you were somewhere you are not.
+    let text = ragged();
+    let set = SelectionSet::column(&text, Point::new(0, 0), Point::new(2, 3));
+    assert_eq!(text.char_to_point(set.primary().head).line, 2);
+
+    let upwards = SelectionSet::column(&text, Point::new(2, 0), Point::new(0, 3));
+    assert_eq!(text.char_to_point(upwards.primary().head).line, 0);
+}
+
+#[test]
+fn a_block_past_the_end_of_the_document_stops_at_the_last_line() {
+    // A drag can leave the window, and a rectangle that named lines the file does not have would
+    // index past the rope.
+    let text = ragged();
+    let set = SelectionSet::column(&text, Point::new(0, 0), Point::new(99, 3));
+    assert!(set.len() <= text.last_line() + 1);
+    for selection in set.iter() {
+        assert!(selection.end() <= text.len_chars());
+    }
+}
+
+#[test]
+fn a_block_with_no_width_is_a_column_of_carets() {
+    // Which is what alt-dragging straight down means, and is the same thing ctrl-alt-↓ builds.
+    let text = ragged();
+    let set = SelectionSet::column(&text, Point::new(0, 1), Point::new(2, 1));
+    assert_eq!(set.len(), 3);
+    assert!(set.iter().all(|s| s.is_caret()));
+}
