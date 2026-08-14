@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-667 tests, clippy clean.
+671 tests, clippy clean.
 
 ## Commands
 
@@ -38,6 +38,14 @@ cargo check --workspace --target x86_64-pc-windows-msvc   # 7 of 9 crates; see "
 
 If you add a background producer, give it a `Version` and a `poll()` that never blocks, and wire it
 into `about_to_wait` beside the others.
+
+**`crates/vex/tests/latency.rs` is the rule as a test that fails the build.** It asserts *flatness*,
+not milliseconds: a hundredfold larger document may cost at most 3x more, which is machine-
+independent in a way an absolute budget is not — a loaded runner is slower at everything, so any
+threshold tight enough to catch a regression is also tight enough to fail at random. Absolute
+ceilings are there too, set where only a catastrophe trips them. Verified the way every guard here
+must be, by injecting a violation: a document-length walk added to `chrome::draw` fails it at 104x,
+and one added to `InsertText` fails it at 111x. `cargo bench` still measures; this is what *fails*.
 
 ## Architecture, in dependency order
 

@@ -1,0 +1,275 @@
+//! The one rule, as a test that fails the build.
+//!
+//! `cargo bench` has measured the UI thread since M2 and nothing has ever *failed* because of what
+//! it measured. Criterion compares against the last run on the same machine, which means a
+//! regression is caught only if somebody happens to run it, notices the red number, and does not
+//! assume it was their laptop. The one real performance defect this project has found — a sidebar
+//! walking 512 display rows to compute one coordinate, 1.13 ms per frame — was found by reading
+//! code, not by the benchmark that was already measuring it.
+//!
+//! **The contract is flatness, not a number.** An absolute millisecond budget is a property of the
+//! machine: a loaded CI runner is three times slower than a quiet laptop at everything, so any
+//! threshold tight enough to catch a real regression is also tight enough to fail at random on a
+//! busy Tuesday. What the one rule actually says is that cost must not grow with the document — so
+//! that is what is asserted. A ratio cancels the machine out.
+//!
+//! Absolute ceilings are here too, but set where only a catastrophe trips them: something that
+//! turned a keystroke into whole-document work would blow past them on any hardware, and nothing
+//! else will.
+//!
+//! Timing in a test is inherently noisy, so every measurement is a **median** of many runs. A
+//! median ignores the scheduler stealing one iteration; a mean does not.
+
+use std::time::{Duration, Instant};
+use vex::chrome::{self, EditorState};
+use vex::execute::execute;
+use vex_buffer::Document;
+use vex_display::{DisplayMap, ScrollAnchor};
+use vex_input::{Grammar, Key, Registers, Resolution};
+use vex_render::{Frame, Rect};
+use vex_text::{CharOffset, Version};
+use vex_theme::{Mode, Theme, Typography};
+
+/// The two sizes every scaling assertion compares. A hundredfold difference in document size, so
+/// anything accidentally linear in the document shows up as a hundredfold difference in time.
+const SMALL: usize = 1_000;
+const LARGE: usize = 100_000;
+
+/// How much slower the large document may be. Three, not one: a bigger rope is genuinely a little
+/// slower — deeper tree, worse cache locality — and the number being asserted is "not proportional
+/// to the document", not "identical".
+const SCALE_LIMIT: f64 = 3.0;
+
+/// A screenful at a typical window size.
+const WINDOW: (f32, f32) = (1600.0, 1000.0);
+
+fn source(lines: usize) -> String {
+    (0..lines / 6)
+        .map(|i| {
+            format!(
+                "/// Item {i}.\n\
+                 #[derive(Debug, Clone)]\n\
+                 pub struct Item{i} {{\n\
+                 \x20   pub name: String,\n\
+                 \x20   pub count: usize,\n\
+                 }}\n"
+            )
+        })
+        .collect()
+}
+
+fn state(lines: usize) -> EditorState {
+    let text = vex_text::Text::from_str(&source(lines));
+    let mut document = Document::from_text(text);
+    document.set_primary_caret(CharOffset(400));
+
+    EditorState {
+        mode: Mode::Insert,
+        theme: Theme::dark(),
+        typography: Typography::default(),
+        document,
+        pairs: vex_buffer::PairConfig::default(),
+        format_on_save: false,
+        display: DisplayMap::default(),
+        scroll: ScrollAnchor::at_line(20),
+        path: vec!["bench.rs".into()],
+        file_path: None,
+        pending: String::new(),
+        syntax_version: Version(1),
+        diagnostics_version: Version(1),
+        highlights: Vec::new(),
+        node_path: Vec::new(),
+        syntax_error: false,
+        frame_ms: 0.0,
+        worst_ms: 0.0,
+        diagnostics: vex_lsp::Diagnostics::default(),
+        server_status: "test".into(),
+        palette: None,
+        prompt: None,
+        results: None,
+        search_matches: Vec::new(),
+        hover: None,
+        completion: None,
+        pending_request: None,
+        project_root: std::path::PathBuf::from("."),
+        buffer_count: 1,
+        buffer_tabs: Vec::new(),
+        active_buffer: 0,
+        modal: true,
+        sticky_scroll: true,
+        recording: None,
+        diff: vex::git::Diff::default(),
+        show_diagnostics: false,
+        problems: Default::default(),
+        inlay_hints: Vec::new(),
+        show_inlay_hints: false,
+        welcome: None,
+        settings: None,
+        setting_sources: std::collections::HashMap::new(),
+        tree: None,
+        autosave: false,
+        line_numbers: vex::config::LineNumbers::Relative,
+        pointer: (0.0, 0.0),
+        help: None,
+        menu: None,
+    }
+}
+
+/// The median time of `runs` iterations, after discarding a warm-up.
+///
+/// The warm-up matters more than it looks: the first frame builds a text-shaping cache, so timing
+/// it would measure the cache being filled rather than the work that repeats.
+fn median(runs: usize, mut body: impl FnMut()) -> Duration {
+    for _ in 0..(runs / 4).max(4) {
+        body();
+    }
+    let mut samples: Vec<Duration> = (0..runs)
+        .map(|_| {
+            let at = Instant::now();
+            body();
+            at.elapsed()
+        })
+        .collect();
+    samples.sort();
+    samples[samples.len() / 2]
+}
+
+/// Asserts that going from a thousand lines to a hundred thousand did not change the cost.
+///
+/// The message names both numbers, because "it regressed" is not something anyone can act on and
+/// "84 µs became 1.13 ms" is.
+fn assert_flat(what: &str, small: Duration, large: Duration) {
+    let ratio = large.as_secs_f64() / small.as_secs_f64().max(f64::EPSILON);
+    assert!(
+        ratio <= SCALE_LIMIT,
+        "{what} is {ratio:.1}x slower on a {LARGE}-line file than on a {SMALL}-line one \
+         ({:.0} µs vs {:.0} µs). The one rule this project has is that nothing unbounded runs on \
+         the UI thread — something here is now proportional to the document rather than to the \
+         viewport.",
+        large.as_secs_f64() * 1e6,
+        small.as_secs_f64() * 1e6,
+    );
+}
+
+/// A ceiling only a catastrophe trips, so it does not go off on a loaded runner.
+fn assert_under(what: &str, taken: Duration, budget: Duration) {
+    assert!(
+        taken <= budget,
+        "{what} took {:.1} ms, past the {:.0} ms ceiling. That is far beyond anything a slow \
+         machine explains — this is whole-document work on the thread that draws.",
+        taken.as_secs_f64() * 1e3,
+        budget.as_secs_f64() * 1e3,
+    );
+}
+
+fn keystroke(lines: usize) -> Duration {
+    let mut state = state(lines);
+    let mut grammar = Grammar::new();
+    let mut registers = Registers::new();
+
+    median(2_000, || {
+        if let Resolution::Action(action) = grammar.feed(state.mode, Key::char('x')) {
+            execute(&mut state, &mut registers, &action, 40);
+        }
+    })
+}
+
+fn frame_build(lines: usize) -> Duration {
+    let state = state(lines);
+    let mut frame = Frame::default();
+
+    median(200, || {
+        frame.clear();
+        chrome::draw(
+            &mut frame,
+            &state,
+            Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1),
+            1.0,
+        );
+    })
+}
+
+#[test]
+fn a_keystroke_costs_the_same_in_a_huge_file_as_in_a_small_one() {
+    let small = keystroke(SMALL);
+    let large = keystroke(LARGE);
+
+    assert_flat("typing a character", small, large);
+    // 16.6 ms is one frame at 60fps; a *keystroke* getting anywhere near a whole frame on its own
+    // is already a failure, and this is thirty times the measured cost on ordinary hardware.
+    assert_under("typing a character", large, Duration::from_micros(500));
+}
+
+#[test]
+fn building_a_frame_is_bounded_by_the_viewport_and_not_by_the_file() {
+    // The defect this exists for, exactly: a sidebar walked 512 display rows to compute one
+    // coordinate and cost 1.13 ms a frame. Bounding it to the ~40 rows on screen took it to 84 µs.
+    // Nothing failed at the time — the benchmark measured it and said nothing, because nothing was
+    // comparing the two sizes to each other.
+    let small = frame_build(SMALL);
+    let large = frame_build(LARGE);
+
+    assert_flat("building a frame", small, large);
+    // Half a frame at 60fps. A frame build past this leaves nothing for the GPU.
+    assert_under("building a frame", large, Duration::from_millis(8));
+}
+
+#[test]
+fn scrolling_walks_the_viewport_and_not_the_document() {
+    let rows = |lines: usize| {
+        let state = state(lines);
+        let text = state.document.text().clone();
+        median(5_000, || {
+            let visible = state.display.rows_from(&text, state.scroll, 40);
+            std::hint::black_box(visible.len());
+        })
+    };
+
+    assert_flat("taking a screenful of rows", rows(SMALL), rows(LARGE));
+}
+
+#[test]
+fn every_frame_a_panel_adds_is_still_bounded_by_the_viewport() {
+    // Each of these was a separate opportunity to walk the whole document once per frame, and the
+    // panels added this session — the settings report, the problems list — are the newest. Measured
+    // one at a time so a failure names which one, rather than "the frame got slower".
+    let with = |lines: usize, arrange: fn(&mut EditorState)| {
+        let mut state = state(lines);
+        arrange(&mut state);
+        let mut frame = Frame::default();
+        median(200, || {
+            frame.clear();
+            chrome::draw(
+                &mut frame,
+                &state,
+                Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1),
+                1.0,
+            );
+        })
+    };
+
+    /// A named way of putting the editor into a state that draws one more thing.
+    type Panel = (&'static str, fn(&mut EditorState));
+
+    let panels: [Panel; 3] = [
+        ("the settings panel", |state| {
+            state.settings = Some(vex::settings_ui::Settings::new());
+        }),
+        ("the problems list", |state| {
+            state.show_diagnostics = true;
+        }),
+        ("a search with matches on screen", |state| {
+            let text = state.document.text().clone();
+            state.search_matches =
+                vex_buffer::find_all(&text, "pub", &vex_buffer::SearchOptions::default());
+        }),
+    ];
+
+    for (what, arrange) in panels {
+        assert_flat(
+            &format!("building a frame with {what}"),
+            with(SMALL, arrange),
+            with(LARGE, arrange),
+        );
+    }
+}
