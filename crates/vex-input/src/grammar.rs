@@ -350,11 +350,18 @@ impl Grammar {
     /// The editor's own Ctrl chords, which are not Vim's and survive the grammar being off.
     fn feed_editor_chords(&mut self, key: Key) -> Resolution {
         match key.code {
+            // Both push what was typed before returning `Pending`. Without it the which-key popup
+            // and the statusline were handed an empty string: with the grammar off, `ctrl-w` and
+            // `ctrl-k` waited for a second key and said nothing at all about it — and those two are
+            // *only* reachable this way when Vim is off, so the popup that exists to teach them
+            // never appeared for the people who needed it.
             KeyCode::Char('w') => {
+                self.push_display(&key);
                 self.stage = Stage::WindowPrefix;
                 Resolution::Pending(self.display.clone())
             }
             KeyCode::Char('k') => {
+                self.push_display(&key);
                 self.stage = Stage::ChordPrefix;
                 Resolution::Pending(self.display.clone())
             }
@@ -494,6 +501,30 @@ impl Grammar {
         }
     }
 
+    /// Hands the key to whatever the grammar is already waiting for, or `None` if it is waiting
+    /// for nothing a second key completes.
+    ///
+    /// One definition, consulted twice: once above the global Ctrl bindings for the two prefixes a
+    /// modifier can still be held through, and once below for everything else. Writing the match
+    /// out at both sites is how the two would drift.
+    fn take_pending(&mut self, key: Key, extend: bool) -> Option<Resolution> {
+        Some(match self.stage {
+            Stage::Register => self.take_register(key),
+            Stage::FindChar { forward, till } => self.take_find_char(key, forward, till, extend),
+            Stage::ReplaceChar => self.take_replace_char(key),
+            Stage::ObjectKind { around } => self.take_object_kind(key, around),
+            Stage::GPrefix => self.take_g_prefix(key, extend),
+            Stage::BracketPrefix { forward } => self.take_bracket_prefix(key, forward),
+            Stage::WindowPrefix => self.take_window_prefix(key),
+            Stage::FoldPrefix => self.take_fold_prefix(key),
+            Stage::RecordRegister => self.take_macro_register(key, true),
+            Stage::ReplayRegister => self.take_macro_register(key, false),
+            Stage::ChordPrefix => self.take_chord(key),
+            // `Target` waits for a motion, which is the rest of `feed_builtin` rather than a taker.
+            Stage::Start | Stage::Target => return None,
+        })
+    }
+
     fn feed_builtin(&mut self, mode: Mode, key: Key) -> Resolution {
         let extend = mode == Mode::Visual;
 
@@ -511,6 +542,19 @@ impl Grammar {
             return Resolution::Pending(self.display.clone());
         }
 
+        // A chord entered *with ctrl held* claims its second key before the global Ctrl bindings
+        // below get a chance at it. A VSCode-style chord is typed without letting go of ctrl —
+        // that is what makes it a chord — so `ctrl-k ctrl-s` reached `editing_key` as a plain
+        // `ctrl-s`, saved the file and dropped the prefix, and `ctrl-k ctrl-o` jumped backwards
+        // instead of opening a folder. Only these two stages, because they are the only ones a
+        // modifier can still be down for; the rest wait on an ordinary character, and reordering
+        // them would change what an arrow key does mid-command for no reported reason.
+        if matches!(self.stage, Stage::WindowPrefix | Stage::ChordPrefix) {
+            if let Some(resolution) = self.take_pending(key, extend) {
+                return resolution;
+            }
+        }
+
         // Arrow keys and Ctrl bindings bypass the grammar, but must respect visual mode.
         if let Some(action) = self.editing_key(key) {
             let action = match (action, extend) {
@@ -520,31 +564,27 @@ impl Grammar {
             return self.emit(action);
         }
 
-        match self.stage {
-            Stage::Register => return self.take_register(key),
-            Stage::FindChar { forward, till } => {
-                return self.take_find_char(key, forward, till, extend);
-            }
-            Stage::ReplaceChar => return self.take_replace_char(key),
-            Stage::ObjectKind { around } => return self.take_object_kind(key, around),
-            Stage::GPrefix => return self.take_g_prefix(key, extend),
-            Stage::BracketPrefix { forward } => return self.take_bracket_prefix(key, forward),
-            Stage::WindowPrefix => return self.take_window_prefix(key),
-            Stage::FoldPrefix => return self.take_fold_prefix(key),
-            Stage::RecordRegister => return self.take_macro_register(key, true),
-            Stage::ReplayRegister => return self.take_macro_register(key, false),
-            Stage::ChordPrefix => return self.take_chord(key),
-            Stage::Start | Stage::Target => {}
+        if let Some(resolution) = self.take_pending(key, extend) {
+            return resolution;
         }
 
         // A Ctrl key the grammar does not know is *not* a character. Falling through here made
         // `ctrl-p` paste and `ctrl-b` move a word back, which only looked harmless because the
         // application intercepts both before the grammar sees them.
+        //
+        // Both of these clear first. They are only reached at `Start` or `Target`, but a count, a
+        // register or an operator can be live at either — and leaving one behind is invisible, so
+        // the next key acts on it. The application clears *its own* copy of the pending string on
+        // `Unhandled` (main.rs), which is what the statusline and the which-key popup read: the
+        // display went blank while the grammar was still holding `d3`, and the next `w` deleted
+        // three words.
         if key.ctrl || key.alt {
+            self.clear();
             return Resolution::Unhandled;
         }
 
         let KeyCode::Char(c) = key.code else {
+            self.clear();
             return Resolution::Unhandled;
         };
 
@@ -694,10 +734,12 @@ impl Grammar {
 
             'u' => self.emit(Action::Undo),
             'q' => {
+                self.push_display(&key);
                 self.stage = Stage::RecordRegister;
                 Resolution::Pending(self.display.clone())
             }
             '@' => {
+                self.push_display(&key);
                 self.stage = Stage::ReplayRegister;
                 Resolution::Pending(self.display.clone())
             }
@@ -717,6 +759,7 @@ impl Grammar {
             'z' => {
                 // A prefix, as in Vim. Soft wrap moves to `zw`: `za`/`zR`/`zM` are muscle memory
                 // worth matching, and a single-key `z` would make them unreachable.
+                self.push_display(&key);
                 self.stage = Stage::FoldPrefix;
                 Resolution::Pending(self.display.clone())
             }
