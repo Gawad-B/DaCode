@@ -78,6 +78,8 @@ fn state(lines: usize) -> EditorState {
         settings: None,
         setting_sources: std::collections::HashMap::new(),
         tree: None,
+        help: None,
+        menu: None,
     }
 }
 
