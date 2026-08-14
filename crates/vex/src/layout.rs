@@ -181,6 +181,41 @@ impl CodeGrid {
     }
 }
 
+/// A pane's code area once sticky scroll has taken its strip off the top.
+///
+/// `draw_code` used to make this split itself, shadowing its own `code` parameter — which left
+/// every other reader of that rectangle measuring against one that was a row taller per pinned
+/// head. The mouse was one of them, so with three heads pinned a click landed three lines below the
+/// line under the pointer, and the hover box and completion popup were drawn three rows above the
+/// cursor they belonged to. The split happens once now, here, and everything reads the result.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeArea {
+    /// The rows that scroll. This is the rectangle to measure anything against.
+    pub code: Rect,
+    /// The strip holding the pinned heads, when there are any.
+    pub pinned: Option<Rect>,
+    /// The block heads pinned above the viewport, outermost first.
+    pub heads: Vec<usize>,
+}
+
+impl CodeArea {
+    pub fn new(code: Rect, heads: Vec<usize>, row_height: f32) -> Self {
+        if heads.is_empty() {
+            return Self {
+                code,
+                pinned: None,
+                heads,
+            };
+        }
+        let (pinned, rest) = code.split_top(row_height * heads.len() as f32);
+        Self {
+            code: rest,
+            pinned: Some(pinned),
+            heads,
+        }
+    }
+}
+
 /// One open file in the tab strip.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tab {
@@ -587,5 +622,38 @@ mod tests {
         let layout = Layout::of(bounds(), 1.0, None);
         assert!(layout.pane(0, 1, true, 1.0).footer.is_none());
         assert!(layout.pane(0, 2, true, 1.0).footer.is_some());
+    }
+
+    #[test]
+    fn a_pinned_head_moves_the_first_code_row_down_for_the_mouse_too() {
+        // `draw_code` made this split itself and shadowed its own parameter, so every other reader
+        // of the pane rectangle measured against one a row taller per pinned head. The mouse was
+        // one of them: with three heads pinned a click landed three lines below the line under the
+        // pointer, and since nothing is pinned at the top of a file it read as intermittent.
+        let code = Rect::new(300.0, 120.0, 900.0, 600.0);
+        const ROW: f32 = 26.0;
+
+        let none = CodeArea::new(code, Vec::new(), ROW);
+        assert_eq!(none.code, code, "nothing pinned changes nothing");
+        assert!(none.pinned.is_none());
+
+        for heads in 1..=3usize {
+            let area = CodeArea::new(code, (0..heads).collect(), ROW);
+            let strip = area.pinned.expect("a strip for the pinned heads");
+            assert_eq!(strip.y, code.y);
+            assert_eq!(strip.height, ROW * heads as f32);
+            assert_eq!(area.code.y, code.y + ROW * heads as f32);
+            assert_eq!(
+                area.code.height,
+                code.height - ROW * heads as f32,
+                "the strip comes out of the scrolling rows, not out of nowhere"
+            );
+
+            // What the defect actually was: the first row of code, at the pixel it is drawn at,
+            // must be display row zero.
+            let grid = CodeGrid::new(area.code, 8.0, ROW, 0, 1.0);
+            assert_eq!(grid.row_at(area.code.y + ROW / 2.0), 0);
+            assert_eq!(grid.row_at(area.code.y + ROW * 1.5), 1);
+        }
     }
 }

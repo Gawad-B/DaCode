@@ -1567,7 +1567,16 @@ impl App {
         let (_, height) = renderer.size();
         let row_height = self.state.typography.row_height() * scale;
         let code_height = self.state.code_height(height as f32, scale);
-        self.state.visible_rows(code_height, row_height)
+        // Minus whatever sticky scroll has pinned above the viewport. This is the height the cursor
+        // reveal and the page motions work in, and without the subtraction they treated rows the
+        // pinned strip is covering as visible — so the caret could be "revealed" underneath it.
+        let pinned = self
+            .state
+            .sticky_heads(self.state.document.text(), self.state.scroll.line, true)
+            .len() as f32
+            * row_height;
+        self.state
+            .visible_rows((code_height - pinned).max(row_height), row_height)
     }
 
     /// Scrolls the viewport so the cursor stays visible with a margin of context.
@@ -5575,7 +5584,7 @@ impl App {
         let grid = self.code_grid(code, scale);
         let height = self
             .state
-            .visible_rows(code.height, grid.row_height())
+            .visible_rows(grid.code.height, grid.row_height())
             .max(1);
         self.state.display.offset_at_display_point(
             self.state.document.text(),
@@ -5591,11 +5600,27 @@ impl App {
     }
 
     /// The grid for a pane's code area, at the focused buffer's scroll position.
+    ///
+    /// Sticky scroll takes its strip off the top first, through the same `CodeArea` the drawing
+    /// side splits with. Without it the mouse measured from the top of the whole pane while the
+    /// text was drawn a row lower per pinned head, so a click landed up to three lines below the
+    /// line under the pointer — and worsened as you nested deeper, which read as intermittent.
     fn code_grid(&self, code: Rect, scale: f32) -> vex::layout::CodeGrid {
-        vex::layout::CodeGrid::new(
+        let row_height = self.state.typography.row_height() * scale;
+        let area = vex::layout::CodeArea::new(
             code,
+            self.state.sticky_heads(
+                self.state.document.text(),
+                self.state.scroll.line,
+                // Only the focused pane pins anything, and this grid is only ever built for it.
+                true,
+            ),
+            row_height,
+        );
+        vex::layout::CodeGrid::new(
+            area.code,
             self.state.typography.code_size * 0.6 * scale,
-            self.state.typography.row_height() * scale,
+            row_height,
             if self.state.display.mode == WrapMode::None {
                 self.state.scroll.column
             } else {
@@ -5761,18 +5786,18 @@ impl App {
     fn click_sidebar(&mut self, sidebar: Rect, y: f32, scale: f32) {
         // The row heights each panel draws with. Kept beside the drawing code's own constants; a
         // mismatch here shows up as clicking one row and selecting its neighbour.
-        if self.state.tree.is_some() {
-            let top = sidebar.y + space::LG * scale + 22.0 * scale * 1.6;
-            let row = ((y - top) / (22.0 * scale)).floor();
-            if row < 0.0 {
-                return;
-            }
-            let Some(tree) = &mut self.state.tree else {
+        if let Some(tree) = &self.state.tree {
+            // The same rectangles the drawing code uses, from the same function. This kept its own
+            // copy of the walk, and the copies had already drifted: drawing left a pad's width free
+            // at the bottom of the panel and this did not, so the two asked for different numbers
+            // of visible rows. Whenever the tree was longer than the panel that is a different
+            // *window* of rows, and clicking one file opened another.
+            let panel = vex::tree::panel(sidebar, scale, tree);
+            let Some(index) = panel.row_at(y) else {
                 return;
             };
-            let height = ((sidebar.bottom() - top) / (22.0 * scale)).floor().max(1.0) as usize;
-            let (rows, _) = tree.visible(height);
-            let Some(target) = rows.get(row as usize).map(|row| row.relative.clone()) else {
+            let target = panel.rows[index].0.relative.clone();
+            let Some(tree) = &mut self.state.tree else {
                 return;
             };
 

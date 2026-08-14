@@ -12,6 +12,63 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use vex_project::ProjectFile;
+use vex_render::Rect;
+
+/// The panel's geometry: which rows are on screen and where each one is.
+///
+/// The rule this module now obeys with the rest of them — every mouse-reachable thing is geometry
+/// data plus a click handler that reads it. Drawing and hit-testing each had their own copy of the
+/// walk, and the copies disagreed: drawing left a pad's worth of space at the bottom and the mouse
+/// did not, so the two asked [`FileTree::visible`] for different heights. Whenever the tree was
+/// longer than the panel, that is a different window of rows — and clicking one file opened
+/// another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Panel {
+    /// Where the "Files" heading goes.
+    pub header: Rect,
+    /// Each visible row and the full-width rectangle it occupies.
+    pub rows: Vec<(Row, Rect)>,
+    /// Which of `rows` is selected, if the selection is on screen.
+    pub cursor: Option<usize>,
+}
+
+impl Panel {
+    /// Which visible row a pixel is in.
+    pub fn row_at(&self, y: f32) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|(_, rect)| y >= rect.y && y < rect.y + rect.height)
+    }
+}
+
+/// Lays the tree out in `rect`. Read by `chrome::draw_tree` and by `App::click_sidebar`.
+pub fn panel(rect: Rect, scale: f32, tree: &FileTree) -> Panel {
+    let pad = vex_theme::space::LG * scale;
+    let line = 22.0 * scale;
+    let top = rect.y + pad;
+    let header = Rect::new(rect.x + pad, top, rect.width - pad * 2.0, line);
+    let first = top + line * 1.6;
+
+    // The pad at the bottom is what the two copies disagreed about. It stays: a row flush against
+    // the edge of the panel reads as a row that has been cut off.
+    let height = (((rect.bottom() - pad) - first) / line).floor().max(1.0) as usize;
+    let (visible, cursor) = tree.visible(height);
+
+    Panel {
+        header,
+        rows: visible
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                (
+                    row.clone(),
+                    Rect::new(rect.x, first + index as f32 * line, rect.width, line),
+                )
+            })
+            .collect(),
+        cursor: (cursor < visible.len()).then_some(cursor),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -392,5 +449,51 @@ mod tests {
         let (rows, cursor) = tree.visible(10);
         assert_eq!(rows.len(), 10);
         assert_eq!(rows[cursor].name, tree.selected_row().unwrap().name);
+    }
+
+    #[test]
+    fn the_panel_a_click_reads_is_the_panel_that_was_drawn() {
+        // The rule the rest of the module list obeys: one walk, two readers. Drawing and
+        // hit-testing each had their own, and the two had already drifted a pad apart — drawing
+        // left space at the bottom of the panel and the mouse did not, so they asked `visible` for
+        // different heights. Once the tree is longer than the panel that is a different *window* of
+        // rows, and clicking one file opens another.
+        let paths: Vec<String> = (0..40).map(|i| format!("file{i:02}.rs")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let mut tree = tree(&refs);
+        tree.move_selection(30);
+
+        let rect = Rect::new(0.0, 0.0, 240.0, 400.0);
+        let panel = panel(rect, 1.0, &tree);
+
+        assert!(!panel.rows.is_empty());
+        for (index, (_, box_)) in panel.rows.iter().enumerate() {
+            // The top of a row, its middle, and the pixel before the next one all resolve to it.
+            assert_eq!(panel.row_at(box_.y), Some(index));
+            assert_eq!(panel.row_at(box_.y + box_.height / 2.0), Some(index));
+            assert_eq!(panel.row_at(box_.y + box_.height - 0.01), Some(index));
+        }
+
+        // Nothing above the first row or below the last claims one.
+        assert_eq!(panel.row_at(panel.header.y), None);
+        let bottom = panel.rows.last().expect("rows").1;
+        assert_eq!(panel.row_at(bottom.y + bottom.height + 1.0), None);
+    }
+
+    #[test]
+    fn the_rows_stay_inside_the_panel_they_are_drawn_in() {
+        // The bottom pad is what the two copies disagreed about, so it is what this pins down: a
+        // row flush against the edge reads as one that has been cut off.
+        let paths: Vec<String> = (0..80).map(|i| format!("file{i:02}.rs")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let tree = tree(&refs);
+
+        let rect = Rect::new(0.0, 0.0, 240.0, 300.0);
+        let panel = panel(rect, 1.0, &tree);
+        let last = panel.rows.last().expect("rows").1;
+        assert!(
+            last.y + last.height <= rect.bottom(),
+            "a row was laid out past the bottom of the panel"
+        );
     }
 }

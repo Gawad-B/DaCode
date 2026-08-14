@@ -186,6 +186,24 @@ impl EditorState {
         outcome
     }
 
+    /// The block heads sticky scroll pins above a viewport, outermost first.
+    ///
+    /// Only when the head has actually scrolled off — pinning a line that is already visible would
+    /// show it twice, which is the thing that makes this feature annoying elsewhere.
+    ///
+    /// Read by `draw_code` to place them and, through [`crate::layout::CodeArea`], by the mouse to
+    /// take their strip off the top before turning a pixel into a display row. It lived inside the
+    /// drawing code, where nothing else could see it.
+    pub fn sticky_heads(&self, text: &Text, scroll_line: usize, focused: bool) -> Vec<usize> {
+        if !focused || !self.sticky_scroll {
+            return Vec::new();
+        }
+        vex_display::enclosing_heads(text, scroll_line, self.display.tab_width, 3)
+            .into_iter()
+            .filter(|head| *head < scroll_line)
+            .collect()
+    }
+
     pub fn cursor(&self) -> CharOffset {
         self.document.selections().primary().head
     }
@@ -838,7 +856,14 @@ pub fn draw_panes(
         // on line numbers.
         let gutter_width = px(78.0).min(slot.width * 0.22);
         let (gutter, code) = slot.split_left(gutter_width);
-        draw_code(frame, state, pane, gutter, code, row_height, scale);
+        // Sticky scroll takes its strip before anything measures against the code area — including
+        // the info box, the completion popup and the mouse, all of which read `focused_code` below.
+        let area = crate::layout::CodeArea::new(
+            code,
+            state.sticky_heads(pane.document.text(), pane.scroll.line, pane.focused),
+            row_height,
+        );
+        draw_code(frame, state, pane, gutter, &area, row_height, scale);
 
         if let Some(footer) = footer {
             frame.fill(footer, if pane.focused { theme.bg_alt } else { theme.bg });
@@ -865,7 +890,7 @@ pub fn draw_panes(
         }
 
         if pane.focused {
-            focused_code = code;
+            focused_code = area.code;
         }
     }
 
@@ -2513,24 +2538,31 @@ fn draw_tree(
     let accent = theme.accent(state.mode);
     let pad = space::LG * scale;
     let line = 22.0 * scale;
-    let mut y = rect.y + pad;
+    // One walk, shared with the click handler. The two used to be written out separately and had
+    // already drifted a pad apart, which is a click that opens the file below the one you pointed
+    // at as soon as the tree is longer than the panel.
+    let panel = crate::tree::panel(rect, scale, tree);
 
     frame.text(run(
         state,
         Role::Prose,
         "Files",
-        Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+        panel.header,
         theme.ink,
         Align::Left,
         scale,
     ));
-    y += line * 1.6;
 
     if tree.is_empty() {
         frame.text(label(
             state,
             "indexing",
-            Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+            Rect::new(
+                rect.x + pad,
+                panel.header.y + line * 1.6,
+                rect.width - pad * 2.0,
+                line,
+            ),
             theme.ink_faint,
             Align::Left,
             scale,
@@ -2538,15 +2570,12 @@ fn draw_tree(
         return;
     }
 
-    let height = (((rect.bottom() - pad) - y) / line).floor().max(1.0) as usize;
-    let (rows, cursor) = tree.visible(height);
-
-    for (index, row) in rows.iter().enumerate() {
-        let row_y = y + index as f32 * line;
-        let selected = index == cursor;
+    for (index, (row, box_)) in panel.rows.iter().enumerate() {
+        let row_y = box_.y;
+        let selected = panel.cursor == Some(index);
 
         if selected {
-            frame.fill(Rect::new(rect.x, row_y, rect.width, line), theme.row_active);
+            frame.fill(*box_, theme.row_active);
             frame.fill(
                 Rect::new(rect.x, row_y, border::ACCENT_BORDER * scale, line),
                 accent,
@@ -2830,10 +2859,13 @@ fn draw_code(
     state: &EditorState,
     pane: &PaneView<'_>,
     gutter: Rect,
-    code: Rect,
+    area: &crate::layout::CodeArea,
     row_height: f32,
     scale: f32,
 ) {
+    // Everything below measures against the scrolling rows, never the whole pane: the split is the
+    // caller's, so the mouse and the popups get the same rectangle this does.
+    let code = area.code;
     let theme = &state.theme;
     // The mode belongs to the focused pane. An unfocused one is not in insert mode just because the
     // pane beside it is, and tinting it as though it were would be a lie about where typing goes.
@@ -2858,32 +2890,12 @@ fn draw_code(
         return;
     }
 
-    // Sticky scroll: the block heads enclosing the top of the viewport, pinned above it. Only when
-    // the head has actually scrolled off — pinning a line that is already visible would show it
-    // twice, which is the thing that makes this feature annoying elsewhere.
-    let sticky: Vec<usize> = if pane.focused && state.sticky_scroll {
-        vex_display::enclosing_heads(text, pane.scroll.line, state.display.tab_width, 3)
-            .into_iter()
-            .filter(|head| *head < pane.scroll.line)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    if let Some(pinned) = area.pinned {
+        frame.fill(pinned, theme.bg_alt);
+        frame.rule_bottom(pinned, theme.rule_soft, border::BORDER);
 
-    let (code, sticky_area) = if sticky.is_empty() {
-        (code, None)
-    } else {
-        let strip = row_height * sticky.len() as f32;
-        let (top, rest) = code.split_top(strip);
-        (rest, Some(top))
-    };
-
-    if let Some(area) = sticky_area {
-        frame.fill(area, theme.bg_alt);
-        frame.rule_bottom(area, theme.rule_soft, border::BORDER);
-
-        for (index, head) in sticky.iter().enumerate() {
-            let y = area.y + index as f32 * row_height;
+        for (index, head) in area.heads.iter().enumerate() {
+            let y = pinned.y + index as f32 * row_height;
             let range = text.line_range(*head);
             let raw = text.slice_to_string(range.start..range.end);
             let content = expand_tabs(state, &raw);
