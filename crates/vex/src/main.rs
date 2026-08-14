@@ -2187,21 +2187,34 @@ impl App {
         match key.code {
             KeyCode::Escape => {
                 // Incremental search moved the cursor; cancelling must put it back, or `/` becomes a
-                // way to lose your place.
+                // way to lose your place. Unless you walked there on purpose with `↵`, in which case
+                // putting it back *is* losing your place.
                 let origin = prompt.origin;
                 let was_search = prompt.is_search();
+                let stepped = prompt.stepped;
                 self.state.prompt = None;
-                if was_search {
+                if was_search && !stepped {
                     self.state.search_matches.clear();
                     self.state.document.set_primary_caret(origin);
                 }
+            }
+            // `↵` steps to the next match and leaves the box open, `⇧↵` to the previous one. It used
+            // to close the box, so stepping meant knowing that F3 existed and that the thing you had
+            // just been using was over — which is why this looked like an editor that could count
+            // matches but not visit them.
+            KeyCode::Enter if prompt.is_search() => {
+                let forward = !key.shift;
+                prompt.stepped = true;
+                let matches = prompt.matches.clone();
+                self.state.search_matches = matches;
+                self.step_match(forward);
             }
             KeyCode::Enter => {
                 let prompt = self.state.prompt.take().expect("checked above");
                 match prompt.kind {
                     PromptKind::Search { .. } => {
-                        // Matches stay highlighted after accepting, so `n` has something to move
-                        // through and the eye can find the rest.
+                        // Unreachable: search is handled above. Kept so the match stays total if a
+                        // new prompt kind ever wants the old accept-and-close behaviour.
                         self.state.search_matches = prompt.matches;
                     }
                     PromptKind::Command => return self.run_command(&prompt.input),
@@ -2240,6 +2253,17 @@ impl App {
                 prompt.input.pop();
                 self.refresh_prompt();
             }
+            // The same query, across every file. This is the other half of "find": you look here,
+            // it is not here, and the next thing you want is the project — without retyping it or
+            // knowing that a second shortcut exists.
+            KeyCode::Char('f') if key.ctrl && key.shift && prompt.is_search() => {
+                let query = prompt.input.clone();
+                self.state.prompt = None;
+                if !query.is_empty() {
+                    self.state.results =
+                        Some(vex::results::Results::start(&self.state.project_root, &query));
+                }
+            }
             KeyCode::Char(c) if !key.ctrl && !key.alt => {
                 prompt.input.push(c);
                 self.refresh_prompt();
@@ -2247,6 +2271,21 @@ impl App {
             _ => {}
         }
         false
+    }
+
+    /// Moves to the next or previous match of the open search, wrapping at the ends.
+    fn step_match(&mut self, forward: bool) {
+        let matches = self.state.search_matches.clone();
+        if matches.is_empty() {
+            return;
+        }
+        // `find_next` compares strictly against the caret and wraps at the ends, so it never returns
+        // the match the cursor is already on — which is what makes a second `↵` move a second time.
+        let from = self.state.cursor();
+        if let Some(target) = vex_buffer::find_next(&matches, from, forward) {
+            self.state.document.set_primary_caret(target.start);
+            self.reveal_cursor();
+        }
     }
 
     /// Re-runs an incremental search and moves the cursor to the first match ahead of the origin.

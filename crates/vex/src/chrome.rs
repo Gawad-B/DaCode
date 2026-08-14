@@ -1409,7 +1409,8 @@ fn draw_palette(
     frame.rule_top(footer, theme.rule_soft, border::BORDER);
     frame.text(label(
         state,
-        "↵ open · ↑↓ move · esc dismiss",
+        // `↵` was a tofu box here too — the bundled font has the arrows but not the return symbol.
+        "enter open · ↑↓ move · esc dismiss",
         Rect::new(
             footer.x + pad,
             footer.y,
@@ -2297,7 +2298,19 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let (bar, name) = right.split_right(34.0 * scale);
     frame.text(label(
         state,
-        format!("{} mode", state.mode.label()),
+        // No mode word when there are no modes. The statusline already knew this; the title bar did
+        // not, so someone who turned Vim off was told "INSERT MODE" by the largest label on screen
+        // while the editor underneath had no modes at all. It says what the file is instead, which
+        // is the thing that is actually true of a non-modal editor.
+        match state.modal {
+            true => format!("{} mode", state.mode.label()),
+            false => state
+                .file_path
+                .as_deref()
+                .and_then(vex_syntax::Language::from_path)
+                .map(|language| language.name().to_string())
+                .unwrap_or_default(),
+        },
         name,
         theme.ink_faint,
         Align::Right,
@@ -2349,14 +2362,20 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         accent,
     );
 
+    // The most-read line in the window, and it advertised `i / v / R / esc mode` to people who had
+    // turned modes off — teaching keys that do nothing, to exactly the person least able to tell.
+    // It leads with f1 now, because "where is the list of keys" was a real question asked by someone
+    // holding the answer's own window.
     let hint = if state.buffer_count > 1 {
         format!(
-            "buffer {} of {} · ctrl-p files · ctrl-b buffers",
+            "buffer {} of {} · ctrl-p files · ctrl-b buffers · f1 keys",
             state.active_buffer + 1,
             state.buffer_count
         )
+    } else if state.modal {
+        "f1 keys · ctrl-p files · i / v / R / esc mode · u undo".to_string()
     } else {
-        "ctrl-p files · i / v / R / esc mode · u undo · z wrap".to_string()
+        "f1 keys · ctrl-shift-p commands · ctrl-p files · ctrl-d select next".to_string()
     };
     frame.text(label(
         state,
@@ -3207,22 +3226,31 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
             accent,
         );
 
-        // Match count on the right, so `/` tells you whether it found anything before you commit.
+        // Where you are and how to move, on the right.
+        //
+        // This said "17 matches" and nothing else, which answers the least useful question: it told
+        // you the haystack had needles without saying which one you were standing on or how to reach
+        // the next. Both keys are named here because a search box that hides its own controls is how
+        // people conclude the editor cannot do something it has always done.
         if prompt.is_search() && !prompt.input.is_empty() {
+            // Words, not `↵`: the bundled font has no glyph for it, so it drew a tofu box — and the
+            // whole point of this line is to be read by someone who does not yet know the keys.
+            let keys = "enter next · shift-enter back · ctrl-shift-f every file";
+            let (text, color) = match prompt.matches.len() {
+                0 => ("no matches".to_string(), theme.stale()),
+                total => match vex_buffer::index_of(&prompt.matches, state.cursor()) {
+                    // On a match: say which one. Not on one yet — the caret sits between them — say
+                    // how many there are, because "0 of 32" reads like a failure and is not one.
+                    Some(index) => (format!("{} of {total}   {keys}", index + 1), theme.ink_dim),
+                    None => (format!("{total} matches   {keys}"), theme.ink_dim),
+                },
+            };
             frame.text(run(
                 state,
                 Role::Value,
-                if prompt.matches.is_empty() {
-                    "no matches".to_string()
-                } else {
-                    format!("{} matches", prompt.matches.len())
-                },
+                text,
                 inner,
-                if prompt.matches.is_empty() {
-                    theme.stale()
-                } else {
-                    theme.ink_dim
-                },
+                color,
                 Align::Right,
                 scale,
             ));

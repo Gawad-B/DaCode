@@ -837,3 +837,53 @@ fn alt(code: vex_input::KeyCode) -> Key {
         shift: false,
     }
 }
+
+// ---- finding things -------------------------------------------------------------------------
+
+/// Pressing return in the search box walks the matches instead of closing it.
+///
+/// The complaint that produced this: the box counted matches and appeared to offer no way to visit
+/// them. It did — return closed the box and `F3` stepped afterwards — but a control you have to
+/// already know about, on a box that has just disappeared, is not a control anyone finds.
+#[test]
+fn return_in_the_search_box_walks_the_matches_and_wraps() {
+    let text = "alpha\nbeta\nalpha\ngamma\nalpha\n";
+    let matches = vex_buffer::find_all(
+        &vex_text::Text::from_str(text),
+        "alpha",
+        &vex_buffer::SearchOptions::default(),
+    );
+    assert_eq!(matches.len(), 3, "three to walk through");
+
+    // Forward from the first lands on the second, then the third, then wraps to the first.
+    let first = matches[0].start;
+    let second = vex_buffer::find_next(&matches, first, true).expect("a next match");
+    assert_eq!(second.start, matches[1].start);
+    let third = vex_buffer::find_next(&matches, second.start, true).expect("a next match");
+    assert_eq!(third.start, matches[2].start);
+    let wrapped = vex_buffer::find_next(&matches, third.start, true).expect("wraps");
+    assert_eq!(wrapped.start, matches[0].start, "the end wraps to the start");
+
+    // And backwards, which is what shift-return does.
+    let back = vex_buffer::find_next(&matches, matches[1].start, false).expect("a previous match");
+    assert_eq!(back.start, matches[0].start);
+}
+
+/// The position shown in the search box is the match the cursor is on, not a bare total.
+#[test]
+fn the_search_box_can_say_which_match_you_are_on() {
+    let text = "alpha beta alpha gamma alpha";
+    let matches = vex_buffer::find_all(
+        &vex_text::Text::from_str(text),
+        "alpha",
+        &vex_buffer::SearchOptions::default(),
+    );
+
+    for (index, found) in matches.iter().enumerate() {
+        assert_eq!(
+            vex_buffer::index_of(&matches, found.start),
+            Some(index),
+            "standing on match {index} should report match {index}"
+        );
+    }
+}

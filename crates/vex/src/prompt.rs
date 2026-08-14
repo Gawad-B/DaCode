@@ -53,6 +53,13 @@ pub struct Prompt {
     pub matches: Vec<Range<CharOffset>>,
     /// A message to show instead of the input — an error from a command that failed.
     pub message: Option<String>,
+    /// Whether the user has stepped through matches with `↵`.
+    ///
+    /// It decides what escape means. Cancelling a search you only typed should put you back where
+    /// you were — that is why `origin` exists. But once you have deliberately walked to the fourth
+    /// match, being thrown back to where you started is not a cancel, it is losing your place, which
+    /// is the exact thing `origin` was added to prevent.
+    pub stepped: bool,
 }
 
 impl Prompt {
@@ -63,6 +70,7 @@ impl Prompt {
             origin,
             matches: Vec::new(),
             message: None,
+            stepped: false,
         }
     }
 
