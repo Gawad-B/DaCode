@@ -143,6 +143,8 @@ fn main() -> Result<()> {
         servers: std::collections::HashMap::new(),
         active_server: None,
         missing_servers: std::collections::HashSet::new(),
+        confirm_close: None,
+        restore_window: None,
         sent_version: None,
         folder_picker: None,
         snippets: load_snippets(),
@@ -213,6 +215,7 @@ fn main() -> Result<()> {
         if others > 0 {
             eprintln!("vex: restored {} more from the last session", others);
         }
+        app.restore_window = session.window;
     }
 
     event_loop.run_app(&mut app).context("running the app")?;
@@ -259,6 +262,8 @@ fn new_state(
             .join("\n")
     });
 
+    let tab_name = path.last().cloned().unwrap_or_else(|| "untitled".into());
+
     let state = EditorState {
         mode,
         theme: theme_override.unwrap_or(settings.theme),
@@ -291,6 +296,9 @@ fn new_state(
         pending_request: None,
         project_root,
         buffer_count: 1,
+        // The one open buffer. `App` keeps this in step from `after_buffer_change`; seeding it here
+        // is what makes the offscreen capture path — which has no `App` — draw a real tab.
+        buffer_tabs: vec![(tab_name, false)],
         active_buffer: 0,
         modal: settings.modal,
         sticky_scroll: settings.sticky_scroll,
@@ -929,6 +937,10 @@ struct App {
     /// Languages already reported as having no server, so the notice is shown once per session
     /// rather than every time a file of that language is opened.
     missing_servers: std::collections::HashSet<&'static str>,
+    /// The buffer a close was just refused for, so pressing close again goes through.
+    confirm_close: Option<usize>,
+    /// The size the last session's window had, applied when this one is created.
+    restore_window: Option<(u32, u32)>,
     /// The document version last sent to the server, so `didChange` is not sent redundantly.
     sent_version: Option<vex_text::Version>,
     /// Set when a save asked for formatting: the reply's edits are applied and the file written
@@ -1016,11 +1028,19 @@ impl ApplicationHandler for App {
         // that does, and they are Unix-only — so on Windows this was an unused `mut`, a warning that
         // clippy would have failed the build on if clippy had ever run there. It runs on Linux in CI,
         // where the `mut` is used, so nothing saw it until the workspace was built on Windows.
+        // The size the last session ended at, in physical pixels — the stored value came from
+        // `inner_size`, so it must go back as a physical size or a scaled display would grow the
+        // window a little on every launch.
+        let size = match self.restore_window {
+            Some((width, height)) => winit::dpi::Size::Physical((width, height).into()),
+            None => winit::dpi::Size::Logical((1280.0, 820.0).into()),
+        };
+
         #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
         let mut attributes = Window::default_attributes()
             .with_title("vex")
             .with_window_icon(vex::icon::window_icon())
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 820.0));
+            .with_inner_size(size);
 
         // The window has to name itself, or the desktop cannot connect it to its installed entry.
         //
@@ -1226,12 +1246,45 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    MouseScrollDelta::PixelDelta(position) => {
+                        (position.x as f32 / 40.0, position.y as f32 / 40.0)
+                    }
+                };
+
+                // ctrl-scroll resizes the text, as it does in every browser and every other editor.
+                // The wheel handler ignored modifiers entirely, so the one gesture people try first
+                // when the type is too small did nothing.
+                if self.modifiers.control_key() {
+                    if dy != 0.0 {
+                        let _ = self.run(if dy > 0.0 {
+                            Action::IncreaseFontSize
+                        } else {
+                            Action::DecreaseFontSize
+                        });
+                        self.request_redraw();
+                    }
+                    return;
+                }
+
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -y as isize * 3,
                     MouseScrollDelta::PixelDelta(position) => -(position.y / 40.0) as isize,
                 };
-                self.scroll_by(lines);
-                self.sync_syntax();
+                if lines != 0 {
+                    self.scroll_by(lines);
+                    self.sync_syntax();
+                }
+                let _ = dx;
+                self.request_redraw();
+            }
+
+            // Dropping a file on the window opens it. Nothing handled this, so dragging a file onto
+            // vex did nothing at all — which reads as "this is a toy" faster than any missing
+            // feature does.
+            WindowEvent::DroppedFile(path) => {
+                self.activate(Target::File(path));
                 self.request_redraw();
             }
 
@@ -2715,6 +2768,7 @@ impl App {
                     self.restore_pane();
                 }
             }
+            Action::CloseBuffer => self.request_close_buffer(self.state.active_buffer),
             Action::ExpandSnippet => self.expand_snippet(),
             // The three ways of finding out what the editor can do. Each is a toggle, because the
             // key that opened it is the key someone presses again to get rid of it.
@@ -2920,7 +2974,18 @@ impl App {
             });
         }
 
-        let session = vex::session::Session { files, active };
+        let session = vex::session::Session {
+            files,
+            active,
+            // Only when there is a real window and it is not minimised: saving 0x0 would reopen
+            // into nothing.
+            window: self
+                .window
+                .as_ref()
+                .map(|window| window.inner_size())
+                .filter(|size| size.width > 0 && size.height > 0)
+                .map(|size| (size.width, size.height)),
+        };
         vex::session::save(&vex::session::session_dir(), self.index.root(), &session);
     }
 
@@ -3921,6 +3986,121 @@ impl App {
         self.after_buffer_change();
     }
 
+    /// Closes a buffer, refusing once if it has unsaved changes.
+    ///
+    /// Not a dialog: pressing the same key again closes it, and the message says so. A confirmation
+    /// that can be answered by repeating what you already did is faster than one that makes you
+    /// find a button, and it still cannot happen by accident — the first press only warns.
+    fn request_close_buffer(&mut self, index: usize) {
+        let dirty = if index == self.state.active_buffer {
+            self.state.document.is_dirty()
+        } else {
+            let stored = if index < self.state.active_buffer {
+                index
+            } else {
+                index - 1
+            };
+            self.buffers
+                .get(stored)
+                .map(|buffer| buffer.document.is_dirty())
+                .unwrap_or(false)
+        };
+
+        if dirty && self.confirm_close != Some(index) {
+            self.confirm_close = Some(index);
+            let name = self
+                .buffer_at(index)
+                .0
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "this file".to_string());
+            self.state.hover = Some(format!(
+                "{name} has unsaved changes — {} saves it, or close again to discard them",
+                self.key_for("save")
+            ));
+            return;
+        }
+
+        self.confirm_close = None;
+        self.close_buffer(index);
+    }
+
+    /// Closes a buffer, keeping the editor on something sensible.
+    ///
+    /// The last one does not close: an editor with no buffer at all has nowhere to put the cursor,
+    /// and "close the file" meaning "quit" is a surprise nobody wants. It becomes an empty scratch
+    /// buffer instead, which is what starting vex with no argument already gives you.
+    ///
+    /// Unsaved changes are not silently discarded — the caller checks first.
+    fn close_buffer(&mut self, index: usize) {
+        if index > self.buffers.len() {
+            return;
+        }
+
+        if self.buffers.is_empty() {
+            self.state.document = Document::from_str("");
+            self.state.path = vec!["untitled".to_string()];
+            self.state.file_path = None;
+            self.state.scroll = ScrollAnchor::default();
+            self.state.highlights = Vec::new();
+            self.after_buffer_change();
+            self.refresh_buffer_tabs();
+            return;
+        }
+
+        // Closing the file you are looking at means something else has to become live, so switch
+        // away first and then drop what is now a stored buffer. Doing it the other way round would
+        // leave the live document pointing at a slot that no longer exists.
+        if index == self.state.active_buffer {
+            let next = if index == 0 { 1 } else { index - 1 };
+            self.switch_to(next);
+        }
+
+        let stored = if index < self.state.active_buffer {
+            index
+        } else {
+            index - 1
+        };
+        if stored < self.buffers.len() {
+            self.buffers.remove(stored);
+        }
+
+        // The active index counts positions in the whole list, so removing one before it shifts it.
+        if index < self.state.active_buffer {
+            self.state.active_buffer -= 1;
+        }
+        self.state.buffer_count = self.buffers.len() + 1;
+        self.refresh_buffer_tabs();
+    }
+
+    /// What the tab strip draws. Refreshed whenever the buffer list changes.
+    fn refresh_buffer_tabs(&mut self) {
+        self.state.buffer_tabs = (0..=self.buffers.len())
+            .map(|index| {
+                let name = self
+                    .buffer_at(index)
+                    .0
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| "untitled".to_string());
+                let dirty = if index == self.state.active_buffer {
+                    self.state.document.is_dirty()
+                } else {
+                    let stored = if index < self.state.active_buffer {
+                        index
+                    } else {
+                        index - 1
+                    };
+                    self.buffers
+                        .get(stored)
+                        .map(|buffer| buffer.document.is_dirty())
+                        .unwrap_or(false)
+                };
+                (name, dirty)
+            })
+            .collect();
+    }
+
     fn switch_to(&mut self, index: usize) {
         if index == self.state.active_buffer || index > self.buffers.len() {
             return;
@@ -4043,6 +4223,10 @@ impl App {
         // that otherwise need a shortcut, and it is the whole reason someone who chose the
         // conventional editor can use this without being told anything.
         if !extend && self.click_toolbar(x, y) {
+            return;
+        }
+
+        if !extend && self.click_tabs(layout.tabs, x, y, scale) {
             return;
         }
 
@@ -4189,13 +4373,38 @@ impl App {
         selection_contains(self.state.document.selections(), offset)
     }
 
-    /// Whether the pointer is over a toolbar button.
+    /// Whether the pointer is over the tab strip — a toolbar button, or a tab.
+    ///
+    /// Both light up under the pointer, so both need the frame redrawn when it arrives or leaves.
     fn over_toolbar(&self) -> bool {
         let (x, y) = self.pointer;
         let layout = self.layout();
-        vex::layout::toolbar_buttons(layout.tabs, self.scale())
-            .iter()
-            .any(|(_, box_)| vex::layout::contains(*box_, x, y))
+        vex::layout::contains(layout.tabs, x, y)
+    }
+
+    /// A click on a tab, or on a tab's close button.
+    ///
+    /// The close button is inside the tab, so it is tested first — otherwise closing a file would
+    /// switch to it instead, which is the more annoying of the two wrong answers.
+    fn click_tabs(&mut self, strip: Rect, x: f32, y: f32, scale: f32) -> bool {
+        let tabs = vex::layout::tabs(
+            strip,
+            self.state.buffer_count,
+            self.state.active_buffer,
+            scale,
+        );
+
+        for tab in tabs {
+            if vex::layout::contains(tab.close, x, y) {
+                self.request_close_buffer(tab.index);
+                return true;
+            }
+            if vex::layout::contains(tab.rect, x, y) {
+                self.switch_to(tab.index);
+                return true;
+            }
+        }
+        false
     }
 
     /// A click on a toolbar button, if that is where it landed.
@@ -4613,6 +4822,10 @@ impl App {
         // remembers, which is how choosing a file from the tree came to display an empty one.
         self.panes.follow(self.state.active_buffer);
 
+        // The names in the tab strip. Here rather than per frame: the list changes when a buffer
+        // opens, closes or is switched to, and nothing else moves it.
+        self.refresh_buffer_tabs();
+
         // Pairing rules are per-language, so they travel with the buffer.
         self.state.pairs = pair_config(
             self.state.file_path.as_deref(),
@@ -4677,6 +4890,15 @@ impl App {
         // The clock starts here, not inside `render`: building the frame is the half of the work
         // this project has optimised hardest, and it was not in the number the statusline showed.
         renderer.timer.begin();
+
+        // The active tab's dot follows the document's dirty flag, which changes on any keystroke.
+        // One bool, rather than rebuilding the whole strip: the names only change when the buffer
+        // list does.
+        let dirty = self.state.document.is_dirty();
+        let active = self.state.active_buffer;
+        if let Some(tab) = self.state.buffer_tabs.get_mut(active) {
+            tab.1 = dirty;
+        }
 
         let (width, height) = renderer.size();
         let scale = self

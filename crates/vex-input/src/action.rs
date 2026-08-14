@@ -237,6 +237,12 @@ pub enum Action {
     },
     /// `ctrl-w c` — close the focused pane. The last pane never closes.
     ClosePane,
+    /// `ctrl-F4` — close the file. Not the *pane* and not the editor: the buffer.
+    ///
+    /// `ctrl-w` is what most people would reach for, and it is already the pane prefix in both
+    /// grammars. `ctrl-F4` is the other Windows convention, and the tab has a close button beside
+    /// its name for everyone who would never have guessed either.
+    CloseBuffer,
     /// `ctrl-w w` and the directional keys — move focus between panes.
     FocusPane {
         forward: bool,
@@ -410,6 +416,7 @@ impl Action {
         "split_vertical",
         "split_horizontal",
         "close_pane",
+        "close_buffer",
         "next_pane",
         "previous_pane",
         "toggle_tree",
@@ -549,6 +556,7 @@ impl Action {
             "split_vertical" => Action::SplitPane { vertical: true },
             "split_horizontal" => Action::SplitPane { vertical: false },
             "close_pane" => Action::ClosePane,
+            "close_buffer" => Action::CloseBuffer,
             "next_pane" => Action::FocusPane { forward: true },
             "previous_pane" => Action::FocusPane { forward: false },
             "toggle_tree" => Action::ToggleTree,

@@ -276,6 +276,7 @@ pub fn execute(
         // and giving it one would mean giving it the buffer list too.
         Action::SplitPane { .. }
         | Action::ClosePane
+        | Action::CloseBuffer
         | Action::FocusPane { .. }
         | Action::ToggleTree => {
             return Outcome::Window(action.clone());

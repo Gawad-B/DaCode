@@ -53,6 +53,7 @@ impl Session {
                 pending_request: None,
                 project_root: std::path::PathBuf::from("."),
                 buffer_count: 1,
+                buffer_tabs: Vec::new(),
                 active_buffer: 0,
                 modal: true,
                 sticky_scroll: true,

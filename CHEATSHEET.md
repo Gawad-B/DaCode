@@ -169,11 +169,16 @@ which is the thing returning to the origin exists to prevent.
 | `ctrl-b` | buffer palette |
 | `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
 | `ctrl-s` | save |
+| `ctrl-f4` | close this file — or click the `x` on its tab |
 | `ctrl-q` | quit |
 | `ctrl-w v` · `ctrl-w s` | split beside · split below |
 | `ctrl-w c` · `ctrl-w q` | close the pane |
 | `ctrl-w w` `ctrl-w l` `ctrl-w j` | focus the next pane |
 | `ctrl-w W` `ctrl-w h` `ctrl-w k` | focus the previous pane |
+
+Every open file has a tab along the top: click one to switch, click its `x` to close. A dot beside
+the name means unsaved changes, and closing a file with unsaved changes warns once — pressing close
+again discards them. `ctrl-w` is the pane prefix here, which is why closing a file is `ctrl-f4`.
 
 ## Language server
 

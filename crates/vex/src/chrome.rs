@@ -88,6 +88,11 @@ pub struct EditorState {
     pub server_status: String,
     /// How many buffers are open, for the tab strip.
     pub buffer_count: usize,
+    /// The name of each open buffer, in order, and whether it has unsaved changes.
+    ///
+    /// Refreshed when the buffer list changes rather than read through a borrow, because the
+    /// drawing code is handed `&EditorState` and the buffers live beside it on the app.
+    pub buffer_tabs: Vec<(String, bool)>,
     /// Index of the active buffer.
     pub active_buffer: usize,
     /// Whether Vim's modal grammar is in force. Shown in the statusline, since with it off there is
@@ -2451,34 +2456,73 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     frame.fill(rect, theme.bg_alt);
     frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
 
-    let inner = Rect::new(
-        rect.x + space::XL * scale,
-        rect.y,
-        rect.width - space::XL * 2.0 * scale,
-        rect.height,
-    );
-    let name = state.path.last().cloned().unwrap_or_default();
+    // One tab per open file, from the same function the mouse hit-tests. The strip used to draw a
+    // single tab — the active file's name — so every other open buffer was invisible, and there was
+    // no way to close one at all.
+    for tab in crate::layout::tabs(rect, state.buffer_count, state.active_buffer, scale) {
+        let (name, dirty) = state
+            .buffer_tabs
+            .get(tab.index)
+            .cloned()
+            .unwrap_or_else(|| (String::from("untitled"), false));
+        let active = tab.index == state.active_buffer;
+        let hovered = crate::layout::contains(tab.rect, state.pointer.0, state.pointer.1);
 
-    let tab_width = 130.0 * scale;
-    let (tab, rest) = inner.split_left(tab_width);
-    frame.text(run(
-        state,
-        Role::Value,
-        name,
-        tab,
-        theme.ink,
-        Align::Left,
-        scale,
-    ));
-    frame.fill(
-        Rect::new(
-            tab.x,
-            tab.bottom() - border::ACCENT_BORDER * scale,
-            tab_width * 0.72,
-            border::ACCENT_BORDER * scale,
-        ),
-        accent,
-    );
+        if active {
+            frame.fill(tab.rect, theme.bg);
+        } else if hovered {
+            frame.fill(tab.rect, theme.row_active);
+        }
+
+        // A dot rather than a second word: the tab is narrow, and "modified" spelled out would
+        // take the room the name needs.
+        let label_text = if dirty { format!("{name} ·") } else { name };
+        let label_area = Rect::new(
+            tab.rect.x + space::XS * scale,
+            tab.rect.y,
+            (tab.close.x - tab.rect.x - space::XS * 2.0 * scale).max(0.0),
+            tab.rect.height,
+        );
+        frame.text(run(
+            state,
+            Role::Value,
+            elide(state, Role::Value, &label_text, label_area.width, scale),
+            label_area,
+            if active { theme.ink } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+
+        // `x` rather than a multiplication sign or a cross glyph: the bundled font has the letter,
+        // and the tree's chevrons shipped as tofu boxes once already.
+        if active || hovered {
+            frame.text(run(
+                state,
+                Role::Value,
+                "x",
+                tab.close,
+                if crate::layout::contains(tab.close, state.pointer.0, state.pointer.1) {
+                    theme.ink
+                } else {
+                    theme.ink_faint
+                },
+                Align::Center,
+                scale,
+            ));
+        }
+
+        if active {
+            frame.fill(
+                Rect::new(
+                    tab.rect.x,
+                    tab.rect.bottom() - border::ACCENT_BORDER * scale,
+                    tab.rect.width,
+                    border::ACCENT_BORDER * scale,
+                ),
+                accent,
+            );
+        }
+    }
 
     // Buttons rather than a line of advice. This row used to advertise `i / v / R / esc mode` to
     // people who had turned modes off — keys that do nothing, shown to exactly the person least able
@@ -2504,28 +2548,8 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         ));
     }
 
-    // What is left of the row says which buffer you are in, when there is more than one.
-    if state.buffer_count > 1 {
-        let left = Rect::new(
-            rest.x,
-            rest.y,
-            (buttons.first().map(|(_, b)| b.x).unwrap_or(rest.right()) - rest.x - space::LG * scale)
-                .max(0.0),
-            rest.height,
-        );
-        frame.text(label(
-            state,
-            format!(
-                "buffer {} of {}",
-                state.active_buffer + 1,
-                state.buffer_count
-            ),
-            left,
-            theme.ink_faint,
-            Align::Right,
-            scale,
-        ));
-    }
+    // `buffer 3 of 7` used to live here, which was the strip apologising for not showing the tabs.
+    // It shows them now.
 }
 
 fn draw_code(

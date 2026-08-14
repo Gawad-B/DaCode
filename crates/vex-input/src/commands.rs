@@ -143,6 +143,7 @@ pub const COMMANDS: &[Command] = &[
         "",
     ),
     command("open_folder", "open a folder as the project", Files, "<c-k>o", "<c-k>o"),
+    command("close_buffer", "close this file", Files, "<c-f4>", "<c-f4>"),
     command("quit", "quit", Files, ":q  <c-q>", "<c-q>"),
 
     // ---- editing -----------------------------------------------------------------------

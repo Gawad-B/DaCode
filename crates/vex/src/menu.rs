@@ -70,7 +70,15 @@ impl Item {
 const MENUS: [(&str, &[&str]); 5] = [
     (
         "file",
-        &["save", "open_folder", "toggle_tree", "settings", "quit"],
+        &[
+            "save",
+            "save_as",
+            "open_folder",
+            "close_buffer",
+            "toggle_tree",
+            "settings",
+            "quit",
+        ],
     ),
     (
         "edit",

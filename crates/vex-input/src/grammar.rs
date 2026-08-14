@@ -1027,6 +1027,13 @@ fn function_key(key: Key) -> Option<Action> {
         return None;
     };
 
+    // ctrl-F4 closes the file, as it does in every tabbed application on Windows. `ctrl-w` is the
+    // other muscle memory for this and cannot have it: it is already the pane prefix, in both
+    // grammars. The tab's own close button is there for everyone who would guess neither.
+    if key.ctrl && number == 4 {
+        return Some(Action::CloseBuffer);
+    }
+
     Some(match (number, key.shift) {
         (1, _) => Action::ToggleHelp,
         (2, _) => Action::Rename,

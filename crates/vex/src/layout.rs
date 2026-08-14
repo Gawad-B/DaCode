@@ -117,6 +117,69 @@ pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
     placed
 }
 
+/// One open file in the tab strip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tab {
+    /// Index into the buffer list, which is what `switch_to` and `close_buffer` count in.
+    pub index: usize,
+    /// The whole tab: clicking it switches to that file.
+    pub rect: Rect,
+    /// The close button at its right end. Inside `rect`, so it must be tested *first*.
+    pub close: Rect,
+}
+
+/// Where each open file's tab is.
+///
+/// The strip drew exactly one tab — the active file's name — which meant the other open buffers
+/// were invisible and the only way between them was `ctrl-b` or the palette. One definition, read
+/// by the drawing code and by the mouse, for the reason this module exists.
+///
+/// Tabs share whatever the toolbar leaves. When they no longer fit they shrink to a floor and then
+/// stop being produced, rather than sliding under the buttons: a tab you cannot read is still a tab
+/// you can click, but one drawn beneath something else is a click that lands on the wrong thing.
+pub fn tabs(strip: Rect, count: usize, active: usize, scale: f32) -> Vec<Tab> {
+    const IDEAL: f32 = 150.0;
+    const FLOOR: f32 = 64.0;
+
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let pad = 16.0 * scale;
+    let height = 22.0 * scale;
+    let y = strip.y + (strip.height - height) / 2.0;
+
+    // The toolbar owns the right end of the same row.
+    let toolbar_left = toolbar_buttons(strip, scale)
+        .first()
+        .map(|(_, box_)| box_.x)
+        .unwrap_or(strip.right());
+    let available = (toolbar_left - strip.x - pad * 2.0).max(0.0);
+    if available < FLOOR * scale {
+        return Vec::new();
+    }
+
+    let width = (available / count as f32).clamp(FLOOR * scale, IDEAL * scale);
+    let fits = ((available / width).floor() as usize).max(1).min(count);
+
+    // When they do not all fit, keep the window that contains the active one — the file you are
+    // looking at must always have a tab.
+    let first = if active >= fits { active + 1 - fits } else { 0 };
+
+    (first..(first + fits).min(count))
+        .enumerate()
+        .map(|(slot, index)| {
+            let rect = Rect::new(strip.x + pad + slot as f32 * width, y, width, height);
+            let button = 18.0 * scale;
+            Tab {
+                index,
+                rect,
+                close: Rect::new(rect.right() - button, y, button, height),
+            }
+        })
+        .collect()
+}
+
 impl Layout {
     /// Computes the layout for a window of this size. The single definition of the chrome's stack.
     pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>) -> Self {
@@ -309,6 +372,53 @@ mod tests {
             Some(TOOLBAR[0].command),
             "what survives is the front of the row — the buttons reached for most"
         );
+    }
+
+    #[test]
+    fn every_tab_is_clickable_and_none_reaches_the_toolbar() {
+        // The strip is shared with the toolbar, and both are read by the mouse. A tab drawn under a
+        // button is a click that runs the wrong thing — the failure this module exists to prevent,
+        // and the one that gets blamed on everything else.
+        let strip = Rect::new(0.0, 72.0, 1600.0, 34.0);
+        let toolbar_left = toolbar_buttons(strip, 1.0)
+            .first()
+            .map(|(_, box_)| box_.x)
+            .expect("a wide strip has a toolbar");
+
+        for count in 1..=12 {
+            for active in 0..count {
+                let tabs = tabs(strip, count, active, 1.0);
+                assert!(
+                    tabs.iter().any(|tab| tab.index == active),
+                    "the file being edited must always have a tab: {active} of {count}"
+                );
+                for tab in &tabs {
+                    assert!(tab.rect.x >= strip.x, "a tab starts left of the strip");
+                    assert!(
+                        tab.rect.right() <= toolbar_left,
+                        "a tab runs under the toolbar with {count} open"
+                    );
+                    assert!(
+                        contains(tab.rect, tab.close.x + 1.0, tab.close.y + 1.0),
+                        "the close button must sit inside its own tab"
+                    );
+                }
+                for pair in tabs.windows(2) {
+                    assert!(
+                        pair[0].rect.right() <= pair[1].rect.x + 0.01,
+                        "two tabs overlap"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_strip_gives_up_on_tabs_rather_than_drawing_unreadable_ones() {
+        // At some width there is no honest tab to draw. Returning none is better than a sliver that
+        // cannot show a name but can still be clicked.
+        let tabs = tabs(Rect::new(0.0, 72.0, 120.0, 34.0), 5, 0, 1.0);
+        assert!(tabs.is_empty());
     }
 
     #[test]
