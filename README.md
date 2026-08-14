@@ -230,6 +230,12 @@ give you a Python language server. When vex cannot find one it says which langua
 to install it, rather than naming a binary you have never heard of. The **settings panel** lists
 every language above with where its server was found, or what would install it.
 
+What that buys you, beyond diagnostics and go-to-definition: `ctrl-space` completes with each
+suggestion's **type** beside it, in the order the server ranked them, and accepting one brings its
+**import** — completing `HashMap` in a file that has no `use std::collections::HashMap` adds that
+line as part of the same undo step. Snippet completions land expanded, so `println!` gives you
+`println!()` with the cursor already inside.
+
 **Naming your own.** The table above is a default, not a limit:
 
 ```lua
@@ -262,7 +268,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 625 tests
+cargo test --workspace                      # 635 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

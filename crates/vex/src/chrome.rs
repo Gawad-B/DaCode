@@ -890,13 +890,15 @@ fn draw_completion(
             .display_point(state.document.text(), state.scroll, 512, completion.anchor);
     let Some(point) = anchor_point else { return };
 
+    // Wide enough for the label and what sits beside it. A popup sized to the label alone puts the
+    // type — half of why you are reading the list at all — off the right edge.
     let widest = visible
         .iter()
-        .map(|item| item.label.chars().count())
+        .map(|item| item.label().chars().count() + 2 + tail_of(item).chars().count().min(TAIL))
         .max()
         .unwrap_or(12)
         .max(12);
-    let width = ((widest as f32 + 2.0) * advance).min(code.width * 0.6);
+    let width = ((widest as f32 + 4.0) * advance).min(code.width * 0.6);
 
     let x = (code.x + space::SM * scale + point.column as f32 * advance)
         .min(code.right() - width - space::SM * scale);
@@ -959,12 +961,47 @@ fn draw_completion(
         }
 
         let text_x = popup.x + space::XS * scale;
+        let inner = popup.width - space::XS * 2.0 * scale;
+
+        // The type on the right, in the faint ink. It gives way to the label rather than the other
+        // way round: a truncated type is still a hint, a truncated name is not something you can
+        // accept.
+        let tail = tail_of(item);
+        let label_room = if tail.is_empty() {
+            inner
+        } else {
+            let tail = elide(
+                state,
+                Role::Value,
+                &tail,
+                (TAIL as f32 * advance).min(inner * 0.62),
+                scale,
+            );
+            frame.text(run(
+                state,
+                Role::Value,
+                tail.clone(),
+                Rect::new(text_x, item_y, inner, row),
+                theme.ink_faint,
+                Align::Right,
+                scale,
+            ));
+            inner - (tail.chars().count() as f32 + 1.0) * advance
+        };
+
+        let label = elide(state, Role::Value, item.label(), label_room, scale);
         frame.text(run(
             state,
             Role::Value,
-            item.label.clone(),
-            Rect::new(text_x, item_y, popup.width - space::XS * 2.0 * scale, row),
-            if selected { theme.ink } else { theme.ink_dim },
+            label.clone(),
+            Rect::new(text_x, item_y, label_room, row),
+            match (selected, item.offer.deprecated) {
+                // Deprecated stays readable but stops looking like the answer. Striking it through
+                // would need a rule per row the renderer has no cheap way to place.
+                (_, true) => theme.ink_faint,
+                (true, false) => theme.ink,
+                (false, false) => theme.ink_dim,
+            },
             Align::Left,
             scale,
         ));
@@ -972,7 +1009,7 @@ fn draw_completion(
         // The typed prefix, in the mode color, over the label's own glyphs.
         let prefix_advance = advance_for(state.typography.spec(Role::Value).size_px * scale);
         for position in &item.highlights {
-            let Some(c) = item.label.chars().nth(*position as usize) else {
+            let Some(c) = label.chars().nth(*position as usize) else {
                 continue;
             };
             frame.text(run(
@@ -990,6 +1027,24 @@ fn draw_completion(
                 scale,
             ));
         }
+    }
+}
+
+/// Characters of type signature a completion row will show before eliding.
+///
+/// The popup is capped at 60% of the code area, so this is what keeps a single 200-character
+/// generic signature from setting the width for every other row in the list.
+const TAIL: usize = 34;
+
+/// What sits to the right of a suggestion's name.
+///
+/// The type when the server gave one, and the kind only when it did not. Showing both was worse
+/// than either: at this width the kind was elided to `m…`, which names nothing — and a signature
+/// starting `fn(` already says what a `method` tag would.
+fn tail_of(item: &crate::completion::Item) -> String {
+    match &item.offer.detail {
+        Some(detail) => detail.clone(),
+        None => item.offer.kind.to_string(),
     }
 }
 

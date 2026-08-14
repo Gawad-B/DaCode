@@ -736,15 +736,33 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             caret,
             state.document.version(),
         );
+        // Shaped like a real rust-analyzer reply — kinds, types, a snippet and a deprecation —
+        // because a fixture of bare labels cannot show whether the type column fits, which is the
+        // half of the popup this capture exists to check.
+        let suggest = |label: &str, kind: &'static str, detail: &str| vex_lsp::CompletionItem {
+            label: label.to_string(),
+            insert: label.to_string(),
+            detail: (!detail.is_empty()).then(|| detail.to_string()),
+            kind,
+            ..Default::default()
+        };
         session.offer(
             vec![
-                "char_to_point".into(),
-                "char_to_byte".into(),
-                "char_to_line".into(),
-                "chars".into(),
-                "clamp".into(),
-                "clone".into(),
+                suggest("char_to_point", "method", "fn(&self, CharOffset) -> Point"),
+                suggest(
+                    "char_to_byte",
+                    "method",
+                    "fn(&self, CharOffset) -> ByteOffset",
+                ),
+                suggest("char_to_line", "method", "fn(&self, CharOffset) -> usize"),
+                suggest("chars", "method", "fn(&self) -> Chars<'_>"),
+                suggest("clamp", "fn", "fn(self, Self, Self) -> Self"),
+                vex_lsp::CompletionItem {
+                    deprecated: true,
+                    ..suggest("clone", "method", "fn(&self) -> Self")
+                },
             ],
+            false,
             state.document.text(),
             caret,
         );
@@ -2119,6 +2137,22 @@ impl App {
             }
         }
 
+        // The rest of whichever suggestion is selected. Sent from here rather than recorded as an
+        // `Action` because it is not something a user asks for: it is the editor keeping the row
+        // under the cursor filled in, so that accepting it can bring its import.
+        if client.state() == vex_lsp::State::Ready {
+            if let Some((at, raw)) = self
+                .state
+                .completion
+                .as_mut()
+                .and_then(vex::completion::Completion::wants_resolving)
+            {
+                if let Err(error) = client.resolve_completion(at, &raw) {
+                    eprintln!("vex: resolve failed: {error:#}");
+                }
+            }
+        }
+
         let active_path = self
             .state
             .file_path
@@ -2179,11 +2213,16 @@ impl App {
                         }
                     }
                 }
-                vex_lsp::ServerEvent::Completion { items } => {
+                vex_lsp::ServerEvent::Completion { items, incomplete } => {
                     let caret = self.state.cursor();
                     let text = self.state.document.text().clone();
                     if let Some(completion) = &mut self.state.completion {
-                        completion.offer(items, &text, caret);
+                        completion.offer(items, incomplete, &text, caret);
+                    }
+                }
+                vex_lsp::ServerEvent::CompletionResolved { at, item } => {
+                    if let Some(completion) = &mut self.state.completion {
+                        completion.resolved(at, item);
                     }
                 }
                 vex_lsp::ServerEvent::Hover { text } => {
@@ -2361,20 +2400,14 @@ impl App {
                 true
             }
             KeyCode::Tab | KeyCode::Enter => {
-                let chosen = completion.selection().map(|item| item.label.clone());
+                let chosen = completion.selection().map(|item| item.offer.clone());
                 let anchor = completion.anchor;
+                let imports_current = completion.imports_are_current(self.state.document.text());
                 self.state.completion = None;
 
                 match chosen {
-                    Some(label) => {
-                        // Replace the typed prefix, so accepting `length` after typing `len` does not
-                        // produce `lenlength`.
-                        let caret = self.state.cursor();
-                        let edit = vex_text::Edit::replace(anchor..caret, label);
-                        let _ = self.state.document.apply(
-                            vex_text::Transaction::new(vec![edit]),
-                            vex_buffer::EditKind::Discrete,
-                        );
+                    Some(offer) => {
+                        self.accept_completion(offer, anchor, imports_current);
                         true
                     }
                     // Nothing selected: let Enter do what Enter does.
@@ -2383,6 +2416,72 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Puts a chosen suggestion into the buffer, with whatever else has to land beside it.
+    ///
+    /// One `Transaction`, one undo step. Accepting `HashMap` inserts the name *and* adds
+    /// `use std::collections::HashMap;` at the top, and undoing that has to take both — an import
+    /// left behind by an undone completion is a compile error the user did not write.
+    fn accept_completion(
+        &mut self,
+        offer: vex_lsp::CompletionItem,
+        anchor: vex_text::CharOffset,
+        imports_current: bool,
+    ) {
+        let caret = self.state.cursor();
+        let accepted = vex::edits::accept_completion(
+            self.state.document.text(),
+            &offer,
+            anchor,
+            caret,
+            imports_current,
+        );
+
+        if accepted.imports_refused {
+            self.state.hover = Some(format!(
+                "`{}` needs an import, and the file has changed shape since the suggestion was \
+                 computed — it was not added. Ask again to get it.",
+                offer.label
+            ));
+        }
+
+        if self
+            .state
+            .document
+            .apply(accepted.transaction, vex_buffer::EditKind::Discrete)
+            .is_err()
+        {
+            return;
+        }
+
+        // Walk the snippet's tab stops, exactly as an expanded snippet does.
+        if let Some(expansion) = accepted.expansion {
+            let session = vex::snippet::Session::new(&expansion, accepted.at);
+            let stop = session
+                .as_ref()
+                .and_then(|session| session.current())
+                .unwrap_or((
+                    vex_text::CharOffset(accepted.at.get() + expansion.text.chars().count()),
+                    0,
+                ));
+            let selection = if stop.1 == 0 {
+                Selection::caret(stop.0)
+            } else {
+                Selection::new(stop.0, vex_text::CharOffset(stop.0.get() + stop.1))
+            };
+            self.state
+                .document
+                .set_selections(SelectionSet::single(selection));
+            self.snippet = session;
+        }
+
+        if accepted.imports > 0 {
+            // Said rather than done silently: an edit somewhere the user is not looking is exactly
+            // the kind of help that reads as the editor having corrupted the file.
+            self.state.server_status = format!("{} · import added", offer.label);
+        }
+        self.reveal_cursor();
     }
 
     /// Keeps an open completion session in step with what has been typed.
@@ -2398,12 +2497,23 @@ impl App {
         }
 
         let text = self.state.document.text().clone();
+        let mut ask_again = false;
         if let Some(completion) = &mut self.state.completion {
             completion.refilter(&text, caret);
-            // A session with nothing left to offer is noise.
-            if !completion.pending && completion.items.is_empty() {
+            // A truncated list filtered locally forever is how an editor comes to insist a name
+            // does not exist: rust-analyzer caps what it sends and sets `isIncomplete`, so the
+            // match you are typing towards may simply not be in the list yet. Asking again is what
+            // the flag is for — and it is a request, not work on this thread.
+            if completion.incomplete && !completion.pending {
+                completion.pending = true;
+                ask_again = true;
+            } else if !completion.pending && completion.items.is_empty() {
+                // A session with nothing left to offer is noise.
                 self.state.completion = None;
             }
+        }
+        if ask_again {
+            self.state.pending_request = Some(Action::RequestCompletion);
         }
     }
 

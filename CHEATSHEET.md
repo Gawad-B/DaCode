@@ -203,6 +203,12 @@ again discards them. `ctrl-w` is the pane prefix here, which is why closing a fi
 | `ctrl-space` | completion (works in insert mode too) |
 | `esc` | dismiss a hover or message box |
 
+The completion list shows each suggestion's type beside its name, in the order the **server** ranked
+them rather than one vex invented. Accepting one inserts what the server asked for — so `println!`
+lands as `println!()` with the cursor inside, and `tab` walks any further stops — and brings its
+**import** with it: completing `HashMap` in a file without `use std::collections::HashMap` adds that
+line too, as one undo step.
+
 ## Folding
 
 | Key | Does |

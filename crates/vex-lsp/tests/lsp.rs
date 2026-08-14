@@ -636,6 +636,154 @@ fn a_real_server_renames_a_symbol() {
     );
 }
 
+#[test]
+fn a_real_server_sends_types_a_ranking_and_an_import() {
+    // Everything the parse used to throw away, against the server that actually sends it. A fixture
+    // cannot verify this: the question is not "does vex handle a CompletionItem" but "does what
+    // rust-analyzer puts on the wire survive the parse", and only rust-analyzer can answer it.
+    if !vex_lsp::can_start("rust-analyzer") {
+        eprintln!("skipping: rust-analyzer is not installed, or is a shim that cannot run");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("vex-lsp-complete-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let source_path = root.join("src/main.rs");
+    // `HashMap` is not in scope, so a correct reply offers it *with* the import beside it.
+    let source = "fn main() {\n    let m = HashMa\n}\n";
+    std::fs::write(&source_path, source).unwrap();
+
+    let mut client = vex_lsp::LspClient::start(
+        &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
+        "rust-analyzer",
+        &[],
+        &root,
+    )
+    .expect("rust-analyzer starts");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let mut offered: Option<Vec<vex_lsp::CompletionItem>> = None;
+    let mut next_ask = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut ready = false;
+
+    // Just after `HashMa`, on line 1 (0-based).
+    let ask = |client: &vex_lsp::LspClient, path: &std::path::Path| {
+        client
+            .completion(
+                path,
+                vex_lsp::lsp_types::Position {
+                    line: 1,
+                    character: 18,
+                },
+            )
+            .expect("the completion request is sent");
+    };
+
+    // Asked repeatedly, not once. Answering before `std` is indexed is not a failure — it is
+    // rust-analyzer returning the generic keyword list, which is what the first reply here actually
+    // was, and a test that stopped at it verified nothing about auto-import. A real editor is in
+    // the same position: you type, you get what is ready, you type again.
+    let is_hash_map = |item: &vex_lsp::CompletionItem| {
+        item.label == "HashMap" || item.filter.as_deref() == Some("HashMap")
+    };
+    let mut resolved: Option<vex_lsp::CompletionItem> = None;
+
+    while std::time::Instant::now() < deadline && resolved.is_none() {
+        for event in client.poll() {
+            match event {
+                vex_lsp::ServerEvent::Ready { .. } => {
+                    client
+                        .did_open(&source_path, "rust", 1, source)
+                        .expect("didOpen is accepted");
+                    ready = true;
+                }
+                vex_lsp::ServerEvent::Completion { items, .. } if !items.is_empty() => {
+                    // Its import is *not* in this reply, by design: the client said it can ask
+                    // separately, which is the only reason the suggestion is offered at all.
+                    if let Some((at, item)) = items.iter().enumerate().find(|(_, i)| is_hash_map(i))
+                    {
+                        client
+                            .resolve_completion(at, &item.raw)
+                            .expect("the resolve request is sent");
+                    }
+                    offered = Some(items);
+                }
+                vex_lsp::ServerEvent::CompletionResolved { item, .. } => resolved = Some(item),
+                vex_lsp::ServerEvent::RequestFailed { reason, retry, .. } if retry => {
+                    eprintln!("server: not ready ({reason}) — asking again");
+                }
+                vex_lsp::ServerEvent::RequestFailed { what, reason, .. } => {
+                    panic!("{what} failed and is not retryable: {reason}")
+                }
+                _ => {}
+            }
+        }
+        if ready && std::time::Instant::now() >= next_ask {
+            ask(&client, &source_path);
+            next_ask = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    client.stop();
+    std::fs::remove_dir_all(&root).ok();
+
+    let Some(items) = offered else {
+        // Analysis of even a one-file crate can exceed the budget on a loaded machine. Reported
+        // rather than failed, for the same reason the rename test does it.
+        eprintln!("note: rust-analyzer did not answer the completion in time");
+        return;
+    };
+
+    assert!(
+        items.iter().any(|item| !item.kind.is_empty()),
+        "a real reply says what each suggestion *is*"
+    );
+    assert!(
+        items.iter().any(|item| item.sort.is_some()),
+        "and carries its own ranking, which is better than any the editor can invent"
+    );
+
+    let Some(offer) = items.iter().find(|item| is_hash_map(item)) else {
+        // Flyimport is a server setting, and a test that failed because some future rust-analyzer
+        // defaulted it off would be testing the server rather than vex.
+        eprintln!("note: this rust-analyzer offered no out-of-scope HashMap");
+        return;
+    };
+
+    assert_eq!(
+        offer.label, "HashMap",
+        "the label is a name: without `labelDetailsSupport` the server folds the whole import path \
+         into it, and the column meant for an identifier reads \
+         `HashMap(use std::collections::HashMap)`"
+    );
+    assert!(
+        offer
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("std::collections")),
+        "and where it would come from is the fact that decides which HashMap you meant: {:?}",
+        offer.detail
+    );
+
+    let Some(resolved) = resolved else {
+        eprintln!("note: rust-analyzer did not resolve the suggestion in time");
+        return;
+    };
+    assert!(
+        resolved
+            .additional
+            .iter()
+            .any(|edit| edit.new_text.contains("use std::collections::HashMap")),
+        "the headline: completing an out-of-scope name brings its import: {resolved:?}"
+    );
+}
+
 // ---- URIs on both platforms --------------------------------------------------------------------
 
 use vex_lsp::position::{decode_uri, encode_uri};

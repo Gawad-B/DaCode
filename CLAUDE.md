@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-625 tests, clippy clean.
+635 tests, clippy clean.
 
 ## Commands
 
@@ -161,6 +161,15 @@ beside `resolve` for that one distinction: `PATH` is a list of directories, so l
 pylsp` up in it finds nothing, ever — and a venv's own server is the main reason to name one.
 Relative paths resolve against the **project root**, not the process's working directory, which for
 a windowed editor is wherever the desktop launched it from and never what the user meant.
+
+**A capability vex does not declare is a feature the server silently withholds.** rust-analyzer will
+not offer an out-of-scope name at all unless the client advertises `completionItem.resolveSupport`
+for `additionalTextEdits` — computing an import for each of a hundred candidates up front is too
+slow to be worth doing, so it simply does not. Auto-import was therefore not a parsing gap but a
+handshake one, and nothing in the editor could see it: the list came back looking perfectly normal
+with the one useful entry missing. `labelDetailsSupport` is the same shape — without it the server
+folds the detail into the label and an item arrives named `HashMap(use std::collections::HashMap)`.
+When a server "does not support" something, check what vex claimed before assuming it does not.
 
 **The language table is pivoted around the language, not the program.** `vex_lsp::LANGUAGES` carries
 the extensions, the `languageId` and the servers together, because `vex.server("python", …)` names a

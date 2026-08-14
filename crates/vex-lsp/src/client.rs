@@ -66,6 +66,11 @@ pub enum Pending {
     CodeAction,
     References,
     InlayHints,
+    /// Asking for the rest of one suggestion. Carries where it sits in the list, since the reply
+    /// says nothing about which item it is for.
+    ResolveCompletion {
+        at: usize,
+    },
     Shutdown,
 }
 
@@ -91,7 +96,16 @@ pub enum ServerEvent {
         position: Position,
     },
     Completion {
-        items: Vec<String>,
+        items: Vec<CompletionItem>,
+        /// The server says this list is not the whole answer and it should be asked again as more
+        /// is typed. rust-analyzer sets it whenever it truncated, and filtering a truncated list
+        /// locally forever is how an editor comes to insist a name does not exist.
+        incomplete: bool,
+    },
+    /// One suggestion, filled in. `at` is where it sat in the list that was offered.
+    CompletionResolved {
+        at: usize,
+        item: CompletionItem,
     },
     /// Edits for a rename, possibly across several files.
     Rename {
@@ -132,6 +146,78 @@ pub enum ServerEvent {
     Stopped,
 }
 
+/// One suggestion, as the server described it.
+///
+/// The parse used to keep the label and throw the rest away, which is three separate defects
+/// wearing one coat. The label is what you *read*: rust-analyzer labels a macro `println!` and
+/// expects `println!($0)` to be inserted, so inserting the label gives you `println!` with no
+/// parentheses and the cursor after it. The `detail` is the type, without which a list of bare
+/// names cannot tell a field from a method. And `additional` is where every server puts the
+/// **import** — completing `HashMap` is supposed to add `use std::collections::HashMap;` at the
+/// top of the file, which is the single most valuable thing completion does and which vex was
+/// silently discarding.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CompletionItem {
+    pub label: String,
+    /// What to insert. Falls back to the label when the server named nothing else.
+    pub insert: String,
+    /// Whether `insert` carries `$1` / `${1:name}` / `$0` placeholders.
+    pub snippet: bool,
+    /// A type or signature, shown beside the label.
+    pub detail: Option<String>,
+    /// A short tag — `fn`, `var`, `mod` — rather than the protocol's number.
+    pub kind: &'static str,
+    /// The server's own ranking. rust-analyzer's is far better than anything an editor can invent
+    /// from a string, so it is kept rather than re-derived.
+    pub sort: Option<String>,
+    /// What to match the typed prefix against, when that is not the label.
+    pub filter: Option<String>,
+    /// Edits elsewhere in the file that have to land with it — the import, nearly always.
+    pub additional: Vec<TextEdit>,
+    pub deprecated: bool,
+    /// The item exactly as it came off the wire.
+    ///
+    /// Kept because `completionItem/resolve` must be handed the item back *as received*: servers
+    /// put an opaque `data` blob on it that only they can read, and reconstructing something that
+    /// looks similar is not the same request.
+    pub raw: serde_json::Value,
+}
+
+/// The protocol's `CompletionItemKind`, as something short enough to sit in a popup.
+///
+/// A tag rather than an icon: the bundled fonts have no symbol set, and a missing glyph renders as
+/// a tofu box — which is how the file tree's chevrons first shipped.
+fn completion_kind(number: Option<u64>) -> &'static str {
+    match number.unwrap_or(0) {
+        2 => "method",
+        3 => "fn",
+        4 => "new",
+        5 => "field",
+        6 => "var",
+        7 => "class",
+        8 => "trait",
+        9 => "mod",
+        10 => "prop",
+        11 => "unit",
+        12 => "value",
+        13 => "enum",
+        14 => "kw",
+        15 => "snip",
+        16 => "color",
+        17 => "file",
+        18 => "ref",
+        19 => "dir",
+        20 => "variant",
+        21 => "const",
+        22 => "struct",
+        23 => "event",
+        24 => "op",
+        25 => "type",
+        // 1 is Text, and 0 is "the server did not say" — neither is worth a column.
+        _ => "",
+    }
+}
+
 /// One thing a server offers to do about the code under the cursor.
 ///
 /// Only actions carrying edits survive the parse: an action whose work is a server-side `command` is
@@ -156,6 +242,7 @@ fn describe_request(kind: &Pending) -> String {
         Pending::CodeAction => "code actions".into(),
         Pending::References => "find references".into(),
         Pending::InlayHints => "inlay hints".into(),
+        Pending::ResolveCompletion { .. } => "the rest of a suggestion".into(),
         Pending::Shutdown => "shutdown".into(),
     }
 }
@@ -340,8 +427,29 @@ impl LspClient {
                     "publishDiagnostics": { "relatedInformation": false, "versionSupport": true },
                     "hover": { "contentFormat": ["plaintext", "markdown"] },
                     "definition": { "dynamicRegistration": false },
+                    // `snippetSupport` is honest now: an accepted suggestion goes through the same
+                    // expander `tab` uses, so `println!($0)` lands with the cursor between the
+                    // parentheses rather than as a literal `$0` on screen.
+                    //
+                    // `resolveSupport` is not politeness — it is the switch that turns auto-import
+                    // on. rust-analyzer will not offer an out-of-scope name at all unless the
+                    // client can ask for its import separately, because computing one for each of
+                    // a hundred candidates up front is too slow to be worth doing. Without this,
+                    // completing `HashMap` in a file that does not import it simply offered
+                    // nothing, and the reason was invisible from the editor's side.
                     "completion": {
-                        "completionItem": { "snippetSupport": false },
+                    // `labelDetailsSupport` keeps the label a name. Without it rust-analyzer folds
+                    // the detail into the label itself for compatibility, and an auto-import
+                    // candidate arrives labelled `HashMap(use std::collections::HashMap)` — which
+                    // is the whole import path sitting in the column meant for the identifier.
+                        "completionItem": {
+                            "snippetSupport": true,
+                            "deprecatedSupport": true,
+                            "labelDetailsSupport": true,
+                            "resolveSupport": {
+                                "properties": ["additionalTextEdits", "detail", "documentation"]
+                            }
+                        },
                         "dynamicRegistration": false
                     },
                     "rename": { "dynamicRegistration": false, "prepareSupport": false },
@@ -455,6 +563,18 @@ impl LspClient {
     }
 
     /// Asks for a symbol to be renamed everywhere.
+    /// Asks for the rest of one suggestion — its import, most usefully.
+    ///
+    /// The item goes back **exactly as it arrived**: the server put an opaque `data` blob on it
+    /// that only it can read, and an item rebuilt from the parsed fields is a different request.
+    pub fn resolve_completion(&self, at: usize, item: &serde_json::Value) -> Result<i64> {
+        self.request(
+            "completionItem/resolve",
+            item.clone(),
+            Pending::ResolveCompletion { at },
+        )
+    }
+
     pub fn rename(&self, path: &Path, position: Position, new_name: &str) -> Result<i64> {
         let mut params = document_position(path, position);
         params["newName"] = serde_json::json!(new_name);
@@ -768,14 +888,75 @@ fn interpret(
                 .and_then(|i| i.as_array())
                 .or_else(|| result.as_array())?;
             Some(ServerEvent::Completion {
-                items: items
-                    .iter()
-                    .filter_map(|item| item.get("label")?.as_str().map(str::to_string))
-                    .collect(),
+                items: items.iter().filter_map(completion_item).collect(),
+                incomplete: result
+                    .get("isIncomplete")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
             })
+        }
+        Pending::ResolveCompletion { at } => {
+            completion_item(result).map(|item| ServerEvent::CompletionResolved { at, item })
         }
         Pending::Shutdown => None,
     }
+}
+
+/// One item of a completion reply, or nothing if it has no label to show.
+///
+/// `textEdit` is read only for the **text** it carries, not its range. The range is in the
+/// coordinates of the document version the request was made against, and by the time a suggestion
+/// is accepted the user has typed the rest of the word — so the range is stale by construction.
+/// The editor replaces the word it anchored the session at instead, which is the same span for
+/// every item that survives its own prefix filter. `additionalTextEdits` *are* used with their
+/// ranges, and can be: they are line-and-column, they sit on other lines, and an edit within one
+/// line does not move another line's coordinates.
+fn completion_item(item: &serde_json::Value) -> Option<CompletionItem> {
+    let string = |key: &str| item.get(key)?.as_str().map(str::to_string);
+    let label = string("label")?;
+
+    // In preference order: the edit's text, `insertText`, then the label. A server that sends a
+    // `textEdit` means it; `insertText` is the older spelling of the same intent.
+    let insert = item
+        .get("textEdit")
+        .and_then(|edit| edit.get("newText"))
+        .and_then(|text| text.as_str())
+        .map(str::to_string)
+        .or_else(|| string("insertText"))
+        .unwrap_or_else(|| label.clone());
+
+    Some(CompletionItem {
+        label,
+        insert,
+        // `insertTextFormat: 2` is the protocol's word for "this has placeholders in it".
+        snippet: item.get("insertTextFormat").and_then(|f| f.as_u64()) == Some(2),
+        // `labelDetails.description` is where a server puts the thing that makes two identical
+        // names different — for an auto-import candidate, the module it would come from, which is
+        // the one fact that decides which `HashMap` you meant.
+        detail: string("detail").or_else(|| {
+            let details = item.get("labelDetails")?;
+            let part = |key: &str| details.get(key)?.as_str().filter(|text| !text.is_empty());
+            match (part("detail"), part("description")) {
+                (Some(detail), Some(description)) => Some(format!("{detail}  {description}")),
+                (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+                (None, None) => None,
+            }
+        }),
+        kind: completion_kind(item.get("kind").and_then(|k| k.as_u64())),
+        sort: string("sortText"),
+        filter: string("filterText"),
+        additional: item
+            .get("additionalTextEdits")
+            .and_then(|edits| serde_json::from_value::<Vec<TextEdit>>(edits.clone()).ok())
+            .unwrap_or_default(),
+        // Both spellings: `deprecated` is the old boolean, `tags: [1]` the one that replaced it.
+        deprecated: item.get("deprecated").and_then(|d| d.as_bool()) == Some(true)
+            || item
+                .get("tags")
+                .and_then(|tags| tags.as_array())
+                .is_some_and(|tags| tags.iter().any(|tag| tag.as_u64() == Some(1))),
+        raw: item.clone(),
+    })
 }
 
 /// Hover contents come in three shapes across protocol versions.

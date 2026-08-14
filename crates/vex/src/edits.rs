@@ -676,6 +676,96 @@ pub fn replace_matches(
     Ok(count)
 }
 
+/// Everything accepting a completion needs to change, worked out but not yet applied.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Accepted {
+    /// The word replaced, plus whatever the server wanted elsewhere — one transaction, one undo.
+    pub transaction: Transaction,
+    /// The snippet's tab stops, when the suggestion carried placeholders.
+    pub expansion: Option<crate::snippet::Expansion>,
+    /// Where the inserted text starts once the other edits have shifted it, for those tab stops.
+    pub at: CharOffset,
+    /// How many of the server's other edits were taken. Nearly always an import, or none.
+    pub imports: usize,
+    /// The server wanted an import and it could not be trusted, so the user has to be told.
+    pub imports_refused: bool,
+}
+
+/// Works out what accepting a suggestion does to the buffer.
+///
+/// **One transaction, one undo step.** Accepting `HashMap` inserts the name *and* adds
+/// `use std::collections::HashMap;` at the top of the file; undoing has to take both, because an
+/// import left behind by an undone completion is a compile error the user did not write.
+///
+/// The server's own `textEdit` range is deliberately not used — it is in the coordinates of the
+/// version the request was made against, and by the time a suggestion is accepted the user has
+/// typed the rest of the word by definition. `anchor..caret` is the same span for every item that
+/// survived the popup's own prefix filter, and it cannot be stale.
+///
+/// `imports_ok` is the caller's answer to whether the *other* edits can still be trusted; see
+/// `completion::Completion::imports_are_current` for what that question means.
+pub fn accept_completion(
+    text: &Text,
+    offer: &vex_lsp::CompletionItem,
+    anchor: CharOffset,
+    caret: CharOffset,
+    imports_ok: bool,
+) -> Accepted {
+    // A snippet goes through the same expander `tab` uses, so `println!($0)` lands as `println!()`
+    // with the cursor between the parentheses rather than as a literal `$0` on screen.
+    let indent: String = {
+        let line = text.char_to_line(anchor);
+        let start = text.point_to_char(vex_text::Point::new(line, 0));
+        text.slice_to_string(start..anchor)
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect()
+    };
+    let expansion = offer
+        .snippet
+        .then(|| crate::snippet::expand(&offer.insert, &indent));
+    let inserted = match &expansion {
+        Some(expansion) => expansion.text.clone(),
+        None => offer.insert.clone(),
+    };
+
+    let mut edits = vec![Edit::replace(anchor..caret, inserted)];
+    let mut imports = 0;
+    // How far the edits before the word push it along, so the snippet's stops land where the text
+    // actually ended up rather than where it would have without an import.
+    let mut shift: isize = 0;
+
+    if imports_ok {
+        for edit in &offer.additional {
+            let range = position::range_from_lsp(text, edit.range);
+            // Never one that overlaps the word being replaced: two edits over one span is not
+            // something a transaction can resolve, and no server meant it.
+            if range.end > anchor && range.start < caret {
+                continue;
+            }
+            if range.end <= anchor {
+                shift += edit.new_text.chars().count() as isize
+                    - (range.end.get() - range.start.get()) as isize;
+            }
+            edits.push(Edit::replace(range.start..range.end, edit.new_text.clone()));
+            imports += 1;
+        }
+    }
+
+    // Ascending, which a transaction requires: an import goes in at the top of the file and the
+    // word being completed is further down, so they are built in the opposite order to the one
+    // they have to be applied in.
+    edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
+
+    Accepted {
+        transaction: Transaction::new(edits),
+        expansion,
+        at: CharOffset(anchor.get().saturating_add_signed(shift)),
+        imports,
+        imports_refused: !imports_ok && !offer.additional.is_empty(),
+    }
+}
+
 /// Which match a replace-one should act on: the one the caret is inside, else the next one after it.
 ///
 /// Wrapping, like `find_next`, so replacing your way down a file does not stop dead at the bottom
@@ -777,6 +867,174 @@ fn replacement_edits(text: &str, pattern: &str, replacement: &str) -> Vec<TextEd
     }
 
     edits
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use vex_lsp::lsp_types::{Position, Range as LspRange};
+
+    fn offer(label: &str, insert: &str) -> vex_lsp::CompletionItem {
+        vex_lsp::CompletionItem {
+            label: label.into(),
+            insert: insert.into(),
+            ..Default::default()
+        }
+    }
+
+    /// An edit inserting a line at the top of the file, as an auto-import arrives.
+    fn import(line: u32, text: &str) -> TextEdit {
+        TextEdit {
+            range: LspRange {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 0 },
+            },
+            new_text: text.into(),
+        }
+    }
+
+    fn apply(source: &str, accepted: &Accepted) -> String {
+        let mut document = Document::from_str(source);
+        document
+            .apply(accepted.transaction.clone(), EditKind::Discrete)
+            .expect("valid");
+        document.text().to_string()
+    }
+
+    #[test]
+    fn the_typed_prefix_is_replaced_rather_than_appended_to() {
+        // Accepting `length` after typing `len` must not produce `lenlength`.
+        let text = Text::from_str("let n = len");
+        let accepted = accept_completion(
+            &text,
+            &offer("length", "length"),
+            CharOffset(8),
+            CharOffset(11),
+            true,
+        );
+        assert_eq!(apply("let n = len", &accepted), "let n = length");
+    }
+
+    #[test]
+    fn what_is_inserted_is_what_the_server_asked_for_not_what_it_displayed() {
+        // rust-analyzer labels a macro `println!` and expects `println!($0)`. Inserting the label
+        // gives you a macro with no parentheses and the cursor after it — which is the shape of
+        // this defect: the label is what you *read*, not what you get.
+        let text = Text::from_str("fn main() { pri }");
+        let mut item = offer("println!", "println!($0)");
+        item.snippet = true;
+
+        let accepted = accept_completion(&text, &item, CharOffset(12), CharOffset(15), true);
+        assert_eq!(
+            apply("fn main() { pri }", &accepted),
+            "fn main() { println!() }"
+        );
+        assert_eq!(
+            accepted.at,
+            CharOffset(12),
+            "with no import before it, the text lands where the word was"
+        );
+        let stops = accepted.expansion.expect("a snippet has stops");
+        assert_eq!(
+            stops.stops,
+            vec![9],
+            "$0 is between the parentheses, so that is where the cursor goes"
+        );
+    }
+
+    #[test]
+    fn an_import_lands_with_the_word_as_one_undo_step() {
+        // The single most valuable thing completion does, and the one vex was silently discarding.
+        let source = "use std::io;\n\nfn main() {\n    let m = Hash\n}\n";
+        let text = Text::from_str(source);
+        let mut item = offer("HashMap", "HashMap");
+        item.additional = vec![import(1, "use std::collections::HashMap;\n")];
+
+        let anchor = CharOffset(source.find("Hash").unwrap());
+        let caret = CharOffset(anchor.get() + 4);
+        let accepted = accept_completion(&text, &item, anchor, caret, true);
+
+        assert_eq!(accepted.imports, 1);
+        assert!(!accepted.imports_refused);
+        assert_eq!(
+            apply(source, &accepted),
+            "use std::io;\nuse std::collections::HashMap;\n\nfn main() {\n    let m = HashMap\n}\n"
+        );
+        // One transaction is what makes it one undo: an import left behind by an undone completion
+        // is a compile error the user did not write.
+        assert_eq!(accepted.transaction.edits.len(), 2);
+    }
+
+    #[test]
+    fn an_import_before_the_word_shifts_where_the_snippet_stops_land() {
+        // The import is inserted first, so everything after it moves. A stop placed at the anchor
+        // would end up that many characters early — inside the import, not inside the call.
+        let source = "use std::io;\n\nfn main() {\n    wr\n}\n";
+        let text = Text::from_str(source);
+        let mut item = offer("write!", "write!($0)");
+        item.snippet = true;
+        item.additional = vec![import(1, "use std::fmt::Write;\n")];
+
+        let anchor = CharOffset(source.find("wr").unwrap());
+        let accepted = accept_completion(&text, &item, anchor, CharOffset(anchor.get() + 2), true);
+        assert_eq!(
+            accepted.at.get(),
+            anchor.get() + "use std::fmt::Write;\n".chars().count(),
+            "the inserted word moved by exactly the import's length"
+        );
+    }
+
+    #[test]
+    fn a_stale_import_is_refused_rather_than_placed_by_guess() {
+        // Its coordinates are line-and-column against a document that has since gained or lost a
+        // line, so vex cannot know where it belongs. An import landing mid-statement is worse than
+        // no import, and the caller says so on screen rather than silently doing neither.
+        let source = "use std::io;\n\nfn main() { Hash }\n";
+        let text = Text::from_str(source);
+        let mut item = offer("HashMap", "HashMap");
+        item.additional = vec![import(1, "use std::collections::HashMap;\n")];
+
+        let anchor = CharOffset(source.find("Hash").unwrap());
+        let accepted = accept_completion(&text, &item, anchor, CharOffset(anchor.get() + 4), false);
+
+        assert_eq!(accepted.imports, 0);
+        assert!(accepted.imports_refused, "and the user is told");
+        assert_eq!(
+            apply(source, &accepted),
+            "use std::io;\n\nfn main() { HashMap }\n",
+            "the word itself still completes"
+        );
+    }
+
+    #[test]
+    fn an_extra_edit_overlapping_the_word_is_dropped() {
+        // Two edits over one span is not something a transaction can resolve, and no server meant
+        // it — but a transaction that fails validation would lose the completion entirely.
+        let source = "let x = ab\n";
+        let text = Text::from_str(source);
+        let mut item = offer("abc", "abc");
+        item.additional = vec![TextEdit {
+            range: LspRange {
+                start: Position {
+                    line: 0,
+                    character: 8,
+                },
+                end: Position {
+                    line: 0,
+                    character: 10,
+                },
+            },
+            new_text: "zz".into(),
+        }];
+
+        let accepted = accept_completion(&text, &item, CharOffset(8), CharOffset(10), true);
+        assert_eq!(accepted.imports, 0);
+        assert!(
+            accepted.transaction.validate(&text).is_ok(),
+            "what is left still applies"
+        );
+        assert_eq!(apply(source, &accepted), "let x = abc\n");
+    }
 }
 
 #[cfg(test)]
