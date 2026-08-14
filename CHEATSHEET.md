@@ -290,6 +290,20 @@ vex.map("normal", "<leader>w", "save")
 vex.map("insert", "<c-s>", "save")
 ```
 
+## Naming a language server
+
+```lua
+vex.server("python", { command = ".venv/bin/pylsp" })
+vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+```
+
+Yours is tried before vex's own list, which stays behind it as the fallback. A command with a slash
+in it is a path — resolved against the project root — rather than a name to look up on `PATH`, and
+`~/` is your home directory. A language vex already knows (`rust`, `typescript`, `python`, `cpp`,
+`go`, `lua`, `dart`) fills in the extensions for you; any other language has to list them, because a
+server that can never match a file would otherwise be a line of config that silently does nothing.
+The settings panel's last section says what was found and where.
+
 In insert mode only modified and named keys can be bound: a letter binding would have to hold the
 letter back to see what came next, and typing would stutter.
 

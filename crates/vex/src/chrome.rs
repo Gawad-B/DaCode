@@ -527,7 +527,6 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             wrap: false,
             layer: Layer::default(),
         });
-
     }
 
     // The finishing row, which is where the last option lands — and the one thing on this screen
@@ -1508,7 +1507,12 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     let card = Rect::new(code.x + pad, y, width, height);
 
     frame.fill(
-        Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
+        Rect::new(
+            card.x - 2.0 * scale,
+            card.y + 4.0 * scale,
+            card.width + 4.0 * scale,
+            card.height,
+        ),
         theme.shadow,
     );
     frame.fill(card, theme.bg_panel);
@@ -1601,7 +1605,12 @@ fn draw_help(
         } else {
             accent
         },
-        rect: Rect::new(header.x + pad, header.y, header.width - pad * 2.0, header.height),
+        rect: Rect::new(
+            header.x + pad,
+            header.y,
+            header.width - pad * 2.0,
+            header.height,
+        ),
         align: Align::Left,
         center_vertically: true,
         wrap: false,
@@ -1610,7 +1619,12 @@ fn draw_help(
     frame.text(label(
         state,
         "type to filter",
-        Rect::new(header.x + pad, header.y, header.width - pad * 2.0, header.height),
+        Rect::new(
+            header.x + pad,
+            header.y,
+            header.width - pad * 2.0,
+            header.height,
+        ),
         theme.ink_faint,
         Align::Right,
         scale,
@@ -1626,7 +1640,12 @@ fn draw_help(
                 frame.text(label(
                     state,
                     *title,
-                    Rect::new(rows_area.x + pad, y, rows_area.width - pad * 2.0, row_height),
+                    Rect::new(
+                        rows_area.x + pad,
+                        y,
+                        rows_area.width - pad * 2.0,
+                        row_height,
+                    ),
                     theme.ink_faint,
                     Align::Left,
                     scale,
@@ -1666,7 +1685,12 @@ fn draw_help(
     frame.text(label(
         state,
         "↑↓ scroll · esc close · ctrl-shift-p every command",
-        Rect::new(footer.x + pad, footer.y, footer.width - pad * 2.0, footer.height),
+        Rect::new(
+            footer.x + pad,
+            footer.y,
+            footer.width - pad * 2.0,
+            footer.height,
+        ),
         theme.ink_faint,
         Align::Left,
         scale,
@@ -1713,7 +1737,12 @@ fn draw_menu(
     }
 
     frame.fill(
-        Rect::new(card.x - 2.0 * scale, card.y + 4.0 * scale, card.width + 4.0 * scale, card.height),
+        Rect::new(
+            card.x - 2.0 * scale,
+            card.y + 4.0 * scale,
+            card.width + 4.0 * scale,
+            card.height,
+        ),
         theme.shadow,
     );
     frame.fill(card, theme.bg_panel);
@@ -1810,6 +1839,27 @@ fn elide(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) ->
     text.chars().take(fits - 1).collect::<String>() + "…"
 }
 
+/// Shortens text to fit by dropping the **front**, for values whose end is the identifying part.
+///
+/// A path is the case: `…\.cargo\bin\rust-analyzer.exe` still names the program, while eliding it
+/// the usual way gives `C:\Users\Gawa…` — every character of which the reader already knew.
+fn elide_start(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) -> String {
+    let advance = state.typography.advance(role) * scale;
+    if advance <= 0.0 || width <= 0.0 {
+        return text.to_string();
+    }
+    let fits = (width / advance).floor().max(0.0) as usize;
+    let length = text.chars().count();
+    if length <= fits {
+        return text.to_string();
+    }
+    if fits <= 1 {
+        return "…".to_string();
+    }
+    let skip = length - (fits - 1);
+    "…".to_string() + &text.chars().skip(skip).collect::<String>()
+}
+
 /// What the viewport shows when no file is open: the mark, and one line telling you how to open one.
 ///
 /// Nothing else. A recent-files list or a tips carousel here would be the first place the editor
@@ -1900,13 +1950,13 @@ fn draw_settings(
     // Every rectangle comes from `settings_ui::panel`, which the mouse reads too. The panel had two
     // copies of this walk, and the moment the list started scrolling they disagreed: a click
     // selected whichever row used to be under the pointer.
-    let panel = crate::settings_ui::panel(rect, scale, settings.selected);
+    let panel = crate::settings_ui::panel(rect, scale, settings);
 
-    if let Some(heading) = panel.heading {
+    for heading in &panel.headings {
         frame.text(label(
             state,
-            "import from vscode",
-            heading,
+            heading.label,
+            heading.rect,
             theme.ink_dim,
             Align::Left,
             scale,
@@ -2064,6 +2114,68 @@ fn draw_settings(
                         (true, true) => accent,
                         (true, false) => theme.ink_dim,
                     },
+                    Align::Left,
+                    scale,
+                ));
+            }
+            Line::Server(at) => {
+                let Some(server) = settings.servers.get(*at) else {
+                    continue;
+                };
+
+                // The language on the left, what it resolved to on the right — the same shape as an
+                // option row, because it is answering the same question: what is this set to, and
+                // who set it.
+                let mark = if server.configured { " (init.lua)" } else { "" };
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    elide(
+                        state,
+                        Role::Value,
+                        &format!("{}{mark}", server.language),
+                        width * 0.7,
+                        scale,
+                    ),
+                    Rect::new(rect.x + pad, y, width, line),
+                    if selected { theme.ink } else { theme.ink_dim },
+                    Align::Left,
+                    scale,
+                ));
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    if server.found { "found" } else { "missing" },
+                    Rect::new(rect.x + pad, y, width, line),
+                    if server.found {
+                        theme.fresh()
+                    } else {
+                        theme.ink_faint
+                    },
+                    Align::Right,
+                    scale,
+                ));
+
+                // The programs vex looked for, and — on the selected row — what it found. Two lines
+                // in one, the same trade the option rows make: both at once is a hundred characters
+                // in a 292-pixel panel, and the version that fits is the one nobody can read.
+                //
+                // A found path elides from the front, because its end is the part that identifies
+                // it; an install line elides from the back, because its start is.
+                let caption = if selected {
+                    if server.found {
+                        elide_start(state, Role::Label, &server.status, width, scale)
+                    } else {
+                        elide(state, Role::Label, &server.status, width, scale)
+                    }
+                } else {
+                    elide(state, Role::Label, &server.program, width, scale)
+                };
+                frame.text(label(
+                    state,
+                    caption,
+                    Rect::new(rect.x + pad, y + line * 0.85, width, line),
+                    theme.ink_faint,
                     Align::Left,
                     scale,
                 ));
@@ -2233,8 +2345,8 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
             _ => theme.ink_faint,
         };
 
-        let on_cursor_line = here == Some(problem.path.as_path())
-            && problem.line == state.cursor_point().line;
+        let on_cursor_line =
+            here == Some(problem.path.as_path()) && problem.line == state.cursor_point().line;
         if on_cursor_line {
             frame.fill(
                 Rect::new(rect.x, y - 2.0 * scale, rect.width, line * 2.0),
@@ -2381,7 +2493,11 @@ fn draw_tree(
 /// `None` when the segment is entirely off screen — the common case for the left of a long line
 /// once the view has scrolled, and the reason this is worth doing at all rather than drawing
 /// everything and letting the clip sort it out.
-fn visible_slice(grid: &crate::layout::CodeGrid, start_column: usize, content: &str) -> Option<(f32, String)> {
+fn visible_slice(
+    grid: &crate::layout::CodeGrid,
+    start_column: usize,
+    content: &str,
+) -> Option<(f32, String)> {
     let first = grid.offset();
     let last = first + grid.columns() + 1;
     let end = start_column + content.chars().count();
@@ -2732,7 +2848,8 @@ fn draw_code(
         (Some(first), Some(last)) => first.range.start..last.range.end,
         _ => CharOffset(0)..CharOffset(0),
     };
-    let overlaps = |range: &std::ops::Range<CharOffset>| range.start < span.end && range.end > span.start;
+    let overlaps =
+        |range: &std::ops::Range<CharOffset>| range.start < span.end && range.end > span.start;
 
     let diagnostics: Vec<(std::ops::Range<CharOffset>, _)> = if pane.focused {
         state
@@ -2809,8 +2926,7 @@ fn draw_code(
 
             let from_column = columns_between(state, text, row.range.start, start);
             let to_column = columns_between(state, text, row.range.start, end);
-            let severity =
-                severity.unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING);
+            let severity = severity.unwrap_or(vex_lsp::lsp_types::DiagnosticSeverity::WARNING);
             let color = if severity == vex_lsp::lsp_types::DiagnosticSeverity::ERROR {
                 theme.over_budget()
             } else {
@@ -2823,7 +2939,8 @@ fn draw_code(
                     y + row_height - border::ACCENT_BORDER * scale - 1.0,
                     ((to_column - from_column) as f32 * advance).max(advance),
                     border::ACCENT_BORDER * scale,
-                ).intersect(code),
+                )
+                .intersect(code),
                 color,
             );
         }
@@ -2844,7 +2961,8 @@ fn draw_code(
                     y,
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
-                ).intersect(code),
+                )
+                .intersect(code),
                 // The visual hue at low alpha: a found-text wash that is not the selection and not
                 // the cursor line.
                 theme
@@ -2873,7 +2991,8 @@ fn draw_code(
                     y,
                     ((to_column - from_column) as f32 * advance).max(advance * 0.4),
                     row_height,
-                ).intersect(code),
+                )
+                .intersect(code),
                 theme.selection_fill(if pane.focused {
                     state.mode
                 } else {
@@ -3680,8 +3799,7 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         {
             let (errors, warnings) = state.diagnostics.counts();
             let (project_errors, project_warnings) = state.problems.counts();
-            let elsewhere = (project_errors + project_warnings)
-                .saturating_sub(errors + warnings);
+            let elsewhere = (project_errors + project_warnings).saturating_sub(errors + warnings);
 
             if errors + warnings == 0 {
                 // Nothing wrong here. If something is wrong *elsewhere*, say so — that is the whole

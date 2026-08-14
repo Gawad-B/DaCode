@@ -24,14 +24,21 @@ pub struct Placement {
     pub rect: Rect,
 }
 
+/// A section heading, and where it goes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Heading {
+    pub label: &'static str,
+    pub rect: Rect,
+}
+
 /// Where everything in the panel is.
 #[derive(Debug, Clone)]
 pub struct Panel {
     /// Only the rows that fit. A row that would run into the footer is not drawn *and* not
     /// clickable — the two must agree, which is the whole reason this type exists.
     pub rows: Vec<Placement>,
-    /// The "import from vscode" heading, when it is on screen.
-    pub heading: Option<Rect>,
+    /// The section headings that are on screen.
+    pub headings: Vec<Heading>,
     pub footer: Rect,
     /// Whether anything is scrolled out of view, so the panel can say so.
     pub scrolls: bool,
@@ -49,7 +56,8 @@ pub struct Panel {
 /// selected whichever row *used* to be under the pointer. That is precisely the failure `layout.rs`
 /// exists to prevent, reproduced in the panel next door, and it is why this returns rectangles
 /// rather than a formula for them.
-pub fn panel(rect: Rect, scale: f32, selected: usize) -> Panel {
+pub fn panel(rect: Rect, scale: f32, settings: &Settings) -> Panel {
+    let selected = settings.selected;
     let pad = space::LG * scale;
     let line = 20.0 * scale;
     let width = rect.width - pad * 2.0;
@@ -59,19 +67,21 @@ pub fn panel(rect: Rect, scale: f32, selected: usize) -> Panel {
     let footer = Rect::new(rect.x + pad, rect.bottom() - line * 2.2, width, line);
     let bottom = footer.y - line * 0.6;
 
-    let entries = Settings::lines();
+    let entries = settings.lines();
     let mut flow = 0.0;
     let mut blocks = Vec::with_capacity(entries.len());
     for entry in &entries {
-        // A heading before the import section, so the checklist does not read as more settings.
-        let heading = (*entry == Line::Import(Importable::Settings)).then(|| {
+        // A heading before each section, so a checklist and a report do not read as more settings.
+        let heading = section(*entry).map(|label| {
             flow += line * 0.6;
-            let at = flow;
+            let at = (flow, label);
             flow += line * 1.4;
             at
         });
         let block = match entry {
             Line::Option(_) => line * 2.0,
+            // Two lines: what vex looked for, and what it found.
+            Line::Server(_) => line * 2.0,
             _ => line * 1.4,
         };
         blocks.push((heading, flow, block));
@@ -92,13 +102,16 @@ pub fn panel(rect: Rect, scale: f32, selected: usize) -> Panel {
         0.0
     };
 
-    let mut heading = None;
+    let mut headings = Vec::new();
     let mut rows = Vec::with_capacity(entries.len());
     for (index, (entry, (at_heading, at, block))) in entries.iter().zip(&blocks).enumerate() {
-        if let Some(at_heading) = at_heading {
+        if let Some((at_heading, label)) = at_heading {
             let y = top - scroll + at_heading;
             if y >= top && y + line <= bottom {
-                heading = Some(Rect::new(rect.x + pad, y, width, line));
+                headings.push(Heading {
+                    label,
+                    rect: Rect::new(rect.x + pad, y, width, line),
+                });
             }
         }
 
@@ -116,12 +129,21 @@ pub fn panel(rect: Rect, scale: f32, selected: usize) -> Panel {
 
     Panel {
         rows,
-        heading,
+        headings,
         footer,
         scrolls,
         width,
         pad,
         line,
+    }
+}
+
+/// The heading a row starts, if it starts one.
+fn section(entry: Line) -> Option<&'static str> {
+    match entry {
+        Line::Import(Importable::Settings) => Some("import from vscode"),
+        Line::Server(0) => Some("language servers"),
+        _ => None,
     }
 }
 
@@ -264,10 +286,11 @@ impl Importable {
     }
 }
 
-/// Every row in the panel: the options, then the import checklist, then the action that runs it.
+/// Every row in the panel: the options, then the import checklist, then the action that runs it,
+/// then what vex found when it looked for language servers.
 ///
-/// One list rather than two panes, so `j` and `k` walk the whole thing and there is no second focus
-/// to keep track of.
+/// One list rather than several panes, so `j` and `k` walk the whole thing and there is no second
+/// focus to keep track of.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Line {
     Option(Field),
@@ -275,6 +298,89 @@ pub enum Line {
     RunImport,
     /// Load a colour scheme from a file, in any format the importer reads.
     LoadTheme,
+    /// An index into [`Settings::servers`].
+    Server(usize),
+}
+
+/// What vex found when it looked for a language server.
+///
+/// **A report, not a setting.** The panel cannot install a program, and a row that looks like a
+/// control and is not would be worse than plain text — so these rows do not cycle, and the only
+/// thing pressing one does is put the whole line in the info box, which is how a path too long for
+/// a 292-pixel sidebar becomes readable.
+///
+/// It exists because the failure it describes is otherwise invisible. "Completion does not work"
+/// has three causes that look identical from the outside: vex knows no server for the language, it
+/// knows one and cannot find it, or `init.lua` named one that is not where it says. Without this
+/// section the only evidence is a statusline cell a few words wide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRow {
+    /// "Python", not "py".
+    pub language: String,
+    pub program: String,
+    /// Where it is, or that it is not there and what would install it.
+    pub status: String,
+    pub found: bool,
+    /// Whether `init.lua` asked for this one.
+    pub configured: bool,
+}
+
+/// Looks for every language server vex knows about or was told about.
+///
+/// Costs a `PATH` walk per program — nine of them, each a bounded number of `is_file` calls against
+/// a fixed table. Bounded, but not free, which is why it runs once when the panel opens rather than
+/// while drawing. If it ever shows up in a frame, the fix is the same shape as every other producer
+/// here: a worker and a version tag.
+pub fn detect(
+    root: &std::path::Path,
+    home: Option<&std::path::Path>,
+    configured: &[vex_lsp::Configured],
+) -> Vec<ServerRow> {
+    let mut rows = Vec::new();
+
+    // Configured entries get a row each, and go first. Someone who named a server wants to know
+    // about *that* one, and folding it into a per-language "what won" row would hide a mistyped
+    // path behind a working fallback — which is precisely the case this section exists for.
+    for entry in configured {
+        let found = vex_lsp::resolve_command(&entry.spec.program, root, home);
+        rows.push(ServerRow {
+            language: entry.spec.language.clone(),
+            program: entry.spec.program.clone(),
+            status: match &found {
+                Some(path) => path.display().to_string(),
+                None => "not found — check the path in init.lua".into(),
+            },
+            found: found.is_some(),
+            configured: true,
+        });
+    }
+
+    for language in &vex_lsp::LANGUAGES {
+        let found = language
+            .programs()
+            .into_iter()
+            .find_map(|program| vex_lsp::resolve(program).map(|path| (program, path)));
+        rows.push(match found {
+            Some((program, path)) => ServerRow {
+                language: language.name.to_string(),
+                program: program.to_string(),
+                status: path.display().to_string(),
+                found: true,
+                configured: false,
+            },
+            // Names every program it looked for, not just the first: "no Python server" is not
+            // actionable when the reader has pylsp installed and vex wanted pyright.
+            None => ServerRow {
+                language: language.name.to_string(),
+                program: language.programs().join(", "),
+                status: language.install().to_string(),
+                found: false,
+                configured: false,
+            },
+        });
+    }
+
+    rows
 }
 
 /// The panel's state: which row is selected, and whether anything is unsaved.
@@ -286,6 +392,12 @@ pub struct Settings {
     pub ticked: Vec<Importable>,
     /// What the last import said, shown in place of the hint.
     pub import_report: Option<String>,
+    /// What vex found when it looked for language servers, gathered when the panel opened.
+    ///
+    /// Gathered once rather than per frame: finding a program means walking `PATH` and asking the
+    /// filesystem about every candidate, which is exactly the kind of unbounded work that must
+    /// never happen while drawing.
+    pub servers: Vec<ServerRow>,
 }
 
 impl Default for Settings {
@@ -301,21 +413,27 @@ impl Settings {
             dirty: false,
             ticked: Vec::new(),
             import_report: None,
+            servers: Vec::new(),
         }
     }
 
     /// Every line, in display order.
-    pub fn lines() -> Vec<Line> {
+    ///
+    /// A method rather than an associated function because the last section's length depends on how
+    /// many servers were found — and a layout that disagrees with the list it is laying out is the
+    /// defect this module already has one test for.
+    pub fn lines(&self) -> Vec<Line> {
         Field::ALL
             .iter()
             .map(|field| Line::Option(*field))
             .chain(Importable::ALL.iter().map(|item| Line::Import(*item)))
             .chain([Line::RunImport, Line::LoadTheme])
+            .chain((0..self.servers.len()).map(Line::Server))
             .collect()
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        let last = Self::lines().len() - 1;
+        let last = self.lines().len() - 1;
         self.selected = match delta {
             d if d < 0 => self.selected.saturating_sub(d.unsigned_abs()),
             d => (self.selected + d as usize).min(last),
@@ -324,7 +442,7 @@ impl Settings {
 
     /// The selected line.
     pub fn line(&self) -> Line {
-        let lines = Self::lines();
+        let lines = self.lines();
         lines[self.selected.min(lines.len() - 1)]
     }
 
@@ -548,10 +666,29 @@ mod tests {
         // handler was not, so in any window short enough to scroll the panel a click selected
         // whichever row *used* to be under the pointer. One function now answers both, and this is
         // the test that says so — at every height, and at every scroll position the panel can be in.
+        let mut settings = Settings::new();
+        settings.servers = vec![
+            ServerRow {
+                language: "Python".into(),
+                program: ".venv/bin/pylsp".into(),
+                status: "not found — check the path in init.lua".into(),
+                found: false,
+                configured: true,
+            },
+            ServerRow {
+                language: "Rust".into(),
+                program: "rust-analyzer".into(),
+                status: "/home/x/.cargo/bin/rust-analyzer".into(),
+                found: true,
+                configured: false,
+            },
+        ];
+
         for height in [300.0_f32, 420.0, 560.0, 700.0, 860.0, 1000.0] {
-            for selected in 0..Settings::lines().len() {
+            for selected in 0..settings.lines().len() {
+                settings.selected = selected;
                 let rect = Rect::new(1300.0, 120.0, 292.0, height);
-                let panel = panel(rect, 1.0, selected);
+                let panel = panel(rect, 1.0, &settings);
 
                 for row in &panel.rows {
                     for probe in [row.rect.y + 1.0, row.rect.y + row.rect.height / 2.0] {
@@ -588,11 +725,75 @@ mod tests {
     }
 
     #[test]
+    fn a_named_server_is_reported_separately_from_the_one_vex_would_fall_back_to() {
+        // The failure this section exists to expose: a mistyped path in init.lua, hidden behind a
+        // working fallback. Reporting only the winner would say "Python: found" and be useless.
+        let dir = std::env::temp_dir().join(format!("vex-detect-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".venv/bin")).unwrap();
+        std::fs::write(dir.join(".venv/bin/pylsp"), "").unwrap();
+
+        let good = vex_lsp::configure("python", ".venv/bin/pylsp", &[], &[]).unwrap();
+        let bad = vex_lsp::configure("python", ".venv/bin/typo", &[], &[]).unwrap();
+        let rows = detect(&dir, None, &[good, bad]);
+
+        assert!(rows[0].configured && rows[0].found, "{:?}", rows[0]);
+        assert!(rows[1].configured && !rows[1].found, "{:?}", rows[1]);
+        assert!(
+            rows[1].status.contains("init.lua"),
+            "a wrong path is the user's to fix, and the message says where: {}",
+            rows[1].status
+        );
+        assert_eq!(
+            rows.len(),
+            2 + vex_lsp::LANGUAGES.len(),
+            "every language vex knows is still reported, found or not"
+        );
+        assert!(
+            rows.iter().all(|row| !row.status.is_empty()),
+            "a row with nothing to say is a row that reads as broken"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_tall_panel_does_not_scroll_at_all() {
-        let panel = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, 0);
+        let settings = Settings::new();
+        let panel = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, &settings);
         assert!(!panel.scrolls);
-        assert_eq!(panel.rows.len(), Settings::lines().len(), "all of it fits");
-        assert!(panel.heading.is_some(), "including the import heading");
+        assert_eq!(panel.rows.len(), settings.lines().len(), "all of it fits");
+        assert!(
+            panel
+                .headings
+                .iter()
+                .any(|h| h.label == "import from vscode"),
+            "including the import heading"
+        );
+    }
+
+    #[test]
+    fn the_language_server_section_appears_only_when_there_is_something_to_report() {
+        // A heading over nothing is worse than no heading: it reads as a section that failed to
+        // load rather than one that had nothing to say.
+        let mut settings = Settings::new();
+        let empty = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, &settings);
+        assert!(!empty.headings.iter().any(|h| h.label == "language servers"));
+
+        settings.servers.push(ServerRow {
+            language: "Rust".into(),
+            program: "rust-analyzer".into(),
+            status: "/usr/bin/rust-analyzer".into(),
+            found: true,
+            configured: false,
+        });
+        let filled = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, &settings);
+        assert!(
+            filled
+                .headings
+                .iter()
+                .any(|h| h.label == "language servers")
+        );
+        assert_eq!(*settings.lines().last().unwrap(), Line::Server(0));
     }
 
     fn values() -> Values {
@@ -678,7 +879,7 @@ mod tests {
         settings.move_selection(-3);
         assert_eq!(settings.selected, 0);
         settings.move_selection(99);
-        assert_eq!(settings.selected, Settings::lines().len() - 1);
+        assert_eq!(settings.selected, settings.lines().len() - 1);
     }
 
     #[test]
@@ -704,7 +905,10 @@ mod tests {
             written.contains("theme = \"one-dark-pro\""),
             "the user's own line still chooses the theme: {written}"
         );
-        assert!(written.contains("tab_width = 4"), "the rest is still written");
+        assert!(
+            written.contains("tab_width = 4"),
+            "the rest is still written"
+        );
     }
 
     #[test]
@@ -774,7 +978,7 @@ mod tests {
 
     #[test]
     fn the_panel_is_one_list_of_options_then_imports_then_the_action() {
-        let lines = Settings::lines();
+        let lines = Settings::new().lines();
         // Options, then the import checklist, then the two actions.
         assert_eq!(lines.len(), Field::ALL.len() + Importable::ALL.len() + 2);
         assert_eq!(

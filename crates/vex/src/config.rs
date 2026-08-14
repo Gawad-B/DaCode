@@ -168,6 +168,8 @@ pub struct Settings {
     pub theme_source: Option<String>,
     /// User key bindings from `init.lua`.
     pub keymap: Keymap,
+    /// Language servers named by `vex.server(...)`, tried before the ones vex knows about.
+    pub servers: Vec<vex_lsp::Configured>,
     /// Which options were set by something other than the built-in defaults, and by what.
     ///
     /// Recorded so the settings panel can say where a value came from. When a setting is not what you
@@ -200,6 +202,7 @@ impl Default for Settings {
             line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
+            servers: Vec::new(),
             sources: std::collections::HashMap::new(),
             problems: Vec::new(),
         }
@@ -356,6 +359,24 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
         settings.theme = Theme::for_appearance(appearance);
         settings.theme_source = None;
         settings.sources.insert("appearance".into(), from_config);
+    }
+
+    // Validated here rather than in `vex-lua`, which does not know what languages exist — the same
+    // split as theme names, and for the same reason: the crate that owns the table is the one that
+    // can say what is wrong with a name in the user's terms.
+    for server in &config.servers {
+        match vex_lsp::configure(
+            &server.language,
+            &server.command,
+            &server.args,
+            &server.extensions,
+        ) {
+            Ok(configured) => settings.servers.push(configured),
+            Err(problem) => settings.problems.push(problem),
+        }
+    }
+    if !settings.servers.is_empty() {
+        settings.sources.insert("servers".into(), from_config);
     }
 
     config.paint(&mut settings.theme);
@@ -640,7 +661,11 @@ mod tests {
             .unwrap();
 
             let settings = load_from(&dir);
-            assert!(settings.problems.is_empty(), "{name}: {:?}", settings.problems);
+            assert!(
+                settings.problems.is_empty(),
+                "{name}: {:?}",
+                settings.problems
+            );
             assert_eq!(settings.theme.bg.to_hex(), build().bg.to_hex(), "{name}");
             assert!(
                 settings.theme_source.is_none(),
@@ -668,6 +693,59 @@ mod tests {
         assert!(settings.problems.is_empty(), "{:?}", settings.problems);
         assert!(settings.theme_source.is_some(), "the file won");
         assert_ne!(settings.theme.bg.to_hex(), Theme::dark().bg.to_hex());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_named_language_server_reaches_the_settings() {
+        let dir = scratch("servers");
+        std::fs::write(
+            dir.join("init.lua"),
+            "vex.server(\"python\", { command = \".venv/bin/pylsp\" })\n\
+             vex.server(\"zig\", { command = \"zls\", extensions = { \"zig\" } })\n",
+        )
+        .unwrap();
+
+        let settings = load_from(&dir);
+        assert!(settings.problems.is_empty(), "{:?}", settings.problems);
+        assert_eq!(settings.servers.len(), 2);
+        assert_eq!(settings.servers[0].spec.program, ".venv/bin/pylsp");
+        assert_eq!(
+            settings.servers[0].extensions,
+            vec!["py", "pyi"],
+            "vex's own table fills in what config did not say"
+        );
+        assert_eq!(
+            settings.sources.get("servers"),
+            Some(&crate::settings_ui::Source::Config)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_server_vex_cannot_make_sense_of_is_reported_and_the_rest_still_loads() {
+        // The same rule the whole config layer follows: an editor that refuses to start because of
+        // one bad line is an editor you cannot use to fix that line.
+        let dir = scratch("bad-server");
+        std::fs::write(
+            dir.join("init.lua"),
+            "vex.set { tab_width = 2 }\n\
+             vex.server(\"zig\", { command = \"zls\" })\n\
+             vex.server(\"go\", { command = \"gopls\" })\n",
+        )
+        .unwrap();
+
+        let settings = load_from(&dir);
+        assert_eq!(settings.tab_width, 2, "the good half applied");
+        assert_eq!(settings.problems.len(), 1);
+        assert!(
+            settings.problems[0].contains("extensions"),
+            "{:?}",
+            settings.problems
+        );
+        assert_eq!(settings.servers.len(), 1, "and the valid one still loaded");
 
         std::fs::remove_dir_all(&dir).ok();
     }

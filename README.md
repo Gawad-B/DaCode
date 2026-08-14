@@ -227,7 +227,22 @@ directly. It looks for these, in this order, and starts the first one it finds:
 
 A language server is a separate program from the language itself — having Python installed does not
 give you a Python language server. When vex cannot find one it says which language it wanted and how
-to install it, rather than naming a binary you have never heard of.
+to install it, rather than naming a binary you have never heard of. The **settings panel** lists
+every language above with where its server was found, or what would install it.
+
+**Naming your own.** The table above is a default, not a limit:
+
+```lua
+-- A project's own virtualenv. Relative paths resolve against the project root.
+vex.server("python", { command = ".venv/bin/pylsp" })
+
+-- A language vex has never heard of has to say which files it serves.
+vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+```
+
+Yours is tried **first**; vex's own list stays behind it, so naming a venv does not cost you the
+fallback when that venv is not there. A command containing a slash is a path rather than a name to
+look for on `PATH`, and `~/` means your home directory.
 
 ## Where files live
 
@@ -247,7 +262,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 616 tests
+cargo test --workspace                      # 625 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar

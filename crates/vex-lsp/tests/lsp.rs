@@ -245,10 +245,20 @@ fn severities_are_counted_for_the_statusline() {
 
 #[test]
 fn servers_are_chosen_by_extension() {
-    assert_eq!(server_for("src/main.rs").unwrap().program, "rust-analyzer");
-    assert_eq!(server_for("app.py").unwrap().language_id, "python");
-    assert_eq!(server_for("main.cpp").unwrap().program, "clangd");
-    assert_eq!(server_for("notes.md"), None);
+    let none = [];
+    assert_eq!(
+        server_for("src/main.rs", &none).unwrap().program,
+        "rust-analyzer"
+    );
+    assert_eq!(server_for("app.py", &none).unwrap().language_id, "python");
+    assert_eq!(server_for("main.cpp", &none).unwrap().program, "clangd");
+    assert_eq!(server_for("notes.md", &none), None);
+
+    // A dotfile has no extension. `rsplit('.')` said `.gitignore`'s was `gitignore`, which was
+    // harmless while every comparison was against a fixed list and stops being harmless the moment
+    // config can name extensions.
+    assert_eq!(server_for(".gitignore", &none), None);
+    assert_eq!(server_for("Makefile", &none), None);
 }
 
 #[test]
@@ -256,14 +266,118 @@ fn a_language_may_have_more_than_one_server() {
     // "The Python server" is not one program: pyright is an npm package and pylsp a pip one, and a
     // machine has whichever its owner installed. Offering only the first and then reporting it
     // missing is how an editor tells someone with a working language server that it has none.
-    let python = vex_lsp::servers_for("app.py");
+    let none = [];
+    let python = vex_lsp::servers_for("app.py", &none);
     assert!(python.len() > 1, "python should have alternatives");
     assert!(python.iter().all(|spec| spec.language == "Python"));
     assert!(
         python.iter().all(|spec| !spec.install.is_empty()),
         "every candidate has to be able to say how to install it"
     );
-    assert!(vex_lsp::servers_for("notes.md").is_empty());
+    assert!(vex_lsp::servers_for("notes.md", &none).is_empty());
+}
+
+#[test]
+fn a_configured_server_is_tried_before_the_built_in_one() {
+    // The case this exists for: a project with its own virtualenv. Naming it must not also throw
+    // away the fallback, so the built-ins stay behind it rather than being replaced.
+    let venv = vex_lsp::configure("python", ".venv/bin/pylsp", &[], &[]).expect("valid");
+    assert_eq!(
+        venv.extensions,
+        vec!["py", "pyi"],
+        "the extensions come from vex's own table, so config need not restate them"
+    );
+    assert_eq!(
+        venv.spec.language_id, "python",
+        "and so does the languageId"
+    );
+
+    let candidates = vex_lsp::servers_for("app.py", std::slice::from_ref(&venv));
+    assert_eq!(candidates[0].program, ".venv/bin/pylsp");
+    assert!(candidates[0].configured);
+    assert!(
+        candidates.len() > 1 && !candidates[1].configured,
+        "the built-ins are still behind it: {candidates:?}"
+    );
+
+    // And it does not leak into another language.
+    assert!(
+        vex_lsp::servers_for("main.rs", std::slice::from_ref(&venv))
+            .iter()
+            .all(|spec| !spec.configured)
+    );
+}
+
+#[test]
+fn a_language_vex_has_never_heard_of_has_to_say_which_files_it_serves() {
+    // A server that can never match a file is a line of config that silently does nothing, which is
+    // the worst outcome available — so it is refused with the fix in the message.
+    let refused = vex_lsp::configure("zig", "zls", &[], &[]).expect_err("no extensions");
+    assert!(refused.contains("extensions"), "{refused}");
+    assert!(refused.contains("zig"), "{refused}");
+
+    let ok = vex_lsp::configure("zig", "zls", &[], &[".ZIG".to_string(), "zon".to_string()])
+        .expect("with extensions");
+    assert_eq!(
+        ok.extensions,
+        vec!["zig", "zon"],
+        "a leading dot and capitals are what people write, and neither should matter"
+    );
+    assert_eq!(
+        ok.spec.language_id, "zig",
+        "an unknown language's id is what the user typed: they and their server are the only two \
+         who know the name"
+    );
+    assert_eq!(
+        vex_lsp::servers_for("build.zig", std::slice::from_ref(&ok)).len(),
+        1
+    );
+
+    let empty = vex_lsp::configure("python", "  ", &[], &[]).expect_err("no command");
+    assert!(empty.contains("command"), "{empty}");
+}
+
+#[test]
+fn a_command_with_a_separator_in_it_is_a_path_not_a_name() {
+    // The venv case. `PATH` is a list of directories, so looking a slash-containing string up in it
+    // finds nothing, ever — which is how naming an interpreter's own server would have failed.
+    let dir = std::env::temp_dir().join(format!("vex-command-{}", std::process::id()));
+    let bin = dir.join(".venv").join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("pylsp"), "").unwrap();
+    std::fs::write(bin.join("other.exe"), "").unwrap();
+    let empty = std::ffi::OsString::new();
+
+    let resolve = |program: &str, windows: bool| {
+        vex_lsp::resolve_command_in(program, &dir, None, &empty, Some(".EXE;.CMD"), windows)
+    };
+
+    assert_eq!(
+        resolve(".venv/bin/pylsp", false),
+        Some(dir.join(".venv/bin/pylsp")),
+        "relative to the project root, not to wherever the desktop launched vex from"
+    );
+    assert_eq!(
+        resolve(".venv/bin/other", true),
+        Some(bin.join("other.exe")),
+        "on Windows the file has a suffix the user did not write, and refusing over that would be \
+         pedantry with a broken editor attached"
+    );
+    assert_eq!(resolve(".venv/bin/missing", false), None);
+
+    // A leading `~` is what people actually write for a tool in their home directory.
+    let home = dir.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("zls"), "").unwrap();
+    assert_eq!(
+        vex_lsp::resolve_command_in("~/zls", &dir, Some(&home), &empty, None, false),
+        Some(home.join("zls"))
+    );
+
+    // And a bare name is still a PATH lookup, which with an empty PATH finds nothing.
+    assert_eq!(resolve("pylsp", false), None);
+
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -277,25 +391,22 @@ fn a_cmd_shim_resolves_on_windows_and_is_ignored_elsewhere() {
     // The platform is a parameter, so the Windows rules are tested wherever this runs.
     let dir = std::env::temp_dir().join(format!("vex-resolve-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    for name in [
-        "pyright-langserver.cmd",
-        "clangd.exe",
-        "pylsp",
-        "gopls.js",
-    ] {
+    for name in ["pyright-langserver.cmd", "clangd.exe", "pylsp", "gopls.js"] {
         std::fs::write(dir.join(name), "").unwrap();
     }
     let path = std::env::join_paths([&dir]).unwrap();
-    let on_windows = |program: &str, pathext: &str| {
-        vex_lsp::resolve_in(program, &path, Some(pathext), true)
-    };
+    let on_windows =
+        |program: &str, pathext: &str| vex_lsp::resolve_in(program, &path, Some(pathext), true);
 
     assert_eq!(
         on_windows("pyright-langserver", ".EXE;.CMD"),
         Some(dir.join("pyright-langserver.cmd")),
         "the npm shim is the whole point"
     );
-    assert_eq!(on_windows("clangd", ".EXE;.CMD"), Some(dir.join("clangd.exe")));
+    assert_eq!(
+        on_windows("clangd", ".EXE;.CMD"),
+        Some(dir.join("clangd.exe"))
+    );
     assert_eq!(
         on_windows("pylsp", ".EXE;.CMD"),
         None,
@@ -346,14 +457,13 @@ fn a_real_server_completes_the_handshake_and_reports_diagnostics() {
     let source = "fn main() {\n    let x: u32 = \"not a number\";\n}\n";
     std::fs::write(&source_path, source).unwrap();
 
-    let mut client =
-        vex_lsp::LspClient::start(
-            &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
-            "rust-analyzer",
-            &[],
-            &root,
-        )
-        .expect("rust-analyzer starts");
+    let mut client = vex_lsp::LspClient::start(
+        &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
+        "rust-analyzer",
+        &[],
+        &root,
+    )
+    .expect("rust-analyzer starts");
 
     // Wait for the handshake, then open the file.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -430,14 +540,13 @@ fn a_real_server_renames_a_symbol() {
     let source = "fn main() {\n    let value = 1;\n    let doubled = value + value;\n    println!(\"{doubled}\");\n}\n";
     std::fs::write(&source_path, source).unwrap();
 
-    let mut client =
-        vex_lsp::LspClient::start(
-            &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
-            "rust-analyzer",
-            &[],
-            &root,
-        )
-        .expect("rust-analyzer starts");
+    let mut client = vex_lsp::LspClient::start(
+        &vex_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
+        "rust-analyzer",
+        &[],
+        &root,
+    )
+    .expect("rust-analyzer starts");
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     let mut asked = false;

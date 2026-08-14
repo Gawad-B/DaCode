@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-616 tests, clippy clean.
+625 tests, clippy clean.
 
 ## Commands
 
@@ -156,6 +156,20 @@ disagreed, so no npm-installed language server could start at all. Hand the reso
 `Command::new` and std routes a `.cmd` through `cmd.exe` itself with the escaping CVE-2024-24576
 added; hand-rolling `cmd /c` would reopen that hole.
 
+**A configured command containing a separator is a path, not a name.** `resolve_command` exists
+beside `resolve` for that one distinction: `PATH` is a list of directories, so looking `.venv/bin/
+pylsp` up in it finds nothing, ever — and a venv's own server is the main reason to name one.
+Relative paths resolve against the **project root**, not the process's working directory, which for
+a windowed editor is wherever the desktop launched it from and never what the user meant.
+
+**The language table is pivoted around the language, not the program.** `vex_lsp::LANGUAGES` carries
+the extensions, the `languageId` and the servers together, because `vex.server("python", …)` names a
+*language* and matching that to a file needs the extension list — which used to exist only as arms
+of a `match`, reachable by nothing. `ServerSpec` is owned rather than `&'static str` for the same
+reason: a server named in `init.lua` is not static, and pretending otherwise costs more than the
+allocation does. A configured entry goes **ahead** of the built-ins rather than replacing them, so
+naming a venv does not also throw away the fallback.
+
 **Paint layers.** The renderer draws all quads then all glyphs *per layer*, so an overlay on a higher
 layer occludes text below it. Within one layer it cannot. Panels go on `Layer::Panel`, the palette on
 `Layer::Modal`. Forgetting this is how the completion popup shipped transparent.
@@ -209,8 +223,11 @@ work on Wayland here, so this is the only way — and it is better anyway, being
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
---splash --empty --at LINE --at-column N --columns N --no-wrap --size WxH --no-vim --help-panel
---menu --context-menu --commands --which-key PREFIX`.
+--splash --empty --at LINE --at-column N --row N --columns N --no-wrap --size WxH --no-vim
+--help-panel --menu --context-menu --commands --which-key PREFIX`.
+
+`--row N` selects a settings row, which is the only way to see a section below the fold — the panel
+scrolls to its selection, and the language-server report is always below it.
 
 **Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
 and a whole family of defects lives below that: the settings rows collided with the footer under
@@ -269,7 +286,7 @@ anything platform-shaped:
 | What a right-click offers | `crates/vex/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/vex-theme/src/theme.rs` |
 | LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
-| Which language server runs | `crates/vex-lsp/src/lib.rs` — `servers_for`, a list per language |
+| Which language server runs | `crates/vex-lsp/src/lib.rs` — `LANGUAGES`, plus `vex.server` in config |
 | Where the settings rows are | `crates/vex/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
 | Whether a file may be opened | `crates/vex/src/open.rs` — every refusal is a sentence for the screen |
 

@@ -149,6 +149,7 @@ fn main() -> Result<()> {
         requested_range: None,
         servers: std::collections::HashMap::new(),
         active_server: None,
+        configured_servers: starting_settings.servers.clone(),
         missing_servers: std::collections::HashSet::new(),
         confirm_close: None,
         confirm_delete: None,
@@ -841,7 +842,20 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.palette = Some(palette);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--settings") {
-        state.settings = Some(vex::settings_ui::Settings::new());
+        let mut settings = vex::settings_ui::Settings::new();
+        // The real detection, against this machine — the section is a report, and a screenshot of a
+        // report with invented contents would verify nothing about whether it can say the true
+        // thing. `--at` scrolls to it, since it sits below the fold at every size.
+        settings.servers = vex::settings_ui::detect(
+            &find_root(&std::path::PathBuf::from(".")),
+            Some(&vex::paths::home()),
+            &vex::config::load().servers,
+        );
+        settings.selected = value("--row")
+            .and_then(|at| at.parse::<usize>().ok())
+            .map(|at| at.min(settings.lines().len() - 1))
+            .unwrap_or(0);
+        state.settings = Some(settings);
         state
             .setting_sources
             .insert("tab_width".into(), vex::settings_ui::Source::Config);
@@ -966,9 +980,11 @@ struct App {
     servers: std::collections::HashMap<String, vex_lsp::LspClient>,
     /// Which one the buffer on screen belongs to.
     active_server: Option<String>,
+    /// Servers named by `vex.server(...)` in `init.lua`, tried before the ones vex knows about.
+    configured_servers: Vec<vex_lsp::Configured>,
     /// Languages already reported as having no server, so the notice is shown once per session
     /// rather than every time a file of that language is opened.
-    missing_servers: std::collections::HashSet<&'static str>,
+    missing_servers: std::collections::HashSet<String>,
     /// The file a delete was just refused for, so choosing it again goes through.
     confirm_delete: Option<String>,
     /// The buffer a close was just refused for, so pressing close again goes through.
@@ -1469,16 +1485,17 @@ impl App {
             return;
         }
         let rows = self.code_rows().max(1);
-        let visible = self
-            .state
-            .display
-            .rows_from(self.state.document.text(), self.state.scroll, rows);
+        let visible =
+            self.state
+                .display
+                .rows_from(self.state.document.text(), self.state.scroll, rows);
         let longest = visible.iter().map(|row| row.len()).max().unwrap_or(0);
 
         let current = self.state.scroll.column as isize;
         self.state.scroll.column = current
             .saturating_add(columns)
-            .clamp(0, longest.saturating_add(8) as isize) as usize;
+            .clamp(0, longest.saturating_add(8) as isize)
+            as usize;
     }
 
     fn scroll_by(&mut self, rows: isize) {
@@ -1855,8 +1872,8 @@ impl App {
             self.state.server_status = "scratch buffer".into();
             return;
         };
-        let candidates = vex_lsp::servers_for(&path);
-        let Some(first) = candidates.first() else {
+        let candidates = vex_lsp::servers_for(&path, &self.configured_servers);
+        let Some(first) = candidates.first().cloned() else {
             self.active_server = None;
             self.state.server_status = "no server for this language".into();
             return;
@@ -1867,20 +1884,23 @@ impl App {
         // indexing every time you glance at another file.
         if let Some(running) = candidates
             .iter()
-            .find(|spec| self.servers.contains_key(spec.program))
+            .find(|spec| self.servers.contains_key(&spec.program))
         {
-            self.active_server = Some(running.program.to_string());
-            self.state.server_status = running.program.to_string();
+            self.active_server = Some(running.program.clone());
+            self.state.server_status = running.program.clone();
             return;
         }
 
-        // The first one that is actually on this machine. "The Python server" is not one program —
-        // pyright comes from npm and pylsp from pip — so offering only the first and reporting it
-        // missing is how an editor tells someone with a working language server that it cannot
-        // find one.
-        let found = candidates
-            .iter()
-            .find_map(|spec| vex_lsp::resolve(spec.program).map(|path| (spec, path)));
+        // The first one that is actually on this machine, config's choices first. "The Python
+        // server" is not one program — pyright comes from npm and pylsp from pip — so offering only
+        // the first and reporting it missing is how an editor tells someone with a working language
+        // server that it cannot find one.
+        let root = self.index.root().to_path_buf();
+        let home = vex::paths::home();
+        let home = (!home.as_os_str().is_empty()).then_some(home);
+        let found = candidates.iter().find_map(|spec| {
+            vex_lsp::resolve_command(&spec.program, &root, home.as_deref()).map(|at| (spec, at))
+        });
 
         let Some((spec, executable)) = found else {
             self.active_server = None;
@@ -1895,22 +1915,41 @@ impl App {
             // a .py file, nagging by the third.
             let names = candidates
                 .iter()
-                .map(|spec| spec.program)
+                .map(|spec| spec.program.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            if self.missing_servers.insert(first.language) {
-                self.state.hover = Some(format!(
-                    "no {} language server. A language server is separate from the {} you have \
-                     installed — vex looked for {names} on PATH. Install one with: {}",
-                    first.language, first.language, first.install
-                ));
+            if self.missing_servers.insert(first.language.clone()) {
+                // A server the user named is a different failure from one vex only guessed at:
+                // theirs is a path that is wrong, not a program that is missing, and telling them
+                // to install pyright when they asked for a venv would be answering the wrong
+                // question.
+                self.state.hover = Some(if first.configured {
+                    format!(
+                        "init.lua asks for `{}` for {}, and vex could not find it. Relative paths \
+                         are resolved against the project root ({}). Nothing else served this \
+                         file, so vex looked for {names}.",
+                        first.program,
+                        first.language,
+                        root.display()
+                    )
+                } else {
+                    format!(
+                        "no {} language server. A language server is separate from the {} you have \
+                         installed — vex looked for {names} on PATH. Install one with: {}. To name \
+                         your own: vex.server(\"{}\", {{ command = \"…\" }})",
+                        first.language, first.language, first.install, first.language_id
+                    )
+                });
             }
-            eprintln!("vex: no {} language server; looked for {names}", first.language);
+            eprintln!(
+                "vex: no {} language server; looked for {names}",
+                first.language
+            );
             return;
         };
 
-        let root = self.index.root().to_path_buf();
-        match vex_lsp::LspClient::start(&executable, spec.program, spec.args, &root) {
+        let arguments: Vec<&str> = spec.args.iter().map(String::as_str).collect();
+        match vex_lsp::LspClient::start(&executable, &spec.program, &arguments, &root) {
             Ok(client) => {
                 eprintln!(
                     "vex: starting {} ({}) in {}",
@@ -1919,8 +1958,8 @@ impl App {
                     root.display()
                 );
                 self.state.server_status = format!("{} starting", spec.program);
-                self.servers.insert(spec.program.to_string(), client);
-                self.active_server = Some(spec.program.to_string());
+                self.servers.insert(spec.program.clone(), client);
+                self.active_server = Some(spec.program.clone());
             }
             // Resolution succeeded and the spawn still failed: this is the case where the user is
             // right and vex is wrong, and it should read that way rather than blaming their PATH.
@@ -1930,6 +1969,16 @@ impl App {
                 self.state.server_status = format!("{} found but would not start", spec.program);
             }
         }
+    }
+
+    /// What the settings panel reports about language servers.
+    ///
+    /// Gathered when the panel opens rather than while drawing: it walks `PATH` once per program,
+    /// which is bounded but not free.
+    fn detect_servers(&self) -> Vec<vex::settings_ui::ServerRow> {
+        let home = vex::paths::home();
+        let home = (!home.as_os_str().is_empty()).then_some(home);
+        vex::settings_ui::detect(self.index.root(), home.as_deref(), &self.configured_servers)
     }
 
     /// The server for the buffer on screen, if there is one.
@@ -1950,6 +1999,9 @@ impl App {
         let Some(name) = self.active_server.clone() else {
             return false;
         };
+        // Taken before the client is borrowed mutably: the language a file is written in is a
+        // question for the config table, and `self` is about to be locked to one server.
+        let configured = &self.configured_servers;
         let Some(client) = self.servers.get_mut(&name) else {
             return false;
         };
@@ -1965,11 +2017,11 @@ impl App {
 
                 match self.sent_version {
                     None => {
-                        let language = vex_lsp::server_for(&path.to_string_lossy())
+                        let language = vex_lsp::server_for(&path.to_string_lossy(), configured)
                             .map(|spec| spec.language_id)
-                            .unwrap_or("plaintext");
+                            .unwrap_or_else(|| "plaintext".to_string());
                         if let Err(error) =
-                            client.did_open(&path, language, buffer_version.0 as i32, &text)
+                            client.did_open(&path, &language, buffer_version.0 as i32, &text)
                         {
                             eprintln!("vex: didOpen failed: {error:#}");
                         }
@@ -2612,7 +2664,9 @@ impl App {
 
             // `↵` in a replace prompt swaps the match under the cursor and moves to the next, which
             // is the loop people actually run: look, replace, look, replace.
-            KeyCode::Enter if prompt.is_replace() && prompt.focus == vex::prompt::Field::Replacement => {
+            KeyCode::Enter
+                if prompt.is_replace() && prompt.focus == vex::prompt::Field::Replacement =>
+            {
                 self.replace_one()
             }
 
@@ -2682,7 +2736,10 @@ impl App {
                     PromptKind::RenameFile => {
                         let to = prompt.input.trim().to_string();
                         let from = self.tree_target();
-                        match (from.as_deref().and_then(|f| self.in_project(f)), self.in_project(&to)) {
+                        match (
+                            from.as_deref().and_then(|f| self.in_project(f)),
+                            self.in_project(&to),
+                        ) {
                             (Some(from), Some(to)) if from != to => {
                                 if to.exists() {
                                     self.warn(&format!("{} already exists", to.display()));
@@ -2753,8 +2810,10 @@ impl App {
                 let query = prompt.input.clone();
                 self.state.prompt = None;
                 if !query.is_empty() {
-                    self.state.results =
-                        Some(vex::results::Results::start(&self.state.project_root, &query));
+                    self.state.results = Some(vex::results::Results::start(
+                        &self.state.project_root,
+                        &query,
+                    ));
                 }
             }
             KeyCode::Char(c) if !key.ctrl && !key.alt => {
@@ -2788,11 +2847,9 @@ impl App {
             Ok(_) => {
                 // Where the caret lands: after what was just written, so the next `↵` finds the
                 // *next* match rather than re-matching what the replacement happens to contain.
-                self.state
-                    .document
-                    .set_primary_caret(vex_text::CharOffset(
-                        at.get() + replacement.chars().count(),
-                    ));
+                self.state.document.set_primary_caret(vex_text::CharOffset(
+                    at.get() + replacement.chars().count(),
+                ));
                 self.after_replace();
                 self.step_match(true);
             }
@@ -3087,8 +3144,7 @@ impl App {
             Action::NewFile => {
                 // Pre-filled with the directory the selection is in, so the common case — a file
                 // beside the one you are looking at — is typing a name and pressing enter.
-                let mut prompt =
-                    vex::prompt::Prompt::new(PromptKind::NewFile, self.state.cursor());
+                let mut prompt = vex::prompt::Prompt::new(PromptKind::NewFile, self.state.cursor());
                 prompt.input = self.tree_directory();
                 self.state.prompt = Some(prompt);
             }
@@ -3153,7 +3209,9 @@ impl App {
                 if self.state.settings.is_some() {
                     self.state.settings = None;
                 } else {
-                    self.state.settings = Some(vex::settings_ui::Settings::new());
+                    let mut settings = vex::settings_ui::Settings::new();
+                    settings.servers = self.detect_servers();
+                    self.state.settings = Some(settings);
                     self.state.tree = None;
                     self.state.show_diagnostics = false;
                 }
@@ -3801,6 +3859,7 @@ impl App {
                 vex::settings_ui::Line::Import(item) => settings.tick(item),
                 vex::settings_ui::Line::RunImport => self.run_import(),
                 vex::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
+                vex::settings_ui::Line::Server(_) => self.activate_setting(line),
             },
             KeyCode::Char('h') | KeyCode::Left => match line {
                 vex::settings_ui::Line::Option(field) => {
@@ -3808,7 +3867,9 @@ impl App {
                     self.adjust_setting(field, -1);
                 }
                 vex::settings_ui::Line::Import(item) => settings.tick(item),
-                vex::settings_ui::Line::RunImport | vex::settings_ui::Line::LoadTheme => {}
+                vex::settings_ui::Line::RunImport
+                | vex::settings_ui::Line::LoadTheme
+                | vex::settings_ui::Line::Server(_) => {}
             },
             // `w` writes; nothing is written without asking, because config is a file the user owns.
             KeyCode::Char('w') => self.write_settings(),
@@ -4515,9 +4576,7 @@ impl App {
                 self.state.hover = Some(format!("deleted {relative}"));
                 // The buffer showing it, if any, becomes a scratch buffer rather than a window onto
                 // a file that no longer exists and would be recreated by the next save.
-                if self.state.file_path.as_deref()
-                    == Some(path.to_string_lossy().as_ref())
-                {
+                if self.state.file_path.as_deref() == Some(path.to_string_lossy().as_ref()) {
                     self.state.file_path = None;
                     self.state.path = vec!["untitled".to_string()];
                     self.refresh_buffer_tabs();
@@ -5066,7 +5125,7 @@ impl App {
             // The same rectangles the drawing code uses, from the same function. This walked the
             // list itself once, which was survivable until the panel started scrolling and the two
             // walks stopped agreeing — a click then selected the row that used to be there.
-            let panel = vex::settings_ui::panel(sidebar, scale, settings.selected);
+            let panel = vex::settings_ui::panel(sidebar, scale, settings);
             let Some(hit) = panel
                 .rows
                 .iter()
@@ -5104,6 +5163,21 @@ impl App {
             }
             vex::settings_ui::Line::RunImport => self.run_import(),
             vex::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
+            // A report, not a control — so pressing it does the one useful thing a 292-pixel row
+            // cannot: shows the whole line, which for a language server is a path that never fits.
+            vex::settings_ui::Line::Server(at) => {
+                if let Some(server) = self
+                    .state
+                    .settings
+                    .as_ref()
+                    .and_then(|settings| settings.servers.get(at))
+                {
+                    self.state.hover = Some(format!(
+                        "{} — {} · {}",
+                        server.language, server.program, server.status
+                    ));
+                }
+            }
         }
     }
 
@@ -5182,6 +5256,18 @@ impl App {
         self.state.show_inlay_hints = settings.inlay_hints;
         self.state.setting_sources = settings.sources.clone();
         self.grammar.set_keymap(settings.keymap);
+
+        // Servers already running are left alone — a reload is not a reason to throw away minutes
+        // of rust-analyzer's indexing. The new table takes effect the next time one is started,
+        // and the panel's report is refreshed so it does not describe the file as it used to be.
+        self.configured_servers = settings.servers;
+        self.missing_servers.clear();
+        if self.state.settings.is_some() {
+            let detected = self.detect_servers();
+            if let Some(panel) = &mut self.state.settings {
+                panel.servers = detected;
+            }
+        }
 
         // Wrap width is in columns and follows the font size, which may just have changed.
         if let Some(window) = &self.window {
@@ -5506,8 +5592,14 @@ mod tests {
 
         let selected = SelectionSet::single(Selection::new(CharOffset(10), CharOffset(20)));
         assert!(selection_contains(&selected, CharOffset(15)), "inside");
-        assert!(selection_contains(&selected, CharOffset(10)), "at the start");
-        assert!(!selection_contains(&selected, CharOffset(20)), "the end is exclusive");
+        assert!(
+            selection_contains(&selected, CharOffset(10)),
+            "at the start"
+        );
+        assert!(
+            !selection_contains(&selected, CharOffset(20)),
+            "the end is exclusive"
+        );
         assert!(!selection_contains(&selected, CharOffset(4)), "before it");
 
         let caret = SelectionSet::single(Selection::caret(CharOffset(10)));
