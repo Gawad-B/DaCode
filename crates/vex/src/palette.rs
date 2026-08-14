@@ -30,6 +30,18 @@ pub enum PaletteKind {
     /// you can search is how anybody finds out what an editor can do, and showing each command's key
     /// beside it is how the palette stops being needed — you use it twice and learn the shortcut.
     Commands,
+    /// `ctrl-shift-o` — every name in this file, as an outline you can search.
+    ///
+    /// Fetched once and filtered here, like the code actions: it is one file, the server answered
+    /// it in full, and asking again per keystroke would be paying a round trip for a `contains`.
+    Symbols,
+    /// `ctrl-t` — every name in the project.
+    ///
+    /// The one palette whose list the *server* filters: a project's symbol table is not something
+    /// the editor holds, and asking for all of it up front is the request no server wants. So each
+    /// keystroke sends the query and the reply replaces the list — with the query it was for, so
+    /// an answer that arrives after you have typed on is discarded rather than flickering back.
+    ProjectSymbols,
 }
 
 impl PaletteKind {
@@ -39,6 +51,8 @@ impl PaletteKind {
             PaletteKind::Files => "open file",
             PaletteKind::Buffers => "switch buffer",
             PaletteKind::Commands => "run a command",
+            PaletteKind::Symbols => "go to symbol",
+            PaletteKind::ProjectSymbols => "go to symbol in project",
         }
     }
 }
@@ -66,6 +80,8 @@ pub enum Target {
     CodeAction(usize),
     /// A command, by the name config binds it under.
     Command(&'static str),
+    /// The index of a symbol in the list the server sent.
+    Symbol(usize),
 }
 
 /// How many rows the palette shows. The design's card is a fixed height, and a palette that scrolls
@@ -124,6 +140,43 @@ impl Palette {
                 score: 0,
                 highlights: highlight_substring(title, &query),
                 target: Target::CodeAction(index),
+            })
+            .collect();
+        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    }
+
+    /// Fills the palette with symbols.
+    ///
+    /// `filter` is false for the project-wide list, whose ranking is the server's and whose rows
+    /// are already the answer to the query — filtering them again here would drop the fuzzy matches
+    /// that are the whole reason a server does the searching.
+    pub fn refresh_symbols(&mut self, symbols: &[vex_lsp::Symbol], filter: bool) {
+        let query = self.query.to_lowercase();
+        self.total = symbols.len();
+        self.rows = symbols
+            .iter()
+            .enumerate()
+            .filter(|(_, symbol)| {
+                !filter || query.is_empty() || symbol.name.to_lowercase().contains(&query)
+            })
+            .map(|(index, symbol)| Row {
+                // Indented into the shape of the file, which is what turns a list of names into an
+                // outline. Two spaces, capped: past three levels the indent costs more room than
+                // the structure it shows is worth.
+                name: format!("{}{}", "  ".repeat(symbol.depth.min(3)), symbol.name),
+                context: match (symbol.kind, symbol.container.as_str()) {
+                    ("", container) => container.to_string(),
+                    (kind, "") => kind.to_string(),
+                    (kind, container) => format!("{kind}  {container}"),
+                },
+                score: 0,
+                highlights: highlight_substring(&symbol.name, &query)
+                    .into_iter()
+                    // The name is drawn after its indent, so a highlight computed against the bare
+                    // name would land that many characters to the left of the letter it means.
+                    .map(|at| at + (symbol.depth.min(3) * 2) as u32)
+                    .collect(),
+                target: Target::Symbol(index),
             })
             .collect();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
@@ -455,5 +508,66 @@ mod tests {
         palette.query.push_str("vex-text");
         palette.refresh_buffers(&buffers);
         assert_eq!(palette.rows.len(), 1);
+    }
+
+    fn symbol(name: &str, kind: &'static str, container: &str, depth: usize) -> vex_lsp::Symbol {
+        vex_lsp::Symbol {
+            name: name.into(),
+            kind,
+            container: container.into(),
+            path: std::path::PathBuf::from("/p/src/anchor.rs"),
+            position: vex_lsp::lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            depth,
+        }
+    }
+
+    #[test]
+    fn an_outline_is_indented_into_the_shape_of_the_file() {
+        let symbols = vec![
+            symbol("Anchor", "struct", "", 0),
+            symbol("offset", "field", "Anchor", 1),
+            symbol("new", "method", "Anchor", 1),
+        ];
+
+        let mut palette = Palette::new(PaletteKind::Symbols);
+        palette.refresh_symbols(&symbols, true);
+        assert_eq!(palette.rows[0].name, "Anchor");
+        assert_eq!(
+            palette.rows[1].name, "  offset",
+            "nesting is what turns a list of names into an outline"
+        );
+        assert_eq!(palette.rows[1].context, "field  Anchor");
+
+        palette.query.push_str("ne");
+        palette.refresh_symbols(&symbols, true);
+        assert_eq!(palette.rows.len(), 1);
+        assert_eq!(palette.rows[0].target, Target::Symbol(2));
+        assert_eq!(
+            palette.rows[0].highlights,
+            vec![2, 3],
+            "the name is drawn after its indent, so the highlight has to move with it"
+        );
+    }
+
+    #[test]
+    fn the_project_wide_list_is_not_filtered_again_here() {
+        // Its rows are already the answer to the query, ranked by the server — and a server matches
+        // fuzzily, so filtering by `contains` on top would throw away exactly the results that
+        // asking a server for them was supposed to buy.
+        let symbols = vec![symbol("resolve_command", "fn", "vex_lsp", 0)];
+
+        let mut palette = Palette::new(PaletteKind::ProjectSymbols);
+        palette.query.push_str("rescmd");
+        palette.refresh_symbols(&symbols, false);
+        assert_eq!(palette.rows.len(), 1);
+
+        // The same query against a file outline, which vex does filter, keeps nothing.
+        let mut outline = Palette::new(PaletteKind::Symbols);
+        outline.query.push_str("rescmd");
+        outline.refresh_symbols(&symbols, true);
+        assert!(outline.rows.is_empty());
     }
 }

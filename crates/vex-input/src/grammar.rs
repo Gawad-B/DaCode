@@ -348,7 +348,11 @@ impl Grammar {
                 Resolution::Pending(self.display.clone())
             }
             KeyCode::Char('e') => self.emit(Action::ToggleTree),
+            // Before the unshifted `o`, which is jump-back: a shifted binding written after the
+            // plain one never matches, and that is exactly how five bindings shipped dead in 0.2.0.
+            KeyCode::Char('o') if key.shift => self.emit(Action::GotoSymbol),
             KeyCode::Char('o') => self.emit(Action::Jump { forward: false }),
+            KeyCode::Char('t') => self.emit(Action::GotoSymbolInProject),
             KeyCode::Char('i') => self.emit(Action::Jump { forward: true }),
             KeyCode::Char(',') => self.emit(Action::ToggleSettings),
             _ => Resolution::Unhandled,
@@ -404,7 +408,10 @@ impl Grammar {
                 // and a poor thing to be the only way — and the prompt it opens is the same one, so
                 // there is no second implementation to keep in step.
                 KeyCode::Char('h') => Some(Action::StartReplace),
+                // Shifted first, or the plain arm swallows it — see `feed_editor_chords`.
+                KeyCode::Char('o') if key.shift => Some(Action::GotoSymbol),
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
+                KeyCode::Char('t') => Some(Action::GotoSymbolInProject),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 KeyCode::Char(',') => Some(Action::ToggleSettings),
                 // The palette of every command works in both grammars. Vim's own vocabulary has no
@@ -989,6 +996,8 @@ impl Grammar {
             // to `gA`'s neighbourhood as `g%` — the whole file, in the same spirit as `%`.
             'a' => self.emit(Action::CodeAction),
             'u' => self.emit(Action::FindReferences),
+            's' => self.emit(Action::GotoSymbol),
+            'S' => self.emit(Action::GotoSymbolInProject),
             'i' => self.emit(Action::ToggleInlayHints),
             'D' => self.emit(Action::ToggleDiagnosticsList),
             '%' => self.emit(Action::SelectAll),

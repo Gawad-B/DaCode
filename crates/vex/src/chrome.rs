@@ -1389,9 +1389,11 @@ fn draw_palette(
         }
 
         // Score, right-aligned in a narrow column. Not for commands: a match score beside "save this
-        // file" is the editor showing its workings to someone who asked what it can do.
+        // file" is the editor showing its workings to someone who asked what it can do. And not
+        // when it is zero, which is every list the editor did not rank itself — a column of ten
+        // zeroes reads as a counter that has broken rather than as a column that does not apply.
         let score_rect = Rect::new(row_rect.x + pad, y, 30.0 * scale, row_height);
-        if palette.kind != PaletteKind::Commands {
+        if palette.kind != PaletteKind::Commands && row.score > 0 {
             frame.text(run(
                 state,
                 Role::Value,

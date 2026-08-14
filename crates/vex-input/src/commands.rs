@@ -377,6 +377,20 @@ pub const COMMANDS: &[Command] = &[
         "gu",
         "<s-f12>",
     ),
+    command(
+        "goto_symbol",
+        "go to a symbol in this file",
+        Language,
+        "gs",
+        "<c-s-o>",
+    ),
+    command(
+        "goto_symbol_in_project",
+        "go to a symbol anywhere in the project",
+        Language,
+        "gS",
+        "<c-t>",
+    ),
     command("hover", "what is this?", Language, "K", ""),
     command("rename", "rename this everywhere", Language, "gr", "<f2>"),
     command(

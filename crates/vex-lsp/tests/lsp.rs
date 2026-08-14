@@ -784,6 +784,114 @@ fn a_real_server_sends_types_a_ranking_and_an_import() {
     );
 }
 
+#[test]
+fn a_symbol_hierarchy_flattens_into_an_outline() {
+    // The shape rust-analyzer and gopls send: nested, with no URI anywhere, because it is all one
+    // file and the server assumes the client remembers which one it asked about.
+    let reply = serde_json::json!([
+        {
+            "name": "Anchor",
+            "kind": 23,
+            "range": { "start": { "line": 10, "character": 0 },
+                       "end": { "line": 40, "character": 1 } },
+            "selectionRange": { "start": { "line": 10, "character": 11 },
+                                "end": { "line": 10, "character": 17 } },
+            "children": [
+                {
+                    "name": "offset",
+                    "kind": 8,
+                    "range": { "start": { "line": 11, "character": 4 },
+                               "end": { "line": 11, "character": 26 } },
+                    "selectionRange": { "start": { "line": 11, "character": 8 },
+                                        "end": { "line": 11, "character": 14 } }
+                },
+                {
+                    "name": "new",
+                    "kind": 6,
+                    "range": { "start": { "line": 20, "character": 4 },
+                               "end": { "line": 22, "character": 5 } },
+                    "selectionRange": { "start": { "line": 20, "character": 11 },
+                                        "end": { "line": 20, "character": 14 } }
+                }
+            ]
+        }
+    ]);
+
+    let here = std::path::Path::new("/p/src/anchor.rs");
+    let symbols = vex_lsp::symbols_from(&reply, here);
+
+    assert_eq!(symbols.len(), 3, "the tree is flattened, not summarised");
+    assert_eq!(
+        (symbols[0].name.as_str(), symbols[0].kind),
+        ("Anchor", "struct")
+    );
+    assert_eq!(symbols[0].depth, 0);
+
+    assert_eq!(symbols[1].depth, 1, "and the nesting survives as depth");
+    assert_eq!(
+        symbols[1].container, "Anchor",
+        "the enclosing name is what makes a field read as belonging to something"
+    );
+    assert_eq!(
+        (symbols[2].name.as_str(), symbols[2].kind),
+        ("new", "method")
+    );
+
+    // The *selection* range, not the whole range: choosing a symbol should land on its name rather
+    // than on the first line of a thirty-line body.
+    assert_eq!(symbols[2].position.line, 20);
+    assert_eq!(symbols[2].position.character, 11);
+    assert!(
+        symbols.iter().all(|symbol| symbol.path == here),
+        "a hierarchy names no file, so every symbol belongs to the one that was asked about"
+    );
+}
+
+#[test]
+fn a_flat_symbol_reply_is_read_too() {
+    // What `workspace/symbol` sends, and what an older server sends for a document: no nesting, a
+    // `location` carrying the file, and the container as a name rather than a parent.
+    let reply = serde_json::json!([
+        {
+            "name": "canonical",
+            "kind": 12,
+            "containerName": "vex_project",
+            "location": {
+                "uri": "file:///p/src/lib.rs",
+                "range": { "start": { "line": 7, "character": 7 },
+                           "end": { "line": 7, "character": 16 } }
+            }
+        }
+    ]);
+
+    let symbols = vex_lsp::symbols_from(&reply, std::path::Path::new(""));
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0].kind, "fn");
+    assert_eq!(symbols[0].container, "vex_project");
+    assert_eq!(symbols[0].position.line, 7);
+    assert_eq!(
+        symbols[0].path,
+        std::path::PathBuf::from("/p/src/lib.rs"),
+        "a project-wide result has to say which file it is in, or it cannot be opened"
+    );
+}
+
+#[test]
+fn a_symbol_reply_that_makes_no_sense_yields_nothing_rather_than_panicking() {
+    // Servers are not proofs. A reply with no array, or entries with no name, must come back empty
+    // rather than taking the editor with it.
+    let path = std::path::Path::new("/p/x.rs");
+    assert!(vex_lsp::symbols_from(&serde_json::json!(null), path).is_empty());
+    assert!(vex_lsp::symbols_from(&serde_json::json!({ "items": [] }), path).is_empty());
+    assert!(vex_lsp::symbols_from(&serde_json::json!([{ "kind": 12 }]), path).is_empty());
+
+    // A name with nothing else is still a symbol; it just has no position to offer.
+    let bare = vex_lsp::symbols_from(&serde_json::json!([{ "name": "x" }]), path);
+    assert_eq!(bare.len(), 1);
+    assert_eq!(bare[0].position.line, 0);
+    assert_eq!(bare[0].kind, "", "and no kind is better than a wrong one");
+}
+
 // ---- URIs on both platforms --------------------------------------------------------------------
 
 use vex_lsp::position::{decode_uri, encode_uri};

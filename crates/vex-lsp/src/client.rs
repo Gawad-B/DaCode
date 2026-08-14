@@ -71,6 +71,18 @@ pub enum Pending {
     ResolveCompletion {
         at: usize,
     },
+    /// Everything named in one file, for an outline. Carries the file, because the hierarchical
+    /// form of the reply names no URI at all — it is all one document, and the server assumes the
+    /// client remembers which.
+    DocumentSymbols {
+        path: PathBuf,
+    },
+    /// Everything in the project matching a query. Carries the query, because replies to an
+    /// out-of-date one arrive after the user has typed on and must be discarded — the same
+    /// staleness rule as everywhere else here, keyed on the text instead of a version.
+    WorkspaceSymbols {
+        query: String,
+    },
     Shutdown,
 }
 
@@ -106,6 +118,15 @@ pub enum ServerEvent {
     CompletionResolved {
         at: usize,
         item: CompletionItem,
+    },
+    /// Everything named, in one file or across the project.
+    ///
+    /// `query` is the text the project-wide search was for, and is `None` for a file outline. The
+    /// editor refuses a reply whose query is not the one being typed now — replies arrive out of
+    /// order, and a list that flickers back to an older answer is worse than one that waits.
+    Symbols {
+        query: Option<String>,
+        symbols: Vec<Symbol>,
     },
     /// Edits for a rename, possibly across several files.
     Rename {
@@ -218,6 +239,143 @@ fn completion_kind(number: Option<u64>) -> &'static str {
     }
 }
 
+/// A named thing in the code: a function, a type, a field.
+///
+/// One type for both `textDocument/documentSymbol` and `workspace/symbol`, because to the person
+/// reading a list they are the same question asked at two scopes, and the palette that shows them
+/// should not need to know which one it is looking at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Symbol {
+    pub name: String,
+    /// A short tag — `fn`, `struct`, `mod` — rather than the protocol's number.
+    pub kind: &'static str,
+    /// What encloses it: the `impl` block or module a server named, or the file it is in.
+    pub container: String,
+    pub path: PathBuf,
+    pub position: Position,
+    /// How deeply nested, so a file outline can be indented into the shape of the file.
+    pub depth: usize,
+}
+
+/// The protocol's `SymbolKind`, as something short enough to sit in a list.
+fn symbol_kind(number: Option<u64>) -> &'static str {
+    match number.unwrap_or(0) {
+        1 => "file",
+        2 => "mod",
+        3 => "ns",
+        4 => "pkg",
+        5 => "class",
+        6 => "method",
+        7 => "prop",
+        8 => "field",
+        9 => "new",
+        10 => "enum",
+        11 => "trait",
+        12 => "fn",
+        13 => "var",
+        14 => "const",
+        15 => "str",
+        16 => "num",
+        17 => "bool",
+        18 => "array",
+        19 => "object",
+        20 => "key",
+        21 => "null",
+        22 => "variant",
+        23 => "struct",
+        24 => "event",
+        25 => "op",
+        26 => "type",
+        _ => "",
+    }
+}
+
+/// Flattens a symbol reply, whichever shape it arrived in.
+///
+/// `documentSymbol` answers with either a *hierarchy* (`DocumentSymbol`, carrying `children` and no
+/// path, since it is all one file) or the older flat `SymbolInformation` with a `location`.
+/// `workspace/symbol` answers with `SymbolInformation` or `WorkspaceSymbol`. All four are read here
+/// rather than in the editor, so the palette sees one kind of thing.
+///
+/// `fallback` is the file the request was for, used by the hierarchical form, which names no URI at
+/// all because the server assumes the client remembers which document it asked about.
+pub fn symbols_from(value: &serde_json::Value, fallback: &Path) -> Vec<Symbol> {
+    let mut symbols = Vec::new();
+    collect_symbols(value, fallback, "", 0, &mut symbols);
+    symbols
+}
+
+fn collect_symbols(
+    value: &serde_json::Value,
+    fallback: &Path,
+    container: &str,
+    depth: usize,
+    into: &mut Vec<Symbol>,
+) {
+    let Some(list) = value.as_array() else {
+        return;
+    };
+
+    for item in list {
+        let Some(name) = item.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let kind = symbol_kind(item.get("kind").and_then(|k| k.as_u64()));
+
+        // A hierarchical symbol carries `selectionRange` — the name itself — where a flat one
+        // carries a whole `location`. Preferring the selection range is what makes choosing a
+        // symbol land on its name rather than on the first line of its body.
+        let (path, position) = match item.get("location") {
+            Some(location) => {
+                let path = location
+                    .get("uri")
+                    .and_then(|uri| uri.as_str())
+                    .and_then(position::uri_to_path)
+                    .unwrap_or_else(|| fallback.to_path_buf());
+                (path, range_start(location.get("range")))
+            }
+            None => (
+                fallback.to_path_buf(),
+                range_start(item.get("selectionRange").or_else(|| item.get("range"))),
+            ),
+        };
+
+        let own = item
+            .get("containerName")
+            .and_then(|c| c.as_str())
+            .unwrap_or(container);
+
+        into.push(Symbol {
+            name: name.to_string(),
+            kind,
+            container: own.to_string(),
+            path,
+            position,
+            depth,
+        });
+
+        if let Some(children) = item.get("children") {
+            // The enclosing name becomes the children's container, which is what makes a method
+            // read as `new` under `Anchor` rather than as an unattached `new`.
+            collect_symbols(children, fallback, name, depth + 1, into);
+        }
+    }
+}
+
+fn range_start(range: Option<&serde_json::Value>) -> Position {
+    let read = |key: &str| {
+        range?
+            .get("start")?
+            .get(key)?
+            .as_u64()
+            .map(|value| value as u32)
+    };
+    Position {
+        line: read("line").unwrap_or(0),
+        character: read("character").unwrap_or(0),
+    }
+}
+
 /// One thing a server offers to do about the code under the cursor.
 ///
 /// Only actions carrying edits survive the parse: an action whose work is a server-side `command` is
@@ -243,6 +401,8 @@ fn describe_request(kind: &Pending) -> String {
         Pending::References => "find references".into(),
         Pending::InlayHints => "inlay hints".into(),
         Pending::ResolveCompletion { .. } => "the rest of a suggestion".into(),
+        Pending::DocumentSymbols { .. } => "this file's symbols".into(),
+        Pending::WorkspaceSymbols { query } => format!("symbols matching `{query}`"),
         Pending::Shutdown => "shutdown".into(),
     }
 }
@@ -452,6 +612,12 @@ impl LspClient {
                         },
                         "dynamicRegistration": false
                     },
+                    // The hierarchical form, so a file outline can be indented into the shape of the
+                    // file rather than being a flat list of every name in it.
+                    "documentSymbol": {
+                        "dynamicRegistration": false,
+                        "hierarchicalDocumentSymbolSupport": true
+                    },
                     "rename": { "dynamicRegistration": false, "prepareSupport": false },
                     "formatting": { "dynamicRegistration": false },
                     "references": { "dynamicRegistration": false },
@@ -465,6 +631,7 @@ impl LspClient {
                 },
                 "workspace": {
                     "workspaceFolders": true,
+                    "symbol": { "dynamicRegistration": false },
                     // `documentChanges: false` is deliberate: it asks servers for the simpler
                     // `changes` map. vex applies text edits and refuses file creation and deletion,
                     // so promising to understand resource operations would be a lie.
@@ -572,6 +739,28 @@ impl LspClient {
             "completionItem/resolve",
             item.clone(),
             Pending::ResolveCompletion { at },
+        )
+    }
+
+    /// Everything named in one file.
+    pub fn document_symbols(&self, path: &Path) -> Result<i64> {
+        self.request(
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": position::path_to_uri(path) } }),
+            Pending::DocumentSymbols {
+                path: path.to_path_buf(),
+            },
+        )
+    }
+
+    /// Everything in the project matching a query.
+    pub fn workspace_symbols(&self, query: &str) -> Result<i64> {
+        self.request(
+            "workspace/symbol",
+            serde_json::json!({ "query": query }),
+            Pending::WorkspaceSymbols {
+                query: query.to_string(),
+            },
         )
     }
 
@@ -898,6 +1087,14 @@ fn interpret(
         Pending::ResolveCompletion { at } => {
             completion_item(result).map(|item| ServerEvent::CompletionResolved { at, item })
         }
+        Pending::DocumentSymbols { path } => Some(ServerEvent::Symbols {
+            query: None,
+            symbols: symbols_from(result, &path),
+        }),
+        Pending::WorkspaceSymbols { query } => Some(ServerEvent::Symbols {
+            symbols: symbols_from(result, Path::new("")),
+            query: Some(query),
+        }),
         Pending::Shutdown => None,
     }
 }

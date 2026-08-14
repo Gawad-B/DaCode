@@ -141,6 +141,8 @@ fn main() {
         "K",
         "gd",
         "gu",
+        "gs",
+        "gS",
         "gr",
         "gf",
         "ga",

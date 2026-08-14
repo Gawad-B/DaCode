@@ -48,6 +48,7 @@ opinions about.
 | `ctrl-s` `ctrl-shift-s` | save · save as |
 | `ctrl-q` | quit |
 | `F12` `shift-F12` | go to definition · find every use |
+| `ctrl-shift-o` `ctrl-t` | a symbol in this file · anywhere in the project |
 | `F2` | rename everywhere |
 | `F8` `shift-F8` | next problem · previous |
 | `ctrl-space` | suggest a completion |
@@ -194,6 +195,8 @@ again discards them. `ctrl-w` is the pane prefix here, which is why closing a fi
 | `K` | hover |
 | `gd` | go to definition |
 | `gu` | find references → results panel |
+| `gs` · `ctrl-shift-o` | go to a symbol in this file — an outline you can search |
+| `gS` · `ctrl-t` | go to a symbol anywhere in the project |
 | `gr` | rename everywhere |
 | `gf` | format the buffer |
 | `ga` | code actions → palette |

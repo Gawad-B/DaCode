@@ -165,7 +165,9 @@ pub fn execute(
         | Action::GotoDefinition
         | Action::Format
         | Action::CodeAction
-        | Action::FindReferences => state.pending_request = Some(action.clone()),
+        | Action::FindReferences
+        | Action::GotoSymbol
+        | Action::GotoSymbolInProject => state.pending_request = Some(action.clone()),
         // The jumplist and macros need the editor's own history, which the executor does not hold —
         // the same split as the window actions.
         Action::OpenFolder

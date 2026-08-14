@@ -23,7 +23,8 @@ pub mod transport;
 use std::path::{Path, PathBuf};
 
 pub use client::{
-    CodeActionItem, CompletionItem, Diagnostics, LspClient, Pending, ServerEvent, State,
+    CodeActionItem, CompletionItem, Diagnostics, LspClient, Pending, ServerEvent, State, Symbol,
+    symbols_from,
 };
 /// Re-exported so consumers can name severities and ranges without depending on the crate directly.
 pub use lsp_types;

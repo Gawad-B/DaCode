@@ -109,6 +109,8 @@ const MENUS: [(&str, &[&str]); 5] = [
         &[
             "goto_definition",
             "find_references",
+            "goto_symbol",
+            "goto_symbol_in_project",
             "search",
             "search_project",
             "next_diagnostic",

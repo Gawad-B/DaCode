@@ -276,6 +276,10 @@ pub enum Action {
     CodeAction,
     /// `gu` — every use of the symbol under the cursor.
     FindReferences,
+    /// `gs` — every name in this file, as a searchable outline.
+    GotoSymbol,
+    /// `gS` — every name in the project, searched as you type.
+    GotoSymbolInProject,
     /// Show or hide inlay hints.
     ToggleInlayHints,
     /// `gD` — list every diagnostic in the file, rather than walking them one at a time.
@@ -451,6 +455,8 @@ impl Action {
         "delete_file",
         "code_action",
         "find_references",
+        "goto_symbol",
+        "goto_symbol_in_project",
         "toggle_inlay_hints",
         "toggle_diagnostics",
         "toggle_fold",
@@ -597,6 +603,8 @@ impl Action {
             "delete_file" => Action::DeleteFile,
             "code_action" => Action::CodeAction,
             "find_references" => Action::FindReferences,
+            "goto_symbol" => Action::GotoSymbol,
+            "goto_symbol_in_project" => Action::GotoSymbolInProject,
             "toggle_inlay_hints" => Action::ToggleInlayHints,
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
             "toggle_fold" => Action::ToggleFold,

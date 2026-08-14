@@ -162,6 +162,7 @@ fn main() -> Result<()> {
         jumps: vex_input::JumpList::default(),
         macros: vex_input::Macros::default(),
         code_actions: Vec::new(),
+        symbols: Vec::new(),
         hinted_version: None,
         recovery: Recovery::new(),
         git: vex::git::GitWorker::spawn(),
@@ -854,6 +855,39 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         // The popup is driven by the pending display, exactly as a half-typed chord drives it.
         state.pending = prefix;
         chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if let Some(query) = value("--symbols") {
+        // A canned outline, so the palette's indenting and its kind column are inspectable without
+        // a language server — the same reason `--complete` has a canned list.
+        let mut palette = vex::palette::Palette::new(vex::palette::PaletteKind::Symbols);
+        let at = |line: u32| vex_lsp::lsp_types::Position {
+            line,
+            character: 11,
+        };
+        let symbol =
+            |name: &str, kind: &'static str, container: &str, depth, line| vex_lsp::Symbol {
+                name: name.to_string(),
+                kind,
+                container: container.to_string(),
+                path: std::path::PathBuf::from(FIXTURE),
+                position: at(line),
+                depth,
+            };
+        let symbols = vec![
+            symbol("Bias", "enum", "", 0, 12),
+            symbol("Left", "variant", "Bias", 1, 15),
+            symbol("Right", "variant", "Bias", 1, 18),
+            symbol("Anchor", "struct", "", 0, 22),
+            symbol("offset", "field", "Anchor", 1, 23),
+            symbol("bias", "field", "Anchor", 1, 24),
+            symbol("new", "method", "Anchor", 1, 28),
+            symbol("left", "method", "Anchor", 1, 32),
+            symbol("right", "method", "Anchor", 1, 36),
+            symbol("map_through", "method", "Anchor", 1, 41),
+        ];
+        palette.query = query;
+        palette.refresh_symbols(&symbols, true);
+        state.palette = Some(palette);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--commands") {
         let mut palette = vex::palette::Palette::new(vex::palette::PaletteKind::Commands);
         palette.refresh_commands(state.modal);
@@ -1035,6 +1069,8 @@ struct App {
     macros: vex_input::Macros,
     /// The code actions the server last offered, indexed by the palette.
     code_actions: Vec<vex_lsp::CodeActionItem>,
+    /// The symbols behind the outline palette, whichever scope it was opened at.
+    symbols: Vec<vex_lsp::Symbol>,
     /// The version inlay hints were last requested for, so typing does not queue one per keystroke.
     hinted_version: Option<vex_text::Version>,
     /// Persists dirty buffers so a crash loses seconds, not work.
@@ -2124,6 +2160,29 @@ impl App {
                             client.code_action(&path, range, &here)
                         }
                         Action::FindReferences => client.references(&path, position),
+                        Action::GotoSymbol => {
+                            // Opened empty and filled by the reply, the same shape the completion
+                            // popup uses: a palette that appears only once the server has answered
+                            // is a key that seems to do nothing for a second.
+                            self.state.palette = Some(Palette::new(PaletteKind::Symbols));
+                            client.document_symbols(&path)
+                        }
+                        // Re-entered on every keystroke, so the palette is opened only if this is
+                        // not already it — otherwise typing would clear the query it is sending.
+                        // An empty query is what every server reads as "everything you have".
+                        Action::GotoSymbolInProject => {
+                            let query = match &self.state.palette {
+                                Some(palette) if palette.kind == PaletteKind::ProjectSymbols => {
+                                    palette.query.clone()
+                                }
+                                _ => {
+                                    self.state.palette =
+                                        Some(Palette::new(PaletteKind::ProjectSymbols));
+                                    String::new()
+                                }
+                            };
+                            client.workspace_symbols(&query)
+                        }
                         Action::Rename => Ok(0),
                         _ => Ok(0),
                     };
@@ -2224,6 +2283,45 @@ impl App {
                     if let Some(completion) = &mut self.state.completion {
                         completion.resolved(at, item);
                     }
+                }
+                vex_lsp::ServerEvent::Symbols { query, symbols } => {
+                    let kind = match query {
+                        Some(_) => PaletteKind::ProjectSymbols,
+                        None => PaletteKind::Symbols,
+                    };
+                    // A project-wide reply for a query the user has already typed past is
+                    // discarded: replies arrive out of order, and a list that flickers back to an
+                    // older answer while you are still typing is worse than one that waits.
+                    let current = self
+                        .state
+                        .palette
+                        .as_ref()
+                        .filter(|palette| palette.kind == kind)
+                        .filter(|palette| query.as_deref().is_none_or(|q| q == palette.query));
+                    if current.is_none() {
+                        continue;
+                    }
+
+                    self.symbols = symbols;
+                    if self.symbols.is_empty() {
+                        // Said, not shown as an empty box: "no symbols" and "the server has not
+                        // finished indexing" look identical, and only one of them is worth waiting
+                        // through.
+                        self.state.hover = Some(format!(
+                            "{} found nothing named{}",
+                            self.state.server_status,
+                            match &query {
+                                Some(q) if !q.is_empty() => format!(" like `{q}`"),
+                                _ => " here yet".into(),
+                            }
+                        ));
+                    }
+                    let filter = kind == PaletteKind::Symbols;
+                    let symbols = std::mem::take(&mut self.symbols);
+                    if let Some(palette) = &mut self.state.palette {
+                        palette.refresh_symbols(&symbols, filter);
+                    }
+                    self.symbols = symbols;
                 }
                 vex_lsp::ServerEvent::Hover { text } => {
                     self.state.hover = Some(if text.trim().is_empty() {
@@ -4325,7 +4423,8 @@ impl App {
             PaletteKind::Files => palette.refresh_files(&mut self.index),
             PaletteKind::Buffers => palette.refresh_buffers(&self.buffer_names()),
             PaletteKind::Commands => palette.refresh_commands(self.state.modal),
-            PaletteKind::CodeActions => {}
+            // Filled when the server answers.
+            PaletteKind::CodeActions | PaletteKind::Symbols | PaletteKind::ProjectSymbols => {}
         }
         self.state.palette = Some(palette);
     }
@@ -4409,6 +4508,13 @@ impl App {
                         .collect();
                     palette.refresh_code_actions(&rows);
                 }
+                // One file's outline is filtered here; the project's is the server's to search,
+                // because the editor does not hold a symbol table for a whole project and asking
+                // for one up front is the request no server wants.
+                PaletteKind::Symbols => palette.refresh_symbols(&self.symbols, true),
+                PaletteKind::ProjectSymbols => {
+                    self.state.pending_request = Some(Action::GotoSymbolInProject);
+                }
             }
         }
     }
@@ -4475,7 +4581,39 @@ impl App {
                     let _ = self.run(action);
                 }
             }
+            Target::Symbol(index) => self.go_to_symbol(index),
         }
+    }
+
+    /// Jumps to a symbol chosen in the palette, opening its file if it is not the one on screen.
+    ///
+    /// Through the jumplist, like `gd`: going to a symbol is a far-reaching move, and `ctrl-o`
+    /// having to bring you back is the difference between exploring a codebase and getting lost in
+    /// it.
+    fn go_to_symbol(&mut self, index: usize) {
+        let Some(symbol) = self.symbols.get(index).cloned() else {
+            return;
+        };
+        let here = self.here();
+
+        // A file-outline symbol carries the path the request was made for, so this is the same code
+        // for both scopes; only the project-wide one ever actually changes file.
+        let path = symbol.path.to_string_lossy().to_string();
+        if !path.is_empty() && Some(&path) != self.state.file_path.as_ref() {
+            self.activate(Target::File(symbol.path.clone()));
+        }
+
+        // Clamped, because a symbol list can outlive the file it describes: the server answered
+        // for the text it last saw, and landing past the end would be worse than landing late.
+        let text = self.state.document.text();
+        let line = (symbol.position.line as usize).min(text.last_line());
+        let offset = text.point_to_char(vex_text::Point::new(
+            line,
+            symbol.position.character as usize,
+        ));
+        self.state.document.set_primary_caret(offset);
+        self.jumps.push(here);
+        self.reveal_cursor();
     }
 
     /// Applies the code action the user picked.
