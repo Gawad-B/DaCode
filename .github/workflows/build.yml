@@ -77,6 +77,10 @@ jobs:
       - run: cargo build --release
       - run: rustup component add rust-analyzer
       - run: cargo test --workspace
+      # Clippy runs here as well as on Linux, because the two disagree: code inside `#[cfg(unix)]` is
+      # not linted on Windows and code that is only *used* there produces warnings that only Windows
+      # sees. A `mut` that Linux needed and Windows did not sat in `main.rs` for months because of it.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       # What a Windows user should be downloading is an installer. The bare vex.exe went out as the
       # release artifact and behaved exactly as it looks — it opened the editor instead of installing
       # it. Inno Setup is on the runner image; installed here if that ever stops being true.

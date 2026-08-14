@@ -6,8 +6,8 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 
 ## What this is
 
-A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~34,000 lines,
-512 tests, clippy clean.
+A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
+567 tests, clippy clean.
 
 ## Commands
 
@@ -46,14 +46,15 @@ vex-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, Selectio
 vex-theme    Oklch, five themes, type roles, mode accents
 vex-display  soft wrap, ScrollAnchor, Folds, sticky scroll
 vex-buffer   Document = text + undo history + pending changes + pairing
-vex-input    Action, Grammar, Keymap, JumpList, Macros
+vex-input    Action, Grammar, Keymap, JumpList, Macros, the command table
 vex-syntax   tree-sitter on a worker thread
 vex-render   Frame -> quads/glyphs/marks, paint Layers, Headless capture
 vex-project  FileIndex, FileWalk, ProjectSearch, FileWatcher
 vex-lsp      transport, client, Diagnostics
 vex-lua      init.lua -> Config
 vex-import   VSCode data, .vsix, colour schemes in four formats
-vex          the binary: chrome, execute, panes, layout, settings, session, welcome
+vex          the binary: chrome, execute, panes, layout, settings, session, welcome,
+             palette, help, menu, clipboard, process
 ```
 
 ### Non-obvious invariants
@@ -133,6 +134,10 @@ They are cleared on buffer change: they are line numbers and nothing more.
   failures and each cost a fifteen-minute round trip to find. Verify such a guard by *injecting a
   violation* — the first version scanned zero files (cargo runs tests with the crate as the working
   directory, not the workspace) and passed while checking nothing.
+- **A test that names a program must name one the *platform* guarantees**, not one the machine happens
+  to have. `picker.rs` asserted `which("sh")` and passed everywhere it had ever run — including the
+  Windows runner, whose image ships Git's `sh.exe` — then failed on the first real Windows developer
+  machine, which does not have one. `cmd` on Windows, `sh` elsewhere, as `paths.rs` already did.
 - **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
   thread-safe against the `getenv` other tests do in parallel, and doing it deadlocked this suite
   inside glibc for twenty minutes. Take the value as a parameter instead — see
@@ -209,3 +214,8 @@ panel. If you add it to fewer, it will silently not work somewhere.
 Deliberate, with reasons in `PLAN.md`: no integrated terminal, no git blame, no structural text objects
 (`if`/`ic`), tree-sitter indent queries unused, column advance derived from the type scale rather than
 measured from the shaper, no macOS packaging. Cross-file rename is not undoable and says so.
+
+Smaller ones, from the non-modal work: a drag after a double-click extends by character rather than by
+word; the which-key popup sits at the top left of the code area rather than following the cursor,
+because a popup that moved as you typed would be harder to read than a still one; and the palette and
+help panel take the keyboard only — their rows are not clickable, though the menus' are.

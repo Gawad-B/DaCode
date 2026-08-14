@@ -370,7 +370,13 @@ mod tests {
 
     #[test]
     fn which_finds_a_program_that_exists_and_not_one_that_does_not() {
-        assert!(which("sh"), "sh is on every system this runs on");
+        // The program has to be one the *platform* guarantees, not one this machine happens to
+        // have. This said `sh` and passed everywhere it had ever run — including Windows CI, where
+        // the runner image ships Git's `sh.exe` — and then failed on the first real Windows
+        // developer machine, which does not. A test that fails for want of something unrelated is
+        // testing the machine, exactly as `paths.rs` says.
+        let known = if cfg!(windows) { "cmd" } else { "sh" };
+        assert!(which(known), "{known} is on every system this runs on");
         assert!(!which("definitely-not-a-real-program-xyzzy"));
     }
 

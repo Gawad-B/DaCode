@@ -16,9 +16,11 @@ show their shortcuts — the interface is meant to teach itself and then get out
 
 `PLAN.md` has the architecture and the reasoning, including the decisions that turned out wrong.
 
-**Status:** used daily by its author on Linux. Windows code paths are written and type-checked but the
-editor has not been *run* there — see `packaging/windows/README.md`. No integrated terminal; see the
-end of M7 in `PLAN.md` for why it is deferred rather than forgotten.
+**Status:** used daily by its author on Linux, and now run on Windows — where the first session found
+three things no test could (themes chosen in the panel would not load again, the folder chooser could
+not leave the directory it opened in, and helper processes flashed console windows). All three are
+fixed and the installer is a real installer; `packaging/windows/README.md` has the detail. No
+integrated terminal; see the end of M7 in `PLAN.md` for why it is deferred rather than forgotten.
 
 ---
 
@@ -94,9 +96,20 @@ nothing, so it returns next launch rather than disappearing because of one stray
 **Full list: [CHEATSHEET.md](CHEATSHEET.md)** — every key in it is checked against the real grammar by
 `cargo run -p vex-input --example cheatsheet`, which fails if one stops resolving.
 
-**Not a Vim user?** First row of the settings panel (`ctrl-,`), or `vim_keys = false`. Typing then
-always inserts, the shortcuts are the familiar ones — `ctrl-c`, `ctrl-v`, `ctrl-x`, `ctrl-z`, `ctrl-y`,
-`ctrl-a`, `ctrl-f`, shift-arrow to select — and the mouse places the cursor and selects by dragging.
+**Not a Vim user?** First row of the settings panel (`ctrl-,`), or `vim_keys = false`. You get a
+conventional editor, not a modal one with the modes hidden:
+
+| Key | |
+|---|---|
+| `ctrl-c` · `ctrl-x` · `ctrl-v` | copy · cut · paste, through the **system** clipboard |
+| `ctrl-d` · `ctrl-shift-l` | select the next copy of this word · every copy |
+| `alt-↑↓` · `shift-alt-↑↓` | move these lines · copy them |
+| `ctrl-/` · `ctrl-shift-k` | comment · delete the line |
+| `tab` · `shift-tab` | indent · outdent a selection |
+| `ctrl-backspace` | delete a word |
+| `F2` · `F12` · `F8` | rename · go to definition · next problem |
+| double-click · triple-click | select the word · the line |
+| alt-click · ctrl-click | another cursor · go to the definition |
 
 **With Vim keys on**, the grammar composes as you expect: `3dw`, `d2f)`, `ci"`, `"ayy`, `.` to repeat.
 Vertical motion follows *display* rows, so it moves through soft-wrapped lines the way they look.
@@ -105,13 +118,20 @@ Either way, these are vex's own and always work:
 
 | Key | |
 |---|---|
+| `F1` | every key that works right now, filterable |
+| `ctrl-shift-p` | every command, searchable, with its key beside it |
+| `F10` · right-click | menu bar · context menu |
 | `ctrl-p` · `ctrl-b` | file palette · buffer palette |
 | `ctrl-e` | file tree |
 | `ctrl-,` | settings |
-| `ctrl-f` | search the project |
+| `ctrl-f` · `ctrl-shift-f` | find in this file · in every file |
 | `ctrl-k o` | open a folder |
 | `ctrl-w v` · `ctrl-w w` | split · move between panes |
 | `ctrl-s` · `ctrl-q` | save · quit |
+
+Every key in the two tables above comes from one table in the source — `vex_input::commands` — which
+is also what the palette, the help panel and the menus read, and a test presses each of them through
+the real grammar. A shortcut documented here that did nothing would fail the build.
 
 ## Settings
 
@@ -191,7 +211,7 @@ offers the copy back. A copy older than the file on disk is discarded rather tha
 ## Development
 
 ```sh
-cargo test --workspace                      # 512 tests
+cargo test --workspace                      # 567 tests
 cargo clippy --workspace --all-targets      # clean
 cargo bench -p vex -p vex-syntax
 cargo run -p vex-input --example cheatsheet # verifies CHEATSHEET.md against the grammar
@@ -221,7 +241,17 @@ vex --screenshot /tmp/vex.png --grep Anchor         # project search
 vex --screenshot /tmp/vex.png --complete ch         # completion popup
 vex --screenshot /tmp/vex.png --diagnostics-list    # diagnostics list
 vex --screenshot /tmp/vex.png --splash --empty      # cold start, empty state
+vex --screenshot /tmp/vex.png --help-panel          # the F1 key list
+vex --screenshot /tmp/vex.png --commands            # every command, searchable
+vex --screenshot /tmp/vex.png --menu                # the menu bar
+vex --screenshot /tmp/vex.png --context-menu        # a right-click
+vex --screenshot /tmp/vex.png --which-key '<c-w>'   # what can follow a chord
 ```
+
+CI renders all of these on every push and keeps the PNGs as an artifact, so the check applies to
+anyone without a GPU to hand. It earned that on its first run: the help panel drew its entire list
+into a thirty-pixel strip at the foot of its card, because `split_bottom` returns the bottom piece
+first and `split_top` returns the top — invisible in the code, obvious in the picture.
 
 ### Environment variables
 
@@ -234,7 +264,7 @@ vex --screenshot /tmp/vex.png --splash --empty      # cold start, empty state
 
 ### Layout
 
-Twelve crates, ~34,000 lines. `CLAUDE.md` has the map and the conventions; the short version:
+Twelve crates, ~38,000 lines. `CLAUDE.md` has the map and the conventions; the short version:
 
 ```
 vex-text     rope, typed coordinates, transactions, anchors, selections
