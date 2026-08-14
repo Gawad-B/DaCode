@@ -172,6 +172,11 @@ fn main() -> Result<()> {
         if let Some(file) = session.files.get(session.active) {
             app.restore_cursor(file.line, file.column);
         }
+        // The strip is built once, from one buffer, before any of this ran. Restoring five files
+        // drew five tabs of which four said "untitled" — the drawing code falls back to that name
+        // for a tab the list is too short to cover, so nothing failed and it simply looked like the
+        // session had not come back.
+        app.refresh_buffer_tabs();
         if others > 0 {
             eprintln!("vex: restored {} more from the last session", others);
         }
@@ -3244,11 +3249,10 @@ impl App {
                                 if to.exists() {
                                     self.warn(&format!("{} already exists", to.display()));
                                 } else {
-                                    // Taken before the rename: once the file has moved, `canonical`
-                                    // can no longer resolve the old name and hands back the raw
-                                    // string, which matches no buffer.
-                                    let was = buffer_key(Some(from.to_string_lossy().as_ref()))
-                                        .unwrap_or_else(|| from.clone());
+                                    // Resolved before the rename: once the file has moved,
+                                    // `canonical` cannot resolve the old name on *either* side of
+                                    // the comparison, and two spellings of it stop matching.
+                                    let moving = self.buffers_showing(&from);
                                     let made = to
                                         .parent()
                                         .map(std::fs::create_dir_all)
@@ -3257,12 +3261,9 @@ impl App {
                                     match made {
                                         Ok(()) => {
                                             // Any buffer open on the old path would save it back
-                                            // into existence, so they follow the file. Compared by
-                                            // the key taken before the rename, not by string —
-                                            // `from` and a buffer's `file_path` are two spellings
-                                            // of one file as often as not.
+                                            // into existence, so they follow the file.
                                             self.rebind_buffers(
-                                                &was,
+                                                &moving,
                                                 Some(to.to_string_lossy().to_string()),
                                             );
                                             self.rescan_project();
@@ -3295,8 +3296,9 @@ impl App {
                         } else {
                             // The buffer *becomes* the new file, as everywhere else: you keep
                             // editing what you saved, not the thing you saved it from.
-                            self.state.file_path = Some(path.clone());
+                            let path = absolute_in(&self.state.project_root, &path);
                             self.state.path = relative_crumbs(&path);
+                            self.state.file_path = Some(path);
                             self.save_active();
                             self.after_buffer_change();
                         }
@@ -3456,8 +3458,11 @@ impl App {
         match parse_command(input) {
             Command::Write { path } => {
                 if let Some(path) = path {
-                    self.state.file_path = Some(path.clone());
+                    // Against the project root, for the reason `absolute_in` gives: `:w notes.md`
+                    // means beside the project, not beside whatever launched the editor.
+                    let path = absolute_in(&self.state.project_root, &path);
                     self.state.path = relative_crumbs(&path);
+                    self.state.file_path = Some(path);
                 }
                 self.save_active();
             }
@@ -3644,6 +3649,25 @@ fn stored_index(buffer: usize, active: usize) -> Option<usize> {
 /// backs them, so there is nothing for them to share.
 fn buffer_key(file_path: Option<&str>) -> Option<std::path::PathBuf> {
     file_path.map(|path| vex_project::canonical(std::path::Path::new(path)))
+}
+
+/// A path typed into one of the editor's own prompts, made absolute against the project root.
+///
+/// A windowed editor's working directory is wherever the desktop launched it from, and never what
+/// someone typing `src/notes.rs` into Save As means. Both `fs::write` and
+/// [`vex_project::canonical`] resolve a relative path against that directory, so leaving it
+/// relative wrote the file somewhere the user could not find and gave the buffer a key naming a
+/// file that did not exist — which then matched nothing on rename or delete.
+///
+/// Left alone if it is already absolute: "save a copy outside the project" is a real thing to want,
+/// and this is not the containment check. That is `in_project`, for the commands that create and
+/// destroy files rather than the one that writes the buffer you are looking at.
+fn absolute_in(root: &std::path::Path, typed: &str) -> String {
+    let path = std::path::Path::new(typed);
+    if path.is_absolute() {
+        return typed.to_string();
+    }
+    root.join(path).to_string_lossy().to_string()
 }
 
 impl App {
@@ -4820,17 +4844,19 @@ impl App {
         }
     }
 
-    /// Points every buffer showing `key` at a new path, or turns it into a scratch buffer when
-    /// there is none — for a file that has just been renamed or deleted out from under it.
+    /// Points the named buffers at a new path, or turns them into scratch buffers — for a file that
+    /// has just been renamed or deleted out from under them.
     ///
-    /// `key` must be taken **before** the filesystem operation. `vex_project::canonical` hands back
-    /// its input unchanged once `canonicalize` fails, and it fails as soon as the file is gone, so a
-    /// key computed afterwards is the raw string again and matches nothing.
+    /// Takes **indices, resolved before the filesystem operation**, not a path. `canonical` falls
+    /// back to returning its input the moment `canonicalize` fails, and it fails as soon as the file
+    /// is gone — so afterwards two spellings of one deleted file no longer compare equal, on either
+    /// side of the comparison. Taking the key early is not enough; the *buffers'* keys have to be
+    /// read early too, and the only way to carry that across the syscall is to carry the answer.
     ///
     /// Every buffer, not only the live one. The file being deleted from the tree is usually *not*
     /// the one on screen, and a stored buffer left pointing at it writes it back into existence the
     /// next time that buffer is saved.
-    fn rebind_buffers(&mut self, key: &std::path::Path, now: Option<String>) {
+    fn rebind_buffers(&mut self, which: &[usize], now: Option<String>) {
         let rebind = |path: &mut Vec<String>, file: &mut Option<String>| match &now {
             Some(name) => {
                 *path = relative_crumbs(name);
@@ -4842,15 +4868,30 @@ impl App {
             }
         };
 
-        if buffer_key(self.state.file_path.as_deref()).as_deref() == Some(key) {
-            rebind(&mut self.state.path, &mut self.state.file_path);
-        }
-        for buffer in &mut self.buffers {
-            if buffer_key(buffer.file_path.as_deref()).as_deref() == Some(key) {
-                rebind(&mut buffer.path, &mut buffer.file_path);
+        let mut live = false;
+        for index in which {
+            match stored_index(*index, self.state.active_buffer) {
+                None => {
+                    rebind(&mut self.state.path, &mut self.state.file_path);
+                    live = true;
+                }
+                Some(stored) => {
+                    if let Some(buffer) = self.buffers.get_mut(stored) {
+                        rebind(&mut buffer.path, &mut buffer.file_path);
+                    }
+                }
             }
         }
-        self.refresh_buffer_tabs();
+
+        if live {
+            // The file on screen is a different file now, and everything keyed to its *language*
+            // has to be told: the pairing rules, the syntax worker, the language server. Renaming
+            // `a.rs` to `a.py` left it Rust-highlighted with rust-analyzer still attached, and
+            // deleting it left a worker parsing a path that was gone.
+            self.after_buffer_change();
+        } else {
+            self.refresh_buffer_tabs();
+        }
     }
 
     /// Whether buffer `index` has unsaved changes.
@@ -4864,11 +4905,20 @@ impl App {
         }
     }
 
-    /// Which buffer is already showing this file, if any.
-    fn buffer_showing(&self, path: &std::path::Path) -> Option<usize> {
-        let wanted = buffer_key(Some(path.to_string_lossy().as_ref()))?;
+    /// Every buffer showing this file, by global index.
+    ///
+    /// Usually none or one. More than one is reachable — session restore pushes whatever spelling
+    /// the session file held, without going through the already-open check — and a rename that
+    /// updated only the first would leave the others writing the old file back.
+    fn buffers_showing(&self, path: &std::path::Path) -> Vec<usize> {
+        let Some(wanted) = buffer_key(Some(path.to_string_lossy().as_ref())) else {
+            return Vec::new();
+        };
         (0..=self.buffers.len())
-            .find(|index| buffer_key(self.buffer_file(*index)) == Some(wanted.clone()))
+            .filter(|index| {
+                buffer_key(self.buffer_file(*index)).as_deref() == Some(wanted.as_path())
+            })
+            .collect()
     }
 
     fn handle_palette_key(&mut self, key: Key) {
@@ -4940,7 +4990,7 @@ impl App {
                 // the breadcrumbs: those are truncated to four segments for the title bar, so this
                 // both missed the same file spelled differently and confused two different files
                 // that happened to end the same way.
-                if let Some(index) = self.buffer_showing(&path) {
+                if let Some(index) = self.buffers_showing(&path).first().copied() {
                     self.switch_to(index);
                     return;
                 }
@@ -5227,9 +5277,10 @@ impl App {
         }
         self.confirm_delete = None;
 
-        // Before the removal, for the same reason rename takes it early: `canonical` cannot resolve
-        // a file that is no longer there, and returns the raw string instead.
-        let was = buffer_key(Some(path.to_string_lossy().as_ref())).unwrap_or_else(|| path.clone());
+        // Before the removal, for the same reason rename resolves early: `canonical` cannot resolve
+        // a file that is no longer there, and hands back the raw string instead — so afterwards two
+        // spellings of it no longer match each other.
+        let showing = self.buffers_showing(&path);
 
         match std::fs::remove_file(&path) {
             Ok(()) => {
@@ -5237,7 +5288,7 @@ impl App {
                 // Any buffer showing it becomes a scratch buffer rather than a window onto a file
                 // that no longer exists and would be recreated by the next save. This looked only
                 // at the live one, and compared raw strings.
-                self.rebind_buffers(&was, None);
+                self.rebind_buffers(&showing, None);
                 self.rescan_project();
             }
             Err(err) => self.warn(&format!("could not delete {relative}: {err}")),
@@ -6934,6 +6985,36 @@ mod buffer_tests {
     }
 
     #[test]
+    fn a_buffer_opened_under_an_awkward_spelling_is_still_released_by_a_delete() {
+        // The ordering trap, and the reason `rebind_buffers` takes indices rather than a path.
+        // `vex_project::canonical` hands back its input unchanged once `canonicalize` fails, and it
+        // fails the moment the file is gone — on *both* sides of the comparison. Taking the key
+        // early is not enough: the buffers' own keys have to be read before the syscall too, so the
+        // only thing that can cross it is the answer.
+        let dir = scratch("spelling");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut app = editor(&dir, &["b.rs"]);
+
+        // A buffer whose stored path is another spelling of the same file — exactly what session
+        // restore produces, since it pushes whatever the session file held without going through
+        // the already-open check.
+        std::fs::write(dir.join("a.rs"), "contents of a.rs\n").unwrap();
+        app.open_in_background(&dir.join("sub").join("..").join("a.rs"), 0, 0);
+        assert_eq!(app.buffers.len(), 1);
+
+        let path = dir.join("a.rs");
+        let showing = app.buffers_showing(&path);
+        std::fs::remove_file(&path).unwrap();
+        app.rebind_buffers(&showing, None);
+
+        assert_eq!(
+            app.buffer_file(1),
+            None,
+            "the buffer still names a file that is gone"
+        );
+    }
+
+    #[test]
     fn a_deleted_file_releases_every_buffer_showing_it_not_just_the_visible_one() {
         // A stored buffer left pointing at a deleted file writes it back into existence the next
         // time that buffer is saved — and the file being deleted from the tree is usually not the
@@ -6942,9 +7023,9 @@ mod buffer_tests {
         let mut app = editor(&dir, &["a.rs", "b.rs"]);
         assert_eq!(app.state.active_buffer, 1);
 
-        let was = buffer_key(Some(dir.join("a.rs").to_string_lossy().as_ref())).unwrap();
+        let showing = app.buffers_showing(&dir.join("a.rs"));
         std::fs::remove_file(dir.join("a.rs")).unwrap();
-        app.rebind_buffers(&was, None);
+        app.rebind_buffers(&showing, None);
 
         assert_eq!(
             app.buffer_file(0),
