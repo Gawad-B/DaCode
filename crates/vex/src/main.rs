@@ -151,6 +151,7 @@ fn main() -> Result<()> {
         active_server: None,
         missing_servers: std::collections::HashSet::new(),
         confirm_close: None,
+        confirm_delete: None,
         restore_window: None,
         confirm_quit: false,
         sent_version: None,
@@ -968,6 +969,8 @@ struct App {
     /// Languages already reported as having no server, so the notice is shown once per session
     /// rather than every time a file of that language is opened.
     missing_servers: std::collections::HashSet<&'static str>,
+    /// The file a delete was just refused for, so choosing it again goes through.
+    confirm_delete: Option<String>,
     /// The buffer a close was just refused for, so pressing close again goes through.
     confirm_close: Option<usize>,
     /// The size the last session's window had, applied when this one is created.
@@ -1719,6 +1722,20 @@ impl App {
         // what I mean". Moving the caret there collapsed it, so `cut` and `copy` — the two rows
         // anybody opens a right-click menu for — ran against an empty range and did nothing at all.
         // The menu looked unclickable when what was broken was the click that opened it.
+        // On the tree, a different menu: a right-click is about what is under the pointer, and
+        // there it is a file rather than a symbol.
+        let layout = self.layout();
+        if self.state.tree.is_some()
+            && vex::layout::contains(layout.sidebar, self.pointer.0, self.pointer.1)
+        {
+            if self.state.menu.is_none() {
+                // Select the row first, so the menu acts on what was clicked.
+                self.click_sidebar(layout.sidebar, self.pointer.1, self.scale());
+            }
+            self.state.menu = Some(vex::menu::Menu::tree(self.pointer, self.state.modal));
+            return;
+        }
+
         if self.state.menu.is_none() && !self.pointer_is_in_a_selection() {
             self.click(false);
         }
@@ -2636,6 +2653,68 @@ impl App {
                             self.warn(&format!("not a folder: {}", expanded.display()));
                         }
                     }
+                    PromptKind::NewFile => {
+                        let relative = prompt.input.trim().to_string();
+                        match self.in_project(&relative) {
+                            Some(path) if path.exists() => {
+                                self.warn(&format!("{relative} already exists"))
+                            }
+                            Some(path) => {
+                                // The parent may not exist — typing `src/new/thing.rs` should work.
+                                let made = path
+                                    .parent()
+                                    .map(std::fs::create_dir_all)
+                                    .unwrap_or(Ok(()))
+                                    .and_then(|()| std::fs::write(&path, ""));
+                                match made {
+                                    Ok(()) => {
+                                        self.rescan_project();
+                                        self.activate(Target::File(path));
+                                    }
+                                    Err(err) => {
+                                        self.warn(&format!("could not create {relative}: {err}"))
+                                    }
+                                }
+                            }
+                            None => self.warn("that is outside the project"),
+                        }
+                    }
+                    PromptKind::RenameFile => {
+                        let to = prompt.input.trim().to_string();
+                        let from = self.tree_target();
+                        match (from.as_deref().and_then(|f| self.in_project(f)), self.in_project(&to)) {
+                            (Some(from), Some(to)) if from != to => {
+                                if to.exists() {
+                                    self.warn(&format!("{} already exists", to.display()));
+                                } else {
+                                    let made = to
+                                        .parent()
+                                        .map(std::fs::create_dir_all)
+                                        .unwrap_or(Ok(()))
+                                        .and_then(|()| std::fs::rename(&from, &to));
+                                    match made {
+                                        Ok(()) => {
+                                            // A buffer open on the old path would save it back into
+                                            // existence, so it follows the file.
+                                            if self.state.file_path.as_deref()
+                                                == Some(from.to_string_lossy().as_ref())
+                                            {
+                                                let name = to.to_string_lossy().to_string();
+                                                self.state.path = relative_crumbs(&name);
+                                                self.state.file_path = Some(name);
+                                                self.refresh_buffer_tabs();
+                                            }
+                                            self.rescan_project();
+                                        }
+                                        Err(err) => self.warn(&format!("could not rename: {err}")),
+                                    }
+                                }
+                            }
+                            (None, _) => self.warn("no file selected"),
+                            (_, None) => self.warn("that is outside the project"),
+                            _ => {}
+                        }
+                    }
                     PromptKind::LoadTheme => {
                         let raw = prompt.input.trim().to_string();
                         self.load_theme_file(&raw);
@@ -3005,6 +3084,24 @@ impl App {
                 }
             }
             Action::CloseBuffer => self.request_close_buffer(self.state.active_buffer),
+            Action::NewFile => {
+                // Pre-filled with the directory the selection is in, so the common case — a file
+                // beside the one you are looking at — is typing a name and pressing enter.
+                let mut prompt =
+                    vex::prompt::Prompt::new(PromptKind::NewFile, self.state.cursor());
+                prompt.input = self.tree_directory();
+                self.state.prompt = Some(prompt);
+            }
+            Action::RenameFile => match self.tree_target() {
+                Some(relative) => {
+                    let mut prompt =
+                        vex::prompt::Prompt::new(PromptKind::RenameFile, self.state.cursor());
+                    prompt.input = relative;
+                    self.state.prompt = Some(prompt);
+                }
+                None => self.warn("no file selected"),
+            },
+            Action::DeleteFile => self.request_delete_file(),
             Action::ExpandSnippet => self.expand_snippet(),
             // The three ways of finding out what the editor can do. Each is a toggle, because the
             // key that opened it is the key someone presses again to get rid of it.
@@ -4329,6 +4426,112 @@ impl App {
         }
         self.state.buffer_count = self.buffers.len() + 1;
         self.refresh_buffer_tabs();
+    }
+
+    /// The file the tree has selected, relative to the root — or the open file when the tree is
+    /// closed, so these commands work from the palette without opening it first.
+    fn tree_target(&self) -> Option<String> {
+        if let Some(tree) = &self.state.tree {
+            if let Some(row) = tree.selected_row() {
+                return Some(row.relative.clone());
+            }
+        }
+        let path = self.state.file_path.as_deref()?;
+        let relative = std::path::Path::new(path)
+            .strip_prefix(&self.state.project_root)
+            .unwrap_or(std::path::Path::new(path));
+        Some(relative.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// The directory a new file should go in: the selected directory, or the selection's parent.
+    fn tree_directory(&self) -> String {
+        let is_directory = self
+            .state
+            .tree
+            .as_ref()
+            .and_then(|tree| tree.selected_row())
+            .map(|row| row.is_directory)
+            .unwrap_or(false);
+
+        let Some(target) = self.tree_target() else {
+            return String::new();
+        };
+        if is_directory {
+            return format!("{target}/");
+        }
+        match target.rsplit_once('/') {
+            Some((parent, _)) => format!("{parent}/"),
+            None => String::new(),
+        }
+    }
+
+    /// Resolves a project-relative path, refusing anything that escapes the root.
+    ///
+    /// A prompt is a text field, and `../../etc/passwd` is a thing a text field can contain. These
+    /// commands create, rename and delete real files, so the one place they turn a string into a
+    /// path is the place to check it.
+    fn in_project(&self, relative: &str) -> Option<std::path::PathBuf> {
+        let relative = relative.trim();
+        if relative.is_empty() {
+            return None;
+        }
+        let joined = self.state.project_root.join(relative);
+        let normal = vex_project::canonical(joined.parent()?);
+        normal
+            .starts_with(vex_project::canonical(&self.state.project_root))
+            .then_some(joined)
+    }
+
+    /// Deletes the selected file, refusing once first.
+    ///
+    /// The same shape as closing a dirty buffer, and for a stronger reason: this one cannot be
+    /// undone at all. `recovery.rs` does not cover it — it protects unsaved *text*, not files that
+    /// used to exist.
+    fn request_delete_file(&mut self) {
+        let Some(relative) = self.tree_target() else {
+            self.warn("no file selected");
+            return;
+        };
+        let Some(path) = self.in_project(&relative) else {
+            self.warn("that is outside the project");
+            return;
+        };
+        if path.is_dir() {
+            self.warn("vex does not delete folders");
+            return;
+        }
+
+        if self.confirm_delete.as_deref() != Some(relative.as_str()) {
+            self.confirm_delete = Some(relative.clone());
+            self.state.hover = Some(format!(
+                "delete {relative}? this cannot be undone — choose delete again to confirm"
+            ));
+            return;
+        }
+        self.confirm_delete = None;
+
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                self.state.hover = Some(format!("deleted {relative}"));
+                // The buffer showing it, if any, becomes a scratch buffer rather than a window onto
+                // a file that no longer exists and would be recreated by the next save.
+                if self.state.file_path.as_deref()
+                    == Some(path.to_string_lossy().as_ref())
+                {
+                    self.state.file_path = None;
+                    self.state.path = vec!["untitled".to_string()];
+                    self.refresh_buffer_tabs();
+                }
+                self.rescan_project();
+            }
+            Err(err) => self.warn(&format!("could not delete {relative}: {err}")),
+        }
+    }
+
+    /// Re-walks the project so the tree and the file index agree with the disk.
+    fn rescan_project(&mut self) {
+        let root = self.state.project_root.clone();
+        self.walk = Some(vex_project::FileWalk::start(root));
     }
 
     /// How many open buffers have unsaved changes.

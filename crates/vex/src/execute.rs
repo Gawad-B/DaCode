@@ -299,6 +299,9 @@ pub fn execute(
         | Action::ClosePane
         | Action::CloseBuffer
         | Action::FocusPane { .. }
+        | Action::NewFile
+        | Action::RenameFile
+        | Action::DeleteFile
         | Action::ToggleTree => {
             return Outcome::Window(action.clone());
         }

@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~38,000 lines,
-615 tests, clippy clean.
+616 tests, clippy clean.
 
 ## Commands
 

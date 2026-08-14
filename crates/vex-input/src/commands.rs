@@ -144,6 +144,12 @@ pub const COMMANDS: &[Command] = &[
     ),
     command("open_folder", "open a folder as the project", Files, "<c-k>o", "<c-k>o"),
     command("close_buffer", "close this file", Files, "<c-f4>", "<c-f4>"),
+    // No keys: these act on what the tree has selected, and the tree is a mouse surface. The
+    // palette and the tree's own right-click menu are the honest routes, and inventing a chord for
+    // "delete a file" would be actively unkind.
+    command("new_file", "new file here", Files, "", ""),
+    command("rename_file", "rename this file", Files, "", ""),
+    command("delete_file", "delete this file", Files, "", ""),
     command("quit", "quit", Files, ":q  <c-q>", "<c-q>"),
 
     // ---- editing -----------------------------------------------------------------------

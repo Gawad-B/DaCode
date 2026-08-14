@@ -262,6 +262,16 @@ pub enum Action {
     },
     /// `ctrl-e` — show or hide the file tree.
     ToggleTree,
+
+    /// Create a file beside the one selected in the tree, or beside the open file.
+    ///
+    /// The tree was strictly read-only, which contradicts this project's own rule about features
+    /// reachable only by a key — for the audience the whole mouse layer was built for.
+    NewFile,
+    /// Rename the selected file, on disk.
+    RenameFile,
+    /// Delete the selected file. Refuses once before it does.
+    DeleteFile,
     /// `ga` in Neovim's spelling — what the server offers to do about the code under the cursor.
     CodeAction,
     /// `gu` — every use of the symbol under the cursor.
@@ -436,6 +446,9 @@ impl Action {
         "next_pane",
         "previous_pane",
         "toggle_tree",
+        "new_file",
+        "rename_file",
+        "delete_file",
         "code_action",
         "find_references",
         "toggle_inlay_hints",
@@ -579,6 +592,9 @@ impl Action {
             "next_pane" => Action::FocusPane { forward: true },
             "previous_pane" => Action::FocusPane { forward: false },
             "toggle_tree" => Action::ToggleTree,
+            "new_file" => Action::NewFile,
+            "rename_file" => Action::RenameFile,
+            "delete_file" => Action::DeleteFile,
             "code_action" => Action::CodeAction,
             "find_references" => Action::FindReferences,
             "toggle_inlay_hints" => Action::ToggleInlayHints,

@@ -169,6 +169,11 @@ which is the thing returning to the origin exists to prevent.
 | `ctrl-p` | file palette (fuzzy) |
 | `ctrl-b` | buffer palette |
 | `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
+
+**Right-click a row in the tree** for new file, rename and delete. They also live in the command
+palette, and act on the tree's selection — or on the open file when the tree is closed. Deleting
+asks once and cannot be undone; nothing else here is destructive.
+
 | `ctrl-s` | save |
 | `ctrl-h` | find and replace in this file — `tab` between the two fields, `enter` replaces one and moves on, `ctrl-enter` replaces all as one undo |
 | `ctrl-f4` | close this file — or click the `x` on its tab |

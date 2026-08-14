@@ -30,6 +30,13 @@ pub enum PromptKind {
     /// current name — a copy, a different extension — and retyping the directory is how you save it
     /// somewhere you did not mean to.
     SaveAs,
+    /// A name for a file to create, pre-filled with the directory it will go in.
+    NewFile,
+    /// A new name for a file on disk, pre-filled with the current one.
+    ///
+    /// Pre-filled for the same reason a symbol rename is: it is nearly always a small edit of what
+    /// is there, and retyping the path is how you move a file somewhere you did not mean to.
+    RenameFile,
     /// `ctrl-h` — find and replace, in this file.
     ///
     /// Two fields on one line rather than an ex-command: `:s/a/b/g` is Vim-shaped, and with the
@@ -58,6 +65,8 @@ impl PromptKind {
             PromptKind::LoadTheme => "theme file ",
             PromptKind::SaveAs => "save as ",
             PromptKind::Replace => "replace ",
+            PromptKind::NewFile => "new file ",
+            PromptKind::RenameFile => "rename file to ",
         }
     }
 }
@@ -122,6 +131,8 @@ impl Prompt {
             | PromptKind::OpenFolder
             | PromptKind::LoadTheme
             | PromptKind::SaveAs
+            | PromptKind::NewFile
+            | PromptKind::RenameFile
             | PromptKind::Replace => true,
         }
     }
