@@ -1405,6 +1405,7 @@ impl ApplicationHandler for App {
         changed |= self.poll_installer();
         changed |= self.sync_git();
         changed |= self.handle_file_changes();
+        changed |= self.rewalk_if_project_changed();
         changed |= self.poll_folder_picker();
         changed |= self.poll_autosave();
         if let Some(results) = &mut self.state.results {
@@ -3435,6 +3436,7 @@ impl App {
             if let Some(tree) = &mut self.state.tree {
                 tree.refresh(self.index.files());
             }
+            self.watch_project_directories();
             eprintln!(
                 "vex: indexed {count} files{}",
                 if self.index.is_truncated() {
@@ -6614,6 +6616,54 @@ impl App {
         }
     }
 
+    /// Watches every directory the project's files live in, so a new file in one is noticed.
+    ///
+    /// Taken from the walk's own result rather than from the root, which means `.gitignore` has
+    /// already decided what is watched: a recursive watch on the root would register one on every
+    /// directory under `target/` as well — thousands of them against a per-user limit shared with
+    /// the rest of the machine, and an event storm on every build.
+    fn watch_project_directories(&mut self) {
+        let directories: std::collections::BTreeSet<std::path::PathBuf> = self
+            .index
+            .files()
+            .iter()
+            .filter_map(|file| file.absolute.parent().map(std::path::Path::to_path_buf))
+            .collect();
+
+        if let Some(watcher) = &mut self.watcher {
+            if !watcher.watch_project(directories) {
+                eprintln!(
+                    "vex: not every directory could be watched; files added outside the editor may \
+                     not appear until the folder is opened again"
+                );
+            }
+        }
+    }
+
+    /// Starts another walk when something appeared or disappeared in the project.
+    ///
+    /// The index is built by one walk, and until this existed nothing ever asked for a second — so a
+    /// file created by any other program, a `git checkout`, or a browser download was invisible to
+    /// the tree and the file picker until the folder was opened again.
+    ///
+    /// A whole walk rather than an incremental patch, because the walk is what applies `.gitignore`,
+    /// and it already runs on a background thread and reports through a poll. One walk covers a
+    /// hundred new files as cheaply as one, which is what makes a branch switch cheap; and a walk
+    /// already in flight is left to finish rather than restarted, since it will see everything that
+    /// has landed by the time it gets there.
+    fn rewalk_if_project_changed(&mut self) -> bool {
+        let changed = self
+            .watcher
+            .as_mut()
+            .is_some_and(|watcher| watcher.project_changed());
+
+        if !changed || self.walk.is_some() {
+            return false;
+        }
+        self.walk = Some(FileWalk::start(self.index.root().to_path_buf()));
+        false
+    }
+
     /// Handles files that changed outside the editor.
     ///
     /// The rule is that unsaved work is never discarded. A clean buffer is reloaded silently, which
@@ -6621,7 +6671,7 @@ impl App {
     /// buffer with unsaved changes is *not* touched — it says so instead, and the choice of whose
     /// version wins stays with the person who made both.
     fn handle_file_changes(&mut self) -> bool {
-        let Some(watcher) = &self.watcher else {
+        let Some(watcher) = &mut self.watcher else {
             return false;
         };
         let changed = watcher.poll();
@@ -7311,6 +7361,54 @@ mod wiring_tests {
             "os",
             "the underline still sits under the import it is about"
         );
+    }
+
+    /// A file created outside the editor appears without the folder being opened again.
+    ///
+    /// The reported bug, and it was structural rather than a slip: the index is built by exactly one
+    /// walk, at startup, and nothing ever asked for a second. The watcher existed but watched only
+    /// the directories of *open* files and reported only paths the editor already had open, so a
+    /// file arriving from another program, a `git checkout` or a browser download was invisible to
+    /// the tree and the file picker until the folder was reopened.
+    ///
+    /// Drives the same idle work the event loop drives, rather than a copy of it.
+    #[test]
+    fn a_file_created_outside_the_editor_appears_without_reopening_the_folder() {
+        let dir = scratch("appears");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+
+        // The startup walk, which is also what registers the project's directories to watch.
+        app.walk = Some(FileWalk::start(dir.clone()));
+        assert!(
+            idle_until(&mut app, |app| app.index.files().len() == 1),
+            "the first walk should index the one file that exists"
+        );
+
+        std::fs::write(dir.join("added-by-something-else.rs"), "fn other() {}\n").unwrap();
+
+        assert!(
+            idle_until(&mut app, |app| app
+                .index
+                .files()
+                .iter()
+                .any(|file| file.relative == "added-by-something-else.rs")),
+            "a file created outside the editor should be indexed without reopening the folder"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Runs the idle work the event loop runs, until `done` or a deadline.
+    fn idle_until(app: &mut App, mut done: impl FnMut(&App) -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            app.poll_walk();
+            app.rewalk_if_project_changed();
+            if done(app) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
     }
 
     /// A program that behaves like a formatter: reads stdin, writes stdout.

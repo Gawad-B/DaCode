@@ -154,8 +154,13 @@ export const RELEASES: ReleaseCard[] = [
     state: "shipped",
   },
   {
-    name: "0.4.1 · one afternoon ←",
+    name: "0.4.1 · one afternoon",
     body: "One person installing 0.4.0 and using it for an afternoon found more than two rounds of adversarial review had. Language servers now install from inside the editor.",
+    state: "shipped",
+  },
+  {
+    name: "0.4.2 · what moved ←",
+    body: "Three things the editor held outside the document — highlight spans, diagnostics, the file index — described text by where it used to be. Typing smeared the colours of the file below the cursor; a new file was invisible until the folder was reopened.",
     state: "current",
   },
   {

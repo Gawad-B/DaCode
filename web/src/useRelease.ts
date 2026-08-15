@@ -64,23 +64,23 @@ export type Release = {
 const ASSETS = "https://github.com/Gawad-B/vex-releases/releases/download";
 
 const RELEASE: Release = {
-  version: "0.4.1",
+  version: "0.4.2",
   published: "2026-08-15",
   assets: {
     "vex-setup.exe": {
-      url: `${ASSETS}/v0.4.1/vex-setup.exe`,
+      url: `${ASSETS}/v0.4.2/vex-setup.exe`,
       size: 7139700,
     },
-    "vex_0.4.1_amd64.deb": {
-      url: `${ASSETS}/v0.4.1/vex_0.4.1_amd64.deb`,
+    "vex_0.4.2_amd64.deb": {
+      url: `${ASSETS}/v0.4.2/vex_0.4.2_amd64.deb`,
       size: 9004948,
     },
-    "vex-0.4.1-1.x86_64.rpm": {
-      url: `${ASSETS}/v0.4.1/vex-0.4.1-1.x86_64.rpm`,
+    "vex-0.4.2-1.x86_64.rpm": {
+      url: `${ASSETS}/v0.4.2/vex-0.4.2-1.x86_64.rpm`,
       size: 8902848,
     },
-    "vex-0.4.1-x86_64-linux.tar.gz": {
-      url: `${ASSETS}/v0.4.1/vex-0.4.1-x86_64-linux.tar.gz`,
+    "vex-0.4.2-x86_64-linux.tar.gz": {
+      url: `${ASSETS}/v0.4.2/vex-0.4.2-x86_64-linux.tar.gz`,
       // 9.7 MB, not the 9.0 MB the original release carried: the tarball that
       // was uploaded is a different build. Measured, not copied.
       size: 9727998,

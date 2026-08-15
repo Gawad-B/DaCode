@@ -79,6 +79,17 @@ gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 %doc %{_docdir}/vex/docs
 
 %changelog
+* Sat Aug 15 2026 vex - 0.4.2-1
+- Typing no longer smears the colours of the rest of the file: the highlight
+  spans are moved with the text they describe, rather than describing where it
+  used to be until the next parse lands.
+- A diagnostic's underline stays under the code it is about, for the same
+  reason and over the far longer wait a language server takes to answer.
+- A file created outside the editor appears without reopening the folder. The
+  project's directories are watched, and anything appearing in one re-walks.
+- The settings panel calls the TypeScript row "JavaScript and TypeScript",
+  which is what it has always served, and vex.server accepts "javascript".
+
 * Fri Aug 14 2026 vex - 0.4.1-1
 - The icon is visible on a light application menu: it was a near-white mark on
   transparency, which is a blank tile rather than a faint icon. The rpm now also

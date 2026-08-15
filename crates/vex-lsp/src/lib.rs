@@ -199,6 +199,13 @@ pub struct Language {
     pub id: &'static str,
     /// Without the dot.
     pub extensions: &'static [&'static str],
+    /// Other names `vex.server` accepts for this language.
+    ///
+    /// One entry can serve several languages — `typescript-language-server` serves JavaScript too,
+    /// and clangd serves both C and C++ — and the person writing `vex.server("javascript", …)` is
+    /// naming their language, not vex's row for it. Without this that call failed with "unknown
+    /// language", which reads as "unsupported".
+    aliases: &'static [&'static str],
     servers: &'static [Builtin],
 }
 
@@ -235,6 +242,7 @@ pub const LANGUAGES: [Language; 7] = [
     Language {
         name: "Rust",
         id: "rust",
+        aliases: &[],
         extensions: &["rs"],
         servers: &[installable(
             "rust-analyzer",
@@ -243,8 +251,13 @@ pub const LANGUAGES: [Language; 7] = [
         )],
     },
     Language {
-        name: "TypeScript",
+        // Named for both, because this row is what the settings panel lists and what somebody
+        // scanning it for their language reads. Called "TypeScript", it told every JavaScript user
+        // that vex had no server for them — while `typescript-language-server` was in the table all
+        // along, serving `.js`, `.jsx`, `.mjs` and `.cjs`. "C and C++" below is the same shape.
+        name: "JavaScript and TypeScript",
         id: "typescript",
+        aliases: &["javascript", "js", "ts"],
         extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
         servers: &[installable(
             "typescript-language-server",
@@ -264,6 +277,7 @@ pub const LANGUAGES: [Language; 7] = [
     Language {
         name: "Python",
         id: "python",
+        aliases: &[],
         extensions: &["py", "pyi"],
         servers: &[
             installable(
@@ -294,6 +308,7 @@ pub const LANGUAGES: [Language; 7] = [
     Language {
         name: "C and C++",
         id: "cpp",
+        aliases: &["c", "c++"],
         extensions: &["c", "h", "cpp", "hpp", "cc", "cxx", "hh"],
         servers: &[builtin(
             "clangd",
@@ -304,6 +319,7 @@ pub const LANGUAGES: [Language; 7] = [
     Language {
         name: "Go",
         id: "go",
+        aliases: &[],
         extensions: &["go"],
         servers: &[installable(
             "gopls",
@@ -314,6 +330,7 @@ pub const LANGUAGES: [Language; 7] = [
     Language {
         name: "Lua",
         id: "lua",
+        aliases: &[],
         extensions: &["lua"],
         servers: &[builtin(
             "lua-language-server",
@@ -324,6 +341,7 @@ pub const LANGUAGES: [Language; 7] = [
     Language {
         name: "Dart",
         id: "dart",
+        aliases: &[],
         extensions: &["dart"],
         servers: &[builtin(
             "dart",
@@ -360,7 +378,9 @@ pub fn language_for(path: &str) -> Option<&'static Language> {
 /// A language by the name `vex.server` uses.
 pub fn language_named(id: &str) -> Option<&'static Language> {
     let id = id.trim().to_ascii_lowercase();
-    LANGUAGES.iter().find(|language| language.id == id)
+    LANGUAGES
+        .iter()
+        .find(|language| language.id == id || language.aliases.contains(&id.as_str()))
 }
 
 /// A server `init.lua` asked for, and the files it serves.
@@ -644,4 +664,73 @@ pub fn resolve_command(program: &str, root: &Path, home: Option<&Path>) -> Optio
 
 pub fn is_installed(program: &str) -> bool {
     resolve(program).is_some()
+}
+
+#[cfg(test)]
+mod language_name_tests {
+    use super::*;
+
+    /// A JavaScript user must be able to find their language in the table.
+    ///
+    /// The row served `.js`, `.jsx`, `.mjs` and `.cjs` from the day it was written, and called
+    /// itself "TypeScript" — which is the string the settings panel prints. So the panel told
+    /// everyone writing JavaScript that vex had no server for them, directly beside a row that was
+    /// already running one for their files.
+    #[test]
+    fn the_row_that_serves_javascript_says_javascript() {
+        let language = language_for("app.js").expect("a .js file has a language");
+        assert!(
+            language.name.contains("JavaScript"),
+            "the row serving .js must name JavaScript, because its name is what the settings panel \
+             lists: got {:?}",
+            language.name
+        );
+    }
+
+    /// `vex.server("javascript", …)` names a language, not vex's row for it.
+    #[test]
+    fn a_language_can_be_configured_by_the_name_its_users_call_it() {
+        let by_alias = language_named("javascript").expect("javascript is a name vex accepts");
+        let by_id = language_named("typescript").expect("so is typescript");
+        assert_eq!(
+            by_alias.id, by_id.id,
+            "both should name the one entry that serves them"
+        );
+
+        assert_eq!(
+            language_named("c").map(|language| language.id),
+            Some("cpp"),
+            "clangd serves C, and somebody configuring it will write \"c\""
+        );
+    }
+
+    /// Every name must belong to one entry, or which one wins is decided by table order.
+    #[test]
+    fn no_two_languages_answer_to_the_same_name() {
+        let mut seen = std::collections::HashSet::new();
+        for language in &LANGUAGES {
+            assert!(seen.insert(language.id), "duplicate id {}", language.id);
+            for alias in language.aliases {
+                assert!(
+                    seen.insert(alias),
+                    "{alias} names more than one language, so language_named picks by table order"
+                );
+            }
+        }
+    }
+
+    /// Every alias must reach an entry that actually serves files, not a name that resolves to
+    /// nothing — the whole point is that configuring by it works.
+    #[test]
+    fn every_alias_reaches_a_language_that_serves_files() {
+        for language in &LANGUAGES {
+            for alias in language.aliases {
+                let found = language_named(alias).expect("an alias resolves");
+                assert!(
+                    !found.extensions.is_empty(),
+                    "{alias} resolves to an entry that serves no file"
+                );
+            }
+        }
+    }
 }

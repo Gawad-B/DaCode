@@ -39,20 +39,20 @@ uninstaller.
 **Debian, Ubuntu, Mint**
 
 ```sh
-sudo apt install ./vex_0.4.1_amd64.deb
+sudo apt install ./vex_0.4.2_amd64.deb
 ```
 
 **Fedora, RHEL, openSUSE**
 
 ```sh
-sudo dnf install ./vex-0.4.1-1.x86_64.rpm
+sudo dnf install ./vex-0.4.2-1.x86_64.rpm
 ```
 
 **Any Linux, no package manager**
 
 ```sh
-tar xzf vex-0.4.1-x86_64-linux.tar.gz
-./vex-0.4.1-x86_64-linux/install.sh        # into ~/.local, no root needed
+tar xzf vex-0.4.2-x86_64-linux.tar.gz
+./vex-0.4.2-x86_64-linux/install.sh        # into ~/.local, no root needed
 ```
 
 **From source** — needs Rust 1.85 or newer.
@@ -135,7 +135,7 @@ and brings its import with it; formatting works through the server when it can a
 ## Status
 
 Used daily by its author on Linux, and run on Windows since 0.3.0 — where real use immediately found
-things no test could, which is what 0.4.1 is made of. **Nobody has ever run vex on macOS.**
+things no test could, which is what 0.4.1 and 0.4.2 are both made of. **Nobody has ever run vex on macOS.**
 
 Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no integrated terminal, no git blame, no
 structural text objects, no macOS packaging. Known limitations, stated rather than hidden: buffer

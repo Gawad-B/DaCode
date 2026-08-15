@@ -24,20 +24,20 @@ cost money this project does not have. You can verify what you downloaded agains
 ### Debian, Ubuntu, Mint
 
 ```sh
-sudo apt install ./vex_0.4.1_amd64.deb
+sudo apt install ./vex_0.4.2_amd64.deb
 ```
 
 ### Fedora, RHEL, openSUSE
 
 ```sh
-sudo dnf install ./vex-0.4.1-1.x86_64.rpm
+sudo dnf install ./vex-0.4.2-1.x86_64.rpm
 ```
 
 ### Any Linux, without a package manager
 
 ```sh
-tar xzf vex-0.4.1-x86_64-linux.tar.gz
-./vex-0.4.1-x86_64-linux/install.sh
+tar xzf vex-0.4.2-x86_64-linux.tar.gz
+./vex-0.4.2-x86_64-linux/install.sh
 ```
 
 That installs into `~/.local`, so it needs no root. Pass a prefix to put it elsewhere. To remove it
@@ -45,7 +45,7 @@ again — including before switching to the `.deb` or `.rpm` — run the `uninst
 the same prefix if you gave one:
 
 ```sh
-./vex-0.4.1-x86_64-linux/uninstall.sh
+./vex-0.4.2-x86_64-linux/uninstall.sh
 ```
 
 Use it rather than deleting the files by hand. GTK keeps an *index* of what each icon theme
@@ -77,7 +77,7 @@ packaging/linux/install.sh     # packaging/linux/uninstall.sh removes it
 vex --version
 ```
 
-You should see `vex 0.4.1`. On Windows this prints nothing when run directly in `cmd.exe` — the
+You should see `vex 0.4.2`. On Windows this prints nothing when run directly in `cmd.exe` — the
 release build is a windowed application and owns no console — but it works from PowerShell or when
 piped. `vex --help` lists every flag.
 

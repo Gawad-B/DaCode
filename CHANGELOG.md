@@ -9,6 +9,45 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-15
+
+Everything here came from one person using 0.4.1 on their own code for an evening, which is where
+0.4.1 came from too. Three of the four are the same defect wearing different clothes: something the
+editor holds *outside* the document, describing text by where it sits, and nothing moving it when the
+text moves.
+
+### Fixed
+
+- Typing no longer smears the colours of the rest of the file. Highlight spans are char offsets into
+  the text, held outside the document, and nothing moved them when you typed — so between a keystroke
+  and the parse that answers it, every span after the cursor described text that had already moved.
+  Typing a hundred characters into a line painted the file below it in the colours of the text a
+  hundred characters earlier: comment italics running through code, the wrong font on half a line. It
+  corrected itself the moment you stopped typing, which is what made it look like a rendering fault.
+- A diagnostic's underline stays under the code it is about. The same defect and the longest-lived,
+  because a diagnostic is a round trip to another process rather than a parse: the squiggles from the
+  previous answer sat over whatever had slid into their place for as long as the server took. Moving
+  them is done in their own line-and-column coordinates rather than by converting each one through
+  the rope, which is the difference between 39.6 ms and about a tenth of a millisecond for one
+  keystroke in a large file full of them.
+- A file created outside the editor appears without the folder being opened again. The index was
+  built by exactly one walk, at startup, and nothing ever asked for a second — so a file arriving
+  from another program, a `git checkout`, or a browser download was invisible to the file tree and
+  the palette until the folder was reopened. The directories the project's files live in are watched
+  now, and anything appearing or disappearing in one starts another walk. Taken from the walk's own
+  result, so `.gitignore` decides what is watched: a recursive watch on the root would put one on
+  every directory under `target/` too.
+
+### Changed
+
+- The language table's TypeScript row is called **JavaScript and TypeScript**, because that name is
+  what the settings panel lists. It served `.js`, `.jsx`, `.mjs` and `.cjs` from the day it was
+  written, so the panel was telling every JavaScript user that vex had no server for them, directly
+  beside a row already running one for their files.
+- `vex.server` accepts the name a language's own users call it: `"javascript"` reaches the TypeScript
+  server, `"c"` reaches clangd. Configuring by those names previously failed with "unknown language",
+  which reads as "unsupported".
+
 ### Added
 
 - `packaging/linux/uninstall.sh`, and the same script inside the tarball. The per-user installer
@@ -236,7 +275,8 @@ language-server support, drawn directly on the GPU with wgpu.
 - Packaging for deb, rpm, Windows and a portable tarball, with a desktop entry and window icon that
   the desktop actually picks up.
 
-[Unreleased]: https://github.com/Gawad-B/Vex/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Gawad-B/Vex/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/Gawad-B/Vex/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Gawad-B/Vex/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Gawad-B/Vex/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Gawad-B/Vex/compare/v0.2.0...v0.3.0
