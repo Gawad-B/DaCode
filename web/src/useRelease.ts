@@ -40,51 +40,49 @@ export type Release = {
 };
 
 /*
- * The download host, not the `/file/d/<id>/view` sharing link, which opens
- * Drive's preview page and leaves the visitor to find a second button. This one
- * answers with the bytes and a Content-Disposition, so the browser saves the
- * file where it would save any other download and the page never navigates
- * away. `confirm=t` is what skips the "Google Drive can't scan this file for
- * viruses" interstitial, which appears above about 100 MB — none of these are
- * close, but a future artifact could be.
- */
-const drive = (id: string) =>
-  `https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=t`;
-
-/*
- * The artifacts are served from Drive, and the version is written here by hand,
- * because the repository is private: its releases went private with it, so both
- * the assets and the API that used to list them answer 404 to anyone not signed
- * in as the owner. The page fetched that API and fell back to hard-coded GitHub
- * URLs when it failed — so after the repository was made private every download
- * button still rendered perfectly, with the right version, date and file size,
- * and 404'd on click. There was no failing state to see.
+ * Downloads come from a release on Gawad-B/vex-releases, a public repository
+ * that holds nothing at all — one empty commit, so that a tag can exist, and
+ * four assets hanging off it. The editor's own repository is private, which
+ * took its releases private with it: the assets and the API that listed them
+ * answer 404 to anyone not signed in as the owner, and the page could not see
+ * that. It fetched the API, ignored the failure, and fell back to hard-coded
+ * GitHub URLs — so every button rendered with the right version, date and size,
+ * and 404'd on click, for everyone except the owner, whose session resolved
+ * them.
  *
- * The cost of doing it this way is that a new release must be uploaded and then
- * written in here. Each id is Drive's file id from the sharing link, and each
- * file must be shared as *anyone with the link* — otherwise it 404s for
- * everyone but the owner, which is exactly the failure this replaced.
+ * Google Drive was tried in between and is what this replaced. The bytes are
+ * reachable, but which URL Drive honours depends on the visitor's session: the
+ * download host answers with the file to a request carrying no cookies and with
+ * the "Google Drive can't scan this file for viruses" page to a signed-in one.
+ * A download that works when tested and not when clicked is worse than one that
+ * plainly fails, and none of it is configurable from this end.
+ *
+ * The cost of doing it this way is that a new release must be uploaded there
+ * and the version written in here. `conventions.rs` fails the build if this
+ * table names a version the crate is not.
  */
+const ASSETS = "https://github.com/Gawad-B/vex-releases/releases/download";
+
 const RELEASE: Release = {
   version: "0.4.1",
   published: "2026-08-15",
   assets: {
     "vex-setup.exe": {
-      url: drive("1fuXNEc2mkEL-wgr8PTeKtSTzuzQ5CzCY"),
+      url: `${ASSETS}/v0.4.1/vex-setup.exe`,
       size: 7139700,
     },
     "vex_0.4.1_amd64.deb": {
-      url: drive("1ZW1WDHAzTySeO04sikqPOXccE4xkp8iE"),
+      url: `${ASSETS}/v0.4.1/vex_0.4.1_amd64.deb`,
       size: 9004948,
     },
     "vex-0.4.1-1.x86_64.rpm": {
-      url: drive("1xGw9_YbyrE_o7FIAavsDkeJslDFpArJ_"),
+      url: `${ASSETS}/v0.4.1/vex-0.4.1-1.x86_64.rpm`,
       size: 8902848,
     },
     "vex-0.4.1-x86_64-linux.tar.gz": {
-      url: drive("1pRq7L0H1BrNHpqiJKMUTMMoaixrQ7NhJ"),
-      // 9.7 MB, not the 9.0 MB the GitHub release carried: the file on Drive is
-      // a different build. Taken from the Content-Length the host answers with.
+      url: `${ASSETS}/v0.4.1/vex-0.4.1-x86_64-linux.tar.gz`,
+      // 9.7 MB, not the 9.0 MB the original release carried: the tarball that
+      // was uploaded is a different build. Measured, not copied.
       size: 9727998,
     },
   },
