@@ -7266,6 +7266,53 @@ mod wiring_tests {
         );
     }
 
+    /// A diagnostic's underline stays under the code it is about when text moves ahead of it.
+    ///
+    /// The same defect as the highlight spans and the longest-lived of the three: a diagnostic costs
+    /// a round trip to another process, so the window in which its range describes text that has
+    /// already moved is as long as the server takes to answer, not the milliseconds a parse takes.
+    /// The ranges are line-and-column rather than offsets, which is why `Diagnostics::transform`
+    /// needs the text from both sides of the edit — a position cannot be moved without knowing which
+    /// document it is a position in.
+    #[test]
+    fn a_diagnostic_underlines_the_code_it_is_about_after_an_edit() {
+        use vex_lsp::lsp_types::{Diagnostic, Position, Range};
+
+        let dir = scratch("diagnostic-moves");
+        let mut app = editor(&dir, "a.py", "import os\nx = 1\n");
+        app.state.document.set_primary_caret(CharOffset(0));
+
+        // An error over `os`, as a server would report it: line 0, characters 7 to 9.
+        let at = |character| Position { line: 0, character };
+        app.state.diagnostics.apply(
+            vec![Diagnostic {
+                range: Range {
+                    start: at(7),
+                    end: at(9),
+                },
+                message: "unused import".into(),
+                ..Default::default()
+            }],
+            None,
+            app.state.document.version(),
+        );
+
+        execute(
+            &mut app.state,
+            &mut app.registers,
+            &Action::InsertText("abc".into()),
+            40,
+        );
+
+        let text = app.state.document.text().clone();
+        let range = vex_lsp::range_from_lsp(&text, app.state.diagnostics.items()[0].range);
+        assert_eq!(
+            text.slice(range).to_string(),
+            "os",
+            "the underline still sits under the import it is about"
+        );
+    }
+
     /// A program that behaves like a formatter: reads stdin, writes stdout.
     fn tidy_formatter() -> Option<vex::format::Configured> {
         let (program, args) = if cfg!(windows) {

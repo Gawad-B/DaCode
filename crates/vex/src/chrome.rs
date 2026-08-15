@@ -162,8 +162,11 @@ impl EditorState {
     /// against a thousand-line one. `latency.rs` holds that measurement. They drift until the search
     /// is re-run, and moving them needs to be lazy — at the viewport when drawing, once per `n`.
     pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
-        // Nothing folded and nothing colored, and this costs two `is_empty` calls.
-        if self.display.folds.is_empty() && self.highlights.is_empty() {
+        // Nothing folded, colored or underlined, and this costs three `is_empty` calls.
+        if self.display.folds.is_empty()
+            && self.highlights.is_empty()
+            && self.diagnostics.is_empty()
+        {
             return change(&mut self.document);
         }
 
@@ -181,6 +184,7 @@ impl EditorState {
                 .folds
                 .transform(&before, &applied.text, &applied.edits);
             shift_highlights(&mut self.highlights, &applied.edits);
+            self.diagnostics.transform(&before, &applied.edits);
             before = applied.text.clone();
             replayed = true;
         }
@@ -191,6 +195,7 @@ impl EditorState {
             // cannot be trusted paint one piece of text in another's colors.
             self.display.folds.clear();
             self.highlights.clear();
+            self.diagnostics.clear();
         }
         outcome
     }

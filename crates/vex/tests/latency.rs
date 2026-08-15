@@ -210,6 +210,47 @@ fn keystroke_while_searching(lines: usize) -> Duration {
     })
 }
 
+/// A keystroke with `count` diagnostics live, in a file of `lines` lines.
+///
+/// Both knobs, because the two failures are different. Moving a diagnostic must not cost a rope
+/// lookup — with one it does, and the *file* size starts driving the keystroke. And however many
+/// arrive, the total must stay far under a frame: a server is entitled to report a diagnostic per
+/// line of a file mid-refactor, and nothing in the protocol caps it.
+fn keystroke_with_diagnostics(lines: usize, count: usize) -> Duration {
+    use vex_lsp::lsp_types::{Diagnostic, Position, Range};
+
+    let mut state = state(lines);
+    let mut grammar = Grammar::new();
+    let mut registers = Registers::new();
+
+    let step = (lines / count.max(1)).max(1);
+    let items: Vec<Diagnostic> = (0..count)
+        .map(|i| Diagnostic {
+            range: Range {
+                start: Position {
+                    line: (i * step) as u32,
+                    character: 4,
+                },
+                end: Position {
+                    line: (i * step) as u32,
+                    character: 8,
+                },
+            },
+            message: "something".into(),
+            ..Default::default()
+        })
+        .collect();
+    state
+        .diagnostics
+        .apply(items, None, state.document.version());
+
+    median(2_000, || {
+        if let Resolution::Action(action) = grammar.feed(state.mode, Key::char('x')) {
+            execute(&mut state, &mut registers, &action, 40);
+        }
+    })
+}
+
 fn frame_build(lines: usize) -> Duration {
     let state = state(lines);
     let mut frame = Frame::default();
@@ -234,6 +275,31 @@ fn a_keystroke_costs_the_same_in_a_huge_file_as_in_a_small_one() {
     // 16.6 ms is one frame at 60fps; a *keystroke* getting anywhere near a whole frame on its own
     // is already a failure, and this is thirty times the measured cost on ordinary hardware.
     assert_under("typing a character", large, Duration::from_micros(500));
+}
+
+/// Moving the diagnostics over an edit follows how many there are, never how large the file is.
+///
+/// The first version of `Diagnostics::transform` converted each range to an offset and back, which
+/// is two rope lookups per diagnostic: a keystroke in a hundred-thousand-line file carrying ten
+/// thousand of them cost **39.6 ms**, more than two frames, for one character. Doing the arithmetic
+/// in the diagnostics' own line-and-column coordinates instead — one conversion per *edit*, integers
+/// after that — took the same keystroke to about a tenth of a millisecond. Both halves of that are
+/// asserted: the same pile of diagnostics costs the same in a large file as in a small one, and even
+/// a diagnostic every ten lines of a huge file stays far inside a frame.
+#[test]
+fn moving_diagnostics_follows_their_count_and_not_the_file() {
+    let small = keystroke_with_diagnostics(SMALL, 500);
+    let large = keystroke_with_diagnostics(LARGE, 500);
+    assert_flat("typing with 500 diagnostics live", small, large);
+
+    // Ten thousand of them. The rope-lookup version measured 39.6 ms here, so this is set where a
+    // return to it fails outright rather than where the current cost happens to sit.
+    let pathological = keystroke_with_diagnostics(LARGE, LARGE / 10);
+    assert_under(
+        "typing with a diagnostic every ten lines",
+        pathological,
+        Duration::from_millis(1),
+    );
 }
 
 /// Moving the highlight spans over an edit is bounded, and walking the match list would not be.

@@ -104,11 +104,22 @@ rendered the rest of the file in the colours of the text a hundred characters ea
 running through code, the wrong font on half a line. It corrected itself the moment typing stopped,
 which is why it read as a rendering fault rather than a stale-data one. `mutate` moves them now.
 
-The search matches are the third and are **deliberately left drifting**: they cover the file where
+The diagnostics were the third, and the longest-lived: a parse answers in milliseconds, while a
+diagnostic is a round trip to another process, so its underlines sat under the wrong code for as long
+as the server took. They are moved in `mutate` too, but **the arithmetic is done in their own
+line-and-column coordinates**, and that is the whole design rather than an optimisation. Converting
+each range to an offset and back is two rope lookups per diagnostic: a keystroke in a
+hundred-thousand-line file carrying ten thousand of them cost 39.6 ms, more than two frames, for one
+character. Converting each *edit* once and moving every diagnostic with integer arithmetic costs
+about a tenth of a millisecond for the same keystroke. `latency.rs` asserts both halves — the same
+pile of diagnostics costs the same in a large file as in a small one, and a pathological pile stays
+inside a frame — and a return to the rope version fails it.
+
+The search matches are the fourth and are **deliberately left drifting**: they cover the file where
 the spans cover the viewport, so moving them per keystroke measured 24.6x on a hundred-thousand-line
 document (311 µs against 13 µs) and `latency.rs` holds that measurement to refuse the one-line
 version of the repair. Doing it properly means moving them lazily — at the viewport for drawing, once
-per `n` for stepping. If you add a fourth, transform it in `mutate` beside the spans or clear it, and
+per `n` for stepping. If you add a fifth, transform it in `mutate` beside the spans or clear it, and
 say which.
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
