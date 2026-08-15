@@ -9,7 +9,15 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
-Nothing pending.
+### Added
+
+- `packaging/linux/uninstall.sh`, and the same script inside the tarball. The per-user installer
+  writes a GTK icon cache, GTK trusts that cache over the filesystem, and nothing removed it — so
+  deleting a `~/.local` install by hand left an index still promising a `vex` icon at a path that no
+  longer existed, which then shadowed the icon a later `.rpm` or `.deb` put in `/usr`, because
+  `~/.local` is searched first. It showed as a blank tile with the name under it, in the launcher and
+  beside the running window, with a correct icon sitting one directory further down the search path.
+  Recovering from it by hand is `gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor`.
 
 ## [0.4.1] - 2026-08-15
 

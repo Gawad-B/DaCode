@@ -6,9 +6,14 @@
 cargo build --release
 packaging/linux/install.sh            # into ~/.local
 packaging/linux/install.sh /usr/local # or system-wide
+packaging/linux/uninstall.sh          # same prefix argument, and always use it
 ```
 
-That places the binary, `vex.desktop` and the icon theme under the chosen prefix. The icon is the
+That places the binary, `vex.desktop` and the icon theme under the chosen prefix, and `uninstall.sh`
+takes them away again. Removing them by hand is what leaves the icon cache claiming a `vex` icon at
+a path that no longer exists — which GTK believes, and which shadows the icon a later `.rpm` or
+`.deb` installs into `/usr`, because `~/.local` is searched first. That is a blank tile in the
+launcher with a perfectly good icon installed one directory down. The icon is the
 **paper** (light) variant of the mark at every size the handoff ships, plus the scalable SVG —
 desktop environments composite app icons onto dark panels far more often than light ones.
 

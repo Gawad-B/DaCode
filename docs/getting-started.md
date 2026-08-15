@@ -40,7 +40,24 @@ tar xzf vex-0.4.1-x86_64-linux.tar.gz
 ./vex-0.4.1-x86_64-linux/install.sh
 ```
 
-That installs into `~/.local`, so it needs no root. Pass a prefix to put it elsewhere.
+That installs into `~/.local`, so it needs no root. Pass a prefix to put it elsewhere. To remove it
+again — including before switching to the `.deb` or `.rpm` — run the `uninstall.sh` beside it, with
+the same prefix if you gave one:
+
+```sh
+./vex-0.4.1-x86_64-linux/uninstall.sh
+```
+
+Use it rather than deleting the files by hand. GTK keeps an *index* of what each icon theme
+directory holds and trusts it over the filesystem, so icons removed without refreshing that index go
+on being handed out as a path nothing can open — and since `~/.local` comes before `/usr` in the
+search path, the leftover entry also hides the icon a later packaged install put in the right place.
+The symptom is a blank tile with `vex` written under it, in the launcher and beside the running
+window, while the packaged icon sits untouched one directory down. If you have already met it:
+
+```sh
+gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor
+```
 
 ### From source
 
@@ -51,7 +68,7 @@ You need Rust 1.85 or newer. On Debian-family Linux you also need `libwayland-de
 git clone https://github.com/Gawad-B/Vex
 cd Vex
 cargo build --release
-packaging/linux/install.sh
+packaging/linux/install.sh     # packaging/linux/uninstall.sh removes it
 ```
 
 ### Check it worked

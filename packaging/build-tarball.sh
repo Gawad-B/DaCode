@@ -62,8 +62,37 @@ command -v gtk-update-icon-cache >/dev/null 2>&1 && \
     gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" 2>/dev/null || true
 
 echo "installed vex to $prefix"
+echo "to remove it again: $here/uninstall.sh${1:+ $1}"
 INNER
 chmod +x "$stage/install.sh"
+
+# The matching uninstaller travels with it. Without one, removing a per-user install means deleting
+# files by hand and leaving the icon cache behind — an index that still promises a `vex` icon at a
+# path that no longer exists, which shadows the icon a later .rpm or .deb installs into /usr and
+# shows as a blank tile. See packaging/linux/uninstall.sh for the long version.
+cat > "$stage/uninstall.sh" <<'INNER'
+#!/bin/sh
+# Removes an install made by install.sh. Pass the same prefix it was given.
+set -eu
+here="$(cd "$(dirname "$0")" && pwd)"
+prefix="${1:-$HOME/.local}"
+
+rm -f "$prefix/bin/vex"
+rm -f "$prefix/share/applications/vex.desktop"
+find "$here/share/icons" -type f | while read -r icon; do
+    rm -f "$prefix/share/${icon#"$here/share/"}"
+done
+
+# The cache is the point: GTK trusts its index over the filesystem, so an icon deleted without a
+# refresh keeps being handed out as a path nothing can open.
+command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database "$prefix/share/applications" 2>/dev/null || true
+command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+    gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" 2>/dev/null || true
+
+echo "removed vex from $prefix"
+INNER
+chmod +x "$stage/uninstall.sh"
 
 mkdir -p "$out"
 tarball="$out/vex-$version-x86_64-linux.tar.gz"

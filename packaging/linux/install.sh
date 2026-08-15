@@ -44,3 +44,6 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 echo "installed vex to $prefix"
+# Named here because the removal is not "delete three files": the icon cache written above outlives
+# them, and a stale entry shadows a later packaged install with a blank tile. uninstall.sh says why.
+echo "to remove it again: $here/uninstall.sh${1:+ $1}"
