@@ -39,7 +39,15 @@ install -Dm644 %{_sourcedir}/icons/hicolor/scalable/apps/vex.svg \
     %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/vex.svg
 install -Dm644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/vex/README.md
 install -Dm644 %{_sourcedir}/CHEATSHEET.md %{buildroot}%{_docdir}/vex/CHEATSHEET.md
+install -Dm644 %{_sourcedir}/CHANGELOG.md %{buildroot}%{_docdir}/vex/CHANGELOG.md
 install -Dm644 %{_sourcedir}/init.lua %{buildroot}%{_docdir}/vex/examples/init.lua
+
+# The documentation tree. The README links into it with relative paths, so installing one without
+# the other gives you a front page whose every link is dead.
+mkdir -p %{buildroot}%{_docdir}/vex
+cp -r %{_sourcedir}/docs %{buildroot}%{_docdir}/vex/
+find %{buildroot}%{_docdir}/vex/docs -type d -exec chmod 755 {} +
+find %{buildroot}%{_docdir}/vex/docs -type f -exec chmod 644 {} +
 
 # Installing an icon is not the same as the desktop seeing it. GTK reads a *cache* built per icon
 # theme directory, and a menu entry whose icon is not in that cache falls back to a blank tile — the
@@ -66,7 +74,9 @@ gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 %{_datadir}/icons/hicolor/*/apps/vex.*
 %doc %{_docdir}/vex/README.md
 %doc %{_docdir}/vex/CHEATSHEET.md
+%doc %{_docdir}/vex/CHANGELOG.md
 %doc %{_docdir}/vex/examples/init.lua
+%doc %{_docdir}/vex/docs
 
 %changelog
 * Fri Aug 14 2026 vex - 0.4.1-1

@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~50,000 lines,
-737 tests, clippy clean.
+744 tests, clippy clean.
 
 ## Commands
 
@@ -19,7 +19,7 @@ cargo build --release
 
 cargo run -p vex-input --example cheatsheet   # CHEATSHEET.md vs the real grammar
 cargo bench -p vex -p vex-syntax
-cargo check --workspace --target x86_64-pc-windows-msvc   # 7 of 9 crates; see "Windows" below
+cargo check --workspace --target x86_64-pc-windows-msvc   # not all of them; see "Windows" below
 ```
 
 `VEX_NO_SYSTEM_FONTS=1` makes captures reproducible and startup faster. Use it for every screenshot.
@@ -109,6 +109,21 @@ panel (F1), the menu bar and the which-key popup all read that one table, and a 
 non-modal key in it through the real grammar. Four features that each maintained their own list would
 disagree within a month, and a discoverability feature that lies is worse than none — it teaches a key
 that does nothing. If you add a binding to `feed_flat`, add its row, or the table is wrong.
+
+**The command line is a table too, and it is checked against the source in three directions.**
+`main.rs`'s `FLAGS` is what `--help` renders and what `docs/reference/cli.md` quotes. `VALUE_FLAGS`
+beside it is the set whose *next argument* is a value, and it has now been wrong twice: first
+`--columns 60` opened a file named `60`, and after that was fixed `--row`, `--symbols` and `--block`
+were each added without being listed, so `--row 12` opened an empty buffer called `12` behind the
+settings panel it was meant to be scrolling. Nothing failed and the panel still drew, which is why
+rendering every overlay in CI could not see it. `command_line_tests` derives all of it from
+`include_str!("main.rs")`: every flag whose value is consumed is in `VALUE_FLAGS`, every flag `FLAGS`
+offers is really read, every flag really read is in `FLAGS`, and a flag listed for ordinary use is
+read *outside* `screenshot` — which is the one that caught `--no-vim` being advertised as a way to
+start the editor without Vim keys when it only ever worked with `--screenshot`. The scan strips
+comment lines and matches only the three shapes a flag is read in, because its first version matched
+the prose above the code and failed against a doc comment. A fifth test keeps the scan from passing
+vacuously.
 
 **A character with ctrl or alt held is a *binding*, not text.** Window systems apply shift before the
 key reaches us, so `ctrl-shift-p` arrives as `P` — and every binding written as `Char('p') if shift`
@@ -294,6 +309,13 @@ They are cleared on buffer change: they are line numbers and nothing more.
   `EditorState` across thousands of iterations, so a keystroke test for electric dedent measured the
   scan once and the "line is no longer blank" early return every time after. `latency.rs` calls
   `dedent_for_closer` directly for that reason. Injecting the unbounded walk back reports 96x.
+- **Documentation is checked the same way code is.** `conventions.rs` resolves every relative link in
+  every `.md` file, because a dead link costs nothing to write, nothing notices, and the person who
+  meets it was looking for exactly the thing it promised. It found four on its first run. `vex-lua`
+  loads `examples/init.lua` through the real reader for the same reason: that file is what the
+  documentation tells people to copy, and nothing read it until a test did — a renamed option or a
+  mistyped action name would have been found by the first person to follow the instructions. Both
+  guards assert they scanned something before asserting they found nothing wrong.
 - **A test that names a program must name one the *platform* guarantees**, not one the machine happens
   to have. `picker.rs` asserted `which("sh")` and passed everywhere it had ever run — including the
   Windows runner, whose image ships Git's `sh.exe` — then failed on the first real Windows developer
@@ -353,7 +375,7 @@ anything platform-shaped:
 - Write Windows-only functions **without** `#[cfg(windows)]` and select them with a runtime
   `cfg!(windows)`. A `#[cfg(windows)]` body is never type-checked on Linux, and that is exactly the
   code that cannot be tested here.
-- Only 7 of 9 crates type-check for the MSVC target from Linux; `vex-syntax` and `vex-lua` need a
+- Not every crate type-checks for the MSVC target from Linux; `vex-syntax` and `vex-lua` need a
   Windows C toolchain. `.github/workflows/build.yml` has a Windows job for that reason — and it earned
   its keep immediately: it caught `file://` URIs being built by percent-encoding a whole Windows path,
   which made rust-analyzer reject every request as an "invalid international domain name" and broke
@@ -375,6 +397,8 @@ anything platform-shaped:
 | A key binding | `crates/vex-input/src/grammar.rs`, then `commands.rs`, `CHEATSHEET.md` + the example |
 | What the palette, help and menus say | `crates/vex-input/src/commands.rs` — one table, four readers |
 | What a command does | `crates/vex/src/execute.rs` |
+| A command-line flag | `crates/vex/src/main.rs` — `FLAGS` and `VALUE_FLAGS`, both checked against the source |
+| What the docs say | `docs/` — tutorial, guides, reference, explanation; `README.md` is the landing page |
 | How something looks | `crates/vex/src/chrome.rs` |
 | Where something is | `crates/vex/src/layout.rs` |
 | A config option | `vex-lua/src/lib.rs`, `vex/src/config.rs`, `vex/src/settings_ui.rs` (all three) |

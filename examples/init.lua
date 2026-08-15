@@ -24,8 +24,14 @@ vex.set {
 
   -- One of the five built-in themes: dark, light, rose-pine, rose-pine-moon, amoled.
   -- Or the name of a file in ~/.config/vex/themes/ — which is what `vex import --theme` writes,
-  -- slugified, so "One Dark Pro" finds one-dark-pro.toml. A built-in of the same name wins.
+  -- slugified, so "One Dark Pro" finds one-dark-pro.toml.
+  --
+  -- The *file* is tried first, so putting dark.toml in themes/ replaces the built-in dark rather
+  -- than being ignored by it. That is what makes a built-in name editable at all.
   theme = "dark",
+
+  -- Light or dark, where a theme has not settled it. "dark" or "light".
+  -- appearance = "dark",
 
   -- Pin the enclosing block heads above the viewport while scrolling.
   sticky_scroll = true,
@@ -34,7 +40,9 @@ vex.set {
   inlay_hints = false,
 
   -- What the gutter counts: "absolute", "relative" (vim's, so `12j` can be read off the screen),
-  -- or "off". Unset, it follows vim_keys — relative with the grammar on, plain numbers without it.
+  -- or "off". Unset, it follows vim_keys — relative with the grammar on, plain numbers without it,
+  -- so this line is the one setting here that is *not* the default: with vim_keys above, the
+  -- default is "relative".
   line_numbers = "absolute",
 
   -- Write the file a moment after you stop typing, rather than waiting for ctrl-s. It waits for a
@@ -51,6 +59,26 @@ vex.theme {
   -- bg      = "#101418",
   -- comment = "oklch(0.62 0.04 250)",
 }
+
+-- A language server, driven over LSP. Yours is tried *first* and vex's own list stays behind it, so
+-- naming a virtualenv does not cost you the fallback on a machine where that virtualenv is absent.
+--
+-- A command containing a separator is a path rather than a name to look for on PATH, and a relative
+-- one resolves against the **project root** — not the directory the editor was launched from, which
+-- for a desktop icon is nobody's project. `~/` means your home directory.
+--
+-- vex.server("python", { command = ".venv/bin/pylsp" })
+--
+-- A language vex has never heard of has to say which files it serves.
+-- vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+
+-- An external formatter, for when the language server does not format — pyright does not, and a
+-- plain JavaScript or Markdown project has no server at all. Same shape, because it is the same
+-- kind of fact. Text goes in on stdin and comes back on stdout; the formatter is never handed the
+-- path, because one given the file would rewrite it behind a buffer you have unsaved changes in.
+--
+-- vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+-- vex.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
 
 -- Bindings. The third argument is one of `vex.actions` — print it to see the whole list.
 --

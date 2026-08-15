@@ -1,0 +1,238 @@
+# Settings reference
+
+Every option vex reads, where it is read, and what it does. Derived from
+`crates/vex-lua/src/lib.rs` (the Lua reader), `crates/vex/src/config.rs` (the settings struct and
+its defaults) and `crates/vex/src/settings_ui.rs` (the panel). Where the three disagree, this file
+says so rather than picking one.
+
+Config lives in `init.lua` in the config directory — `~/.config/vex/` on Unix, `%APPDATA%\vex\` on
+Windows, or wherever `VEX_CONFIG_DIR` points. See `cli.md` for the full resolution rules.
+
+## Load order
+
+Four layers, each overriding the one before:
+
+1. the built-in defaults in `config::Settings::default`
+2. `imported-settings.toml` — written by `vex import`, never hand-edited
+3. `config.toml` — the hand-written TOML, for anything the importer's format can carry
+4. `init.lua` — the real config, and therefore the last word
+
+The settings panel (`ctrl-,`) writes into a marked block appended to the end of `init.lua`. Because
+Lua applies in order, the panel's block is authoritative over your own `vex.set` calls above it;
+deleting a line from that block hands the setting back to your own code.
+
+A missing file at any layer is not an error, and a broken one is not fatal. Everything an `init.lua`
+managed to set before it failed still applies, and the failure is shown in a box at startup rather
+than logged.
+
+## `vex.set` options
+
+| Name | Type | Default | What it does |
+|---|---|---|---|
+| `vim_keys` | boolean | `true` | Vim's modal grammar. Off means letters always insert and the shortcuts are the conventional ones. |
+| `font_size` | number | `13.5` | Size of the code face in pixels. Clamped to 11.0–18.0. |
+| `tab_width` | integer | `4` | Columns a tab stands for. Clamped to 1–16. |
+| `soft_wrap` | boolean | `true` | Wrap long lines rather than scrolling sideways. |
+| `format_on_save` | boolean | `false` | Reformat after every save, through the language server or an external formatter. |
+| `theme` | string | `"dark"` | A file in `themes/`, or one of the five built-ins. File first. |
+| `appearance` | `"dark"` \| `"light"` | unset | Flips the built-in theme. Ignored entirely when `theme` is set. |
+| `line_numbers` | `"absolute"` \| `"relative"` \| `"off"` | follows `vim_keys` | What the gutter counts. |
+| `sticky_scroll` | boolean | `true` | Pin enclosing block heads above the viewport. |
+| `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
+| `autosave` | boolean | `false` | Write the file a moment after typing stops. |
+| `leader` | string | `"<space>"` | What `<leader>` expands to in `vex.map`. |
+
+Anything not named in a `vex.set` call is left alone, and unset is not the same as false: reading a
+boolean naively would have made every `vex.set` that omitted `soft_wrap` turn wrapping off, because
+Lua coerces a missing key to `false`. So a boolean is taken **only** when the value really is a
+boolean — which also means `soft_wrap = "yes"` reads as absent and is not reported. Numbers and
+strings go through mlua's own coercion, so `tab_width = "2"` works and `theme = 5` becomes `"5"`.
+Bad *values* for `appearance` and `line_numbers` are reported by name.
+
+### Notes on the ones that are not obvious
+
+**`line_numbers` has no fixed default.** It follows the grammar: `relative` with `vim_keys` on,
+`absolute` with it off. Relative numbering exists so `12j` can be read off the screen, and with the
+grammar off there is no count to type — a column of numbers that are not the line's number is then
+just noise. `config::LineNumbers::default_for` is the one place that decides, and it runs *after*
+`vim_keys` has settled, which is why it is not a plain fallback. A value that is none of the three
+is reported as a problem and the default applies.
+
+**`font_size` is clamped twice, at different limits.** `vex.set` stores whatever number it is given;
+`Typography::with_code_size` then clamps it to 11.0–18.0. Values outside that range are silently
+brought inside it, so `font_size = 40` renders at 18. The settings panel's own bounds are 8–32 and
+do not match — see "Where the three disagree" below.
+
+**`tab_width` is clamped twice, at the same limits.** `vex.set` clamps to 1–16 and `config::apply_lua`
+clamps again. Never zero, which would divide by it.
+
+**`theme` prefers a file over a built-in.** `config::resolve_theme` tries `themes/<slug>.toml` first
+and falls back to `Theme::by_name`. A `themes/dark.toml` you wrote therefore shadows the built-in
+called `dark` — the more specific answer wins, and silently preferring the compiled-in one would
+leave you editing a file that never loads. The name is slugified, so `theme = "One Dark Pro"` finds
+`one-dark-pro.toml`. The built-ins are `dark`, `light`, `rose-pine`, `rose-pine-moon`, `amoled`.
+A name that matches neither a file nor a built-in is reported with both the list and the path that
+was tried.
+
+**`appearance` is a fallback for `theme`, not a companion to it.** `config::apply_lua` consults it
+only in the `else` branch of "was a theme named?". Setting both means `appearance` does nothing.
+
+**`format_on_save` and `autosave` are off for the same reason.** Writing or reflowing someone's file
+without being asked is not a decision to make on their behalf, and it is the kind of default that
+loses trust the first time it fires.
+
+**A theme loaded from a file cannot be changed by the panel.** The panel cycles the five built-ins by
+name; a file's colours have no name it could write, so it shows `from a file` and writes nothing for
+that row — otherwise changing the font size would throw away an imported theme.
+
+## `vex.theme` — individual colours
+
+```lua
+vex.theme {
+  bg      = "#101418",
+  comment = "oklch(0.62 0.04 250)",
+}
+```
+
+Both notations are accepted: `#rrggbb` and `oklch(L C H)`. OKLCH is the one worth editing by hand,
+because it lets lightness change without shifting the hue. Overrides are applied *after* the theme is
+resolved, so they land on top of whichever base was chosen.
+
+Tokens are validated when the config is read, not when the theme is painted, so an unknown name is
+reported with the spelling you typed and a suggestion rather than vanishing. The nineteen tokens
+are readable from Lua as `vex.tokens`:
+
+`bg`, `bg_alt`, `bg_panel`, `row_active`, `rule`, `rule_soft`, `ink`, `ink_dim`, `ink_faint`,
+`scrim`, `shadow`, `keyword`, `type`, `function`, `attribute`, `comment`, `string`, `number`,
+`constant`.
+
+## `vex.map(mode, keys, action)`
+
+| Argument | Type | Notes |
+|---|---|---|
+| `mode` | string | `normal`, `insert`, `visual`, `replace`. Single-letter forms `n`, `i`, `v`, `r` also work. |
+| `keys` | string | A key *sequence*, not a single key. `<leader>` expands to whatever `leader` was when the binding was made. |
+| `action` | string | One of `vex.actions`. |
+
+Later bindings replace earlier ones for the same mode and sequence, so setting a key twice behaves
+like assignment rather than accumulating a binding that can never fire. An empty sequence, an unknown
+mode and an unknown action are each reported, the last with a did-you-mean.
+
+`leader` affects bindings added *afterwards*, so a config that changes it must do so before the
+`vex.map` calls that use it.
+
+Bindings are consulted before the built-in grammar, but only when no command is half-typed:
+`d<leader>` is the grammar's business, so a config file can never leave an operator dangling. In
+insert mode only modified and named keys can be bound — a letter binding would have to hold the
+letter back to see what came next, and typing would stutter.
+
+`vex.actions` is a Lua array of every name `vex.map` accepts, filtered through `Action::from_name`
+so a name that no longer resolves disappears from the list instead of being advertised and then
+rejected. There are 79 of them.
+
+## `vex.server(language, spec)`
+
+```lua
+vex.server("python", { command = ".venv/bin/pylsp" })
+vex.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig" } })
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `command` | string | yes | The program that speaks LSP. Empty or missing is reported. |
+| `args` | list of strings | no | Passed verbatim. |
+| `extensions` | list of strings | conditionally | Without the dot; a leading dot is stripped and the value lowercased. |
+
+The language is positional because it is what the entry is *about*. It is matched against vex's own
+table — `rust`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — case-insensitively. For one of
+those, `extensions` may be omitted and vex fills in the list it already knows. For any other name,
+`extensions` is required, because otherwise nothing would ever reach the server; the error message
+says so and shows the shape.
+
+A configured entry goes **ahead** of the built-ins rather than replacing them, so naming a venv's
+server does not also throw away the fallback.
+
+**A command containing a path separator is a path, not a name.** `PATH` is a list of directories, so
+looking `.venv/bin/pylsp` up in it finds nothing — and a venv's own server is the main reason to name
+one. Relative paths resolve against the **project root**, not the process's working directory, which
+for a windowed editor is wherever the desktop launched it from. `~/` is expanded. On Windows the
+lookup honours `PATHEXT`, so a `.cmd` shim is found.
+
+## `vex.formatter(language, spec)`
+
+```lua
+vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+vex.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
+```
+
+The same three fields and the same rules as `vex.server`, against a different language table:
+`rust`, `typescript`, `python`, `cpp`, `go`, `json`, `css`, `markdown`.
+
+A formatter is given the file's text on **stdin** and never a path — one handed the file would
+rewrite it behind a dirty buffer. Some programs still need to be told what they are looking at, which
+is what `args` is for: `prettier` takes `--stdin-filepath`, `clang-format` takes `--assume-filename`,
+and vex appends the path to either one.
+
+Whether `Action::Format` goes to the language server or to a formatter is decided at the LSP
+handshake, from `documentFormattingProvider` in the `initialize` reply. pyright says no, so a Python
+file formats through ruff or black; a plain JavaScript project has no server at all and never gets
+as far as asking.
+
+## The TOML layer
+
+`imported-settings.toml` and `config.toml` are read by a hand-rolled parser over `[section]` headers
+and `key = value` lines. This layer exists because it is what the VSCode importer *writes* — an
+imported theme has to work without anyone having hand-authored a Lua file.
+
+| Key | Type | Maps to |
+|---|---|---|
+| `editor.font_size` | number | `font_size` |
+| `editor.tab_width` | integer | `tab_width` |
+| `editor.soft_wrap` | boolean | `soft_wrap` |
+| `editor.format_on_save` | boolean | `format_on_save` |
+| `theme.name` | string | `theme` |
+| `theme.appearance` | `"light"` | flips to the light built-in, unless `theme.name` already resolved |
+
+Six keys, against twelve in Lua. `vim_keys`, `line_numbers`, `sticky_scroll`, `inlay_hints`,
+`autosave` and `leader` have no TOML spelling and can only be set from `init.lua` or the panel.
+
+A leading byte-order mark is stripped from both formats. Notepad and PowerShell's `Set-Content` both
+write one, and without stripping it Lua refuses the whole file over an invisible byte while the TOML
+parser silently loses everything above its second heading.
+
+## Where the three disagree
+
+Adding an option is meant to touch the Lua reader, the settings struct and the panel. These do not:
+
+| Option | Lua reader | Settings struct | Panel |
+|---|---|---|---|
+| `appearance` | yes | yes | **no row** |
+| `leader` | yes | yes (into the keymap) | **no row** |
+
+Both are arguably deliberate — the panel has no key capturer, and `appearance` is subsumed by the
+theme row it would sit next to — but neither says so, and an option with no row is one the panel's
+"where did this value come from" column can never answer for.
+
+**The panel's font-size bounds do not match the ones that apply.** `settings_ui::Field::FontSize`
+clamps to 8.0–32.0 and its click handler wraps at 32; the value is applied through
+`Typography::with_code_size`, which clamps to 11.0–18.0, and read back from the live editor. So the
+panel can never reach 32, the wrap never fires, and a mouse-only user who raises the font size to 18
+has no way to lower it again from the panel. The unit tests pass because they drive a bare `Values`
+struct rather than the editor.
+
+**The importer writes four keys nothing reads.** `ImportedSettings::to_config` emits
+`editor.font_family`, `editor.insert_spaces`, `editor.ruler_column` and
+`editor.relative_line_numbers`; `config::load_from` reads none of them. They are counted in the
+import report, so `vex import --settings` can claim to have brought over settings that do nothing.
+
+## Example file
+
+`examples/init.lua` is meant to document every option. It currently drifts from the reader in four
+places:
+
+- It says a built-in theme wins over a file of the same name. The opposite is true — `resolve_theme`
+  tries the file first, and there is a test named for it.
+- It sets `line_numbers = "absolute"` under a header claiming the values shown are the defaults. With
+  `vim_keys = true`, as the same file sets, the default is `relative`.
+- It never mentions `appearance`, `vex.server` or `vex.formatter`, all of which the reader accepts.
+- It shows only the long mode names for `vex.map`; `n`, `i`, `v` and `r` also work.

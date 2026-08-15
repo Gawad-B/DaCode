@@ -53,6 +53,24 @@ fn main() -> Result<()> {
         return vex::import_cli::run(&args);
     }
 
+    // Before anything that could open a window. `vex --version` used to fall through `positional`
+    // as an unrecognised flag and start the editor, which is the one thing a person typing it is
+    // certainly not asking for — and a bug report that asks for the version had no way to get one.
+    //
+    // On a Windows *release* build these print into a console the process does not own: the binary
+    // is `windows_subsystem = "windows"`, so a shell that redirects or pipes sees the text and one
+    // that does not shows nothing. `vex import --help` has always behaved this way. Attaching the
+    // parent console would fix it and needs FFI that cannot be tested from here, so the limitation
+    // is written down rather than half-fixed.
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("vex {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print!("{}", usage());
+        return Ok(());
+    }
+
     // `--screenshot <png> [--mode <name>] [--light] [file]` renders one frame offscreen and
     // exits: verifies the design with no window server, which is how it gets checked in CI and
     // over SSH.
@@ -299,7 +317,14 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> vex_buffer::PairConfig {
 
 /// Flags that consume the argument after them. Without this list, a flag's *value* gets mistaken
 /// for the file to open — which is how `--columns 60` ended up trying to open a file named `60`.
-const VALUE_FLAGS: [&str; 15] = [
+///
+/// It went on happening after that was fixed, because the list is written here and the flags are
+/// read a thousand lines away in [`screenshot`]: `--row`, `--symbols` and `--block` were all added
+/// later and none of them was added here, so `--row 12` opened an empty buffer called `12` behind
+/// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
+/// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
+/// from the source rather than trusting anyone to remember.
+const VALUE_FLAGS: [&str; 18] = [
     "--which-key",
     "--screenshot",
     "--mode",
@@ -315,7 +340,142 @@ const VALUE_FLAGS: [&str; 15] = [
     "--welcome",
     "--size",
     "--at-column",
+    "--row",
+    "--symbols",
+    "--block",
 ];
+
+/// Every flag `vex` accepts, grouped, as the one description of its command line.
+///
+/// `--help` renders this and `docs/reference/cli.md` quotes it, so the two cannot disagree — the
+/// same reason [`vex_input::commands::COMMANDS`] is one table with four readers. Two tests keep it
+/// honest in both directions: a flag listed here that the binary does not read is a lie, and a flag
+/// the binary reads that is missing from here is undocumented.
+///
+/// The headless group is long because it is the whole visual test surface, and a person reaching for
+/// it is reproducing a screenshot from CI rather than editing a file.
+const FLAGS: [(&str, &str, &str); 37] = [
+    // Opening.
+    (
+        "--no-session",
+        "",
+        "start empty rather than reopening the last session",
+    ),
+    ("--no-welcome", "", "skip the first-run questions"),
+    ("--version", "", "print the version and exit"),
+    ("--help", "", "print this and exit"),
+    // Headless rendering. `--screenshot` is what turns the rest on.
+    ("--screenshot", "PNG", "render one frame to a file and exit"),
+    (
+        "--size",
+        "WxH",
+        "the window to render at (default 1600x1000)",
+    ),
+    ("--light", "", "the light theme"),
+    ("--dark", "", "the dark theme"),
+    ("--theme", "NAME", "any built-in or installed theme"),
+    ("--mode", "NAME", "normal, insert, visual …"),
+    ("--no-vim", "", "render with Vim keys off"),
+    ("--empty", "", "no file open"),
+    ("--splash", "", "the cold-start screen"),
+    ("--at", "LINE", "put the cursor on a line"),
+    ("--at-column", "N", "and a column"),
+    ("--columns", "N", "wrap width, in columns"),
+    ("--no-wrap", "", "soft wrap off"),
+    ("--split", "N[h]", "N panes, `h` for stacked"),
+    ("--tree", "", "the file tree"),
+    ("--settings", "", "the settings panel"),
+    ("--row", "N", "select a settings row, scrolling to it"),
+    ("--welcome", "STEP", "the first-run wizard at one step"),
+    ("--folded", "", "with a block folded"),
+    ("--git", "", "the diff gutter"),
+    ("--palette", "QUERY", "the file palette, filtered"),
+    ("--commands", "", "the command palette"),
+    ("--search", "QUERY", "the find box"),
+    ("--grep", "QUERY", "project-wide search results"),
+    ("--symbols", "QUERY", "the symbol picker"),
+    ("--complete", "PREFIX", "the completion popup"),
+    ("--diagnostic", "L:C:MSG", "one diagnostic, inline"),
+    ("--diagnostics-list", "", "the problems list"),
+    ("--help-panel", "", "the F1 key list"),
+    ("--menu", "", "the menu bar"),
+    ("--context-menu", "", "a right-click menu"),
+    (
+        "--which-key",
+        "PREFIX",
+        "what can follow a half-typed chord",
+    ),
+    (
+        "--block",
+        "LINE:COLUMN",
+        "a rectangular selection to that corner",
+    ),
+];
+
+/// How many of [`FLAGS`] belong to ordinary use; the rest are the headless renderer's.
+///
+/// The split is checked, not just declared. `--no-vim` was listed here and read only inside
+/// [`screenshot`], so `--help` offered it as a way to start the editor without Vim keys and it did
+/// nothing at all — the setting comes from the config. A flag in the wrong group is a documented
+/// feature that does not exist, which is the failure the whole table was meant to prevent.
+const PLAIN_FLAGS: usize = 4;
+
+/// The text `--help` prints.
+///
+/// Built from [`FLAGS`] rather than written out, because a help text maintained by hand is one that
+/// documents last year's flags. Widths are computed from the longest entry so adding a flag cannot
+/// leave the columns ragged.
+fn usage() -> String {
+    let name = |(flag, value, _): &(&str, &str, &str)| {
+        if value.is_empty() {
+            (*flag).to_string()
+        } else {
+            format!("{flag} {value}")
+        }
+    };
+    let width = FLAGS
+        .iter()
+        .map(|entry| name(entry).len())
+        .max()
+        .unwrap_or(0);
+    let render = |group: &[(&str, &str, &str)]| {
+        group
+            .iter()
+            .map(|entry| format!("    {:width$}   {}\n", name(entry), entry.2))
+            .collect::<String>()
+    };
+
+    format!(
+        "vex {} — a code editor that never stalls on your keystroke\n\
+         \n\
+         USAGE\n\
+         \x20   vex [FILE]              open a file\n\
+         \x20   vex [FOLDER]            open a folder as the project\n\
+         \x20   vex                     reopen the last project\n\
+         \x20   vex import …            bring settings over from VSCode (`vex import --help`)\n\
+         \n\
+         OPTIONS\n\
+         {}\n\
+         RENDERING WITHOUT A WINDOW\n\
+         \x20   Renders one frame to a PNG and exits. This is how the design is checked in CI and\n\
+         \x20   over SSH. Everything below needs --screenshot.\n\
+         \n\
+         {}\n\
+         Configuration lives in {}. VEX_CONFIG_DIR and VEX_STATE_DIR move it;\n\
+         VEX_NO_SYSTEM_FONTS=1 makes a render reproducible.\n\
+         \n\
+         Keys: press F1 in the editor, or read CHEATSHEET.md.\n\
+         Docs: https://github.com/Gawad-B/Vex/tree/main/docs\n",
+        env!("CARGO_PKG_VERSION"),
+        render(&FLAGS[..PLAIN_FLAGS]),
+        render(&FLAGS[PLAIN_FLAGS..]),
+        if cfg!(windows) {
+            "%APPDATA%\\vex"
+        } else {
+            "~/.config/vex"
+        },
+    )
+}
 
 /// The first non-flag argument: the file to open.
 fn positional(args: &[String]) -> Option<String> {
@@ -6696,6 +6856,157 @@ impl App {
 
         if let Err(err) = renderer.render(&self.frame, self.state.theme.bg) {
             eprintln!("vex: frame dropped: {err:#}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod command_line_tests {
+    use super::*;
+
+    /// This file, so the tests below can ask what the binary actually reads rather than what
+    /// somebody remembered to write down. Both directions matter and neither is checkable any other
+    /// way: the flags are parsed a thousand lines from where they are listed.
+    const SOURCE: &str = include_str!("main.rs");
+
+    /// The three shapes a flag is read in: an equality against an argument, and the two closures
+    /// [`screenshot`] builds over its argument list.
+    const READ_AS: [&str; 3] = ["arg == \"", "flag(\"", "value(\""];
+
+    /// The file with its comment lines removed.
+    ///
+    /// The first version of this scanned for `"--` anywhere and failed against the *prose* above
+    /// it — a doc comment naming a flag is not the binary reading one. Stripping comments first,
+    /// and then matching only the shapes in [`READ_AS`], means the set can be satisfied one way:
+    /// by code that actually reads the argument.
+    fn code() -> String {
+        SOURCE
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Every flag reached by `pattern`, e.g. every one whose value is consumed.
+    fn flags_read_by(code: &str, pattern: &str) -> Vec<String> {
+        let mut found: Vec<String> = code
+            .match_indices(pattern)
+            .filter_map(|(index, _)| code[index + pattern.len()..].split('"').next())
+            .filter(|name| name.starts_with("--") && name.len() > 2)
+            .map(str::to_string)
+            .collect();
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    /// Every flag the binary reads, however it reads it.
+    fn flags_in_source() -> Vec<String> {
+        let code = code();
+        let mut found: Vec<String> = READ_AS
+            .iter()
+            .flat_map(|pattern| flags_read_by(&code, pattern))
+            .collect();
+        found.sort();
+        found.dedup();
+        found
+    }
+
+    #[test]
+    fn every_flag_that_consumes_a_value_is_listed_as_one() {
+        // The defect this is made of: `--row`, `--symbols` and `--block` all take an argument and
+        // none was in VALUE_FLAGS, so `--row 12` fed `12` to `positional` and opened an empty buffer
+        // called `12` behind the panel it was meant to be scrolling. Nothing failed and the panel
+        // still drew, so rendering every overlay in CI could not see it either.
+        //
+        // The value closure is the only way a flag consumes the next argument, which makes the set
+        // derivable rather than remembered.
+        for name in flags_read_by(&code(), READ_AS[2]) {
+            assert!(
+                VALUE_FLAGS.contains(&name.as_str()),
+                "{name} reads the argument after it but is not in VALUE_FLAGS, so its value will be \
+                 opened as a file"
+            );
+        }
+    }
+
+    #[test]
+    fn a_flag_offered_for_ordinary_use_works_without_screenshot() {
+        // `--no-vim` sat in the ordinary group and was read only inside `screenshot`, so --help
+        // advertised a way to start the editor without Vim keys that did nothing whatever: the
+        // setting comes from the config, and the flag was never consulted. The other guards could
+        // not see it — the flag *is* read, just not anywhere a person following the help could
+        // reach. `screenshot` is the last item in the file before the event loop, so everything a
+        // plain run can reach is the text above it.
+        let code = code();
+        let boundary = code
+            .find("fn screenshot(")
+            .expect("the headless renderer moved; this split needs rewriting");
+        let ordinary = &code[..boundary];
+
+        for (flag, _, _) in &FLAGS[..PLAIN_FLAGS] {
+            assert!(
+                READ_AS
+                    .iter()
+                    .any(|pattern| flags_read_by(ordinary, pattern).contains(&flag.to_string())),
+                "--help lists {flag} for ordinary use, but nothing outside the headless renderer \
+                 reads it, so it does nothing unless --screenshot is also given"
+            );
+        }
+    }
+
+    #[test]
+    fn the_scan_finds_the_flags_that_are_really_there() {
+        // A guard derived from source is worth exactly what its scan is worth, and this one has
+        // already been wrong once. Three flags it must find, read three different ways.
+        let found = flags_in_source();
+        for flag in ["--screenshot", "--light", "--row"] {
+            assert!(found.contains(&flag.to_string()), "the scan missed {flag}");
+        }
+        assert!(
+            !found.contains(&"--".to_string()),
+            "the bare separator is not a flag"
+        );
+    }
+
+    #[test]
+    fn the_help_names_no_flag_the_binary_does_not_read() {
+        let real = flags_in_source();
+        for (flag, _, _) in FLAGS {
+            assert!(
+                real.contains(&flag.to_string()),
+                "--help offers {flag}, which nothing in the binary reads"
+            );
+        }
+    }
+
+    #[test]
+    fn every_flag_the_binary_reads_is_in_the_help() {
+        // The direction that rots silently: a flag added for one screenshot, never written down,
+        // and undiscoverable by anyone who did not add it. That is how --row, --symbols and --block
+        // came to exist for months with CLAUDE.md as their only mention.
+        for flag in flags_in_source() {
+            assert!(
+                FLAGS.iter().any(|(name, _, _)| *name == flag),
+                "{flag} is read by the binary but --help does not mention it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_version_is_the_crate_version() {
+        // Not a tautology: it is the assertion that stops the two drifting when the help text is
+        // next edited by hand, and `vex --version` is what a bug report is asked for.
+        assert!(usage().contains(env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn the_help_describes_every_flag_it_lists() {
+        for (flag, _, description) in FLAGS {
+            assert!(
+                !description.trim().is_empty(),
+                "{flag} is listed with nothing said about it"
+            );
         }
     }
 }

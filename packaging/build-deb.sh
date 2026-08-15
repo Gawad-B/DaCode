@@ -26,7 +26,15 @@ find "$here/linux/icons" -type f | while read -r icon; do
 done
 install -Dm644 "$root/README.md" "$work/data/usr/share/doc/vex/README.md"
 install -Dm644 "$root/CHEATSHEET.md" "$work/data/usr/share/doc/vex/CHEATSHEET.md"
+install -Dm644 "$root/CHANGELOG.md" "$work/data/usr/share/doc/vex/CHANGELOG.md"
 install -Dm644 "$root/examples/init.lua" "$work/data/usr/share/doc/vex/examples/init.lua"
+
+# The documentation tree, laid out exactly as it is in the repository. The README links to it with
+# relative paths, so shipping the one without the other installs a front page whose every link is
+# dead — and the person reading it offline is the one who most needed it to work.
+find "$root/docs" -type f | while read -r page; do
+    install -Dm644 "$page" "$work/data/usr/share/doc/vex/docs/${page#"$root/docs/"}"
+done
 
 size="$(du -ks "$work/data" | cut -f1)"
 

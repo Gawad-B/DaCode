@@ -19,11 +19,13 @@ New-Item -ItemType Directory -Force -Path $target | Out-Null
 Copy-Item $binary (Join-Path $target 'vex.exe') -Force
 
 # Documentation beside it, because on Windows nobody goes looking in /usr/share/doc.
-foreach ($file in 'README.md', 'CHEATSHEET.md') {
+foreach ($file in 'README.md', 'CHEATSHEET.md', 'CHANGELOG.md') {
     Copy-Item (Join-Path $root $file) $target -Force
 }
 New-Item -ItemType Directory -Force -Path (Join-Path $target 'examples') | Out-Null
 Copy-Item (Join-Path $root 'examples\init.lua') (Join-Path $target 'examples') -Force
+# The whole docs tree: the README's links into it are relative, so half of it is a page of dead ends.
+Copy-Item (Join-Path $root 'docs') $target -Recurse -Force
 
 # On PATH, so `vex` works from any terminal. The user's own PATH, not the machine's, and only if it is
 # not already there — appending blindly is how PATH variables end up a kilometre long.
