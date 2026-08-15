@@ -170,10 +170,11 @@ and a mouse-only user who raises the size to 18 has no way to lower it again fro
 `init.lua` or the palette until that is fixed; it is recorded in the
 [settings reference](../reference/settings.md#where-the-three-disagree).
 
-The line height is a fixed multiple of the code size — a generous 1.9, which is what lets italic
-serif comments and monospaced code share a page without the lines fighting. The gutter and the code
-area always share a row height exactly; if those ever diverged the line numbers would stop
-registering with their lines.
+The line height is a fixed multiple of the code size — a generous 1.9. Comments used to be set in
+italic serif a size larger, and that ratio is what let the two share a page without the lines
+fighting; they are set as code now, upright and in the code face, so the height is simply room to
+read in. The gutter and the code area always share a row height exactly; if those ever diverged the
+line numbers would stop registering with their lines.
 
 Column advance is estimated from the type scale rather than measured from the shaper. That is why an
 elided label can be a character short or long either way — an approximate ellipsis beats an exact

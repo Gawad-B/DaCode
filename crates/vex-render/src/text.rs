@@ -19,11 +19,21 @@ use vex_theme::{Family, Style};
 ///
 /// Embedded in the binary rather than fetched or installed, for the reason the design gives: the
 /// first frame must never wait on a font, and the editor has to look like itself on a machine where
-/// nothing is installed. Both families are SIL OFL; the licence texts sit beside them.
+/// nothing is installed. All of them are SIL OFL; the licence texts sit beside them.
+///
+/// The code face is Fira Code. It was IBM Plex Mono, which is the face the design names and is a
+/// good one — but the code face is the single thing somebody looks at for hours, and enough people
+/// said the same thing about this one that being defensible stopped being the point. Familiarity is
+/// a real property of a code font: an unfamiliar one is read as a mistake before it is read as a
+/// choice, and a reader deciding whether to trust an editor should not be spending that on the
+/// letterforms.
+///
+/// Only the code face moved. Instrument Serif still draws the wordmark and the headings, which is
+/// what the editor looks like and is not what anybody was objecting to.
 mod bundled {
     pub const SERIF_REGULAR: &[u8] = include_bytes!("../fonts/InstrumentSerif-Regular.ttf");
     pub const SERIF_ITALIC: &[u8] = include_bytes!("../fonts/InstrumentSerif-Italic.ttf");
-    pub const MONO_REGULAR: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
+    pub const MONO_REGULAR: &[u8] = include_bytes!("../fonts/FiraCode-Regular.ttf");
     pub const SANS_MEDIUM: &[u8] = include_bytes!("../fonts/IBMPlexSans-Medium.ttf");
 
     pub const ALL: [&[u8]; 4] = [SERIF_REGULAR, SERIF_ITALIC, MONO_REGULAR, SANS_MEDIUM];
@@ -345,7 +355,7 @@ fn load_fonts() -> FontSystem {
     // Generic names resolve to the bundled faces, so anything asking for "serif" gets the design's
     // serif rather than whatever the system considers one.
     db.set_serif_family("Instrument Serif");
-    db.set_monospace_family("IBM Plex Mono");
+    db.set_monospace_family("Fira Code");
     db.set_sans_serif_family("IBM Plex Sans");
 
     if std::env::var_os("VEX_FONT_TRACE").is_some() {

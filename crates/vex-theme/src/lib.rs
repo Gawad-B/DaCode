@@ -101,21 +101,33 @@ mod tests {
     }
 
     #[test]
-    fn comments_are_italic_serif_and_larger_than_code() {
-        // The design's most distinctive typographic decision, asserted so it cannot be
-        // "simplified" away later.
+    fn comments_are_set_as_code() {
+        // This was the design's most distinctive typographic decision and it is deliberately gone:
+        // comments were italic serif a size larger than the code around them. It is a real idea —
+        // prose among instructions — and it is the thing people noticed first and liked least, and
+        // a proportional face cannot hold a monospaced column, so a commented-out line sat visibly
+        // out of step with the line it was commenting out. What distinguishes a comment now is the
+        // colour the theme gives it, which is what was doing the work anyway.
         let typo = Typography::default();
         let comment = typo.spec(Role::Comment);
         let code = typo.spec(Role::Code);
 
-        assert_eq!(comment.family, Family::Serif);
-        assert_eq!(comment.style, Style::Italic);
-        assert_eq!(code.family, Family::Mono);
-        assert!(comment.size_px > code.size_px);
+        assert_eq!(comment.family, Family::Mono, "the same face as the code");
+        assert_eq!(comment.style, Style::Roman, "upright");
+        assert_eq!(comment.size_px, code.size_px, "and the same size");
         assert_eq!(
             comment.line_height, code.line_height,
             "must share the row grid"
         );
+    }
+
+    /// The wordmark keeps the serif italic that every complaint about the code face spared.
+    #[test]
+    fn the_display_face_is_still_the_serif() {
+        let typo = Typography::default();
+        let display = typo.spec(Role::Display);
+        assert_eq!(display.family, Family::Serif);
+        assert_eq!(display.style, Style::Italic);
     }
 
     #[test]

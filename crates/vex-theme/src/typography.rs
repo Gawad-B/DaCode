@@ -18,15 +18,18 @@ pub enum Family {
 }
 
 impl Family {
-    /// Preferred face, then fallbacks. The design names Instrument Serif and IBM Plex; the
-    /// fallbacks keep the editor usable before those are bundled, since the *contrast* between
-    /// families is the point rather than the specific faces.
+    /// Preferred face, then fallbacks. The design names Instrument Serif and IBM Plex, and both
+    /// still draw the interface; the *code* face is Fira Code, which is bundled. The fallbacks keep
+    /// the editor usable if a face is missing, since the *contrast* between families is the point
+    /// rather than the specific faces — and IBM Plex Mono stays on the list because a machine that
+    /// has it should reach for it before DejaVu.
     pub const fn candidates(self) -> &'static [&'static str] {
         match self {
             Family::Serif => &["Instrument Serif", "EB Garamond", "Georgia", "serif"],
             Family::Mono => &[
-                "IBM Plex Mono",
+                "Fira Code",
                 "JetBrains Mono",
+                "IBM Plex Mono",
                 "DejaVu Sans Mono",
                 "monospace",
             ],
@@ -161,11 +164,17 @@ impl Typography {
                 tracking_em: 0.0,
                 uppercase: false,
             },
+            // A comment is code, and it is set as code: the same face, upright, at the same size.
+            // It was italic serif a size larger, which is a real typographic idea — prose among
+            // instructions — and it is the thing people notice first and like least. It also has to
+            // fight the grid: a proportional face in a monospaced column cannot align with the code
+            // above it, so a commented-out line sat visibly off the one it was commenting out. The
+            // theme still dims it, which is the distinction that was doing the work anyway.
             Role::Comment => FontSpec {
-                family: Family::Serif,
-                style: Style::Italic,
+                family: Family::Mono,
+                style: Style::Roman,
                 weight: 400,
-                size_px: code * 1.15,
+                size_px: code,
                 line_height: self.code_line_height,
                 tracking_em: 0.0,
                 uppercase: false,

@@ -9,6 +9,18 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+### Changed
+
+- The code face is **Fira Code**, bundled, replacing IBM Plex Mono. The design names Plex and it is
+  a good face, but the code font is the one thing somebody looks at for hours: an unfamiliar one is
+  read as a mistake before it is read as a choice. Only the code face moved — Instrument Serif still
+  draws the wordmark and the headings.
+- Comments are set as code: the same face, upright, at the same size. They were italic serif a size
+  larger, which is a real typographic idea and the thing people noticed first and liked least. It
+  also could not hold the grid — a proportional face in a monospaced column leaves a commented-out
+  line visibly out of step with the one above it. The theme still dims them, which is the
+  distinction that was doing the work.
+
 ## [0.4.2] - 2026-08-15
 
 Everything here came from one person using 0.4.1 on their own code for an evening, which is where
