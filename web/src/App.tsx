@@ -34,11 +34,15 @@ export default function App() {
         <span className="wordmark">vex</span>
         <span className="caret" />
         <span style={{ flex: 1 }} />
+        {/* One link per section that exists, in the order they appear. */}
         <nav className="nav-links label">
+          <a href="#why">why</a>
           <a href="#editor">editor</a>
-          <a href="#grammar">keys</a>
+          <a href="#keys">keys</a>
           <a href="#releases">releases</a>
-          <a href={`${REPO_URL}`}>source</a>
+          <a href="#identity">identity</a>
+          <a href="#scope">scope</a>
+          <a href={REPO_URL}>source</a>
           <button className="chip label" onClick={toggle}>
             {theme === "dark" ? "light" : "dark"}
           </button>
@@ -101,7 +105,7 @@ export default function App() {
       </section>
 
       {/* ── Three principles ─────────────────────────────────────────────── */}
-      <section className="section triple">
+      <section className="section triple" id="why">
         {PRINCIPLES.map((p, i) => (
           <div
             className={`principle reveal ${i < PRINCIPLES.length - 1 ? "rule-v" : ""}`}
@@ -123,7 +127,7 @@ export default function App() {
       <Screens />
 
       {/* ── Grammar ──────────────────────────────────────────────────────── */}
-      <section className="section split" id="grammar">
+      <section className="section split" id="keys">
         <div className="split-left alt rule-v">
           <h2 className="reveal">
             Vim's grammar.

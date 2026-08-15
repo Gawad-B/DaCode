@@ -39,17 +39,18 @@ const SAFETY_MS = 2000;
 export function useReveal(reduced: boolean) {
   useEffect(() => {
     const root = document.documentElement;
-    const targets = Array.from(document.querySelectorAll<HTMLElement>(".reveal"));
-    // The fallback drops the transition as well as the hidden state. A tab that
-    // is not compositing does not advance a transition either, so fading in
-    // from zero there would land on exactly the blank page this is preventing.
-    const reveal = () => {
+    const all = () => Array.from(document.querySelectorAll<HTMLElement>(".reveal"));
+
+    // Reveals everything at once and drops the transition with it. A tab that is
+    // not compositing does not advance a transition either, so fading in from
+    // zero there would land on exactly the blank page this is preventing.
+    const revealEverything = () => {
       root.classList.add("settled");
-      targets.forEach((el) => el.classList.add("in"));
+      all().forEach((el) => el.classList.add("in"));
     };
 
     if (reduced) {
-      reveal();
+      revealEverything();
       return;
     }
 
@@ -67,11 +68,47 @@ export function useReveal(reduced: boolean) {
       { rootMargin: "0px 0px -12% 0px", threshold: 0.08 },
     );
 
-    targets.forEach((el) => io.observe(el));
-    const safety = window.setTimeout(reveal, SAFETY_MS);
+    const observe = (el: HTMLElement) => {
+      if (el.classList.contains("in")) return;
+      // Once the fallback has run, the observer is known not to be firing, so
+      // anything arriving after it must not be handed to the observer to wait
+      // on — that is how the toggle would empty its section a second time.
+      if (root.classList.contains("settled")) el.classList.add("in");
+      else io.observe(el);
+    };
+    all().forEach(observe);
+
+    /*
+     * A `.reveal` that appears after mount — the grammar table swapping between
+     * the Vim keys and the conventional ones — is hidden by the stylesheet the
+     * instant it renders and has nothing watching it. That is not a hypothetical:
+     * it shipped, and pressing the toggle emptied the section. Anything added
+     * later is picked up here and, being already on screen, reveals immediately.
+     */
+    const mutations = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.classList.contains("reveal")) observe(node);
+          node.querySelectorAll<HTMLElement>(".reveal").forEach(observe);
+        }
+      }
+    });
+    mutations.observe(document.body, { childList: true, subtree: true });
+
+    /*
+     * The safety net fires only if the observer has revealed *nothing* by now,
+     * which means it is not running at all. Revealing everything unconditionally
+     * was wrong in the other direction: two seconds in, every section below the
+     * fold was already marked, and the page scrolled with no animation left.
+     */
+    const safety = window.setTimeout(() => {
+      if (document.querySelectorAll(".reveal.in").length === 0) revealEverything();
+    }, SAFETY_MS);
 
     return () => {
       io.disconnect();
+      mutations.disconnect();
       window.clearTimeout(safety);
       root.classList.remove("animate", "settled");
     };

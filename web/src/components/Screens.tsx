@@ -14,7 +14,6 @@ const SRC: Record<ShotId, string> = { editor, commands, settings, tree, light };
 
 export function Screens() {
   const [active, setActive] = useState<ShotId>("editor");
-  const [loaded, setLoaded] = useState<Partial<Record<ShotId, boolean>>>({});
   const shot = SHOTS.find((s) => s.id === active)!;
 
   return (
@@ -28,26 +27,35 @@ export function Screens() {
 
       <div className="shot-tabs reveal">
         {SHOTS.map((s) => (
-          <button
-            key={s.id}
-            aria-pressed={s.id === active}
-            onClick={() => setActive(s.id)}
-          >
+          <button key={s.id} aria-pressed={s.id === active} onClick={() => setActive(s.id)}>
             {s.label}
           </button>
         ))}
       </div>
 
+      {/*
+        All five are in the DOM at once, stacked in a single grid cell, and
+        switching changes which one is opaque. Swapping one <img>'s src meant
+        a fetch and a decode on every press — the first switch to each tab
+        stuttered, and the frame collapsed to nothing while it waited. They are
+        all 1440x900, so the stack has one exact height and nothing reflows.
+      */}
       <div className="shot-frame reveal">
-        <img
-          key={active}
-          src={SRC[active]}
-          alt={`vex — ${shot.label}`}
-          loading="lazy"
-          decoding="async"
-          className={loaded[active] ? "shown" : ""}
-          onLoad={() => setLoaded((l) => ({ ...l, [active]: true }))}
-        />
+        <div className="shot-stack">
+          {SHOTS.map((s) => (
+            <img
+              key={s.id}
+              src={SRC[s.id]}
+              alt={s.id === active ? `vex — ${s.label}` : ""}
+              width={1440}
+              height={900}
+              loading="lazy"
+              decoding="async"
+              aria-hidden={s.id !== active}
+              className={s.id === active ? "shown" : ""}
+            />
+          ))}
+        </div>
       </div>
 
       <p className="shot-caption reveal">{shot.caption}</p>

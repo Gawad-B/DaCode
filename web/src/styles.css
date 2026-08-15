@@ -82,6 +82,18 @@ body {
   background: var(--bg);
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
+/*
+ * The nav is sticky, so an anchor that lands exactly on a section's top edge
+ * lands underneath it. This is the tallest the nav gets, plus a little air.
+ */
+[id] {
+  scroll-margin-top: 96px;
+}
+
 body {
   color: var(--ink);
   font-family: var(--mono);
@@ -201,7 +213,8 @@ button {
 
 .nav-links {
   display: flex;
-  gap: 28px;
+  flex-wrap: wrap;
+  gap: 12px 24px;
   align-items: center;
 }
 
@@ -721,19 +734,24 @@ button {
   border: 1px solid var(--rule);
   background: var(--bg-alt);
   padding: 1px;
-  position: relative;
   overflow: hidden;
 }
 
-.shot-frame img {
+/* One grid cell, five images in it. The stack is as tall as one of them. */
+.shot-stack {
+  display: grid;
+}
+
+.shot-stack img {
+  grid-area: 1 / 1;
   display: block;
   width: 100%;
   height: auto;
   opacity: 0;
-  transition: opacity 320ms ease;
+  transition: opacity 260ms ease;
 }
 
-.shot-frame img.shown {
+.shot-stack img.shown {
   opacity: 1;
 }
 
@@ -744,6 +762,8 @@ button {
   line-height: 1.55;
   color: var(--ink-dim);
   max-width: 68ch;
+  /* Captions differ in length; without a floor the page jumps on every tab. */
+  min-height: 4.7em;
 }
 
 /* ── Releases ────────────────────────────────────────────────────────────── */
@@ -1039,6 +1059,10 @@ button {
   no reveal, no drift, no blink. The layout is identical either way.
 */
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
   *,
   *::before,
   *::after {
