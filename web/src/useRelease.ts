@@ -69,19 +69,19 @@ const RELEASE: Release = {
   assets: {
     "vex-setup.exe": {
       url: `${ASSETS}/v0.4.2/vex-setup.exe`,
-      size: 7816666,
+      size: 7816905,
     },
     "vex_0.4.2_amd64.deb": {
       url: `${ASSETS}/v0.4.2/vex_0.4.2_amd64.deb`,
-      size: 9705440,
+      size: 9705656,
     },
     "vex-0.4.2-1.x86_64.rpm": {
       url: `${ASSETS}/v0.4.2/vex-0.4.2-1.x86_64.rpm`,
-      size: 9604348,
+      size: 9605086,
     },
     "vex-0.4.2-x86_64-linux.tar.gz": {
       url: `${ASSETS}/v0.4.2/vex-0.4.2-x86_64-linux.tar.gz`,
-      size: 9706865,
+      size: 9706966,
     },
   },
   stale: false,
