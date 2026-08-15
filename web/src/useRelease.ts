@@ -69,21 +69,19 @@ const RELEASE: Release = {
   assets: {
     "vex-setup.exe": {
       url: `${ASSETS}/v0.4.2/vex-setup.exe`,
-      size: 7139700,
+      size: 7816666,
     },
     "vex_0.4.2_amd64.deb": {
       url: `${ASSETS}/v0.4.2/vex_0.4.2_amd64.deb`,
-      size: 9004948,
+      size: 9705440,
     },
     "vex-0.4.2-1.x86_64.rpm": {
       url: `${ASSETS}/v0.4.2/vex-0.4.2-1.x86_64.rpm`,
-      size: 8902848,
+      size: 9604348,
     },
     "vex-0.4.2-x86_64-linux.tar.gz": {
       url: `${ASSETS}/v0.4.2/vex-0.4.2-x86_64-linux.tar.gz`,
-      // 9.7 MB, not the 9.0 MB the original release carried: the tarball that
-      // was uploaded is a different build. Measured, not copied.
-      size: 9727998,
+      size: 9706865,
     },
   },
   stale: false,
