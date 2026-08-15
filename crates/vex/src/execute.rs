@@ -322,6 +322,7 @@ pub fn execute(
         | Action::NewFile
         | Action::RenameFile
         | Action::DeleteFile
+        | Action::InstallLanguageServer
         | Action::ToggleTree => {
             return Outcome::Window(action.clone());
         }

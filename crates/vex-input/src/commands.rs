@@ -167,6 +167,15 @@ pub const COMMANDS: &[Command] = &[
     command("new_file", "new file here", Files, "", ""),
     command("rename_file", "rename this file", Files, "", ""),
     command("delete_file", "delete this file", Files, "", ""),
+    // Where someone looks when the statusline says there is no server: the message names the command
+    // and this runs it. Nothing is installed without being asked twice.
+    command(
+        "install_language_server",
+        "install a language server for this file",
+        Files,
+        "",
+        "",
+    ),
     command("quit", "quit", Files, ":q  <c-q>", "<c-q>"),
     // ---- editing -----------------------------------------------------------------------
     command("copy", "copy", Editing, "y", "<c-c>"),

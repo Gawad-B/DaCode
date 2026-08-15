@@ -992,6 +992,12 @@ struct App {
     configured_formatters: Vec<vex::format::Configured>,
     /// Runs external formatters off the UI thread.
     formatter: vex::format::FormatWorker,
+    /// Runs the command that installs a language server, off the UI thread — `rustup component add`
+    /// takes tens of seconds.
+    installer: vex::install::InstallWorker,
+    /// The install a second request would carry out, and what it would run. The message on screen
+    /// *is* the prompt, as with every other confirmation here.
+    confirm_install: Option<vex::install::Request>,
     /// The version an external format was requested against, so a stale reply is refused.
     formatting_version: Option<vex_text::Version>,
     /// Languages already reported as having no server, so the notice is shown once per session
@@ -1211,6 +1217,7 @@ impl ApplicationHandler for App {
         let mut changed = self.poll_walk();
         changed |= self.sync_lsp();
         changed |= self.poll_formatter();
+        changed |= self.poll_installer();
         changed |= self.sync_git();
         changed |= self.handle_file_changes();
         changed |= self.poll_folder_picker();
@@ -1489,6 +1496,8 @@ impl App {
             server_formats: std::collections::HashMap::new(),
             configured_formatters: settings.formatters.clone(),
             formatter: vex::format::FormatWorker::spawn(),
+            installer: vex::install::InstallWorker::spawn(),
+            confirm_install: None,
             formatting_version: None,
             missing_servers: std::collections::HashSet::new(),
             confirm_close: None,
@@ -1936,13 +1945,14 @@ impl App {
         // Not for the action that consumes the arm, or the second press could never get through.
         let consuming = matches!(
             action,
-            Action::Quit | Action::CloseBuffer | Action::DeleteFile
+            Action::Quit | Action::CloseBuffer | Action::DeleteFile | Action::InstallLanguageServer
         );
         if !consuming {
             self.state.hover = None;
             self.confirm_quit = false;
             self.confirm_close = None;
             self.confirm_delete = None;
+            self.confirm_install = None;
         }
         self.state.pending = self.grammar.pending().to_string();
 
@@ -2121,6 +2131,20 @@ impl App {
                         first.language,
                         root.display()
                     )
+                } else if first.installer.is_some() {
+                    // The editor can run this one, so the answer is a command in the editor rather
+                    // than a line to go and type somewhere else. There is no marketplace, and
+                    // bundling every server would be a gigabyte of tooling for languages nobody
+                    // opened — this runs the same line the message used to print, once you agree.
+                    format!(
+                        "no {} language server. A language server is separate from the {} you have \
+                         installed — vex looked for {names} on PATH. {} installs one, by running: \
+                         {}",
+                        first.language,
+                        first.language,
+                        self.key_for("install_language_server"),
+                        first.install,
+                    )
                 } else {
                     format!(
                         "no {} language server. A language server is separate from the {} you have \
@@ -2271,6 +2295,83 @@ impl App {
     }
 
     /// Applies a finished external format, if it is still for the text on screen.
+    /// Offers to install the language server for this file, and installs it when asked twice.
+    ///
+    /// Twice, because this runs a package manager. The first request says exactly what will be run —
+    /// the same line the "no language server" message already prints — and the second runs it. The
+    /// message *is* the prompt, as with closing a dirty buffer and deleting a file; a dialog would
+    /// be a bigger change and this cannot do anything by accident.
+    fn request_install_server(&mut self) {
+        if let Some(request) = self.confirm_install.take() {
+            self.state.hover = Some(format!(
+                "installing {} — this can take a minute",
+                request.program
+            ));
+            self.installer.request(request);
+            return;
+        }
+
+        let Some(path) = self.state.file_path.clone() else {
+            self.warn("no file open, so there is no language to install a server for");
+            return;
+        };
+        let candidates = vex_lsp::servers_for(&path, &self.configured_servers);
+        let Some(first) = candidates.first() else {
+            self.warn("vex knows no language server for this kind of file");
+            return;
+        };
+
+        // Already there: the useful answer is why it is not being used, not an offer to install it
+        // again.
+        if let Some(installed) = candidates
+            .iter()
+            .find(|spec| vex_lsp::can_start(&spec.program))
+        {
+            self.warn(&format!(
+                "{} is already installed — {}",
+                installed.program, self.state.server_status
+            ));
+            return;
+        }
+
+        let Some(installer) = first.installer.clone() else {
+            // No single command is honest for this one, so the advice is the whole answer. Saying
+            // so beats a button that cannot work.
+            self.warn(&format!(
+                "vex cannot install a {} server for you — {}",
+                first.language, first.install
+            ));
+            return;
+        };
+
+        self.state.hover = Some(format!(
+            "install a {} language server? vex will run: {} — choose it again to go ahead",
+            first.language,
+            installer.line()
+        ));
+        self.confirm_install = Some(vex::install::Request {
+            installer,
+            program: first.program.clone(),
+            language: first.language.clone(),
+        });
+    }
+
+    /// Collects an install when it finishes, and starts the server it just put on disk.
+    fn poll_installer(&mut self) -> bool {
+        let Some(installed) = self.installer.poll() else {
+            return false;
+        };
+        self.state.hover = Some(installed.message);
+
+        if installed.ok {
+            // The point of installing it. Without this the editor would sit there knowing a server
+            // exists and not using it until the file was reopened.
+            self.start_language_server();
+            self.sync_lsp();
+        }
+        true
+    }
+
     fn poll_formatter(&mut self) -> bool {
         let Some(formatted) = self.formatter.poll() else {
             return false;
@@ -2851,6 +2952,12 @@ impl App {
         // and if the key that eventually woke it was a text edit, the revert was then refused as
         // stale and lost outright.
         if self.git.busy() {
+            return true;
+        }
+        // And for an install. It is the longest-running of them by far, and its whole point is to
+        // report back — a reply left sitting in the channel would make a minute-long install look
+        // like nothing happened.
+        if self.installer.busy() {
             return true;
         }
         if let Some(client) = self.active_client() {
@@ -3800,6 +3907,7 @@ impl App {
                 None => self.warn("no file selected"),
             },
             Action::DeleteFile => self.request_delete_file(),
+            Action::InstallLanguageServer => self.request_install_server(),
             Action::ExpandSnippet => self.expand_snippet(),
             // The three ways of finding out what the editor can do. Each is a toggle, because the
             // key that opened it is the key someone presses again to get rid of it.

@@ -15,6 +15,7 @@ pub mod git;
 pub mod help;
 pub mod icon;
 pub mod import_cli;
+pub mod install;
 pub mod layout;
 pub mod menu;
 pub mod open;

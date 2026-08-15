@@ -51,8 +51,41 @@ pub struct ServerSpec {
     /// One line that installs it, or empty for a server `init.lua` named — nobody can be told how
     /// to install a program only they know about, and the useful message there is a different one.
     pub install: String,
+    /// The same thing as a command the editor can actually run, when there is one.
+    ///
+    /// `None` where no single command is honest: clangd comes from a system package manager whose
+    /// name differs per distribution and which wants root, and the Dart server ships inside an SDK.
+    /// Telling someone what to type is the whole answer there, and pretending otherwise would mean
+    /// an editor that offers a button which cannot work.
+    pub installer: Option<Installer>,
     /// Whether `init.lua` asked for this one rather than vex knowing about it.
     pub configured: bool,
+}
+
+/// A command that installs a language server, as argv rather than a shell line.
+///
+/// Never a shell string. These are run through `Command`, which does no word splitting, so a shell
+/// line would have to be re-split here — and splitting a string into arguments correctly is a
+/// problem nobody should solve twice. The `needs` program is what has to be on PATH first: saying
+/// "rustup is not installed" is a better answer than a spawn failure nobody can read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installer {
+    pub program: String,
+    pub args: Vec<String>,
+    /// What has to exist before this can run. Usually the same as `program`.
+    pub needs: String,
+}
+
+impl Installer {
+    /// The command as one line, for showing before it is run. Nothing is ever *parsed* back out of
+    /// this — it exists so a person can read what they are about to agree to.
+    pub fn line(&self) -> String {
+        if self.args.is_empty() {
+            self.program.clone()
+        } else {
+            format!("{} {}", self.program, self.args.join(" "))
+        }
+    }
 }
 
 /// One server vex ships knowledge of: a program, its arguments, and the line that installs it.
@@ -61,8 +94,11 @@ struct Builtin {
     program: &'static str,
     args: &'static [&'static str],
     install: &'static str,
+    /// The install line as argv, when vex can run it: `(needs, program, args)`.
+    runs: Option<(&'static str, &'static str, &'static [&'static str])>,
 }
 
+/// A server whose install line is advice only — no one command is right on every platform.
 const fn builtin(
     program: &'static str,
     args: &'static [&'static str],
@@ -72,6 +108,50 @@ const fn builtin(
         program,
         args,
         install,
+        runs: None,
+    }
+}
+
+/// A server the editor can install itself, given `needs` on PATH.
+///
+/// The displayed line is derived from the argv rather than written twice, so what is shown and what
+/// is run cannot disagree — which is the whole point of showing it before running it.
+const fn installable(
+    program: &'static str,
+    args: &'static [&'static str],
+    needs: &'static str,
+    installer: &'static str,
+    installer_args: &'static [&'static str],
+) -> Builtin {
+    Builtin {
+        program,
+        args,
+        install: "",
+        runs: Some((needs, installer, installer_args)),
+    }
+}
+
+impl Builtin {
+    fn spec(&self, language: &Language) -> ServerSpec {
+        let installer = self.runs.map(|(needs, program, args)| Installer {
+            program: program.to_string(),
+            args: args.iter().map(|arg| (*arg).to_string()).collect(),
+            needs: needs.to_string(),
+        });
+        ServerSpec {
+            program: self.program.to_string(),
+            args: self.args.iter().map(|arg| (*arg).to_string()).collect(),
+            language_id: language.id.to_string(),
+            language: language.name.to_string(),
+            // Derived from the argv where there is one, so the sentence the user reads and the
+            // command that runs are the same thing rather than two strings kept in step by hand.
+            install: match &installer {
+                Some(installer) => installer.line(),
+                None => self.install.to_string(),
+            },
+            installer,
+            configured: false,
+        }
     }
 }
 
@@ -97,14 +177,7 @@ impl Language {
     pub fn specs(&self) -> Vec<ServerSpec> {
         self.servers
             .iter()
-            .map(|server| ServerSpec {
-                program: server.program.to_string(),
-                args: server.args.iter().map(|arg| (*arg).to_string()).collect(),
-                language_id: self.id.to_string(),
-                language: self.name.to_string(),
-                install: server.install.to_string(),
-                configured: false,
-            })
+            .map(|server| server.spec(self))
             .collect()
     }
 
@@ -113,9 +186,12 @@ impl Language {
         self.servers.iter().map(|server| server.program).collect()
     }
 
-    /// The line that installs the first choice.
-    pub fn install(&self) -> &'static str {
-        self.servers.first().map(|s| s.install).unwrap_or_default()
+    /// The line that installs the first choice, whether or not vex can run it.
+    pub fn install(&self) -> String {
+        self.servers
+            .first()
+            .map(|server| server.spec(self).install)
+            .unwrap_or_default()
     }
 }
 
@@ -130,20 +206,24 @@ pub const LANGUAGES: [Language; 7] = [
         name: "Rust",
         id: "rust",
         extensions: &["rs"],
-        servers: &[builtin(
+        servers: &[installable(
             "rust-analyzer",
             &[],
-            "rustup component add rust-analyzer",
+            "rustup",
+            "rustup",
+            &["component", "add", "rust-analyzer"],
         )],
     },
     Language {
         name: "TypeScript",
         id: "typescript",
         extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
-        servers: &[builtin(
+        servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
-            "npm i -g typescript-language-server typescript",
+            "npm",
+            "npm",
+            &["install", "-g", "typescript-language-server", "typescript"],
         )],
     },
     Language {
@@ -151,13 +231,27 @@ pub const LANGUAGES: [Language; 7] = [
         id: "python",
         extensions: &["py", "pyi"],
         servers: &[
-            builtin("pyright-langserver", &["--stdio"], "npm i -g pyright"),
-            builtin(
+            installable(
+                "pyright-langserver",
+                &["--stdio"],
+                "npm",
+                "npm",
+                &["install", "-g", "pyright"],
+            ),
+            installable(
                 "basedpyright-langserver",
                 &["--stdio"],
-                "pip install basedpyright",
+                "pip",
+                "pip",
+                &["install", "--user", "basedpyright"],
             ),
-            builtin("pylsp", &[], "pip install python-lsp-server"),
+            installable(
+                "pylsp",
+                &[],
+                "pip",
+                "pip",
+                &["install", "--user", "python-lsp-server"],
+            ),
         ],
     },
     Language {
@@ -174,10 +268,12 @@ pub const LANGUAGES: [Language; 7] = [
         name: "Go",
         id: "go",
         extensions: &["go"],
-        servers: &[builtin(
+        servers: &[installable(
             "gopls",
             &[],
-            "go install golang.org/x/tools/gopls@latest",
+            "go",
+            "go",
+            &["install", "golang.org/x/tools/gopls@latest"],
         )],
     },
     Language {
@@ -304,6 +400,9 @@ pub fn configure(
             language_id: known.map(|k| k.id).unwrap_or(language).to_string(),
             language: known.map(|k| k.name).unwrap_or(language).to_string(),
             install: String::new(),
+            // Nobody can be told how to install a program only they know about, and offering to run
+            // something for a command the config named would be guessing with a package manager.
+            installer: None,
             configured: true,
         },
         extensions,

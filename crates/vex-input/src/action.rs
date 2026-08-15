@@ -272,6 +272,9 @@ pub enum Action {
     RenameFile,
     /// Delete the selected file. Refuses once before it does.
     DeleteFile,
+    /// Install the language server for this file, by running the command the editor already told
+    /// you to type. Refuses once before it does: this runs a package manager.
+    InstallLanguageServer,
     /// `ga` in Neovim's spelling — what the server offers to do about the code under the cursor.
     CodeAction,
     /// `gu` — every use of the symbol under the cursor.
@@ -459,6 +462,7 @@ impl Action {
         "new_file",
         "rename_file",
         "delete_file",
+        "install_language_server",
         "code_action",
         "find_references",
         "goto_symbol",
@@ -610,6 +614,7 @@ impl Action {
             "new_file" => Action::NewFile,
             "rename_file" => Action::RenameFile,
             "delete_file" => Action::DeleteFile,
+            "install_language_server" => Action::InstallLanguageServer,
             "code_action" => Action::CodeAction,
             "find_references" => Action::FindReferences,
             "next_change" => Action::GotoChange { forward: true },
