@@ -1,5 +1,3 @@
-import { useEffect, useState } from "react";
-import { REPO, REPO_URL } from "./data";
 
 export type Os = "windows" | "linux" | "macos" | "unknown";
 
@@ -18,6 +16,12 @@ export type Platform = {
   name: string;
   /** null when there is no build for this platform. */
   primary: Download | null;
+  /**
+   * What to say in place of the button when there is nothing to download. A
+   * label rather than a link: the source is private, so "build it yourself"
+   * is no longer an offer this page can make.
+   */
+  pending: string | null;
   /** Other artifacts for the same platform: the rpm and the tarball on Linux. */
   alternatives: Download[];
   /** The line under the button. Honest about what the visitor is getting. */
@@ -31,85 +35,64 @@ export type Release = {
   version: string;
   published: string | null;
   assets: Record<string, { url: string; size: number }>;
-  /** True while the real release is still being fetched, or if it failed. */
+  /** Kept so callers need not change; nothing is fetched, so nothing is stale. */
   stale: boolean;
 };
 
 /*
- * The version and the four asset URLs are fetched from the releases API so the
- * page cannot go stale behind a release. It ships knowing 0.4.1 anyway: the API
- * is rate-limited per IP without a token, and a download button that fails
- * closed on the sixty-first visitor of the hour is worse than one link out of
- * date. The fallback is replaced the moment the real answer arrives.
+ * The download host, not the `/file/d/<id>/view` sharing link, which opens
+ * Drive's preview page and leaves the visitor to find a second button. This one
+ * answers with the bytes and a Content-Disposition, so the browser saves the
+ * file where it would save any other download and the page never navigates
+ * away. `confirm=t` is what skips the "Google Drive can't scan this file for
+ * viruses" interstitial, which appears above about 100 MB — none of these are
+ * close, but a future artifact could be.
  */
-const FALLBACK: Release = {
+const drive = (id: string) =>
+  `https://drive.usercontent.google.com/download?id=${id}&export=download&confirm=t`;
+
+/*
+ * The artifacts are served from Drive, and the version is written here by hand,
+ * because the repository is private: its releases went private with it, so both
+ * the assets and the API that used to list them answer 404 to anyone not signed
+ * in as the owner. The page fetched that API and fell back to hard-coded GitHub
+ * URLs when it failed — so after the repository was made private every download
+ * button still rendered perfectly, with the right version, date and file size,
+ * and 404'd on click. There was no failing state to see.
+ *
+ * The cost of doing it this way is that a new release must be uploaded and then
+ * written in here. Each id is Drive's file id from the sharing link, and each
+ * file must be shared as *anyone with the link* — otherwise it 404s for
+ * everyone but the owner, which is exactly the failure this replaced.
+ */
+const RELEASE: Release = {
   version: "0.4.1",
   published: "2026-08-15",
   assets: {
     "vex-setup.exe": {
-      url: `${REPO_URL}/releases/download/v0.4.1/vex-setup.exe`,
+      url: drive("1fuXNEc2mkEL-wgr8PTeKtSTzuzQ5CzCY"),
       size: 7139700,
     },
     "vex_0.4.1_amd64.deb": {
-      url: `${REPO_URL}/releases/download/v0.4.1/vex_0.4.1_amd64.deb`,
+      url: drive("1ZW1WDHAzTySeO04sikqPOXccE4xkp8iE"),
       size: 9004948,
     },
     "vex-0.4.1-1.x86_64.rpm": {
-      url: `${REPO_URL}/releases/download/v0.4.1/vex-0.4.1-1.x86_64.rpm`,
+      url: drive("1xGw9_YbyrE_o7FIAavsDkeJslDFpArJ_"),
       size: 8902848,
     },
     "vex-0.4.1-x86_64-linux.tar.gz": {
-      url: `${REPO_URL}/releases/download/v0.4.1/vex-0.4.1-x86_64-linux.tar.gz`,
-      size: 9006859,
+      url: drive("1pRq7L0H1BrNHpqiJKMUTMMoaixrQ7NhJ"),
+      // 9.7 MB, not the 9.0 MB the GitHub release carried: the file on Drive is
+      // a different build. Taken from the Content-Length the host answers with.
+      size: 9727998,
     },
   },
-  stale: true,
-};
-
-type ApiRelease = {
-  tag_name?: string;
-  published_at?: string;
-  assets?: { name?: string; browser_download_url?: string; size?: number }[];
+  stale: false,
 };
 
 export function useRelease(): Release {
-  const [release, setRelease] = useState<Release>(FALLBACK);
-
-  useEffect(() => {
-    const abort = new AbortController();
-
-    fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      signal: abort.signal,
-      headers: { Accept: "application/vnd.github+json" },
-    })
-      .then((r) => (r.ok ? (r.json() as Promise<ApiRelease>) : Promise.reject(r.status)))
-      .then((data) => {
-        const assets: Release["assets"] = {};
-        for (const a of data.assets ?? []) {
-          if (a.name && a.browser_download_url) {
-            assets[a.name] = { url: a.browser_download_url, size: a.size ?? 0 };
-          }
-        }
-        // An empty asset list means a release exists but nothing is attached to
-        // it yet — keep the links that are known to work rather than offering
-        // none at all.
-        if (Object.keys(assets).length === 0) return;
-
-        setRelease({
-          version: (data.tag_name ?? "").replace(/^v/, "") || FALLBACK.version,
-          published: data.published_at ?? null,
-          assets,
-          stale: false,
-        });
-      })
-      .catch(() => {
-        /* Rate limited, offline, or blocked. The fallback already stands. */
-      });
-
-    return () => abort.abort();
-  }, []);
-
-  return release;
+  return RELEASE;
 }
 
 /*
@@ -178,6 +161,7 @@ export function platformFor(os: Os, release: Release): Platform {
           url: exe.url,
           size: exe.size,
         },
+        pending: null,
         alternatives: [],
         note: "Per-user, under %LOCALAPPDATA%\\Programs\\vex — no admin prompt. Adds a Start Menu entry, vex on your PATH, “Open with vex” on a folder, and an uninstaller.",
         prompt: ">",
@@ -194,6 +178,7 @@ export function platformFor(os: Os, release: Release): Platform {
           url: deb.url,
           size: deb.size,
         },
+        pending: null,
         alternatives: present([
           rpm && { label: ".rpm — Fedora, RHEL, openSUSE", detail: rpm.name, url: rpm.url, size: rpm.size },
           tar && { label: ".tar.gz — any distribution", detail: tar.name, url: tar.url, size: tar.size },
@@ -207,13 +192,12 @@ export function platformFor(os: Os, release: Release): Platform {
       return {
         os,
         name: "macOS",
-        // Not an oversight and not a "coming soon": there is no macOS build,
-        // and nobody has ever run vex there. Saying so is the honest button.
         primary: null,
+        pending: "macOS build coming soon",
         alternatives: [],
-        note: "There is no macOS build, and nobody has ever run vex on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
-        prompt: "$",
-        command: `git clone ${REPO_URL} && cd Vex && cargo build --release`,
+        note: "There is no macOS build yet, and nobody has ever run vex on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
+        prompt: "#",
+        command: "no macOS build yet",
       };
 
     default:
@@ -221,6 +205,7 @@ export function platformFor(os: Os, release: Release): Platform {
         os: "unknown",
         name: "your platform",
         primary: null,
+        pending: null,
         alternatives: present([
           exe && { label: "Windows — vex-setup.exe", detail: exe.name, url: exe.url, size: exe.size },
           deb && { label: "Linux — .deb", detail: deb.name, url: deb.url, size: deb.size },
@@ -228,8 +213,8 @@ export function platformFor(os: Os, release: Release): Platform {
           tar && { label: "Linux — .tar.gz", detail: tar.name, url: tar.url, size: tar.size },
         ]),
         note: "vex is a desktop editor for x86-64 Linux and Windows. Pick the artifact for the machine you will run it on.",
-        prompt: "$",
-        command: `git clone ${REPO_URL}`,
+        prompt: "#",
+        command: "pick the artifact for your machine",
       };
   }
 }

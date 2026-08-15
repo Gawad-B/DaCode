@@ -9,7 +9,6 @@ import {
   MODE_HUE,
   PRINCIPLES,
   RELEASES,
-  REPO_URL,
   SCOPE,
 } from "./data";
 import { useMode, usePrefersReducedMotion, useReveal, useScrolled, useTheme } from "./hooks";
@@ -42,7 +41,6 @@ export default function App() {
           <a href="#releases">releases</a>
           <a href="#identity">identity</a>
           <a href="#scope">scope</a>
-          <a href={REPO_URL}>source</a>
           <button className="chip label" onClick={toggle}>
             {theme === "dark" ? "light" : "dark"}
           </button>
@@ -303,12 +301,11 @@ export default function App() {
         </span>
         <span className="caret" style={{ height: 14, width: 6 }} />
         <span style={{ flex: 1 }} />
-        <a href={REPO_URL}>source</a>
-        <a href={`${REPO_URL}/blob/main/docs/getting-started.md`}>getting started</a>
-        <a href={`${REPO_URL}/tree/main/docs`}>documentation</a>
-        <a href={`${REPO_URL}/blob/main/CHEATSHEET.md`}>every key</a>
-        <a href={`${REPO_URL}/blob/main/CHANGELOG.md`}>changelog</a>
-        <a href={`${REPO_URL}/blob/main/LICENSE`}>mit</a>
+        {/* Everything that used to live here pointed into the repository,
+            which is private — five links that rendered fine and 404'd. */}
+        <a href="#releases">download</a>
+        <a href="#keys">keys</a>
+        <span>mit licence</span>
       </footer>
     </div>
   );

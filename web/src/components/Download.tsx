@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { REPO_URL } from "../data";
 import {
   detectOs,
   formatDate,
@@ -47,14 +46,13 @@ export function Download({ reduced }: { reduced: boolean }) {
           <span>{platform.primary.label}</span>
           <span className="arrow">↓</span>
         </a>
-      ) : (
-        <a className="dl-primary" href={`${REPO_URL}#install`}>
-          <span>
-            {os === "macos" ? "Build from source" : "Every artifact on GitHub"}
-          </span>
-          <span className="arrow">→</span>
-        </a>
-      )}
+      ) : platform.pending ? (
+        // Not a link. There is nothing to download and, with the source
+        // private, nothing to send someone off to build either.
+        <span className="dl-primary dl-pending" aria-disabled="true">
+          <span>{platform.pending}</span>
+        </span>
+      ) : null}
 
       <div className="dl-meta">
         v{version}
@@ -104,9 +102,6 @@ export function Download({ reduced }: { reduced: boolean }) {
               {OS_LABEL[o]} instead
             </button>
           ))}
-        <a className="dl-alt" href={`${REPO_URL}/releases/latest`}>
-          all files
-        </a>
       </div>
     </div>
   );

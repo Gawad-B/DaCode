@@ -333,6 +333,17 @@ button {
   border-color: var(--rule);
 }
 
+/* A promise, not an offer: it must not look like the button beside it. */
+.dl-pending {
+  color: var(--ink-dim);
+  background: transparent;
+  border-style: dashed;
+}
+
+.dl-pending:hover {
+  background: transparent;
+}
+
 .dl-primary .arrow {
   color: var(--mode);
   transition: transform 160ms ease;
