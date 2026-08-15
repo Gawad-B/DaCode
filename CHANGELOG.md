@@ -9,6 +9,11 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-08-16
+
+A typographic release, and it came from readers rather than from use: enough people said the same
+thing about the code face that being defensible stopped being the point.
+
 ### Changed
 
 - The code face is **Fira Code**, bundled, replacing IBM Plex Mono. The design names Plex and it is
@@ -20,6 +25,8 @@ release, where one exists, lives in `packaging/notes/`.
   also could not hold the grid — a proportional face in a monospaced column leaves a commented-out
   line visibly out of step with the one above it. The theme still dims them, which is the
   distinction that was doing the work.
+- The landing page's identity panel names the code face it is describing. It still said IBM Plex
+  Mono, which was a claim about the editor rather than about the page.
 
 ## [0.4.2] - 2026-08-15
 
@@ -294,7 +301,8 @@ language-server support, drawn directly on the GPU with wgpu.
 - Packaging for deb, rpm, Windows and a portable tarball, with a desktop entry and window icon that
   the desktop actually picks up.
 
-[Unreleased]: https://github.com/Gawad-B/Vex/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/Gawad-B/Vex/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/Gawad-B/Vex/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/Gawad-B/Vex/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Gawad-B/Vex/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Gawad-B/Vex/compare/v0.3.0...v0.4.0

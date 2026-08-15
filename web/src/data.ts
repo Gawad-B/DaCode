@@ -159,8 +159,13 @@ export const RELEASES: ReleaseCard[] = [
     state: "shipped",
   },
   {
-    name: "0.4.2 · what moved ←",
+    name: "0.4.2 · what moved",
     body: "Three things the editor held outside the document — highlight spans, diagnostics, the file index — described text by where it used to be. Typing smeared the colours of the file below the cursor; a new file was invisible until the folder was reopened.",
+    state: "shipped",
+  },
+  {
+    name: "0.4.3 · the code face ←",
+    body: "Fira Code, bundled, replacing IBM Plex Mono — the code font is the one thing you look at for hours, and an unfamiliar one is read as a mistake before it is read as a choice. Comments are set as code rather than italic serif.",
     state: "current",
   },
   {
@@ -185,7 +190,7 @@ export const IDENTITY_CAPTIONS = {
   palette:
     "One lightness, one chroma, four hues. Modes read as states of one instrument, not four themes.",
   cursors: "Shape says what the next keystroke will do. Colour only confirms it.",
-  type: "Prose and comments are typeset, not printed. Code stays mono; labels stay small and spaced.",
+  type: "Prose is typeset, not printed. Code and comments both stay mono — a comment is code, and a proportional face cannot hold the column. Labels stay small and spaced.",
 };
 
 export const SCOPE = {

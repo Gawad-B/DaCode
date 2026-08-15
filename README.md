@@ -39,20 +39,20 @@ uninstaller.
 **Debian, Ubuntu, Mint**
 
 ```sh
-sudo apt install ./vex_0.4.2_amd64.deb
+sudo apt install ./vex_0.4.3_amd64.deb
 ```
 
 **Fedora, RHEL, openSUSE**
 
 ```sh
-sudo dnf install ./vex-0.4.2-1.x86_64.rpm
+sudo dnf install ./vex-0.4.3-1.x86_64.rpm
 ```
 
 **Any Linux, no package manager**
 
 ```sh
-tar xzf vex-0.4.2-x86_64-linux.tar.gz
-./vex-0.4.2-x86_64-linux/install.sh        # into ~/.local, no root needed
+tar xzf vex-0.4.3-x86_64-linux.tar.gz
+./vex-0.4.3-x86_64-linux/install.sh        # into ~/.local, no root needed
 ```
 
 **From source** — needs Rust 1.85 or newer.

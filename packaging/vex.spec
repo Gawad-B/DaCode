@@ -79,6 +79,13 @@ gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 %doc %{_docdir}/vex/docs
 
 %changelog
+* Sat Aug 16 2026 vex - 0.4.3-1
+- The code face is Fira Code, bundled, replacing IBM Plex Mono: the code font
+  is the one thing you look at for hours, and an unfamiliar one is read as a
+  mistake before it is read as a choice.
+- Comments are set as code — same face, upright, same size — rather than in
+  italic serif a size larger, which could not hold the monospaced column.
+
 * Sat Aug 15 2026 vex - 0.4.2-1
 - Typing no longer smears the colours of the rest of the file: the highlight
   spans are moved with the text they describe, rather than describing where it

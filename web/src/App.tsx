@@ -283,7 +283,7 @@ export default function App() {
               <span className="serif" style={{ fontSize: 27 }}>
                 Instrument Serif
               </span>
-              <span style={{ fontSize: 14, color: "var(--ink-dim)" }}>IBM Plex Mono</span>
+              <span style={{ fontSize: 14, color: "var(--ink-dim)" }}>Fira Code</span>
               <span className="label" style={{ fontSize: 12, letterSpacing: "0.14em" }}>
                 Plex Sans · labels
               </span>

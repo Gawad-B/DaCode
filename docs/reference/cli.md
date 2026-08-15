@@ -40,7 +40,7 @@ Verbatim, from a Windows build. The configuration path in the penultimate paragr
 part that varies: it reads `~/.config/vex` everywhere else.
 
 ```
-vex 0.4.2 — a code editor that never stalls on your keystroke
+vex 0.4.3 — a code editor that never stalls on your keystroke
 
 USAGE
     vex [FILE]              open a file
@@ -117,7 +117,7 @@ The first argument that is not a flag — and is not the value belonging to one 
 | *(positional)* `DIR` | — | Opens the directory as the project root and shows the file tree. The directory itself becomes the root rather than searching upwards for a `.git`, because naming a folder is an explicit choice about what the project is. |
 | `--no-session` | — | Do not restore the previous session, and do not fall back to the last project when started with no argument. |
 | `--no-welcome` | — | Skip the first-run wizard even when no configuration exists. |
-| `--version`, `-V` | — | Print `vex 0.4.2` and exit. |
+| `--version`, `-V` | — | Print `vex 0.4.3` and exit. |
 | `--help`, `-h` | — | Print the usage text and exit. |
 
 With no argument at all, vex reopens the last session for the last project worked in — not whatever

@@ -64,23 +64,23 @@ export type Release = {
 const ASSETS = "https://github.com/Gawad-B/vex-releases/releases/download";
 
 const RELEASE: Release = {
-  version: "0.4.2",
-  published: "2026-08-15",
+  version: "0.4.3",
+  published: "2026-08-16",
   assets: {
     "vex-setup.exe": {
-      url: `${ASSETS}/v0.4.2/vex-setup.exe`,
+      url: `${ASSETS}/v0.4.3/vex-setup.exe`,
       size: 7816905,
     },
-    "vex_0.4.2_amd64.deb": {
-      url: `${ASSETS}/v0.4.2/vex_0.4.2_amd64.deb`,
+    "vex_0.4.3_amd64.deb": {
+      url: `${ASSETS}/v0.4.3/vex_0.4.3_amd64.deb`,
       size: 9705656,
     },
-    "vex-0.4.2-1.x86_64.rpm": {
-      url: `${ASSETS}/v0.4.2/vex-0.4.2-1.x86_64.rpm`,
+    "vex-0.4.3-1.x86_64.rpm": {
+      url: `${ASSETS}/v0.4.3/vex-0.4.3-1.x86_64.rpm`,
       size: 9605086,
     },
-    "vex-0.4.2-x86_64-linux.tar.gz": {
-      url: `${ASSETS}/v0.4.2/vex-0.4.2-x86_64-linux.tar.gz`,
+    "vex-0.4.3-x86_64-linux.tar.gz": {
+      url: `${ASSETS}/v0.4.3/vex-0.4.3-x86_64-linux.tar.gz`,
       size: 9706966,
     },
   },
