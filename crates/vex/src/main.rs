@@ -2131,7 +2131,7 @@ impl App {
                         first.language,
                         root.display()
                     )
-                } else if first.installer.is_some() {
+                } else if first.installer().is_some() {
                     // The editor can run this one, so the answer is a command in the editor rather
                     // than a line to go and type somewhere else. There is no marketplace, and
                     // bundling every server would be a gigabyte of tooling for languages nobody
@@ -2334,7 +2334,7 @@ impl App {
             return;
         }
 
-        let Some(installer) = first.installer.clone() else {
+        let Some(installer) = first.installer().cloned() else {
             // No single command is honest for this one, so the advice is the whole answer. Saying
             // so beats a button that cannot work.
             self.warn(&format!(

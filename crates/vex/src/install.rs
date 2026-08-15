@@ -15,9 +15,12 @@
 //!
 //! It never runs a package manager that needs root, never invokes a shell, and never installs
 //! anything without being told twice — the first request explains the command and arms it, the
-//! second runs it. Where no single command is honest, [`vex_lsp::ServerSpec::installer`] is `None`
+//! second runs it. Where no single command is honest, [`vex_lsp::ServerSpec::installers`] is empty
 //! and the editor gives advice instead of a button that cannot work. An editor that quietly runs
 //! package managers is a worse thing to have than one that says what to type.
+//!
+//! And "the installer exited zero" is not "it worked": on Windows `pip` and `go install` both write
+//! to directories PATH does not cover, so success is checked by looking for the program afterwards.
 //!
 //! # The one rule
 //!
@@ -141,14 +144,34 @@ fn run(request: &Request) -> Installed {
     command.args(&installer.args);
 
     match command.output() {
-        Ok(output) if output.status.success() => Installed {
-            program: request.program.clone(),
-            language: request.language.clone(),
-            ok: true,
-            message: format!(
-                "installed {} — {} has a language server now",
-                request.program, request.language
-            ),
+        // A zero exit is not the same as "vex can now run it", and the difference is common enough
+        // to be the normal case on two platforms. `pip install --user` on Windows writes scripts to
+        // a directory Python does not put on PATH and says so in a warning nobody reads; `go
+        // install` writes to `~/go/bin`, which the Windows MSI has never added. Reporting success
+        // there would leave the editor claiming a server it cannot start — so the check is whether
+        // the program is *findable*, which is the same question that made it missing to begin with.
+        Ok(output) if output.status.success() => match vex_lsp::resolve(&request.program) {
+            Some(_) => Installed {
+                program: request.program.clone(),
+                language: request.language.clone(),
+                ok: true,
+                message: format!(
+                    "installed {} — {} has a language server now",
+                    request.program, request.language
+                ),
+            },
+            None => Installed {
+                program: request.program.clone(),
+                language: request.language.clone(),
+                ok: false,
+                message: format!(
+                    "`{}` succeeded, but {} is still not on PATH — the installer put it somewhere \
+                     PATH does not cover. Add that directory to PATH, or name the program with \
+                     vex.server(\"…\", {{ command = \"…\" }})",
+                    installer.line(),
+                    request.program
+                ),
+            },
         },
         Ok(output) => Installed {
             program: request.program.clone(),
@@ -267,5 +290,68 @@ mod tests {
     #[test]
     fn stdout_is_used_when_stderr_said_nothing() {
         assert_eq!(tail(b"   \n", b"the actual reason\n"), "the actual reason");
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    /// Every server the editor offers to install must name a real toolchain and must not ask for
+    /// root.
+    ///
+    /// The list is the part most likely to rot: a package manager renames a flag, an ecosystem moves
+    /// from `pip` to `uv`, and nothing in a compiler notices. This does not check the commands are
+    /// *current* — only a person with the docs open can do that — but it does pin the rules that
+    /// made them safe to run at all.
+    #[test]
+    fn no_offered_install_needs_root_or_a_shell() {
+        // Not exhaustive, and deliberately so: it names the ways this has actually gone wrong
+        // elsewhere rather than pretending to a general theory of dangerous commands.
+        const FORBIDDEN: [&str; 6] = ["sudo", "su", "doas", "runas", "pkexec", "sh"];
+
+        for language in vex_lsp::LANGUAGES {
+            for spec in language.specs() {
+                for installer in &spec.installers {
+                    assert!(
+                        !FORBIDDEN.contains(&installer.program.as_str()),
+                        "{} would install {} as another user",
+                        installer.line(),
+                        spec.program
+                    );
+                    assert!(
+                        !installer.needs.is_empty(),
+                        "{} names no toolchain to check for first, so a missing one would surface \
+                         as an unreadable spawn error",
+                        installer.line()
+                    );
+                    // A shell metacharacter in an argv element is a sign someone wrote a shell line
+                    // and split it by hand — which is the thing the argv form exists to prevent.
+                    for arg in &installer.args {
+                        assert!(
+                            !arg.contains('|') && !arg.contains('&') && !arg.contains('>'),
+                            "`{arg}` looks like shell, and nothing here runs a shell"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_language_with_no_safe_command_gives_advice_instead_of_an_empty_offer() {
+        // clangd, lua-language-server and the Dart SDK. An editor that offered a button for these
+        // would be offering one that cannot work: they come from a system package manager whose
+        // name differs per distribution and which wants root.
+        for language in vex_lsp::LANGUAGES {
+            for spec in language.specs() {
+                if spec.installers.is_empty() {
+                    assert!(
+                        !spec.install.trim().is_empty(),
+                        "{} for {} can neither be installed nor explained",
+                        spec.program,
+                        language.name
+                    );
+                }
+            }
+        }
     }
 }

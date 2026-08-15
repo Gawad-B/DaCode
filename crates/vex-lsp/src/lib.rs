@@ -51,13 +51,19 @@ pub struct ServerSpec {
     /// One line that installs it, or empty for a server `init.lua` named — nobody can be told how
     /// to install a program only they know about, and the useful message there is a different one.
     pub install: String,
-    /// The same thing as a command the editor can actually run, when there is one.
+    /// Commands that would install it, best first — empty where none is honest.
     ///
-    /// `None` where no single command is honest: clangd comes from a system package manager whose
-    /// name differs per distribution and which wants root, and the Dart server ships inside an SDK.
-    /// Telling someone what to type is the whole answer there, and pretending otherwise would mean
-    /// an editor that offers a button which cannot work.
-    pub installer: Option<Installer>,
+    /// A *list*, because "how do I install this" has more than one right answer and which one is
+    /// right depends on the machine. `pip install` is upstream's own fallback for the Python
+    /// servers rather than its recommendation: on Debian, Ubuntu, Fedora, Arch and Homebrew Python
+    /// it refuses outright under PEP 668, and `uv` or `pipx` is what actually works. Picking one at
+    /// build time would mean choosing which platform the button is broken on.
+    ///
+    /// Empty for clangd, lua-language-server and the Dart SDK: those come from a system package
+    /// manager whose name differs per distribution and which wants root, and vex must not run a
+    /// package manager as root. Telling someone what to type is the whole answer there — an editor
+    /// offering a button that cannot work is worse than one that does not offer it.
+    pub installers: Vec<Installer>,
     /// Whether `init.lua` asked for this one rather than vex knowing about it.
     pub configured: bool,
 }
@@ -88,14 +94,28 @@ impl Installer {
     }
 }
 
+impl ServerSpec {
+    /// The best install command this machine can actually run.
+    ///
+    /// Asks the filesystem, because that is the only place the answer is: a list that put `pip`
+    /// first would be right on Windows and refused on most Linux, and one that put `uv` first would
+    /// name a program most people do not have. Cheap, and only reached when someone asks to install
+    /// something.
+    pub fn installer(&self) -> Option<&Installer> {
+        self.installers
+            .iter()
+            .find(|installer| resolve(&installer.needs).is_some())
+    }
+}
+
 /// One server vex ships knowledge of: a program, its arguments, and the line that installs it.
 #[derive(Debug, Clone, Copy)]
 struct Builtin {
     program: &'static str,
     args: &'static [&'static str],
     install: &'static str,
-    /// The install line as argv, when vex can run it: `(needs, program, args)`.
-    runs: Option<(&'static str, &'static str, &'static [&'static str])>,
+    /// The install lines as argv, best first: `(needs, program, args)`.
+    runs: &'static [(&'static str, &'static str, &'static [&'static str])],
 }
 
 /// A server whose install line is advice only — no one command is right on every platform.
@@ -108,36 +128,39 @@ const fn builtin(
         program,
         args,
         install,
-        runs: None,
+        runs: &[],
     }
 }
 
-/// A server the editor can install itself, given `needs` on PATH.
+/// A server the editor can install itself, given one of `runs`' toolchains on PATH.
 ///
 /// The displayed line is derived from the argv rather than written twice, so what is shown and what
 /// is run cannot disagree — which is the whole point of showing it before running it.
 const fn installable(
     program: &'static str,
     args: &'static [&'static str],
-    needs: &'static str,
-    installer: &'static str,
-    installer_args: &'static [&'static str],
+    runs: &'static [(&'static str, &'static str, &'static [&'static str])],
 ) -> Builtin {
     Builtin {
         program,
         args,
         install: "",
-        runs: Some((needs, installer, installer_args)),
+        runs,
     }
 }
 
 impl Builtin {
     fn spec(&self, language: &Language) -> ServerSpec {
-        let installer = self.runs.map(|(needs, program, args)| Installer {
-            program: program.to_string(),
-            args: args.iter().map(|arg| (*arg).to_string()).collect(),
-            needs: needs.to_string(),
-        });
+        let installers: Vec<Installer> = self
+            .runs
+            .iter()
+            .map(|(needs, program, args)| Installer {
+                program: (*program).to_string(),
+                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                needs: (*needs).to_string(),
+            })
+            .collect();
+
         ServerSpec {
             program: self.program.to_string(),
             args: self.args.iter().map(|arg| (*arg).to_string()).collect(),
@@ -145,11 +168,18 @@ impl Builtin {
             language: language.name.to_string(),
             // Derived from the argv where there is one, so the sentence the user reads and the
             // command that runs are the same thing rather than two strings kept in step by hand.
-            install: match &installer {
-                Some(installer) => installer.line(),
-                None => self.install.to_string(),
+            // Every alternative is named: someone on Debian needs to see `pipx`, not the `pip` line
+            // their machine refuses.
+            install: if installers.is_empty() {
+                self.install.to_string()
+            } else {
+                installers
+                    .iter()
+                    .map(Installer::line)
+                    .collect::<Vec<_>>()
+                    .join(", or ")
             },
-            installer,
+            installers,
             configured: false,
         }
     }
@@ -209,9 +239,7 @@ pub const LANGUAGES: [Language; 7] = [
         servers: &[installable(
             "rust-analyzer",
             &[],
-            "rustup",
-            "rustup",
-            &["component", "add", "rust-analyzer"],
+            &[("rustup", "rustup", &["component", "add", "rust-analyzer"])],
         )],
     },
     Language {
@@ -221,9 +249,16 @@ pub const LANGUAGES: [Language; 7] = [
         servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
-            "npm",
-            "npm",
-            &["install", "-g", "typescript-language-server", "typescript"],
+            &[(
+                "npm",
+                "npm",
+                &[
+                    "install",
+                    "--global",
+                    "typescript-language-server",
+                    "typescript",
+                ],
+            )],
         )],
     },
     Language {
@@ -234,23 +269,25 @@ pub const LANGUAGES: [Language; 7] = [
             installable(
                 "pyright-langserver",
                 &["--stdio"],
-                "npm",
-                "npm",
-                &["install", "-g", "pyright"],
+                &[("npm", "npm", &["install", "--global", "pyright"])],
             ),
             installable(
                 "basedpyright-langserver",
                 &["--stdio"],
-                "pip",
-                "pip",
-                &["install", "--user", "basedpyright"],
+                &[
+                    ("uv", "uv", &["tool", "install", "basedpyright"]),
+                    ("pipx", "pipx", &["install", "basedpyright"]),
+                    ("pip", "pip", &["install", "basedpyright"]),
+                ],
             ),
             installable(
                 "pylsp",
                 &[],
-                "pip",
-                "pip",
-                &["install", "--user", "python-lsp-server"],
+                &[
+                    ("uv", "uv", &["tool", "install", "python-lsp-server"]),
+                    ("pipx", "pipx", &["install", "python-lsp-server[all]"]),
+                    ("pip", "pip", &["install", "python-lsp-server"]),
+                ],
             ),
         ],
     },
@@ -271,9 +308,7 @@ pub const LANGUAGES: [Language; 7] = [
         servers: &[installable(
             "gopls",
             &[],
-            "go",
-            "go",
-            &["install", "golang.org/x/tools/gopls@latest"],
+            &[("go", "go", &["install", "golang.org/x/tools/gopls@latest"])],
         )],
     },
     Language {
@@ -402,7 +437,7 @@ pub fn configure(
             install: String::new(),
             // Nobody can be told how to install a program only they know about, and offering to run
             // something for a command the config named would be guessing with a package manager.
-            installer: None,
+            installers: Vec::new(),
             configured: true,
         },
         extensions,
