@@ -1,4 +1,19 @@
 /target
 **/*.proptest-regressions
-# The design bundle is committed extracted; the archive is redundant.
-Vex modal state design.zip
+
+# Editor and agent scratch. Machine-local by nature: a launch configuration names ports and paths
+# that are one person's, not the project's.
+/.claude/
+.vscode/
+.idea/
+
+# The design handoff, kept on disk rather than in the repo — a few megabytes of exported HTML that
+# nothing builds from and nobody reads twice. `PLAN.md` and `web/README.md` say what it was for.
+/Vex modal state design/
+/Vex modal state design.zip
+
+# Screenshots and captures written by `--screenshot` while checking a change by eye.
+/*.png
+/*.jpg
+
+.DS_Store

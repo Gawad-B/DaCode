@@ -643,7 +643,8 @@ exist), language configuration (needs an auto-close/comment-toggle engine, M7), 
 
 ## 6. Visual design
 
-Source: `Vex modal state design/design_handoff_vex/` — implement **`vex Editor Paper.dc.html`**
+Source: `Vex modal state design/design_handoff_vex/`, a handoff bundle kept out of the repo (it is
+exported HTML nothing builds from) — implement **`vex Editor Paper.dc.html`**
 only. The landing page (`vex Landing.dc.html`) is out of scope for now, and
 `vex Editor.dc.html` ("Ink") is an unchosen alternate.
 

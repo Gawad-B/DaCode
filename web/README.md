@@ -1,8 +1,9 @@
 # web — the vex landing page
 
 Vite + React + TypeScript. No CSS framework, no UI library, no images beyond the editor
-screenshots: every other graphic on the page is a rectangle, which is what the design handoff in
-`Vex modal state design/design_handoff_vex/` asks for.
+screenshots: every other graphic on the page is a rectangle, which is what the design handoff asked
+for. That bundle is not in the repo — it is exported HTML nothing builds from; `PLAN.md` §6 records
+what it said.
 
 ```sh
 npm install
