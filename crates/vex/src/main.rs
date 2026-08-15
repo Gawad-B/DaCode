@@ -7195,6 +7195,77 @@ mod wiring_tests {
         false
     }
 
+    /// The span for a token, as a parse would hand it over.
+    fn span(range: std::ops::Range<usize>) -> vex_syntax::HighlightSpan {
+        vex_syntax::HighlightSpan {
+            range: CharOffset(range.start)..CharOffset(range.end),
+            highlight: vex_syntax::Highlight::Type,
+        }
+    }
+
+    /// What a span names, so a test asserts about text rather than about numbers.
+    fn spanned(app: &App, index: usize) -> String {
+        let span = &app.state.highlights[index];
+        app.state
+            .document
+            .text()
+            .slice(span.range.clone())
+            .to_string()
+    }
+
+    /// Highlight spans move with the text they describe, rather than staying where they were.
+    ///
+    /// The spans are only ever set from a parse whose version matched the buffer, and that was taken
+    /// to mean they could never be stale. The next keystroke makes them stale, and the parse that
+    /// replaces them takes a few milliseconds to arrive — so every span after the cursor named text
+    /// that had already moved. Typing a hundred characters into a line rendered the rest of the file
+    /// in the colors of the text a hundred characters earlier, and it corrected itself as soon as
+    /// typing stopped, which is what made it look like a rendering fault.
+    #[test]
+    fn highlight_spans_move_with_the_text_they_describe() {
+        let dir = scratch("spans-move");
+        let mut app = editor(&dir, "a.py", "import os\nx = 1\n");
+        app.state.document.set_primary_caret(CharOffset(0));
+        app.state.highlights = vec![span(7..9)];
+        assert_eq!(spanned(&app, 0), "os", "the span names `os` to begin with");
+
+        execute(
+            &mut app.state,
+            &mut app.registers,
+            &Action::InsertText("abc".into()),
+            40,
+        );
+
+        assert_eq!(
+            spanned(&app, 0),
+            "os",
+            "after typing three characters ahead of it, the span still names `os`"
+        );
+    }
+
+    /// A span whose text is deleted is dropped, not left describing whatever slid into its place.
+    #[test]
+    fn a_span_whose_text_is_deleted_is_dropped() {
+        let dir = scratch("spans-deleted");
+        let mut app = editor(&dir, "a.py", "import os\nx = 1\n");
+        app.state.document.set_primary_caret(CharOffset(9));
+        app.state.highlights = vec![span(7..9)];
+
+        for _ in 0..2 {
+            execute(
+                &mut app.state,
+                &mut app.registers,
+                &Action::DeleteBackward,
+                40,
+            );
+        }
+
+        assert!(
+            app.state.highlights.is_empty(),
+            "the two characters the span named are gone, so the span is too"
+        );
+    }
+
     /// A program that behaves like a formatter: reads stdin, writes stdout.
     fn tidy_formatter() -> Option<vex::format::Configured> {
         let (program, args) = if cfg!(windows) {

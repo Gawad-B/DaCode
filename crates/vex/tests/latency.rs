@@ -174,6 +174,42 @@ fn keystroke(lines: usize) -> Duration {
     })
 }
 
+/// A keystroke with a whole document's worth of search matches live.
+///
+/// This exists to refuse an obvious-looking fix. The highlight spans drift across an edit unless
+/// `mutate` moves them, and the search matches — plain char ranges in the same state — drift for
+/// exactly the same reason, so moving them there too looks like one more line of the same repair.
+/// It is not: the spans cover the *viewport*, while the matches cover the *file*, and a common word
+/// in a hundred-thousand-line document is tens of thousands of ranges. Written that way this
+/// measured 311 µs against 13 µs, 24.6x, and the matches are left drifting instead — stated in
+/// `mutate` and in the known gaps — until they can be moved lazily, at the viewport for drawing and
+/// once per `n` for stepping.
+fn keystroke_while_searching(lines: usize) -> Duration {
+    let mut state = state(lines);
+    // Spans for a screenful, which is what a parse of the visible range returns.
+    state.highlights = (0..240)
+        .map(|i| vex_syntax::HighlightSpan {
+            range: CharOffset(i * 7)..CharOffset(i * 7 + 4),
+            highlight: vex_syntax::Highlight::Keyword,
+        })
+        .collect();
+    let mut grammar = Grammar::new();
+    let mut registers = Registers::new();
+
+    // One match every sixty characters, which is denser than a real search of a real word.
+    let len = state.document.text().len_chars().get();
+    state.search_matches = (0..len.saturating_sub(8))
+        .step_by(60)
+        .map(|at| CharOffset(at)..CharOffset(at + 4))
+        .collect();
+
+    median(2_000, || {
+        if let Resolution::Action(action) = grammar.feed(state.mode, Key::char('x')) {
+            execute(&mut state, &mut registers, &action, 40);
+        }
+    })
+}
+
 fn frame_build(lines: usize) -> Duration {
     let state = state(lines);
     let mut frame = Frame::default();
@@ -198,6 +234,20 @@ fn a_keystroke_costs_the_same_in_a_huge_file_as_in_a_small_one() {
     // 16.6 ms is one frame at 60fps; a *keystroke* getting anywhere near a whole frame on its own
     // is already a failure, and this is thirty times the measured cost on ordinary hardware.
     assert_under("typing a character", large, Duration::from_micros(500));
+}
+
+/// Moving the highlight spans over an edit is bounded, and walking the match list would not be.
+#[test]
+fn a_keystroke_with_a_search_live_stays_bounded() {
+    let small = keystroke_while_searching(SMALL);
+    let large = keystroke_while_searching(LARGE);
+
+    assert_flat("typing with a search live", small, large);
+    assert_under(
+        "typing with a search live",
+        large,
+        Duration::from_micros(500),
+    );
 }
 
 #[test]

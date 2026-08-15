@@ -95,8 +95,21 @@ below the fold's head. `mutate` takes a closure, runs it against the document, t
 because "remember to call the other thing too" is not a rule that survives a year — and that grep
 found two sites hand-editing had already missed.
 
-**Nothing outside the document may hold a bare line number across an edit.** Folds are the case that
-existed; if you add another, transform it in `mutate` beside them or clear it, and say which.
+**Nothing outside the document may hold a bare line number *or offset* across an edit.** Folds were
+the case that existed. The highlight spans were the second and nobody had noticed: they are only ever
+*set* from a parse whose version matched the buffer, which was read as meaning they could never be
+stale — but the next keystroke makes them stale, and a parse takes milliseconds to answer, so every
+span after the cursor named text that had already moved. Typing a hundred characters into a line
+rendered the rest of the file in the colours of the text a hundred characters earlier: comment italics
+running through code, the wrong font on half a line. It corrected itself the moment typing stopped,
+which is why it read as a rendering fault rather than a stale-data one. `mutate` moves them now.
+
+The search matches are the third and are **deliberately left drifting**: they cover the file where
+the spans cover the viewport, so moving them per keystroke measured 24.6x on a hundred-thousand-line
+document (311 µs against 13 µs) and `latency.rs` holds that measurement to refuse the one-line
+version of the repair. Doing it properly means moving them lazily — at the viewport for drawing, once
+per `n` for stepping. If you add a fourth, transform it in `mutate` beside the spans or clear it, and
+say which.
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested

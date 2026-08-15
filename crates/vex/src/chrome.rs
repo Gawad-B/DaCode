@@ -14,7 +14,7 @@ use vex_buffer::Document;
 use vex_display::{DisplayMap, ScrollAnchor, WrapMode};
 use vex_render::{Align, Frame, Layer, Rect, TextRun};
 use vex_syntax::{Highlight, HighlightSpan};
-use vex_text::{CharOffset, Point, Text, Version};
+use vex_text::{Bias, CharOffset, Point, Text, Version};
 use vex_theme::{CursorShape, Mode, Oklch, Role, Theme, Typography, frame as border, space};
 
 /// One pane's view of a buffer, for drawing.
@@ -156,9 +156,14 @@ impl EditorState {
     /// [`crate::edits`], which builds the transaction itself and is tested against a bare
     /// `Document`. `crates/vex/tests/conventions.rs` enforces going through here, since "remember
     /// to call the other thing too" is not a rule that survives a year.
+    /// The matches of the last search are the one thing here that is *not* moved, and it is a
+    /// deliberate refusal rather than an oversight: they cover the file where the spans cover the
+    /// viewport, so walking them per keystroke measured 24.6x on a hundred-thousand-line document
+    /// against a thousand-line one. `latency.rs` holds that measurement. They drift until the search
+    /// is re-run, and moving them needs to be lazy — at the viewport when drawing, once per `n`.
     pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
-        // Nothing folded is the overwhelmingly common case, and then this costs one `is_empty`.
-        if self.display.folds.is_empty() {
+        // Nothing folded and nothing colored, and this costs two `is_empty` calls.
+        if self.display.folds.is_empty() && self.highlights.is_empty() {
             return change(&mut self.document);
         }
 
@@ -167,21 +172,25 @@ impl EditorState {
         let outcome = change(&mut self.document);
 
         let moved = self.document.version() != mark;
-        let folds = &mut self.display.folds;
         let mut replayed = false;
 
         // Each change's edits are expressed against the previous change's text, so they are walked
         // in order rather than concatenated — the same reason the syntax worker replays them.
         for applied in self.document.changes_since(mark) {
-            folds.transform(&before, &applied.text, &applied.edits);
+            self.display
+                .folds
+                .transform(&before, &applied.text, &applied.edits);
+            shift_highlights(&mut self.highlights, &applied.edits);
             before = applied.text.clone();
             replayed = true;
         }
 
         if moved && !replayed {
             // The queue was truncated, so how far the lines moved is no longer knowable. Folds that
-            // cannot be trusted are worse than no folds: they hide code silently.
-            folds.clear();
+            // cannot be trusted are worse than no folds: they hide code silently, and spans that
+            // cannot be trusted paint one piece of text in another's colors.
+            self.display.folds.clear();
+            self.highlights.clear();
         }
         outcome
     }
@@ -249,6 +258,34 @@ impl EditorState {
     pub fn code_height(&self, window_height: f32, scale: f32) -> f32 {
         (window_height - (72.0 + 34.0 + 34.0) * scale).max(0.0)
     }
+}
+
+/// Moves highlight spans over one change's edits, so they keep naming the text they describe.
+///
+/// The spans are the second thing outside the document that holds bare offsets across an edit, and
+/// unlike the folds nothing was moving them. They are only ever *set* from a parse whose version
+/// matched the buffer — but the next keystroke makes that set stale, and a parse takes a few
+/// milliseconds to answer, so the spans were painted against text that had already moved. Typing a
+/// hundred characters into a line shifted every span after it a hundred characters early: a comment's
+/// italic ran from the middle of the line above to the middle of the comment, and the whole file
+/// below the cursor rendered as a smear of the wrong colors until the parse landed. It went away
+/// the moment you stopped typing, which is exactly why it read as a rendering fault rather than a
+/// stale-data one.
+///
+/// Both ends take [`Bias::Left`], which keeps adjacent spans from overlapping: text typed at a span's
+/// end is left uncolored until the parse arrives rather than being claimed by both that span and the
+/// one after it.
+fn shift_highlights(spans: &mut Vec<HighlightSpan>, edits: &[vex_text::Edit]) {
+    spans.retain_mut(|span| shift(&mut span.range, edits));
+}
+
+/// Moves one range over the edits, reporting whether anything of it is left.
+fn shift(range: &mut std::ops::Range<CharOffset>, edits: &[vex_text::Edit]) -> bool {
+    range.start = vex_text::transform_offset(range.start, Bias::Left, edits);
+    range.end = vex_text::transform_offset(range.end, Bias::Left, edits);
+    // A range whose text was deleted collapses to empty. Dropping it is the whole of what
+    // "this no longer describes anything" means.
+    range.start < range.end
 }
 
 /// The first-run setup screen.
