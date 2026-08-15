@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="#3d3a35" stroke-width="13" stroke-linecap="butt" stroke-linejoin="miter" role="img" aria-label="vex">
+  <!--
+    The solo mark, not the primary one. `logo/README.md` reserves the single
+    chevron for 16 and 24px and warns that downscaling the full mark turns its
+    34%-opacity echo to mud — and a favicon is 16px in a tab and 16px in a
+    bookmark bar, whatever size the file happens to be. Geometry is the solo
+    variant's, unchanged: stroke 13, butt caps, miter joins, never round.
+
+    The colour is stated rather than inherited. `currentColor` is the right
+    choice everywhere else — the mark then takes the ink of whatever surface it
+    sits on — but a favicon has no surface to inherit from: it renders in its
+    own document, where `color` is the initial black. So the two ink values from
+    `logo/src/` are written in, and switched on the browser chrome's theme
+    rather than the page's, which is the one this icon actually sits in.
+
+    Monochrome, per the colour rule. The four mode hues are the UI's language
+    for modal state; a mark wearing one would look like it was claiming a mode.
+  -->
+  <style>
+    /* CSS beats the presentation attribute on the root, which is there so the
+       mark still draws if a renderer ignores the stylesheet entirely. */
+    @media (prefers-color-scheme: dark) {
+      path { stroke: #e8e4dc; }
+    }
+  </style>
+  <path d="M20 26 L50 66 L80 26" />
+</svg>
