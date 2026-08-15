@@ -194,6 +194,7 @@ rendering flag is in the [command line reference](../reference/cli.md#headless-r
 
 ## See also
 
+- [Configuration](configuration.md) — the panel, `init.lua`, and which of them wins
 - [Settings reference](../reference/settings.md) — `theme`, `appearance`, `font_size`, `vex.theme`
 - [Command line reference](../reference/cli.md#vex-import) — every `vex import` flag
 - [Migrating from VSCode](migrating-from-vscode.md) — themes as part of a whole setup

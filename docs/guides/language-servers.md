@@ -38,9 +38,10 @@ reporting it missing is how an editor tells someone with a perfectly good langua
 cannot find one.
 
 Only the **active** buffer gets a language server. Background buffers get crash-recovery writes and
-nothing else. That is deliberate — the alternative is one server per open file — but it is a
-limitation rather than an oversight, and it is why switching buffers takes a moment in a large
-project.
+nothing else, so diagnostics for a file you are not looking at are not live. That is deliberate — the
+alternative is one server per open file — but it is a limitation rather than an oversight, and it is
+worth knowing before you go looking for the problems panel to be complete. Switching to a buffer is
+what hands it to the server.
 
 ## Installing one from inside the editor
 
@@ -63,7 +64,8 @@ because "an editor that runs package managers" is a reasonable thing to be wary 
 - **It never acts on one request.** Two, always, with the exact command printed in between.
 - **It checks the toolchain first.** `npm install -g pyright` on a machine with no Node fails with
   "program not found", which names neither npm nor the thing to go and get. vex looks for the
-  toolchain first and says `npm is not installed, and \`npm install --global pyright\` needs it`.
+  toolchain first and says that npm is not installed and that this command needs it — the program
+  that installs a server is usually not the server, and the thing missing is usually the toolchain.
 - **It does not believe the exit code.** "The installer exited zero" is not "vex can now run it". On
   Windows both `pip install --user` and `go install` write to directories `PATH` does not cover, so
   after a successful install vex looks for the program again and says so if it is still not there,
@@ -228,6 +230,7 @@ rather than the last.
 
 ## See also
 
+- [Configuration](configuration.md) — where `init.lua` lives and how it is loaded
 - [Settings reference](../reference/settings.md) — `vex.server`, `vex.formatter`, `format_on_save`,
   `inlay_hints`
 - [Command line reference](../reference/cli.md) — `VEX_LSP_TRACE` and the rest of the environment

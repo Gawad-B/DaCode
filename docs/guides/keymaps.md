@@ -202,6 +202,8 @@ the mouse teaches the keyboard and then gets out of the way.
 
 - [CHEATSHEET.md](../../CHEATSHEET.md) — every key in both keymaps, checked against the real grammar
   on every build
+- [Configuration](configuration.md) — where `init.lua` lives, and what happens when it and the panel
+  disagree
 - [Settings reference](../reference/settings.md) — `vim_keys`, `leader`, `line_numbers` and the rest
 - [Language servers](language-servers.md) — what <kbd>F2</kbd>, <kbd>F12</kbd> and
   <kbd>ctrl</kbd>+<kbd>space</kbd> need in order to do anything

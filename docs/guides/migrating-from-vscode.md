@@ -174,6 +174,7 @@ is in [choosing how you type](keymaps.md), along with how to rebind any of it.
 ## See also
 
 - [Command line reference](../reference/cli.md#vex-import) — every `vex import` flag and source
+- [Configuration](configuration.md) — turning what you imported into an `init.lua` you own
 - [Settings reference](../reference/settings.md) — what the imported TOML layer can and cannot carry
 - [Themes](themes.md) — importing a colour scheme on its own, in any of four formats
 - [Language servers](language-servers.md) — the replacement for most of what you had extensions for
