@@ -87,8 +87,9 @@ gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
   reason and over the far longer wait a language server takes to answer.
 - A file created outside the editor appears without reopening the folder. The
   project's directories are watched, and anything appearing in one re-walks.
-- The settings panel calls the TypeScript row "JavaScript and TypeScript",
-  which is what it has always served, and vex.server accepts "javascript".
+- JavaScript is served as JavaScript: it shared the TypeScript entry, so every
+  .js file was announced to the language server as TypeScript, which is
+  indistinguishable from the server not supporting the file.
 
 * Fri Aug 14 2026 vex - 0.4.1-1
 - The icon is visible on a light application menu: it was a near-white mark on

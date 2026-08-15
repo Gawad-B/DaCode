@@ -9,25 +9,12 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
-### Fixed
-
-- JavaScript is its own entry in the language table rather than a set of extensions hanging off the
-  TypeScript one. The entry decides the `languageId` sent in `didOpen`, so every `.js` file was
-  being announced to the server as TypeScript — and a server told that applies TypeScript's rules
-  to it, which from the outside is "the TypeScript server does not work with .js files". Both
-  entries run the same program, so separating them costs no second install; 0.4.2 renamed the row
-  to name both languages, which fixed finding it in the settings panel and not this.
-- The landing page's release grid fills its last row. The rules between cards are 1px gaps over a
-  background, so a row that stops short showed that background as a slab of rule colour. It was
-  exactly nine cards when it was written, which is what `grid-9` says; the tenth broke it. The count
-  above the grid is derived from the table now, so it cannot claim a number that is no longer true.
-
 ## [0.4.2] - 2026-08-15
 
 Everything here came from one person using 0.4.1 on their own code for an evening, which is where
-0.4.1 came from too. Three of the four are the same defect wearing different clothes: something the
-editor holds *outside* the document, describing text by where it sits, and nothing moving it when the
-text moves.
+0.4.1 came from too. Three of them are the same defect wearing different clothes: something the
+editor holds *outside* the document, describing text by where it sits, and nothing moving it when
+the text moves.
 
 ### Fixed
 
@@ -50,16 +37,23 @@ text moves.
   now, and anything appearing or disappearing in one starts another walk. Taken from the walk's own
   result, so `.gitignore` decides what is watched: a recursive watch on the root would put one on
   every directory under `target/` too.
+- JavaScript is served as JavaScript. It shared the TypeScript entry, and the entry is what decides
+  the `languageId` sent in `didOpen` — so every `.js` file was announced to the server as
+  TypeScript, and a server told that applies TypeScript's rules to it. From the outside that is
+  indistinguishable from the server not supporting the file. They are separate entries running the
+  same program now, so it costs no second install, and the settings panel has a JavaScript row where
+  before it had none to find.
+- The landing page's release grid fills its last row. Its rules between cards are 1px gaps over a
+  background, so a row that stopped short showed that background as a slab of rule colour. It was
+  exactly nine cards when it was written, which is what `grid-9` says, and the 0.4.2 card was the
+  tenth. The release count above the grid is counted from the table now, so it cannot go on claiming
+  a number that is no longer true.
 
 ### Changed
 
-- The language table's TypeScript row is called **JavaScript and TypeScript**, because that name is
-  what the settings panel lists. It served `.js`, `.jsx`, `.mjs` and `.cjs` from the day it was
-  written, so the panel was telling every JavaScript user that vex had no server for them, directly
-  beside a row already running one for their files.
-- `vex.server` accepts the name a language's own users call it: `"javascript"` reaches the TypeScript
-  server, `"c"` reaches clangd. Configuring by those names previously failed with "unknown language",
-  which reads as "unsupported".
+- `vex.server` accepts the name a language's own users call it: `"js"` reaches the JavaScript entry,
+  `"c"` reaches clangd. Both previously failed with "unknown language", which reads as
+  "unsupported".
 
 ### Added
 
