@@ -392,27 +392,27 @@ fn the_documented_install_commands_name_this_version() {
     );
 }
 
-/// The landing page's offline fallback names the version that is actually being built.
+/// The landing page's download table names the version that is actually being built.
 ///
-/// `web/src/useRelease.ts` fetches the real release from the GitHub API, but it ships knowing one
-/// so the download button still works for a visitor the API has rate-limited — which is the
-/// sixty-first from any one address in an hour. That fallback is the same hazard as the README's
-/// install command, one directory further from anyone who would notice: nothing fails, the button
-/// still renders, and it hands out the previous release. This is the guard the README already has.
+/// `web/src/useRelease.ts` used to fetch the real release from the GitHub API and fall back to a
+/// hard-coded one; now that the repository is private, the table is all there is and every URL is
+/// written by hand. That makes this guard matter more rather than less. It is the same hazard as
+/// the README's install command, one directory further from anyone who would notice: nothing
+/// fails, the button still renders, and it hands out the previous release.
 #[test]
-fn the_landing_page_fallback_names_this_version() {
+fn the_landing_page_release_names_this_version() {
     let root = workspace_root();
     let path = root.join("web/src/useRelease.ts");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("cannot read web/src/useRelease.ts: {error}"));
 
     let start = text
-        .find("const FALLBACK")
-        .expect("no FALLBACK in useRelease.ts — this test would check nothing");
+        .find("const RELEASE")
+        .expect("no RELEASE in useRelease.ts — this test would check nothing");
     let block = &text[start..];
     let end = block
         .find("\n};")
-        .expect("FALLBACK is not closed by `};` — the scan would run to the end of the file");
+        .expect("RELEASE is not closed by `};` — the scan would run to the end of the file");
     let block = &block[..end];
 
     // Every digits-dots-digits run inside the block. The asset sizes have no dots in them, so
@@ -437,7 +437,7 @@ fn the_landing_page_fallback_names_this_version() {
 
     assert!(
         !versions.is_empty(),
-        "found no version in the FALLBACK block, so this test checks nothing"
+        "found no version in the RELEASE block, so this test checks nothing"
     );
 
     let expected = env!("CARGO_PKG_VERSION");
