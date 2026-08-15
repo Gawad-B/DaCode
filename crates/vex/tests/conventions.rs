@@ -392,6 +392,63 @@ fn the_documented_install_commands_name_this_version() {
     );
 }
 
+/// The landing page's offline fallback names the version that is actually being built.
+///
+/// `web/src/useRelease.ts` fetches the real release from the GitHub API, but it ships knowing one
+/// so the download button still works for a visitor the API has rate-limited — which is the
+/// sixty-first from any one address in an hour. That fallback is the same hazard as the README's
+/// install command, one directory further from anyone who would notice: nothing fails, the button
+/// still renders, and it hands out the previous release. This is the guard the README already has.
+#[test]
+fn the_landing_page_fallback_names_this_version() {
+    let root = workspace_root();
+    let path = root.join("web/src/useRelease.ts");
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("cannot read web/src/useRelease.ts: {error}"));
+
+    let start = text
+        .find("const FALLBACK")
+        .expect("no FALLBACK in useRelease.ts — this test would check nothing");
+    let block = &text[start..];
+    let end = block
+        .find("\n};")
+        .expect("FALLBACK is not closed by `};` — the scan would run to the end of the file");
+    let block = &block[..end];
+
+    // Every digits-dots-digits run inside the block. The asset sizes have no dots in them, so
+    // anything with two is a version: the tag, the deb, the rpm and the tarball all carry one.
+    let mut versions = Vec::new();
+    let bytes: Vec<char> = block.chars().collect();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_digit() {
+            let from = index;
+            while index < bytes.len() && (bytes[index].is_ascii_digit() || bytes[index] == '.') {
+                index += 1;
+            }
+            let run: String = bytes[from..index].iter().collect();
+            if run.matches('.').count() == 2 {
+                versions.push(run);
+            }
+        } else {
+            index += 1;
+        }
+    }
+
+    assert!(
+        !versions.is_empty(),
+        "found no version in the FALLBACK block, so this test checks nothing"
+    );
+
+    let expected = env!("CARGO_PKG_VERSION");
+    let stale: Vec<&String> = versions.iter().filter(|v| *v != expected).collect();
+    assert!(
+        stale.is_empty(),
+        "web/src/useRelease.ts offers downloads for a version this tree is not: {stale:?}\nthe \
+         crate says {expected}"
+    );
+}
+
 /// The target of every markdown link and HTML `src` in `text`.
 ///
 /// Deliberately crude — it does not parse markdown, it looks for `](` and `src="`. A reference-style
@@ -431,9 +488,16 @@ fn markdown_files(from: &Path) -> Vec<PathBuf> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let skip = path
-                    .file_name()
-                    .is_some_and(|name| name == "target" || name == ".git" || name == "logo");
+                // `node_modules` and `dist` belong to the landing page in `web/` and are not
+                // ours: a dependency's README linking to a file it did not ship is that
+                // dependency's problem, and there are thousands of them.
+                let skip = path.file_name().is_some_and(|name| {
+                    name == "target"
+                        || name == ".git"
+                        || name == "logo"
+                        || name == "node_modules"
+                        || name == "dist"
+                });
                 if !skip {
                     stack.push(path);
                 }

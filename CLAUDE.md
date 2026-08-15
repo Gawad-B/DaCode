@@ -407,6 +407,7 @@ anything platform-shaped:
 | What a command does | `crates/vex/src/execute.rs` |
 | A command-line flag | `crates/vex/src/main.rs` — `FLAGS` and `VALUE_FLAGS`, both checked against the source |
 | What the docs say | `docs/` — tutorial, guides, reference, explanation; `README.md` is the landing page |
+| The web landing page | `web/` — Vite + React, no framework beyond it; `web/README.md` says what drives it |
 | How something looks | `crates/vex/src/chrome.rs` |
 | Where something is | `crates/vex/src/layout.rs` |
 | A config option | `vex-lua/src/lib.rs`, `vex/src/config.rs`, `vex/src/settings_ui.rs` (all three) |
