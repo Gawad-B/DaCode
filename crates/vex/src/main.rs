@@ -1373,7 +1373,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => -y as isize * 3,
                     MouseScrollDelta::PixelDelta(position) => -(position.y / 40.0) as isize,
                 };
-                if lines != 0 {
+                if lines != 0 && !self.wheel(lines) {
                     self.scroll_by(lines);
                     self.sync_syntax();
                 }
@@ -1615,6 +1615,70 @@ impl App {
             .saturating_add(columns)
             .clamp(0, longest.saturating_add(8) as isize)
             as usize;
+    }
+
+    /// Gives the wheel to whatever is on screen. Returns true when something took it.
+    ///
+    /// The wheel had no dispatch at all: it scrolled the document whatever was in front of it, so
+    /// the settings panel, the key list, the command palette, the file tree, the search results and
+    /// the problems list all ignored it — while the *file behind them* scrolled instead. Every other
+    /// input already has this ladder; `handle_key` and `click` each ask the same questions in the
+    /// same order, and this is the third reader of that order rather than a new opinion about it.
+    ///
+    /// For every panel but the help one, moving the selection *is* moving the view: their windows
+    /// are computed from `selected` inside the same function the drawing reads, so there is no
+    /// second copy of the walk here and no new state. Help is the one with a real offset, and it
+    /// already had one going unused.
+    fn wheel(&mut self, lines: isize) -> bool {
+        // Modal surfaces own the wheel wherever the pointer is — the same rule the keyboard uses,
+        // and for the same reason: scrolling the file under an open palette is not what the gesture
+        // meant.
+        if let Some(palette) = &mut self.state.palette {
+            palette.move_selection(lines);
+            return true;
+        }
+        if self.state.help.is_some() {
+            // Read before the panel is borrowed: `code_rows` needs the renderer and the document.
+            let rows = self.code_rows();
+            if let Some(help) = &mut self.state.help {
+                help.scroll_by(lines, rows);
+            }
+            return true;
+        }
+        // A menu or the wizard swallows it rather than passing it through to the document.
+        if self.state.menu.is_some() || self.state.welcome.is_some() {
+            return true;
+        }
+
+        let layout = self.layout();
+        let (x, y) = self.pointer;
+
+        if let (Some(results), Some(area)) = (&mut self.state.results, layout.results) {
+            if vex::layout::contains(area, x, y) {
+                results.move_selection(lines);
+                return true;
+            }
+        }
+
+        // The sidebar holds three different panels; which one is showing is the same question
+        // `click_sidebar` asks, in the same order.
+        if vex::layout::contains(layout.sidebar, x, y) {
+            if let Some(tree) = &mut self.state.tree {
+                tree.move_selection(lines);
+                return true;
+            }
+            if self.state.show_diagnostics {
+                // The problems list draws from `problems` directly and has no selection to move, so
+                // the wheel is swallowed rather than falling through to scroll the file behind it.
+                return true;
+            }
+            if let Some(settings) = &mut self.state.settings {
+                settings.move_selection(lines);
+                return true;
+            }
+        }
+
+        false
     }
 
     fn scroll_by(&mut self, rows: isize) {
@@ -1859,6 +1923,27 @@ impl App {
     }
 
     fn run(&mut self, action: Action) -> bool {
+        // A message describes what just happened, so doing something else takes it away. It used to
+        // sit until Escape, which meant "opened a folder" was still on screen three files later and
+        // every routine action left a box to dismiss by hand.
+        //
+        // The three confirmations expire *with* it, because the box **is** the prompt — there is no
+        // dialog, and "press it again to mean it" has to mean again *now*. Clearing the message
+        // while leaving the arm set would be the worst of both: the next ctrl-q would discard
+        // unsaved work having shown no warning at all. `confirm_quit` was in fact never cleared by
+        // anything, so one warning armed it for the rest of the session.
+        //
+        // Not for the action that consumes the arm, or the second press could never get through.
+        let consuming = matches!(
+            action,
+            Action::Quit | Action::CloseBuffer | Action::DeleteFile
+        );
+        if !consuming {
+            self.state.hover = None;
+            self.confirm_quit = false;
+            self.confirm_close = None;
+            self.confirm_delete = None;
+        }
         self.state.pending = self.grammar.pending().to_string();
 
         // `.` replays the last change rather than re-deriving it, which is the whole reason

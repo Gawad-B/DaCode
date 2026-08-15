@@ -1153,19 +1153,40 @@ fn draw_info(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32
         (None, None) => return,
     };
 
-    // Lines are trimmed to keep the box a box: hover replies can be pages of markdown, and a panel
-    // that grows to fit one would cover the code it describes.
-    let lines: Vec<&str> = text
+    // A cap on *rendered* rows, not source lines. It used to be `.take(6)` over `str::lines`, which
+    // for a one-paragraph message is one line however long it is — and the box was then a fixed 620
+    // wide with `wrap: false`, so the sentence simply stopped where the rectangle did. No wrap, no
+    // ellipsis, no growth: the reader is told the beginning of why something failed and left
+    // believing that was all of it.
+    const MAX_ROWS: usize = 10;
+
+    let line_height = 20.0 * scale;
+    let widest = (620.0 * scale).min(code.width - space::XL * scale);
+    let inner = widest - space::SM * 2.0 * scale;
+
+    let mut lines: Vec<String> = text
         .lines()
         .filter(|line| !line.trim().is_empty() && line.trim() != "```")
-        .take(6)
+        .flat_map(|line| wrap_to(&state.typography, Role::Value, line.trim(), inner, scale))
         .collect();
     if lines.is_empty() {
         return;
     }
 
-    let line_height = 20.0 * scale;
-    let width = (620.0 * scale).min(code.width - space::XL * scale);
+    // The original intent, kept: a hover reply can be pages of markdown, and a panel that grew to
+    // fit one would cover the code it describes. What changed is that the cut now says it happened.
+    if lines.len() > MAX_ROWS {
+        lines.truncate(MAX_ROWS);
+        if let Some(last) = lines.last_mut() {
+            *last = elide(state, Role::Value, &format!("{last} …"), inner, scale);
+        }
+    }
+
+    // Sized to what is actually drawn, so a short message gets a short box rather than 620px of
+    // panel with three words in it.
+    let advance = state.typography.advance(Role::Value) * scale;
+    let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let width = ((longest as f32 * advance) + space::SM * 2.0 * scale).clamp(0.0, widest);
     let height = lines.len() as f32 * line_height + space::MD * scale;
 
     // Below the cursor line where there is room, above it otherwise, so the box never hides the
@@ -1200,7 +1221,7 @@ fn draw_info(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32
         frame.text(run(
             state,
             Role::Value,
-            line.trim_end().to_string(),
+            line.clone(),
             Rect::new(
                 box_rect.x + space::SM * scale,
                 box_rect.y + space::XS * scale + index as f32 * line_height,
@@ -1979,6 +2000,72 @@ fn elide(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) ->
         return "…".to_string();
     }
     text.chars().take(fits - 1).collect::<String>() + "…"
+}
+
+/// Breaks text into lines that fit a width, at word boundaries where it can.
+///
+/// The counterpart to [`elide`], for the one place where losing the tail is not acceptable: a
+/// message. `elide` is right for a label in a row of a fixed height, and wrong for a sentence
+/// explaining why something did not work — the box that carried "a language server is separate from
+/// the Python you have installed…" stopped at "you have i", with no ellipsis and nothing to say it
+/// had been cut. The reader is left believing they read the whole thing.
+///
+/// Measured with the same type-scale estimate `elide` uses, and deliberately: it is the
+/// approximation the code grid and every other measurement here already make. Over-estimating a
+/// character costs one word moved to the next line; under-estimating costs a character shaved by the
+/// renderer's clip. Neither loses a sentence.
+///
+/// A word longer than the whole line is broken rather than dropped, because a path or a URL is
+/// exactly the kind of thing an error message contains.
+fn wrap_to(typography: &Typography, role: Role, text: &str, width: f32, scale: f32) -> Vec<String> {
+    let advance = typography.advance(role) * scale;
+    let per_line = if advance > 0.0 && width > 0.0 {
+        (width / advance).floor().max(1.0) as usize
+    } else {
+        return vec![text.to_string()];
+    };
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+
+    for word in text.split_whitespace() {
+        let length = word.chars().count();
+
+        // Longer than a whole line on its own: break it across as many as it needs.
+        if length > per_line {
+            if used > 0 {
+                lines.push(std::mem::take(&mut current));
+            }
+            let mut rest: Vec<char> = word.chars().collect();
+            while rest.len() > per_line {
+                lines.push(rest.drain(..per_line).collect());
+            }
+            current = rest.into_iter().collect();
+            used = current.chars().count();
+            continue;
+        }
+
+        let needed = if used == 0 { length } else { length + 1 };
+        if used + needed > per_line {
+            lines.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        if used > 0 {
+            current.push(' ');
+            used += 1;
+        }
+        current.push_str(word);
+        used += length;
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Shortens text to fit by dropping the **front**, for values whose end is the identifying part.
@@ -4007,5 +4094,81 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
             Align::Right,
             scale,
         ));
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    /// Wrapping reads exactly one thing — the type scale — so that is all it is given. A function
+    /// that takes less is a function a test can drive.
+    fn state() -> Typography {
+        Typography::default()
+    }
+
+    #[test]
+    fn a_sentence_longer_than_the_box_wraps_instead_of_stopping() {
+        // The defect: the box split only on hard newlines, so a one-paragraph message was one line,
+        // and `run` sets `wrap: false` — the renderer clipped it at the rectangle with no ellipsis.
+        // "…separate from the Python you have i" and nothing to say more had been said.
+        let state = state();
+        let message = "no Python language server. A language server is separate from the Python \
+                       you have installed — vex can format with ruff or black";
+        let lines = wrap_to(&state, Role::Value, message, 300.0, 1.0);
+
+        assert!(lines.len() > 1, "it did not wrap: {lines:?}");
+        // Nothing is lost and nothing is invented: the words come back in order.
+        let rejoined = lines.join(" ");
+        assert_eq!(
+            rejoined.split_whitespace().collect::<Vec<_>>(),
+            message.split_whitespace().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn every_wrapped_line_fits_the_width_it_was_given() {
+        let state = state();
+        let advance = state.advance(Role::Value);
+        for width in [80.0f32, 160.0, 300.0, 620.0] {
+            let per_line = (width / advance).floor() as usize;
+            let lines = wrap_to(
+                &state,
+                Role::Value,
+                "the quick brown fox jumps over the lazy dog and keeps going for a while yet",
+                width,
+                1.0,
+            );
+            for line in &lines {
+                assert!(
+                    line.chars().count() <= per_line,
+                    "`{line}` is {} characters, past the {per_line} that fit {width}px",
+                    line.chars().count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_word_longer_than_the_line_is_broken_rather_than_dropped() {
+        // A path or a URL is exactly what an error message contains, and it is the one thing that
+        // cannot be wrapped at a space. Dropping it would lose the part that identifies the problem.
+        let state = state();
+        let path = r"C:\Users\someone\projects\deeply\nested\directory\with\a\long\name.rs";
+        let lines = wrap_to(&state, Role::Value, path, 90.0, 1.0);
+
+        assert!(lines.len() > 1);
+        assert_eq!(
+            lines.concat(),
+            path,
+            "the path came back changed: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_message_stays_one_line() {
+        let state = state();
+        let lines = wrap_to(&state, Role::Value, "saved", 620.0, 1.0);
+        assert_eq!(lines, vec!["saved".to_string()]);
     }
 }
