@@ -238,7 +238,7 @@ impl Language {
 /// not a single program — pyright comes from npm and pylsp from pip — and a machine has whichever
 /// its owner happened to install. Offering only the first and reporting it missing is how an editor
 /// tells someone with a perfectly good language server that it cannot find one.
-pub const LANGUAGES: [Language; 7] = [
+pub const LANGUAGES: [Language; 8] = [
     Language {
         name: "Rust",
         id: "rust",
@@ -250,15 +250,37 @@ pub const LANGUAGES: [Language; 7] = [
             &[("rustup", "rustup", &["component", "add", "rust-analyzer"])],
         )],
     },
+    // JavaScript and TypeScript are two entries running one program, which is not a duplication:
+    // the entry is what decides the `languageId` in `didOpen`, and that string is how a server is
+    // told which language it has been handed. One row called "TypeScript" announced every `.js`
+    // file as TypeScript, so the server applied TypeScript's rules to JavaScript — which from the
+    // outside looks exactly like "the TypeScript server does not work with .js files". It also
+    // left the settings panel with no JavaScript row at all.
     Language {
-        // Named for both, because this row is what the settings panel lists and what somebody
-        // scanning it for their language reads. Called "TypeScript", it told every JavaScript user
-        // that vex had no server for them — while `typescript-language-server` was in the table all
-        // along, serving `.js`, `.jsx`, `.mjs` and `.cjs`. "C and C++" below is the same shape.
-        name: "JavaScript and TypeScript",
+        name: "JavaScript",
+        id: "javascript",
+        aliases: &["js", "node"],
+        extensions: &["js", "jsx", "mjs", "cjs"],
+        servers: &[installable(
+            "typescript-language-server",
+            &["--stdio"],
+            &[(
+                "npm",
+                "npm",
+                &[
+                    "install",
+                    "--global",
+                    "typescript-language-server",
+                    "typescript",
+                ],
+            )],
+        )],
+    },
+    Language {
+        name: "TypeScript",
         id: "typescript",
-        aliases: &["javascript", "js", "ts"],
-        extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
+        aliases: &["ts"],
+        extensions: &["ts", "tsx"],
         servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
@@ -670,33 +692,52 @@ pub fn is_installed(program: &str) -> bool {
 mod language_name_tests {
     use super::*;
 
-    /// A JavaScript user must be able to find their language in the table.
+    /// A JavaScript file is announced to the server as JavaScript.
     ///
-    /// The row served `.js`, `.jsx`, `.mjs` and `.cjs` from the day it was written, and called
-    /// itself "TypeScript" — which is the string the settings panel prints. So the panel told
-    /// everyone writing JavaScript that vex had no server for them, directly beside a row that was
-    /// already running one for their files.
+    /// This is the whole of why the two are separate entries rather than one row named for both.
+    /// The entry decides the `languageId` sent in `didOpen`, so a single row called "TypeScript"
+    /// told the server that every `.js` file was TypeScript — and a server told that applies
+    /// TypeScript's rules to it. Reported as "the TypeScript server does not work with .js files",
+    /// which is precisely what it looks like from the outside. The row's *name* is also what the
+    /// settings panel lists, so there was no JavaScript in it to find.
     #[test]
-    fn the_row_that_serves_javascript_says_javascript() {
+    fn a_javascript_file_is_announced_as_javascript() {
         let language = language_for("app.js").expect("a .js file has a language");
-        assert!(
-            language.name.contains("JavaScript"),
-            "the row serving .js must name JavaScript, because its name is what the settings panel \
-             lists: got {:?}",
-            language.name
-        );
+        assert_eq!(language.id, "javascript");
+        assert_eq!(language.name, "JavaScript");
+
+        for name in ["component.jsx", "module.mjs", "config.cjs"] {
+            assert_eq!(
+                language_for(name).map(|language| language.id),
+                Some("javascript"),
+                "{name} is JavaScript"
+            );
+        }
+        for name in ["app.ts", "component.tsx"] {
+            assert_eq!(
+                language_for(name).map(|language| language.id),
+                Some("typescript"),
+                "{name} is TypeScript"
+            );
+        }
     }
 
-    /// `vex.server("javascript", …)` names a language, not vex's row for it.
+    /// Both run the same program, which is what makes separating them free.
+    #[test]
+    fn javascript_and_typescript_are_served_by_the_same_program() {
+        let js = language_named("javascript").expect("javascript is in the table");
+        let ts = language_named("typescript").expect("so is typescript");
+        assert_eq!(js.programs(), ts.programs());
+        assert_eq!(js.install(), ts.install());
+    }
+
+    /// `vex.server("js", …)` names a language, not vex's row for it.
     #[test]
     fn a_language_can_be_configured_by_the_name_its_users_call_it() {
-        let by_alias = language_named("javascript").expect("javascript is a name vex accepts");
-        let by_id = language_named("typescript").expect("so is typescript");
         assert_eq!(
-            by_alias.id, by_id.id,
-            "both should name the one entry that serves them"
+            language_named("js").map(|language| language.id),
+            Some("javascript")
         );
-
         assert_eq!(
             language_named("c").map(|language| language.id),
             Some("cpp"),

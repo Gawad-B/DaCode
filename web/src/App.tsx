@@ -27,6 +27,11 @@ export default function App() {
 
   const keys = grammar === "modal" ? MODAL_KEYS : FLAT_KEYS;
 
+  // Counted from the table rather than written out, so that adding a release cannot
+  // leave the sentence above the grid claiming a number that is no longer true.
+  const shipped = RELEASES.filter((r) => r.state !== "next").length;
+  const fillers = (6 - (RELEASES.length % 6)) % 6;
+
   return (
     <div className="page">
       <header className={`nav ${scrolled ? "condensed" : ""}`}>
@@ -176,7 +181,7 @@ export default function App() {
         <div className="releases-head reveal">
           <h2>What shipped</h2>
           <span className="prose" style={{ fontSize: 13, color: "var(--ink-faint)" }}>
-            six releases in three days, then one afternoon of real use
+            {shipped} releases in four days, then real use finding what review could not
           </span>
         </div>
         <div className="grid-9">
@@ -191,6 +196,15 @@ export default function App() {
               <span className="name">{r.name}</span>
               <span className="body">{r.body}</span>
             </div>
+          ))}
+          {/* The grid draws its rules as 1px gaps over a background, so a row that
+              stops short shows that background as a slab of rule colour rather than
+              as nothing. It was exactly nine cards when it was written, which is what
+              the name says; the tenth broke it. Filling the row keeps it whole at any
+              count, and to a multiple of six because the layout drops to two columns
+              on a narrow window. */}
+          {Array.from({ length: fillers }, (_, i) => (
+            <div className="card filler" key={`filler-${i}`} aria-hidden="true" />
           ))}
         </div>
       </section>

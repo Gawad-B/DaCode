@@ -815,6 +815,11 @@ button {
   transition: background-color var(--tint);
 }
 
+/* Nothing in it, and nothing to read: it exists to complete the row. */
+.filler {
+  background: var(--bg-alt);
+}
+
 .card .name {
   font-family: var(--serif);
   font-size: 22px;

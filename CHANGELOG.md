@@ -9,6 +9,19 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- JavaScript is its own entry in the language table rather than a set of extensions hanging off the
+  TypeScript one. The entry decides the `languageId` sent in `didOpen`, so every `.js` file was
+  being announced to the server as TypeScript — and a server told that applies TypeScript's rules
+  to it, which from the outside is "the TypeScript server does not work with .js files". Both
+  entries run the same program, so separating them costs no second install; 0.4.2 renamed the row
+  to name both languages, which fixed finding it in the settings panel and not this.
+- The landing page's release grid fills its last row. The rules between cards are 1px gaps over a
+  background, so a row that stops short showed that background as a slab of rule colour. It was
+  exactly nine cards when it was written, which is what `grid-9` says; the tenth broke it. The count
+  above the grid is derived from the table now, so it cannot claim a number that is no longer true.
+
 ## [0.4.2] - 2026-08-15
 
 Everything here came from one person using 0.4.1 on their own code for an evening, which is where

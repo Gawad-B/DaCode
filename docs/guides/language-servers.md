@@ -25,7 +25,8 @@ The first program on this list that exists on `PATH` is the one that starts.
 | Language | Files | Servers vex looks for, in order | Installed by |
 |---|---|---|---|
 | Rust | `.rs` | `rust-analyzer` | `rustup component add rust-analyzer` |
-| TypeScript, JavaScript | `.ts` `.tsx` `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server` | `npm install --global typescript-language-server typescript` |
+| JavaScript | `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server` | `npm install --global typescript-language-server typescript` |
+| TypeScript | `.ts` `.tsx` | `typescript-language-server` | `npm install --global typescript-language-server typescript` |
 | Python | `.py` `.pyi` | `pyright-langserver`, `basedpyright-langserver`, `pylsp` | `npm install --global pyright`; or `uv`/`pipx`/`pip` for the other two |
 | C and C++ | `.c` `.h` `.cpp` `.hpp` `.cc` `.cxx` `.hh` | `clangd` | install LLVM, or `apt install clangd` |
 | Go | `.go` | `gopls` | `go install golang.org/x/tools/gopls@latest` |
