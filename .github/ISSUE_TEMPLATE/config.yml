@@ -1,0 +1,17 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question, or an idea you want to talk through first
+    url: https://github.com/Gawad-B/Vex/discussions
+    about: >
+      Discussions, not issues. "How do I …", "is this meant to work like this", and anything you want
+      to think about before it becomes a proposal.
+  - name: Security vulnerability
+    url: https://github.com/Gawad-B/Vex/security/advisories/new
+    about: >
+      Report privately rather than in a public issue. SECURITY.md says what is in scope and what to
+      expect.
+  - name: Which key does what
+    url: https://github.com/Gawad-B/Vex/blob/main/CHEATSHEET.md
+    about: >
+      Every binding, checked against the real grammar by a test. F1 in the editor lists the ones that
+      work right now, and ctrl-shift-p searches every command.

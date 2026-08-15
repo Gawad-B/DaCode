@@ -20,8 +20,10 @@ mkdir -p "$work/SOURCES" "$work/BUILD" "$work/RPMS"
 cp "$root/target/release/vex" "$work/SOURCES/"
 cp "$here/linux/vex.desktop" "$work/SOURCES/"
 cp -r "$here/linux/icons" "$work/SOURCES/"
-cp "$root/README.md" "$root/CHEATSHEET.md" "$work/SOURCES/"
+cp "$root/README.md" "$root/CHEATSHEET.md" "$root/CHANGELOG.md" "$work/SOURCES/"
 cp "$root/examples/init.lua" "$work/SOURCES/"
+# The README's links into docs/ are relative, so the tree ships with it.
+cp -r "$root/docs" "$work/SOURCES/"
 
 rpmbuild -bb "$here/vex.spec" \
     --define "_topdir $work" \

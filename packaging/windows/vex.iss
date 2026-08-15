@@ -60,7 +60,11 @@ Source: "..\..\target\release\vex.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vex.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\CHEATSHEET.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\examples\init.lua"; DestDir: "{app}\examples"; Flags: ignoreversion
+; The README links into docs\ with relative paths, so the two ship together or the front page's
+; every link is dead — and offline is when that page matters most.
+Source: "..\..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\vex"; Filename: "{app}\{#AppExe}"; IconFilename: "{app}\vex.ico"; Comment: "A modal code editor that never stalls on your keystroke"

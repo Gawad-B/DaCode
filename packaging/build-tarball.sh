@@ -23,6 +23,11 @@ find "$here/linux/icons" -type f | while read -r icon; do
 done
 install -Dm644 "$root/README.md" "$stage/README.md"
 install -Dm644 "$root/CHEATSHEET.md" "$stage/CHEATSHEET.md"
+install -Dm644 "$root/CHANGELOG.md" "$stage/CHANGELOG.md"
+# The README links into this tree relatively, so the two travel together or the links are dead.
+find "$root/docs" -type f | while read -r page; do
+    install -Dm644 "$page" "$stage/docs/${page#"$root/docs/"}"
+done
 install -Dm644 "$root/LICENSE" "$stage/LICENSE" 2>/dev/null || true
 install -Dm644 "$root/examples/init.lua" "$stage/examples/init.lua"
 

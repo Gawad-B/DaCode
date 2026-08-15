@@ -12,7 +12,7 @@
 //! so the panel's block is simply the last word.
 
 use vex_render::Rect;
-use vex_theme::{Theme, space};
+use vex_theme::{Theme, Typography, space};
 
 /// One row of the panel, and the box it occupies.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -568,6 +568,12 @@ pub struct Values {
 }
 
 impl Values {
+    /// What a tab may stand for. The same bounds `vex-lua` clamps a configured `tab_width` to —
+    /// stated once here because the panel and the config file must agree about what is reachable,
+    /// and the font size next to it is the case where they did not.
+    pub const MIN_TAB_WIDTH: usize = 1;
+    pub const MAX_TAB_WIDTH: usize = 16;
+
     pub fn get(&self, field: Field) -> String {
         match field {
             Field::VimKeys => on_off(self.modal),
@@ -585,20 +591,26 @@ impl Values {
 
     /// What a *click* on a row does: the same as `l`, except that a number at its limit wraps.
     ///
-    /// The keyboard clamps, deliberately — holding `l` should stop at 32 rather than silently
-    /// starting again at 8. But a click has no other direction to go in, so a mouse user who
-    /// clicked font size up to 32 would be stuck there with no way back. Wrapping is the only
-    /// honest single-direction control, and it is why this is not simply `adjust(+1)`.
+    /// The keyboard clamps, deliberately — holding `l` should stop at the maximum rather than
+    /// silently starting again at the minimum. But a click has no other direction to go in, so a
+    /// mouse user who clicked the font size up to its ceiling would be stuck there with no way back.
+    /// Wrapping is the only honest single-direction control, and it is why this is not `adjust(+1)`.
+    ///
+    /// The limit has to be the one the editor actually enforces. It was written as 32 while
+    /// [`Typography::with_code_size`] clamps at 18 and [`Values`] is read back from the live
+    /// typography — so the value could never reach 32, this branch never ran, and the mouse-only
+    /// user it exists for was stuck at 18 with the panel offering no way down. A wrap point above
+    /// the real ceiling is the same as no wrap at all.
     pub fn cycle(&mut self, field: Field) {
         let at_limit = match field {
-            Field::FontSize => self.font_size >= 32.0,
-            Field::TabWidth => self.tab_width >= 16,
+            Field::FontSize => self.font_size >= Typography::MAX_CODE_SIZE,
+            Field::TabWidth => self.tab_width >= Self::MAX_TAB_WIDTH,
             _ => false,
         };
         if at_limit {
             match field {
-                Field::FontSize => self.font_size = 8.0,
-                Field::TabWidth => self.tab_width = 1,
+                Field::FontSize => self.font_size = Typography::MIN_CODE_SIZE,
+                Field::TabWidth => self.tab_width = Self::MIN_TAB_WIDTH,
                 _ => {}
             }
             return;
@@ -609,14 +621,19 @@ impl Values {
     /// Changes a field. `delta` is +1 or -1; a toggle ignores its sign.
     pub fn adjust(&mut self, field: Field, delta: i32) {
         match field {
-            // Bounds match `Typography::with_code_size`, which clamps anyway — but a panel that lets
-            // you set 400 and then silently shows 99 is lying about what it did.
+            // The bounds are the editor's own, taken from the types that enforce them rather than
+            // written out again here. They were written out again here, as 8 and 32, while
+            // `Typography` clamped at 11 and 18 — so the panel showed a number the editor had
+            // already refused, which is exactly the lying it was trying to avoid.
             Field::VimKeys => self.modal = !self.modal,
             Field::FontSize => {
-                self.font_size = (self.font_size + delta as f32).clamp(8.0, 32.0);
+                self.font_size = (self.font_size + delta as f32)
+                    .clamp(Typography::MIN_CODE_SIZE, Typography::MAX_CODE_SIZE);
             }
             Field::TabWidth => {
-                self.tab_width = (self.tab_width as i32 + delta).clamp(1, 16) as usize;
+                self.tab_width = (self.tab_width as i32 + delta)
+                    .clamp(Self::MIN_TAB_WIDTH as i32, Self::MAX_TAB_WIDTH as i32)
+                    as usize;
             }
             Field::SoftWrap => self.soft_wrap = !self.soft_wrap,
             Field::FormatOnSave => self.format_on_save = !self.format_on_save,
@@ -730,6 +747,55 @@ pub fn write_back(existing: &str, values: &Values) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mouse_can_bring_the_font_size_back_down() {
+        // The trap: `cycle` wrapped at 32 and `adjust` clamped to 32, while
+        // `Typography::with_code_size` clamps at 18 and `Values` is read back from the live
+        // typography. So the panel's value could never exceed 18, the wrap never fired, and someone
+        // who had clicked the row up to 18 — the only direction a click goes — had no way back.
+        //
+        // Driven through `cycle`, which is what a click calls, rather than through a value set by
+        // hand. The previous tests set the field directly and passed the whole time this was broken.
+        let mut values = Values {
+            font_size: Typography::MIN_CODE_SIZE,
+            tab_width: 4,
+            soft_wrap: true,
+            format_on_save: false,
+            modal: true,
+            theme: Some("dark"),
+            line_numbers: crate::config::LineNumbers::Absolute,
+            sticky_scroll: true,
+            inlay_hints: false,
+            autosave: false,
+        };
+
+        // Enough clicks to pass the ceiling several times over, so a wrap that never fires shows up
+        // as a value stuck at the top rather than as a lucky landing.
+        let mut seen = Vec::new();
+        for _ in 0..40 {
+            values.cycle(Field::FontSize);
+            seen.push(values.font_size);
+        }
+
+        assert!(
+            seen.contains(&Typography::MIN_CODE_SIZE),
+            "clicking the font size never brings it back to {}: it reached {:?} and stayed",
+            Typography::MIN_CODE_SIZE,
+            seen.last()
+        );
+
+        // And every value a click can produce must be one the editor will actually keep. A panel
+        // offering a number that `with_code_size` then clamps away is the same defect wearing the
+        // other face: the row would show 24 and the text would be drawn at 18.
+        for size in seen {
+            assert_eq!(
+                Typography::with_code_size(size).code_size,
+                size,
+                "the panel offers {size}, which the typography clamps away"
+            );
+        }
+    }
 
     #[test]
     fn a_click_selects_the_row_it_looks_like_it_selects_at_every_height() {
@@ -905,15 +971,19 @@ mod tests {
             values.adjust(Field::FontSize, 1);
             values.adjust(Field::TabWidth, 1);
         }
-        assert_eq!(values.font_size, 32.0);
-        assert_eq!(values.tab_width, 16);
+        assert_eq!(values.font_size, Typography::MAX_CODE_SIZE);
+        assert_eq!(values.tab_width, Values::MAX_TAB_WIDTH);
 
         for _ in 0..100 {
             values.adjust(Field::FontSize, -1);
             values.adjust(Field::TabWidth, -1);
         }
-        assert_eq!(values.font_size, 8.0);
-        assert_eq!(values.tab_width, 1, "never zero, which would divide by it");
+        assert_eq!(values.font_size, Typography::MIN_CODE_SIZE);
+        assert_eq!(
+            values.tab_width,
+            Values::MIN_TAB_WIDTH,
+            "never zero, which would divide by it"
+        );
     }
 
     #[test]
@@ -1143,16 +1213,21 @@ mod click_tests {
 
     #[test]
     fn a_click_on_a_number_at_its_limit_wraps_rather_than_sticking() {
-        // A click has only one direction. Clamping at 32 would leave a mouse user stuck at the
+        // A click has only one direction. Clamping at the top would leave a mouse user stuck at the
         // largest font with no way back — a control that has trapped the person using it.
+        //
+        // The limits come from the types that enforce them. Written out as 32 and 8, this test
+        // passed for as long as the panel and `Typography` disagreed — the wrap it asserts was
+        // unreachable in the running editor, because the value is read back from a typography that
+        // had already clamped it to 18.
         let mut values = values();
-        values.font_size = 32.0;
+        values.font_size = Typography::MAX_CODE_SIZE;
         values.cycle(Field::FontSize);
-        assert_eq!(values.font_size, 8.0);
+        assert_eq!(values.font_size, Typography::MIN_CODE_SIZE);
 
-        values.tab_width = 16;
+        values.tab_width = Values::MAX_TAB_WIDTH;
         values.cycle(Field::TabWidth);
-        assert_eq!(values.tab_width, 1);
+        assert_eq!(values.tab_width, Values::MIN_TAB_WIDTH);
     }
 
     #[test]
@@ -1163,7 +1238,7 @@ mod click_tests {
         for _ in 0..100 {
             values.adjust(Field::FontSize, 1);
         }
-        assert_eq!(values.font_size, 32.0);
+        assert_eq!(values.font_size, Typography::MAX_CODE_SIZE);
     }
 
     #[test]

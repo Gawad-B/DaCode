@@ -1,0 +1,58 @@
+name: Feature request
+description: Something vex should be able to do and cannot.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Start with the problem rather than the feature. A description of what you were trying to do
+        can usually be answered several ways, and the best one is often not the one that came to mind
+        first — that is how the conventional keymap ended up a first-class editor instead of a
+        compatibility layer.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: >
+        What were you doing, and where did vex get in the way? Concrete beats general: "I have a
+        1,200-line file and cannot see which function I am inside" says more than "needs better
+        navigation".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+      description: >
+        Your proposed solution. If it is a key, say which and in which grammar — Vim's or the
+        conventional one, since they are separate. If it is a setting, say what its default should be
+        and why.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+      description: >
+        The workaround, another editor, or nothing. This is genuinely useful: it says how much the
+        problem costs, and sometimes it turns out vex already does it under a name you had not found.
+
+  - type: checkboxes
+    id: known-gaps
+    attributes:
+      label: Before you file
+      options:
+        - label: >
+            I have read the "Known gaps" section of `CLAUDE.md`, and the reasoning behind them in
+            `PLAN.md`. Several obvious requests — an integrated terminal, git blame, structural text
+            objects like `if`/`ic`, running VSCode extensions — are deliberate omissions with the
+            reasons written down, and a request that argues against the stated reason is far more
+            useful than one that has not seen it.
+          required: true
+        - label: >
+            I have checked `CHEATSHEET.md`, the F1 panel and `ctrl-shift-p`, and vex does not already
+            do this under another name.
+          required: true

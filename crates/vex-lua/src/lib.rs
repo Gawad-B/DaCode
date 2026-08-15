@@ -512,6 +512,39 @@ mod tests {
     }
 
     #[test]
+    fn the_example_config_is_a_config_this_reader_accepts() {
+        // `examples/init.lua` is what the documentation tells people to copy, and what the packages
+        // install as `examples/init.lua` beside the README — and until now nothing read it. A typo in
+        // an action name, an option renamed out from under it, or a stray comma would have been
+        // found by the first person to follow the instructions rather than by the build.
+        //
+        // It is checked for *problems*, not for values: the file is meant to be edited, so what
+        // matters is that every line in it still means something. `eval` collects rather than
+        // throws, which is the whole reason a bad config cannot stop the editor opening.
+        let config = eval(
+            include_str!("../../../examples/init.lua"),
+            "examples/init.lua",
+        );
+        assert!(
+            config.problems.is_empty(),
+            "the example config no longer loads cleanly: {:?}",
+            config.problems
+        );
+
+        // A commented-out line teaches nothing about whether it would work, so the two that are
+        // live are the ones worth pinning: the file would otherwise document `vim_keys` and a
+        // leader without either being exercised.
+        assert_eq!(config.modal, Some(true));
+        assert_eq!(
+            config
+                .keymap
+                .lookup(Mode::Normal, &Key::parse_sequence(" w")),
+            Match::Exact(Action::Save),
+            "the leader binding the file demonstrates does not resolve"
+        );
+    }
+
+    #[test]
     fn a_byte_order_mark_does_not_reject_the_whole_file() {
         // Notepad and `Set-Content` both write one, so on Windows this is what an init.lua someone
         // edited normally actually looks like. Lua reports it as `unexpected symbol near '<\239>'`,
