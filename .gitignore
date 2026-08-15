@@ -12,6 +12,11 @@
 /Vex modal state design/
 /Vex modal state design.zip
 
+# Working notes for whoever changes the code, kept on disk rather than in the repo. Nothing that
+# builds or ships reads them; `README.md`, `docs/` and `CONTRIBUTING.md` are what a user needs.
+/CLAUDE.md
+/PLAN.md
+
 # Screenshots and captures written by `--screenshot` while checking a change by eye.
 /*.png
 /*.jpg
