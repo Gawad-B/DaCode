@@ -58,10 +58,10 @@ just noise. `config::LineNumbers::default_for` is the one place that decides, an
 `vim_keys` has settled, which is why it is not a plain fallback. A value that is none of the three
 is reported as a problem and the default applies.
 
-**`font_size` is clamped twice, at different limits.** `vex.set` stores whatever number it is given;
+**`font_size` is clamped twice, at the same limits.** `vex.set` stores whatever number it is given;
 `Typography::with_code_size` then clamps it to 11.0–18.0. Values outside that range are silently
-brought inside it, so `font_size = 40` renders at 18. The settings panel's own bounds are 8–32 and
-do not match — see "Where the three disagree" below.
+brought inside it, so `font_size = 40` renders at 18. The settings panel takes its bounds from
+`Typography` rather than repeating them, so clicking the row up to 18 wraps back round to 11.
 
 **`tab_width` is clamped twice, at the same limits.** `vex.set` clamps to 1–16 and `config::apply_lua`
 clamps again. Never zero, which would divide by it.
@@ -213,12 +213,14 @@ Both are arguably deliberate — the panel has no key capturer, and `appearance`
 theme row it would sit next to — but neither says so, and an option with no row is one the panel's
 "where did this value come from" column can never answer for.
 
-**The panel's font-size bounds do not match the ones that apply.** `settings_ui::Field::FontSize`
-clamps to 8.0–32.0 and its click handler wraps at 32; the value is applied through
-`Typography::with_code_size`, which clamps to 11.0–18.0, and read back from the live editor. So the
-panel can never reach 32, the wrap never fires, and a mouse-only user who raises the font size to 18
-has no way to lower it again from the panel. The unit tests pass because they drive a bare `Values`
-struct rather than the editor.
+The panel's font-size bounds used to be a third disagreement, and they are worth recording because of
+how long it lasted. `settings_ui` clamped to 8.0–32.0 and wrapped a click at 32, while the value is
+applied through `Typography::with_code_size`, which clamps to 11.0–18.0, and read back from the live
+editor. The panel could therefore never reach 32, the wrap never fired, and a mouse-only user who
+clicked the font size up to 18 had no way to lower it again. Three unit tests asserted the 8–32
+bounds and passed throughout, because they drove a bare `Values` struct rather than the path the
+editor uses. Both bounds now come from `Typography` itself, and the test that replaced them asserts
+that every size a click can produce is one the typography will keep.
 
 **The importer writes four keys nothing reads.** `ImportedSettings::to_config` emits
 `editor.font_family`, `editor.insert_spaces`, `editor.ruler_column` and
@@ -227,12 +229,14 @@ import report, so `vex import --settings` can claim to have brought over setting
 
 ## Example file
 
-`examples/init.lua` is meant to document every option. It currently drifts from the reader in four
-places:
+`examples/init.lua` is meant to document every option, and `vex-lua` now loads it through the real
+reader in a test — so a renamed option or a mistyped action name fails the build rather than the
+first person to follow the instructions.
 
-- It says a built-in theme wins over a file of the same name. The opposite is true — `resolve_theme`
-  tries the file first, and there is a test named for it.
-- It sets `line_numbers = "absolute"` under a header claiming the values shown are the defaults. With
-  `vim_keys = true`, as the same file sets, the default is `relative`.
-- It never mentions `appearance`, `vex.server` or `vex.formatter`, all of which the reader accepts.
-- It shows only the long mode names for `vex.map`; `n`, `i`, `v` and `r` also work.
+Three drifts found when that test was written have been corrected: it claimed a built-in theme wins
+over a file of the same name (the opposite is true — `resolve_theme` tries the file first, and there
+is a test named for it), it set `line_numbers = "absolute"` under a header claiming the values shown
+are the defaults when with `vim_keys = true` the default is `relative`, and it never mentioned
+`appearance`, `vex.server` or `vex.formatter` at all.
+
+One remains: it shows only the long mode names for `vex.map`, where `n`, `i`, `v` and `r` also work.

@@ -264,6 +264,14 @@ naming a venv does not also throw away the fallback.
 layer occludes text below it. Within one layer it cannot. Panels go on `Layer::Panel`, the palette on
 `Layer::Modal`. Forgetting this is how the completion popup shipped transparent.
 
+**A bound written in two places is a bound that disagrees.** The settings panel clamped `font_size`
+to 8–32 and wrapped a click at 32; `Typography::with_code_size` clamps at 11–18, and `Values` is read
+back from the live typography. So the panel's value could never reach 32, the wrap never fired, and a
+mouse-only user who clicked the size up to 18 was stuck — a control that traps the person using it,
+which is the exact thing `cycle` exists to prevent, and its doc comment said so while doing the
+opposite. Three tests asserted 8 and 32 and passed throughout, because they drove a bare `Values`
+rather than the editor's path. Take the limit from the type that enforces it.
+
 **Layout is data.** `crates/vex/src/layout.rs` is the single definition of where things are; both
 drawing and mouse hit-testing read it. Two copies of that arithmetic drift, and the symptom — clicks
 landing a line off — gets blamed on the display map.

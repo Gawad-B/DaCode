@@ -477,6 +477,31 @@ fn usage() -> String {
     )
 }
 
+/// How to run a command, as a phrase that fits in the middle of a sentence.
+///
+/// Not every command has a key, and some deliberately do not — installing a language server is not
+/// something to fire off by muscle memory. `key_for` returns `""` for those, and the message that
+/// interpolated it read "…vex looked for pyright-langserver on PATH.  installs one, by running:",
+/// with a hole exactly where the instruction belonged. A sentence naming the long way round is worth
+/// far more than one telling you to press nothing.
+///
+/// Takes `modal` rather than reading it off the editor so this is testable without one, which is the
+/// same reason `paths::resolve` takes its platform.
+fn how_to_run(command: &str, modal: bool) -> String {
+    let Some(found) = vex_input::commands::by_name(command) else {
+        return String::new();
+    };
+    match found.keys_for(modal) {
+        "" => {
+            let palette = vex_input::commands::by_name("command_palette")
+                .map(|command| command.keys_for(modal))
+                .unwrap_or_default();
+            format!("the command palette ({palette}), \"{}\",", found.what)
+        }
+        keys => keys.to_string(),
+    }
+}
+
 /// The first non-flag argument: the file to open.
 fn positional(args: &[String]) -> Option<String> {
     let mut skip_next = false;
@@ -2302,7 +2327,7 @@ impl App {
                          {}",
                         first.language,
                         first.language,
-                        self.key_for("install_language_server"),
+                        self.how_to_run("install_language_server"),
                         first.install,
                     )
                 } else {
@@ -4649,6 +4674,11 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// How to run a command, as a phrase that can go in the middle of a sentence.
+    fn how_to_run(&self, command: &str) -> String {
+        how_to_run(command, self.state.modal)
+    }
+
     /// Keys for the first-run setup. Returns true if the key was consumed — which is always, while it
     /// is showing: it is a modal screen, and letting keys through to a document nobody can see would
     /// be worse than ignoring them.
@@ -6991,6 +7021,37 @@ mod command_line_tests {
                 "{flag} is read by the binary but --help does not mention it"
             );
         }
+    }
+
+    #[test]
+    fn a_message_never_tells_you_to_press_nothing() {
+        // `install_language_server` has no key in either grammar, on purpose, and the "no language
+        // server" message interpolated one anyway — so the sentence a first-time user of a Python
+        // project reads had a blank where the instruction was. Checked over every command rather
+        // than that one, because the next keyless command will be interpolated by somebody too.
+        for modal in [true, false] {
+            for command in vex_input::commands::COMMANDS {
+                let phrase = how_to_run(command.name, modal);
+                assert!(
+                    !phrase.trim().is_empty(),
+                    "`{}` produces an empty phrase with modal={modal}, so any message using it has \
+                     a hole in it",
+                    command.name
+                );
+                assert!(
+                    !phrase.contains("()"),
+                    "`{}` names the palette without saying how to open it: {phrase}",
+                    command.name
+                );
+            }
+        }
+
+        // The case it was built for, spelled out: no key, so the palette is named instead.
+        let phrase = how_to_run("install_language_server", true);
+        assert!(
+            phrase.contains("command palette") && phrase.contains("install a language server"),
+            "got: {phrase}"
+        );
     }
 
     #[test]
