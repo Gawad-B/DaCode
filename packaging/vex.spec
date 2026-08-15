@@ -69,6 +69,29 @@ gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
 %doc %{_docdir}/vex/examples/init.lua
 
 %changelog
+* Fri Aug 14 2026 vex - 0.4.1-1
+- The icon is visible on a light application menu: it was a near-white mark on
+  transparency, which is a blank tile rather than a faint icon. The rpm now also
+  refreshes the icon cache, without which a correctly installed icon still shows
+  as blank.
+- With Vim keys off, escape no longer enters a mode there is no way out of.
+- The mouse wheel scrolls whatever is under it — the settings panel, the key
+  list, the command palette, the file tree, the results and the problems list.
+- A message wraps instead of stopping mid-word, and goes away when you do
+  something else rather than waiting for escape.
+- The toolbar's labels no longer run together.
+- A language server can be installed from inside the editor, by running the
+  command it was already telling you to type.
+
+* Fri Aug 14 2026 vex - 0.4.0-1
+- Find and replace, rectangular selection, horizontal scrolling, closable tabs,
+  file operations from the tree, and crash recovery for every dirty buffer.
+- Completion uses what the server sent, including auto-import; go to a symbol in
+  the file or the project; formatting works with no language server at all.
+- Thirty-three defects found by an adversarial review, three of which could lose
+  work: a panic while typing in the search box, a crash losing every unsaved
+  buffer but one, and `d5G` deleting to the end of the file.
+
 * Fri Aug 14 2026 vex - 0.3.0-1
 - Every ctrl-shift binding works again. Shift arrives applied to the character, so
   ctrl-shift-p was seen as P and never matched: the command palette, delete-line,

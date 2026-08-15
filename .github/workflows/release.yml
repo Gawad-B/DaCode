@@ -81,9 +81,21 @@ jobs:
         run: |
           set -eu
           version="${TAG#v}"
+          # What changed, if the release wrote it down. `packaging/notes/<version>.md` is where that
+          # goes, and this reads it rather than the commit log: a release page is read by someone
+          # deciding whether to upgrade, and a list of commit subjects does not answer that.
+          #
+          # It comes first, and it is a *file* because this step used to build the notes from a
+          # heredoc alone — so publishing 0.4.0 overwrote the hand-written notes that had been put on
+          # the release minutes earlier, and nobody noticed until the next release was being cut.
+          : > notes.md
+          if [ -f "packaging/notes/${version}.md" ]; then
+            cat "packaging/notes/${version}.md" >> notes.md
+            printf '\n---\n\n' >> notes.md
+          fi
           # The install instructions belong to the release, not to the commit log: someone reading a
           # release page wants the command for their platform, not a list of what changed in it.
-          cat > notes.md <<NOTES
+          cat >> notes.md <<NOTES
           ## Install
 
           **Windows**
