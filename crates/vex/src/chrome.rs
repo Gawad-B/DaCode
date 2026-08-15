@@ -204,6 +204,24 @@ impl EditorState {
             .collect()
     }
 
+    /// Changes the editor mode, unless there is only one.
+    ///
+    /// With Vim's grammar off there is exactly one mode and it is `Insert`. Escape resolved to
+    /// `CollapseSelections`, which set `Normal` unconditionally — so a non-modal user pressing the
+    /// key every editor uses for "never mind" got a blue block cursor and a blue gutter, while the
+    /// statusline went on saying EDITING because its label is chosen by `modal` rather than by the
+    /// mode. A mode they could see, could not name, and could not leave: nothing `feed_flat` can
+    /// type is `i`.
+    ///
+    /// Refusing here rather than at each of the six call sites, because five of them are only
+    /// reachable *from* visual mode and reasoning about that at every site is how the sixth was
+    /// missed.
+    pub fn set_mode(&mut self, mode: Mode) {
+        if self.modal {
+            self.mode = mode;
+        }
+    }
+
     pub fn cursor(&self) -> CharOffset {
         self.document.selections().primary().head
     }
@@ -2761,7 +2779,13 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     // One tab per open file, from the same function the mouse hit-tests. The strip used to draw a
     // single tab — the active file's name — so every other open buffer was invisible, and there was
     // no way to close one at all.
-    for tab in crate::layout::tabs(rect, state.buffer_count, state.active_buffer, scale) {
+    for tab in crate::layout::tabs(
+        rect,
+        state.buffer_count,
+        state.active_buffer,
+        &state.typography,
+        scale,
+    ) {
         let (name, dirty) = state
             .buffer_tabs
             .get(tab.index)
@@ -2834,16 +2858,26 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     // Each one prints its own key beside it in the menu and the palette, so using the button twice
     // teaches the shortcut and the third time it is not needed. That is the same bargain the menus
     // make: the mouse path exists to make itself redundant, not to replace the keyboard.
-    let buttons = crate::layout::toolbar_buttons(rect, scale);
-    for (button, box_) in &buttons {
-        let hovered = crate::layout::contains(*box_, state.pointer.0, state.pointer.1);
+    let buttons = crate::layout::toolbar_buttons(rect, &state.typography, scale);
+    for placed in &buttons {
+        let hovered = crate::layout::contains(placed.rect, state.pointer.0, state.pointer.1);
         if hovered {
-            frame.fill(*box_, theme.row_active);
+            frame.fill(placed.rect, theme.row_active);
         }
+        // Into `text`, never `rect`: the padding is what guarantees a gap between two labels even
+        // when the width estimate is short, and it only does that if the run is clipped to the
+        // inner box. Elided for the same reason every variable-length string here is — an
+        // approximate ellipsis beats an exact guillotine.
         frame.text(label(
             state,
-            button.label,
-            *box_,
+            elide(
+                state,
+                Role::Label,
+                placed.button.label,
+                placed.text.width,
+                scale,
+            ),
+            placed.text,
             if hovered { accent } else { theme.ink_dim },
             Align::Center,
             scale,

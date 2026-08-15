@@ -907,3 +907,41 @@ fn the_search_box_can_say_which_match_you_are_on() {
         );
     }
 }
+
+#[test]
+fn escape_with_vim_off_does_not_enter_a_mode_there_is_no_way_out_of() {
+    // Escape is the key every editor uses for "never mind", and with the grammar off it resolved to
+    // `CollapseSelections`, which set `Mode::Normal` unconditionally. The cursor became a blue
+    // block, the gutter turned blue, and the statusline went on saying EDITING — because its label
+    // is chosen by `modal` rather than by the mode. A mode you could see, could not name, and could
+    // not leave: nothing `feed_flat` can type is `i`.
+    let mut session = flat("hello world\n").at(6);
+    session.press(Key::named(vex_input::KeyCode::Escape));
+
+    assert_eq!(
+        session.state.mode,
+        Mode::Insert,
+        "escape left the only mode a non-modal editor has"
+    );
+
+    // And it still has to do its job: collapsing a selection is the reason the key is bound.
+    let mut session = flat("hello world\n").at(0);
+    session.press(Key::ctrl('a'));
+    assert!(!session.state.document.selections().primary().is_caret());
+    session.press(Key::named(vex_input::KeyCode::Escape));
+    assert!(
+        session.state.document.selections().primary().is_caret(),
+        "escape stopped collapsing the selection"
+    );
+    assert_eq!(session.state.mode, Mode::Insert);
+}
+
+#[test]
+fn escape_with_vim_on_still_leaves_insert_mode() {
+    // The other half: refusing the mode change everywhere would break the modal editor, where
+    // escape leaving insert is the single most-used key in the grammar.
+    let mut session = Session::new("hello\n");
+    session.state.mode = Mode::Insert;
+    session.press(Key::named(vex_input::KeyCode::Escape));
+    assert_eq!(session.state.mode, Mode::Normal);
+}

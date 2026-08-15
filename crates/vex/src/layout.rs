@@ -27,6 +27,22 @@ pub struct Layout {
 /// editor most people close. Someone who chose the conventional editor should be able to open a
 /// file, show the tree, search, save and reach the settings without having been told a single
 /// shortcut — and then learn the shortcut from the button's own tooltip when they are ready.
+///
+/// One toolbar button, its box, and the box its label is drawn in.
+///
+/// Two rectangles rather than one because they answer different questions: the mouse and the hover
+/// fill want the whole button, and the text wants the part inside the padding. Returning only the
+/// outer one left the caller to invent the inset, and it invented none — so a label wider than its
+/// estimate ran to the button's own edge and met its neighbour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ToolButtonBox {
+    pub button: ToolButton,
+    /// The button: what the mouse hits and what lights up under the pointer.
+    pub rect: Rect,
+    /// Where the label goes, inset by the padding.
+    pub text: Rect,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct ToolButton {
     /// The command it runs, by the name in `vex_input::commands`.
@@ -86,16 +102,33 @@ pub const TOOLBAR: [ToolButton; 7] = [
 /// not fit are dropped from the end instead: [`TOOLBAR`] is ordered by how often each is reached
 /// for, so the tail is the part that can be spared, and a shorter toolbar is honest where half a
 /// button hanging past the edge is not.
-pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
+pub fn toolbar_buttons(
+    tabs: Rect,
+    typography: &vex_theme::Typography,
+    scale: f32,
+) -> Vec<ToolButtonBox> {
     let height = 22.0 * scale;
     let gap = 6.0 * scale;
     let margin = 16.0 * scale;
+    let pad = 8.0 * scale;
     let y = tabs.y + (tabs.height - height) / 2.0;
 
-    // Width follows the label, so nothing is clipped and the row stays tight.
+    // Per character, from the type scale rather than a constant of its own. It was `7.5` — below
+    // the project's own estimate for the role these are drawn in (`Role::Label` is uppercase with
+    // 0.2em tracking, so 8.2px at the default size), and tied to nothing, so it could not follow the
+    // font size at all. The eight-character labels were the first to overflow, which is exactly the
+    // pair that ran together: SETTINGS and COMMANDS. It went unseen here because the fonts Linux
+    // resolves are narrower than the ones Windows does; raising the editor font would have shown it
+    // on either.
+    //
+    // The 1.15 is slack, and it is there because `advance` is an *estimate* — a ratio times the
+    // type size, not a shaped measurement, which is a limitation this codebase states rather than
+    // hides. Without it the label still fitted the arithmetic and not the font: `COMMANDS` came back
+    // from the shaper wider than the estimate and lost its leading C to the clip.
+    let advance = typography.advance(vex_theme::Role::Label) * scale * 1.15;
     let widths: Vec<f32> = TOOLBAR
         .iter()
-        .map(|button| (button.label.chars().count() as f32 + 2.0) * 7.5 * scale)
+        .map(|button| (button.label.chars().count() as f32 * advance + pad * 2.0).ceil())
         .collect();
 
     let span = |count: usize| -> f32 {
@@ -111,7 +144,16 @@ pub fn toolbar_buttons(tabs: Rect, scale: f32) -> Vec<(ToolButton, Rect)> {
     let mut x = tabs.right() - margin - span(count);
     let mut placed = Vec::with_capacity(count);
     for (button, width) in TOOLBAR.iter().take(count).zip(&widths) {
-        placed.push((*button, Rect::new(x, y, *width, height)));
+        let rect = Rect::new(x, y, *width, height);
+        placed.push(ToolButtonBox {
+            button: *button,
+            rect,
+            // The label is drawn into this, never into `rect`. `advance` is an estimate, and the
+            // renderer clips a run to its own rectangle — so an underestimate now costs a shaved
+            // letter inside the padding rather than a label bleeding into its neighbour. The gap
+            // between two labels cannot fall below `pad * 2 + gap` on any font or platform.
+            text: Rect::new(x + pad, y, (width - pad * 2.0).max(0.0), height),
+        });
         x += width + gap;
     }
     placed
@@ -236,7 +278,13 @@ pub struct Tab {
 /// Tabs share whatever the toolbar leaves. When they no longer fit they shrink to a floor and then
 /// stop being produced, rather than sliding under the buttons: a tab you cannot read is still a tab
 /// you can click, but one drawn beneath something else is a click that lands on the wrong thing.
-pub fn tabs(strip: Rect, count: usize, active: usize, scale: f32) -> Vec<Tab> {
+pub fn tabs(
+    strip: Rect,
+    count: usize,
+    active: usize,
+    typography: &vex_theme::Typography,
+    scale: f32,
+) -> Vec<Tab> {
     const IDEAL: f32 = 150.0;
     const FLOOR: f32 = 64.0;
 
@@ -249,9 +297,9 @@ pub fn tabs(strip: Rect, count: usize, active: usize, scale: f32) -> Vec<Tab> {
     let y = strip.y + (strip.height - height) / 2.0;
 
     // The toolbar owns the right end of the same row.
-    let toolbar_left = toolbar_buttons(strip, scale)
+    let toolbar_left = toolbar_buttons(strip, typography, scale)
         .first()
-        .map(|(_, box_)| box_.x)
+        .map(|placed| placed.rect.x)
         .unwrap_or(strip.right());
     let available = (toolbar_left - strip.x - pad * 2.0).max(0.0);
     if available < FLOOR * scale {
@@ -440,36 +488,84 @@ mod tests {
         // `open` and `files` were painted past the left edge — and since the mouse reads the same
         // rectangles, they could not be clicked either. Every button that is drawn must be inside
         // the strip it belongs to, at every width.
+        let typography = vex_theme::Typography::default();
         for width in [120.0, 200.0, 320.0, 434.0, 700.0, 1600.0] {
             let tabs = Rect::new(0.0, 72.0, width, 34.0);
-            for (button, box_) in toolbar_buttons(tabs, 1.0) {
+            for placed in toolbar_buttons(tabs, &typography, 1.0) {
                 assert!(
-                    box_.x >= tabs.x,
+                    placed.rect.x >= tabs.x,
                     "`{}` starts left of the strip in a {width}px window",
-                    button.label
+                    placed.button.label
                 );
                 assert!(
-                    box_.right() <= tabs.right(),
+                    placed.rect.right() <= tabs.right(),
                     "`{}` runs past the right edge in a {width}px window",
-                    button.label
+                    placed.button.label
                 );
             }
         }
 
-        let wide = toolbar_buttons(Rect::new(0.0, 72.0, 1600.0, 34.0), 1.0);
+        let wide = toolbar_buttons(Rect::new(0.0, 72.0, 1600.0, 34.0), &typography, 1.0);
         assert_eq!(wide.len(), TOOLBAR.len(), "a wide window shows all of it");
         assert_eq!(
-            wide[0].0.command, TOOLBAR[0].command,
+            wide[0].button.command, TOOLBAR[0].command,
             "and shows it in order"
         );
 
-        let narrow = toolbar_buttons(Rect::new(0.0, 72.0, 200.0, 34.0), 1.0);
+        let narrow = toolbar_buttons(Rect::new(0.0, 72.0, 200.0, 34.0), &typography, 1.0);
         assert!(narrow.len() < TOOLBAR.len(), "a narrow one cannot");
         assert_eq!(
-            narrow.first().map(|(button, _)| button.command),
+            narrow.first().map(|placed| placed.button.command),
             Some(TOOLBAR[0].command),
             "what survives is the front of the row — the buttons reached for most"
         );
+    }
+
+    #[test]
+    fn a_toolbar_label_always_has_room_and_never_touches_its_neighbour() {
+        // The assertion the test above was missing, and the reason SETTINGS and COMMANDS ran
+        // together on Windows: it only ever checked that the *buttons* stayed inside the strip, and
+        // never that a *label* fitted the button it was drawn in. The width came from a bare `7.5`
+        // per character — below the project's own estimate for the role, and tied to nothing, so it
+        // could not follow the font size either. Linux resolves narrower fonts and hid it.
+        //
+        // Swept over the font sizes the settings panel can produce, because the old constant was
+        // wrong on *every* platform once the editor font was raised.
+        for size in [11.0f32, 13.5, 15.0, 16.5, 18.0] {
+            let typography = vex_theme::Typography::with_code_size(size);
+            let advance = typography.advance(vex_theme::Role::Label);
+            for scale in [1.0f32, 1.25, 1.5, 2.0] {
+                let placed = toolbar_buttons(
+                    Rect::new(0.0, 72.0, 1600.0 * scale, 34.0 * scale),
+                    &typography,
+                    scale,
+                );
+                assert_eq!(placed.len(), TOOLBAR.len(), "all seven fit at 1600px");
+
+                for button in &placed {
+                    let needed = button.button.label.chars().count() as f32 * advance * scale;
+                    assert!(
+                        button.text.width >= needed,
+                        "`{}` needs {needed:.1}px and has {:.1}px at size {size}, scale {scale}",
+                        button.button.label,
+                        button.text.width
+                    );
+                    assert!(button.text.x >= button.rect.x);
+                    assert!(button.text.right() <= button.rect.right());
+                }
+
+                // And the labels never meet, whatever the shaper does with them: the clip is to the
+                // inner box, so the blank between two of them is at least the padding plus the gap.
+                for pair in placed.windows(2) {
+                    assert!(
+                        pair[1].text.x - pair[0].text.right() >= 6.0 * scale,
+                        "`{}` and `{}` touch at size {size}, scale {scale}",
+                        pair[0].button.label,
+                        pair[1].button.label
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -521,14 +617,15 @@ mod tests {
         // button is a click that runs the wrong thing — the failure this module exists to prevent,
         // and the one that gets blamed on everything else.
         let strip = Rect::new(0.0, 72.0, 1600.0, 34.0);
-        let toolbar_left = toolbar_buttons(strip, 1.0)
+        let typography = vex_theme::Typography::default();
+        let toolbar_left = toolbar_buttons(strip, &typography, 1.0)
             .first()
-            .map(|(_, box_)| box_.x)
+            .map(|placed| placed.rect.x)
             .expect("a wide strip has a toolbar");
 
         for count in 1..=12 {
             for active in 0..count {
-                let tabs = tabs(strip, count, active, 1.0);
+                let tabs = tabs(strip, count, active, &typography, 1.0);
                 assert!(
                     tabs.iter().any(|tab| tab.index == active),
                     "the file being edited must always have a tab: {active} of {count}"
@@ -558,7 +655,8 @@ mod tests {
     fn a_narrow_strip_gives_up_on_tabs_rather_than_drawing_unreadable_ones() {
         // At some width there is no honest tab to draw. Returning none is better than a sliver that
         // cannot show a name but can still be clicked.
-        let tabs = tabs(Rect::new(0.0, 72.0, 120.0, 34.0), 5, 0, 1.0);
+        let typography = vex_theme::Typography::default();
+        let tabs = tabs(Rect::new(0.0, 72.0, 120.0, 34.0), 5, 0, &typography, 1.0);
         assert!(tabs.is_empty());
     }
 

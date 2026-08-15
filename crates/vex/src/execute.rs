@@ -44,7 +44,7 @@ pub fn execute(
         } => apply_operator(state, registers, *operator, *target, *register),
 
         Action::EnterMode(mode) => {
-            state.mode = *mode;
+            state.set_mode(*mode);
             state.document.end_undo_group();
         }
         Action::InsertAt(position) => enter_insert(state, *position),
@@ -102,7 +102,7 @@ pub fn execute(
         }
         Action::CollapseSelections => {
             state.document.collapse_selections();
-            state.mode = Mode::Normal;
+            state.set_mode(Mode::Normal);
         }
         Action::SelectLine { count } => select_lines(state, *count),
         Action::SelectAll => {
@@ -474,7 +474,7 @@ fn apply_operator(
         Operator::Yank => {
             registers.set(register, contents.join(""));
             if leaving_visual {
-                state.mode = Mode::Normal;
+                state.set_mode(Mode::Normal);
             }
             // Yanking leaves the text alone, so collapse to the start of each range the way Vim
             // leaves the cursor at the top of a yank.
@@ -497,9 +497,9 @@ fn apply_operator(
                 .mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
 
             if operator == Operator::Change {
-                state.mode = Mode::Insert;
+                state.set_mode(Mode::Insert);
             } else if leaving_visual {
-                state.mode = Mode::Normal;
+                state.set_mode(Mode::Normal);
             }
         }
 
@@ -519,7 +519,7 @@ fn apply_operator(
             let _ = state
                 .mutate(|document| document.apply(Transaction::new(edits), EditKind::Discrete));
             if leaving_visual {
-                state.mode = Mode::Normal;
+                state.set_mode(Mode::Normal);
             }
         }
 

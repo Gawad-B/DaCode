@@ -41,6 +41,25 @@ install -Dm644 %{_sourcedir}/README.md %{buildroot}%{_docdir}/vex/README.md
 install -Dm644 %{_sourcedir}/CHEATSHEET.md %{buildroot}%{_docdir}/vex/CHEATSHEET.md
 install -Dm644 %{_sourcedir}/init.lua %{buildroot}%{_docdir}/vex/examples/init.lua
 
+# Installing an icon is not the same as the desktop seeing it. GTK reads a *cache* built per icon
+# theme directory, and a menu entry whose icon is not in that cache falls back to a blank tile — the
+# same thing a missing icon looks like, which is why this is easy to ship without noticing. `|| :`
+# throughout: a desktop-file or icon-cache tool that is absent must not fail the installation of an
+# editor that runs perfectly well without a menu entry.
+%post
+touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
+update-desktop-database &>/dev/null || :
+
+%postun
+if [ $1 -eq 0 ]; then
+    touch --no-create %{_datadir}/icons/hicolor &>/dev/null || :
+    gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+    update-desktop-database &>/dev/null || :
+fi
+
+%posttrans
+gtk-update-icon-cache %{_datadir}/icons/hicolor &>/dev/null || :
+
 %files
 %{_bindir}/vex
 %{_datadir}/applications/vex.desktop

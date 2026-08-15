@@ -8,8 +8,16 @@
 //! — the obvious choice, and what the handoff suggests — would add a decoder stack for a dozen
 //! formats to read one file whose format we chose ourselves.
 //!
-//! The light ("paper") variant is the shipped icon: desktop environments composite app icons onto
-//! panels and docks that are dark far more often than light.
+//! The icon carries its own background. It used to be the bare "paper" mark on transparency, on the
+//! reasoning that "desktop environments composite app icons onto panels and docks that are dark far
+//! more often than light" — a bet, and one that came back as a bug report from the first person to
+//! install the rpm. Their application menu is light, and a near-white mark on transparency there is
+//! not a faint icon: it is a blank tile with the word vex under it.
+//!
+//! An icon whose legibility depends on what is behind it has a coin flip in it. This one is drawn on
+//! the editor's own background, like nearly every other application in that menu, so there is
+//! nothing left to guess. `cargo run -p vex --example icons` regenerates it and the whole Linux set
+//! from one definition.
 
 use winit::window::Icon;
 
@@ -81,34 +89,55 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_is_transparent_at_its_corners_and_marked_in_its_middle() {
-        // The mark sits on transparency with no tile, so the corners must be empty — an icon that
-        // arrived with a background would have come from the wrong export.
+    fn the_icon_is_a_rounded_tile_rather_than_a_square_or_a_bare_mark() {
+        // Both halves matter. A bare mark on transparency is the defect this replaced — invisible
+        // on a light menu. A *square* tile is the other failure: it reads as a sticker beside the
+        // rounded icons every desktop draws, so the corners have to stay empty.
         let (rgba, width, _) = decode(ICON_PNG).unwrap();
         let alpha_at = |x: usize, y: usize| rgba[(y * width as usize + x) * 4 + 3];
 
-        assert_eq!(alpha_at(2, 2), 0, "top-left corner is transparent");
-        assert_eq!(alpha_at(253, 2), 0, "top-right corner is transparent");
+        assert_eq!(alpha_at(2, 2), 0, "top-left corner is rounded away");
+        assert_eq!(alpha_at(253, 2), 0, "top-right corner is rounded away");
+        assert_eq!(alpha_at(2, 253), 0, "bottom-left corner is rounded away");
 
-        // The apex of the primary chevron is around 50%,52% of the box.
-        assert!(
-            alpha_at(128, 130) > 200,
-            "the mark itself is opaque where the apex is"
+        assert_eq!(
+            alpha_at(128, 4),
+            255,
+            "the tile itself is solid at its edge"
         );
+        assert_eq!(alpha_at(4, 128), 255);
+        // The apex of the primary chevron is around 50%,52% of the box.
+        assert!(alpha_at(128, 130) > 200, "the mark is opaque at its apex");
     }
 
     #[test]
-    fn the_icon_is_the_paper_variant() {
-        // Light ink, because docks are usually dark. If someone swaps in the `ink` export by mistake
-        // the icon vanishes into most panels, which is exactly the kind of thing nobody notices in
-        // review.
+    fn the_mark_stands_out_against_the_ground_it_is_drawn_on() {
+        // This used to assert the mark was *light*, on the reasoning that docks are usually dark —
+        // and that is the assertion that would have held the invisible icon in place. What matters
+        // is not which way round the two are, it is that they differ: an icon legible on one
+        // desktop and blank on another is the bug, whichever desktop drew the short straw.
         let (rgba, width, _) = decode(ICON_PNG).unwrap();
-        let index = (130 * width as usize + 128) * 4;
-        let (r, g, b) = (rgba[index], rgba[index + 1], rgba[index + 2]);
+        let sample = |x: usize, y: usize| {
+            let index = (y * width as usize + x) * 4;
+            (
+                rgba[index],
+                rgba[index + 1],
+                rgba[index + 2],
+                rgba[index + 3],
+            )
+        };
 
+        let (mr, mg, mb, ma) = sample(128, 130);
+        let (gr, gg, gb, ga) = sample(128, 232);
+        assert_eq!(ma, 255, "the mark is opaque");
+        assert_eq!(ga, 255, "so is the ground under it");
+
+        // Rough luminance is enough: this is asking "can you see it", not matching a colour.
+        let luma = |r: u8, g: u8, b: u8| 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+        let separation = (luma(mr, mg, mb) - luma(gr, gg, gb)).abs();
         assert!(
-            r > 180 && g > 180 && b > 170,
-            "expected the light mark, got rgb({r}, {g}, {b})"
+            separation > 90.0,
+            "the mark rgb({mr},{mg},{mb}) barely separates from the ground rgb({gr},{gg},{gb})"
         );
     }
 }

@@ -47,7 +47,27 @@ Description: A modal code editor that never stalls on your keystroke
  off for people who would rather have a conventional editor.
 EOF
 
-# Checksums, which `dpkg --verify` and several package managers read.
+# Installing an icon is not the same as the desktop seeing it: GTK reads a *cache* per icon theme
+# directory, and a menu entry whose icon is missing from that cache falls back to a blank tile —
+# which looks exactly like shipping no icon at all. Every command is allowed to be absent, because a
+# missing menu entry must never fail the installation of an editor that runs fine without one.
+for script in postinst postrm; do
+    cat > "$work/control/$script" <<'EOF'
+#!/bin/sh
+set -e
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+fi
+exit 0
+EOF
+    chmod 755 "$work/control/$script"
+done
+
+# Checksums, which `dpkg --verify` and several package managers read. After the scriptlets, which
+# live in the control member and must not be listed here.
 (cd "$work/data" && find . -type f -exec md5sum {} + | sed 's|\./||') > "$work/control/md5sums"
 
 echo "2.0" > "$work/debian-binary"

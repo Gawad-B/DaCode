@@ -5876,6 +5876,7 @@ impl App {
             strip,
             self.state.buffer_count,
             self.state.active_buffer,
+            &self.state.typography,
             scale,
         );
 
@@ -5895,10 +5896,10 @@ impl App {
     /// A click on a toolbar button, if that is where it landed.
     fn click_toolbar(&mut self, x: f32, y: f32) -> bool {
         let layout = self.layout();
-        let hit = vex::layout::toolbar_buttons(layout.tabs, self.scale())
+        let hit = vex::layout::toolbar_buttons(layout.tabs, &self.state.typography, self.scale())
             .into_iter()
-            .find(|(_, box_)| vex::layout::contains(*box_, x, y))
-            .map(|(button, _)| button.command);
+            .find(|placed| vex::layout::contains(placed.rect, x, y))
+            .map(|placed| placed.button.command);
 
         let Some(command) = hit else {
             return false;
