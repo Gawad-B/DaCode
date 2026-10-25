@@ -404,7 +404,7 @@ pub fn draw_welcome(
     let mark = px(34.0);
     let mut y =
         (bounds.y + ((bounds.height - header - content_height) / 2.0).max(px(56.0))).round();
-    frame.mark(Rect::new(left, y, mark, mark), theme.ink, theme.bg);
+    frame.mark(Rect::new(left, y, mark, mark), theme.ink, theme.brand());
 
     let mut wordmark = typography.spec(Role::Display);
     wordmark.size_px = px(30.0);
@@ -830,7 +830,7 @@ pub fn draw_splash(
     frame.mark(
         Rect::new(left, top, mark_size, mark_size),
         theme.ink,
-        theme.bg,
+        theme.brand(),
     );
 
     let mut spec = typography.spec(Role::Display);
@@ -2169,11 +2169,11 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     let top = (code.y + (code.height - block) / 2.0).round();
     let left = (code.x + (code.width - size) / 2.0).round();
 
-    // 40% opacity, over the canvas it sits on: the mark is present, not insistent.
+    // Faint, over the canvas it sits on: the mark is present, not insistent.
     frame.mark(
         Rect::new(left, top, size, size),
         theme.ink_faint.with_alpha(0.4),
-        theme.bg,
+        theme.brand().with_alpha(0.4),
     );
 
     frame.text(label(
@@ -2981,30 +2981,30 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let bar = crate::layout::title_bar(rect, scale);
     let white = Oklch::new(0.99, 0.0, 0.0);
 
-    // The logo: code brackets in a disc of the brand colour. A circle and a word, so it reads at
-    // the size of a title bar the way the old serif wordmark did not.
-    frame.disc(
-        [
-            bar.logo.x + bar.logo.width / 2.0,
-            bar.logo.y + bar.logo.height / 2.0,
-        ],
-        bar.logo.width / 2.0,
-        theme.primary,
-    );
+    // The mark and the wordmark, as the logo sheet sets them: "Da" in the brand's amber, "Code" in
+    // the ink. Two runs placed by the face's own advance — one monospaced face, so the second word
+    // starts exactly where the first ends.
+    frame.mark(bar.logo, theme.ink, theme.brand());
+    let advance = state.typography.advance(Role::Brand) * scale;
     frame.text(run(
         state,
-        Role::Value,
-        "</>",
-        bar.logo,
-        white,
-        Align::Center,
+        Role::Brand,
+        "Da",
+        bar.name,
+        theme.brand(),
+        Align::Left,
         scale,
     ));
     frame.text(run(
         state,
         Role::Brand,
-        "DaCode",
-        bar.name,
+        "Code",
+        Rect::new(
+            bar.name.x + advance * 2.0,
+            bar.name.y,
+            (bar.name.width - advance * 2.0).max(0.0),
+            bar.name.height,
+        ),
         theme.ink,
         Align::Left,
         scale,

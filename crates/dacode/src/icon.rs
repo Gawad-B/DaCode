@@ -106,8 +106,8 @@ mod tests {
             "the tile itself is solid at its edge"
         );
         assert_eq!(alpha_at(4, 128), 255);
-        // The apex of the primary chevron is around 50%,52% of the box.
-        assert!(alpha_at(128, 130) > 200, "the mark is opaque at its apex");
+        // The letter's left stroke, where the bowl turns, is around 20%,67% of the box.
+        assert!(alpha_at(50, 172) > 200, "the tile is opaque under the letter");
     }
 
     #[test]
@@ -127,7 +127,8 @@ mod tests {
             )
         };
 
-        let (mr, mg, mb, ma) = sample(128, 130);
+        // The letter's left stroke, and the tile below the whole mark.
+        let (mr, mg, mb, ma) = sample(50, 172);
         let (gr, gg, gb, ga) = sample(128, 232);
         assert_eq!(ma, 255, "the mark is opaque");
         assert_eq!(ga, 255, "so is the ground under it");

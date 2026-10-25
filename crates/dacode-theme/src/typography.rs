@@ -192,7 +192,9 @@ impl Typography {
                 weight: 600,
                 size_px: (code * 1.15).round(),
                 line_height: 1.2,
-                tracking_em: 0.01,
+                // None: the wordmark is two runs placed by the advance, and tracking the shaper does
+                // not apply would put the second a fraction to the right of where the first ended.
+                tracking_em: 0.0,
                 uppercase: false,
             },
         }

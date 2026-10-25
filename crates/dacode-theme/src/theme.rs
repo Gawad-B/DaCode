@@ -369,6 +369,18 @@ impl Theme {
             .map(|(name, _)| *name)
     }
 
+    /// The logo's amber — the block in the mark and "Da" in the wordmark.
+    ///
+    /// Taken from the logo sheet, which gives it two values: the bright one on dark surfaces and a
+    /// deeper one on light, where the bright one would read as yellow on white. Fixed per appearance
+    /// rather than per theme, because it is the brand's colour, not the theme's.
+    pub const fn brand(&self) -> Oklch {
+        match self.appearance {
+            Appearance::Dark => Oklch::new(0.8134, 0.1404, 80.2),
+            Appearance::Light => Oklch::new(0.6212, 0.1290, 72.8),
+        }
+    }
+
     // ---- mode-derived colors -----------------------------------------------------------
     //
     // Everything mode-colored on screen comes from `accent`. Nothing downstream is allowed to

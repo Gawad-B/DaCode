@@ -250,70 +250,67 @@ fn run(text: &str, rect: Rect) -> TextRun {
 
 /// The mark's own rules, which are geometric and therefore easy to break without noticing.
 #[test]
-fn the_mark_is_square_optically_centred_and_monochrome() {
+fn the_mark_is_square_and_centred_in_its_box() {
     let theme = Theme::dark();
     let mut frame = Frame::default();
 
     // A wide box: the mark must not stretch to fill it.
-    frame.mark(Rect::new(100.0, 200.0, 300.0, 46.0), theme.ink, theme.bg);
+    frame.mark(
+        Rect::new(100.0, 200.0, 300.0, 66.0),
+        theme.ink,
+        theme.brand(),
+    );
     let mark = &frame.marks[0];
 
     assert_eq!(mark.rect.width, mark.rect.height, "the em box stays square");
-    assert_eq!(mark.rect.width, 46.0, "sized by the smaller side");
+    assert_eq!(mark.rect.width, 66.0, "sized by the smaller side");
     assert_eq!(
-        mark.rect.x, 227.0,
+        mark.rect.x, 217.0,
         "horizontally centred in the box it was given"
     );
+    assert_eq!(mark.rect.y, 200.0);
+    assert!(!mark.small, "66px is the full mark");
+}
+
+#[test]
+fn small_marks_switch_to_the_one_block_variant() {
+    // The logo sheet's rule: below 64 pixels the white and amber blocks become one, because two
+    // blocks a few pixels across read as a smudge.
+    let theme = Theme::dark();
+    let mut frame = Frame::default();
+
+    frame.mark(Rect::new(0.0, 0.0, 28.0, 28.0), theme.ink, theme.brand());
+    frame.mark(Rect::new(0.0, 0.0, 64.0, 64.0), theme.ink, theme.brand());
+
     assert!(
-        mark.rect.y < 200.0,
-        "nudged up: the echo makes the shape bottom-heavy, so box-centring reads low"
+        frame.marks[0].small,
+        "28px — the title bar — is the small mark"
     );
-    assert!(!mark.solo, "46px is well above the solo threshold");
+    assert!(!frame.marks[1].small, "64px is the full mark");
 }
 
 #[test]
-fn small_marks_switch_to_the_solo_variant() {
-    // Below 32px the 34% echo turns to mud, so the mark becomes a single chevron — the same
-    // substitution the handoff bakes into its PNG set.
-    let theme = Theme::dark();
+fn the_letter_takes_the_ink_and_the_block_keeps_the_amber() {
+    // What lets one asset serve every theme: the colours arrive with the draw, so a light theme's
+    // dark ink makes a dark letter while the brand's amber stays amber.
+    let light = Theme::light();
     let mut frame = Frame::default();
-
-    frame.mark(Rect::new(0.0, 0.0, 24.0, 24.0), theme.ink, theme.bg);
-    frame.mark(Rect::new(0.0, 0.0, 32.0, 32.0), theme.ink, theme.bg);
-
-    assert!(frame.marks[0].solo, "24px is solo");
-    assert!(!frame.marks[1].solo, "32px is the full mark");
-}
-
-#[test]
-fn the_echo_sits_between_the_surface_and_the_ink() {
-    // The echo is mixed on the CPU rather than drawn at 34% alpha, so this is where "the echo is
-    // dimmer than the mark, and not merely a darker rectangle" is actually enforced.
-    let theme = Theme::dark();
-    let mut frame = Frame::default();
-    frame.mark(Rect::new(0.0, 0.0, 46.0, 46.0), theme.ink, theme.bg);
+    frame.mark(Rect::new(0.0, 0.0, 46.0, 46.0), light.ink, light.brand());
 
     let mark = &frame.marks[0];
     let luminance = |c: [f32; 4]| c[0] * 0.2126 + c[1] * 0.7152 + c[2] * 0.0722;
-    let surface = luminance(theme.bg.to_linear());
-    let ink = luminance(mark.color);
-    let echo = luminance(mark.echo);
-
     assert!(
-        echo > surface && echo < ink,
-        "echo luminance {echo} should fall between surface {surface} and ink {ink}"
+        luminance(mark.ink) < luminance(light.bg.to_linear()),
+        "on a light theme the letter is darker than the surface"
     );
-    assert_eq!(
-        mark.echo[3], 1.0,
-        "the echo is opaque: its dimness is color"
-    );
+    assert_eq!(mark.accent, light.brand().to_linear());
 }
 
 #[test]
 fn a_zero_sized_box_draws_nothing() {
     let theme = Theme::dark();
     let mut frame = Frame::default();
-    frame.mark(Rect::new(0.0, 0.0, 0.0, 40.0), theme.ink, theme.bg);
+    frame.mark(Rect::new(0.0, 0.0, 0.0, 40.0), theme.ink, theme.brand());
     assert!(frame.marks.is_empty());
 }
 
@@ -322,9 +319,9 @@ fn marks_follow_the_layer_cursor_and_clear_with_the_frame() {
     let theme = Theme::dark();
     let mut frame = Frame::default();
 
-    frame.mark(Rect::new(0.0, 0.0, 40.0, 40.0), theme.ink, theme.bg);
+    frame.mark(Rect::new(0.0, 0.0, 40.0, 40.0), theme.ink, theme.brand());
     frame.set_layer(Layer::Panel);
-    frame.mark(Rect::new(0.0, 0.0, 40.0, 40.0), theme.ink, theme.bg);
+    frame.mark(Rect::new(0.0, 0.0, 40.0, 40.0), theme.ink, theme.brand());
 
     assert_eq!(frame.marks_on(Layer::Base).count(), 1);
     assert_eq!(frame.marks_on(Layer::Panel).count(), 1);

@@ -1,39 +1,44 @@
-//! Regenerates the application icons from the chevron mark.
+//! Regenerates every icon and logo image from the mark's two masks.
 //!
-//! Run with `cargo run -p dacode --example icons`. It rewrites `packaging/linux/icons` and
-//! `crates/dacode/assets/icons`, so the icon that ships is the icon in the repository rather than
-//! whatever was exported by hand once.
+//! Run with `cargo run -p dacode --example icons`. It rewrites `packaging/linux/icons`,
+//! `packaging/windows/dacode.ico`, `crates/dacode/assets/icons` and `logo/dacode`, so the icon that
+//! ships is the icon in the repository rather than whatever was exported by hand once.
+//!
+//! # Where the art comes from
+//!
+//! `crates/dacode-render/assets/mark.png` and `mark-small.png` are the logo — direction B of the
+//! logo sheet, "bold geometric". Each is a pair of coverage masks rather than a picture: red is how
+//! much of a pixel the letter covers, green how much the amber block does. They were separated from
+//! the sheet once, against its own background and its two ink colours, and are the source of truth
+//! from here on: the editor draws its title-bar mark from the same files, so the icon in the dock and
+//! the mark in the window cannot disagree. `mark-small.png` is the sheet's own small-size variant,
+//! where the white and amber blocks become one block below 64 pixels.
 //!
 //! # Why the icon has a background
 //!
-//! It did not, and that is the bug this exists for. The mark is a near-white chevron, shipped on
-//! transparency because "desktop environments composite app icons onto panels and docks that are
-//! dark far more often than light" — a reasonable bet, and wrong for the first person who installed
-//! the rpm. Their application menu is light, and a near-white mark on transparency there is not a
-//! faint icon, it is *no icon*: a blank tile with the word DaCode under it.
-//!
-//! An icon that depends on what is behind it has a coin flip in it. This one carries the editor's
-//! own background, so it reads on any panel, any theme, any platform — which is also what every
-//! other application in that menu does.
-//!
-//! Drawn here rather than exported from a design tool because the alternative is a binary asset
-//! nobody can regenerate: the shipped PNGs and the SVG have to agree, and eight sizes exported by
-//! hand drift the first time one of them is touched.
+//! The mark is a near-white letter, and a near-white letter on transparency in a light application
+//! menu is not a faint icon, it is *no icon* — which is what the first person to install the rpm
+//! saw, with the old mark. The icon carries the logo sheet's own dark tile, so it reads on any panel,
+//! any theme, any platform, as every other application in that menu does.
 
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-/// The editor's own background, and the paper the mark is drawn in.
-const BACKGROUND: [u8; 3] = [0x1c, 0x1a, 0x2b];
-const INK: [u8; 3] = [0xe8, 0xe4, 0xdc];
+/// The tile, the letter and the block, from the logo sheet.
+const TILE: [u8; 3] = [0x10, 0x16, 0x22];
+const LETTER: [u8; 3] = [0xe8, 0xeb, 0xf0];
+const BLOCK: [u8; 3] = [0xf1, 0xb7, 0x49];
+/// The letter's colour on a light surface, from the sheet's light card.
+const LETTER_ON_LIGHT: [u8; 3] = [0x14, 0x17, 0x20];
 
-/// How rounded the tile is, as a fraction of its side. Matches the platform convention closely
-/// enough to sit beside other icons without looking like a sticker.
+/// How rounded the tile is, as a fraction of its side.
 const RADIUS: f32 = 0.22;
+/// How much of the tile the mark spans.
+const MARK: f32 = 0.74;
+/// Below this the sheet's small variant is used.
+const SMALL_BELOW: u32 = 64;
 
-/// Supersampling for the edges. The shapes are diagonal strokes and a rounded rectangle, both of
-/// which alias badly at 16px without it.
-const SAMPLES: u32 = 4;
+const MASK_SIDE: u32 = 512;
 
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -41,13 +46,16 @@ fn main() {
         .nth(2)
         .expect("the workspace root is two above this crate")
         .to_path_buf();
+    let assets = root.join("crates/dacode-render/assets");
+    let full = load_mask(&assets.join("mark.png"));
+    let small = load_mask(&assets.join("mark-small.png"));
+    let mask_for = |size: u32| if size < SMALL_BELOW { &small } else { &full };
 
     let hicolor = root.join("packaging/linux/icons/hicolor");
     for size in [16u32, 24, 32, 48, 64, 128, 256, 512] {
-        let pixels = render(size);
         write_png(
             &hicolor.join(format!("{size}x{size}/apps/dacode.png")),
-            &pixels,
+            &tile(mask_for(size), size),
             size,
         );
     }
@@ -56,148 +64,223 @@ fn main() {
     // of a build directory cannot look different.
     write_png(
         &root.join("crates/dacode/assets/icons/dacode-256.png"),
-        &render(256),
+        &tile(&full, 256),
         256,
     );
 
-    write_svg(&hicolor.join("scalable/apps/dacode.svg"));
-    println!("dacode: wrote the icon set under {}", hicolor.display());
+    write_svg(
+        &hicolor.join("scalable/apps/dacode.svg"),
+        &encode_png(&tile(&full, 512), 512),
+    );
+
+    let ico_sizes = [16u32, 24, 32, 48, 64, 128, 256];
+    let images: Vec<(u32, Vec<u8>)> = ico_sizes
+        .iter()
+        .map(|&size| (size, encode_png(&tile(mask_for(size), size), size)))
+        .collect();
+    write_ico(&root.join("packaging/windows/dacode.ico"), &images);
+
+    // The bare mark for documents: the README picks one by the reader's colour scheme.
+    let logo = root.join("logo/dacode");
+    write_png(
+        &logo.join("mark-on-dark-128.png"),
+        &bare(&full, 128, LETTER),
+        128,
+    );
+    write_png(
+        &logo.join("mark-on-light-128.png"),
+        &bare(&full, 128, LETTER_ON_LIGHT),
+        128,
+    );
+
+    println!("dacode: wrote the icon set from {}", assets.display());
 }
 
-/// One icon, as RGBA rows.
+/// A mask as (letter, block) coverage pairs, row by row.
+fn load_mask(path: &Path) -> Vec<(f32, f32)> {
+    let file = std::fs::File::open(path).expect("the mark's masks are in the repository");
+    let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+        .read_info()
+        .expect("a PNG");
+    let mut pixels = vec![0; reader.output_buffer_size().expect("a size")];
+    let info = reader.next_frame(&mut pixels).expect("decodes");
+    assert_eq!(
+        (info.width, info.height),
+        (MASK_SIDE, MASK_SIDE),
+        "the masks are {MASK_SIDE} square"
+    );
+    let channels = info.color_type.samples();
+    pixels[..info.buffer_size()]
+        .chunks_exact(channels)
+        .map(|pixel| (pixel[0] as f32 / 255.0, pixel[1] as f32 / 255.0))
+        .collect()
+}
+
+/// The mask's average coverage over a square of the source, for resampling it down.
 ///
-/// Everything is in unit coordinates so the geometry is written once and the sizes are only a
-/// sampling rate — an icon set whose 16px and 512px versions were drawn separately would not be the
-/// same icon.
-fn render(size: u32) -> Vec<u8> {
-    let mut pixels = vec![0u8; (size * size * 4) as usize];
-    let side = size as f32;
-
-    for y in 0..size {
-        for x in 0..size {
-            let (mut tile, mut upper, mut lower) = (0.0f32, 0.0f32, 0.0f32);
-
-            // Supersampled coverage: the fraction of this pixel each shape covers.
-            for sy in 0..SAMPLES {
-                for sx in 0..SAMPLES {
-                    let step = 1.0 / (SAMPLES as f32 + 1.0);
-                    let u = (x as f32 + (sx as f32 + 1.0) * step) / side;
-                    let v = (y as f32 + (sy as f32 + 1.0) * step) / side;
-                    if inside_tile(u, v) {
-                        tile += 1.0;
-                        // Clipped to the tile, so a stroke cannot bleed past a rounded corner.
-                        if on_chevron(u, v, 0.235) {
-                            upper += 1.0;
-                        }
-                        if on_chevron(u, v, 0.465) {
-                            lower += 1.0;
-                        }
-                    }
-                }
-            }
-
-            let total = (SAMPLES * SAMPLES) as f32;
-            let (tile, upper, lower) = (tile / total, upper / total, lower / total);
-
-            // The lower chevron is the same mark at a third of the weight, as in the wordmark.
-            let ink = (upper + lower * 0.34).min(1.0);
-            let index = ((y * size + x) * 4) as usize;
-            for channel in 0..3 {
-                let base = BACKGROUND[channel] as f32;
-                let mixed = base + (INK[channel] as f32 - base) * ink;
-                pixels[index + channel] = mixed.round().clamp(0.0, 255.0) as u8;
-            }
-            pixels[index + 3] = (tile * 255.0).round().clamp(0.0, 255.0) as u8;
+/// An area average rather than a point sample: at 16 pixels each output pixel covers a 32-pixel
+/// square of the mask, and sampling one point of it is how small icons come out jagged.
+fn coverage(mask: &[(f32, f32)], x0: f32, y0: f32, span: f32) -> (f32, f32) {
+    let (mut letter, mut block, mut count) = (0.0, 0.0, 0.0);
+    let from_x = x0.floor().max(0.0) as u32;
+    let from_y = y0.floor().max(0.0) as u32;
+    let to_x = ((x0 + span).ceil() as u32).min(MASK_SIDE);
+    let to_y = ((y0 + span).ceil() as u32).min(MASK_SIDE);
+    for y in from_y..to_y {
+        for x in from_x..to_x {
+            let (l, b) = mask[(y * MASK_SIDE + x) as usize];
+            letter += l;
+            block += b;
+            count += 1.0;
         }
     }
+    if count == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (letter / count, block / count)
+    }
+}
 
+/// The mark on its tile, as RGBA rows.
+fn tile(mask: &[(f32, f32)], size: u32) -> Vec<u8> {
+    let side = size as f32;
+    let mark = side * MARK;
+    let offset = (side - mark) / 2.0;
+    let span = MASK_SIDE as f32 / mark;
+
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let (mut letter, mut block) = (0.0, 0.0);
+            let (mx, my) = (x as f32 - offset, y as f32 - offset);
+            if mx >= 0.0 && my >= 0.0 && mx < mark && my < mark {
+                (letter, block) = coverage(mask, mx * span, my * span, span);
+            }
+            let index = ((y * size + x) * 4) as usize;
+            for channel in 0..3 {
+                // The block on the tile, then the letter over both — as the artwork overlaps them.
+                let under =
+                    TILE[channel] as f32 + (BLOCK[channel] as f32 - TILE[channel] as f32) * block;
+                let value = under + (LETTER[channel] as f32 - under) * letter;
+                pixels[index + channel] = value.round().clamp(0.0, 255.0) as u8;
+            }
+            pixels[index + 3] = (tile_coverage(x, y, size) * 255.0).round() as u8;
+        }
+    }
     pixels
 }
 
-/// Whether a point is inside the rounded tile.
-fn inside_tile(u: f32, v: f32) -> bool {
-    let r = RADIUS;
-    // The straight edges cover everything but the four corner squares.
-    let near_x = u < r || u > 1.0 - r;
-    let near_y = v < r || v > 1.0 - r;
-    if !(near_x && near_y) {
-        return (0.0..=1.0).contains(&u) && (0.0..=1.0).contains(&v);
+/// The mark alone on transparency, its letter in `ink`.
+fn bare(mask: &[(f32, f32)], size: u32, ink: [u8; 3]) -> Vec<u8> {
+    let span = MASK_SIDE as f32 / size as f32;
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let (letter, block) = coverage(mask, x as f32 * span, y as f32 * span, span);
+            let alpha = letter + block * (1.0 - letter);
+            let index = ((y * size + x) * 4) as usize;
+            if alpha > 0.0 {
+                for channel in 0..3 {
+                    let value = (ink[channel] as f32 * letter
+                        + BLOCK[channel] as f32 * block * (1.0 - letter))
+                        / alpha;
+                    pixels[index + channel] = value.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+            pixels[index + 3] = (alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
     }
-    let cx = if u < r { r } else { 1.0 - r };
-    let cy = if v < r { r } else { 1.0 - r };
-    ((u - cx).powi(2) + (v - cy).powi(2)).sqrt() <= r
+    pixels
 }
 
-/// Whether a point is on a chevron whose apex sits `top` down the tile.
-///
-/// Two strokes meeting at a point, measured as distance to each segment — which keeps the join
-/// mitred without any path arithmetic.
-fn on_chevron(u: f32, v: f32, top: f32) -> bool {
-    const HALF_WIDTH: f32 = 0.26;
-    const DROP: f32 = 0.30;
-    const WEIGHT: f32 = 0.088;
-
-    let apex = (0.5, top + DROP);
-    let left = (0.5 - HALF_WIDTH, top);
-    let right = (0.5 + HALF_WIDTH, top);
-
-    distance_to_segment((u, v), left, apex) <= WEIGHT / 2.0
-        || distance_to_segment((u, v), right, apex) <= WEIGHT / 2.0
+/// How much of a pixel the rounded tile covers, supersampled four by four.
+fn tile_coverage(x: u32, y: u32, size: u32) -> f32 {
+    let side = size as f32;
+    let mut inside = 0.0;
+    for sy in 0..4 {
+        for sx in 0..4 {
+            let u = (x as f32 + (sx as f32 + 0.5) / 4.0) / side;
+            let v = (y as f32 + (sy as f32 + 0.5) / 4.0) / side;
+            let cx = u.clamp(RADIUS, 1.0 - RADIUS);
+            let cy = v.clamp(RADIUS, 1.0 - RADIUS);
+            if (u - cx).hypot(v - cy) <= RADIUS {
+                inside += 1.0;
+            }
+        }
+    }
+    inside / 16.0
 }
 
-fn distance_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let length_squared = dx * dx + dy * dy;
-    let t = if length_squared == 0.0 {
-        0.0
-    } else {
-        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length_squared).clamp(0.0, 1.0)
-    };
-    let closest = (a.0 + t * dx, a.1 + t * dy);
-    ((p.0 - closest.0).powi(2) + (p.1 - closest.1).powi(2)).sqrt()
-}
-
-/// The scalable version, written from the same numbers so it cannot drift from the rasters.
-fn write_svg(path: &Path) {
-    const HALF_WIDTH: f32 = 0.26;
-    const DROP: f32 = 0.30;
-    const WEIGHT: f32 = 0.088;
-    let pct = |value: f32| value * 100.0;
-
-    let chevron = |top: f32, opacity: &str| {
-        format!(
-            r#"<path d="M{} {} L50 {} L{} {}" opacity="{opacity}"/>"#,
-            pct(0.5 - HALF_WIDTH),
-            pct(top),
-            pct(top + DROP),
-            pct(0.5 + HALF_WIDTH),
-            pct(top),
-        )
-    };
-
+/// The scalable icon. The artwork is a raster at heart — it came from one — so the SVG carries the
+/// 512 pixel tile rather than pretending to be vectors it was never drawn as.
+fn write_svg(path: &Path, png_bytes: &[u8]) {
     let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">
-<rect width="100" height="100" rx="{radius}" fill="#{bg:02x}{bg1:02x}{bg2:02x}"/>
-<g fill="none" stroke="#{ink:02x}{ink1:02x}{ink2:02x}" stroke-width="{weight}" stroke-linecap="butt" stroke-linejoin="miter">
-{upper}
-{lower}
-</g>
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<image width="512" height="512" href="data:image/png;base64,{}"/>
 </svg>
-"##,
-        radius = pct(RADIUS),
-        bg = BACKGROUND[0],
-        bg1 = BACKGROUND[1],
-        bg2 = BACKGROUND[2],
-        ink = INK[0],
-        ink1 = INK[1],
-        ink2 = INK[2],
-        weight = pct(WEIGHT),
-        upper = chevron(0.235, "1"),
-        lower = chevron(0.465, "0.34"),
+"#,
+        base64(png_bytes)
     );
-
     std::fs::create_dir_all(path.parent().expect("a parent")).expect("creating the icon directory");
     std::fs::write(path, svg).expect("writing the svg");
+}
+
+/// A Windows icon with a PNG per size, which every Windows since Vista reads.
+fn write_ico(path: &Path, images: &[(u32, Vec<u8>)]) {
+    let mut out = Vec::new();
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(images.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * images.len() as u32;
+    for (size, data) in images {
+        // A side of 256 is written as 0: the field is one byte.
+        let side = if *size >= 256 { 0 } else { *size as u8 };
+        out.extend_from_slice(&[side, side, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += data.len() as u32;
+    }
+    for (_, data) in images {
+        out.extend_from_slice(data);
+    }
+    std::fs::write(path, out).expect("writing the ico");
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn encode_png(pixels: &[u8], size: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, size, size);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .expect("writing the header")
+            .write_image_data(pixels)
+            .expect("writing the pixels");
+    }
+    bytes
 }
 
 fn write_png(path: &PathBuf, pixels: &[u8], size: u32) {

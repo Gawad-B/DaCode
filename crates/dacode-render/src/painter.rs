@@ -23,7 +23,7 @@ pub struct Painter {
 impl Painter {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let quads = QuadPipeline::new(&device, format);
-        let marks = MarkPipeline::new(&device, format);
+        let marks = MarkPipeline::new(&device, &queue, format);
         let shapes = ShapePipeline::new(&device, format);
         let text = TextStack::new(&device, &queue, format);
         Self {

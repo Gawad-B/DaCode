@@ -18,6 +18,10 @@ release, where one exists, lives in `packaging/notes/`.
   unsaved files and close buttons, between back/forward and split/run buttons; and a status bar that
   counts errors, warnings and notes with their icons. Every button shows its name and shortcut when
   the pointer rests on it.
+- A new logo: the letter ض with its fatha and an amber block, in the title bar beside a wordmark
+  with "Da" in amber, on the welcome and empty screens, and as the application icon on every
+  platform. Below 64 pixels the two blocks become one, as the logo sheet specifies, and on a light
+  theme the letter turns dark while the amber stays.
 - One font: everything is set in Fira Code. The serif headings and sans labels, and the two fonts
   they came from, are gone.
 - A new default theme, `dacode`, with the chrome a shade darker than the code. The other five are

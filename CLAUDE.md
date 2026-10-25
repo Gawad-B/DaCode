@@ -450,6 +450,7 @@ anything platform-shaped:
 | A config option | `dacode-lua/src/lib.rs`, `dacode/src/config.rs`, `dacode/src/settings_ui.rs` (all three) |
 | What the title, activity and tab bars offer | `crates/dacode/src/layout.rs` — `title_bar`, `ACTIVITIES`, `TAB_BAR_COMMANDS`, read by drawing and by the mouse |
 | An icon | `crates/dacode-render/src/icon.rs` — geometry on a 24-unit grid, drawn by `shape.wgsl` |
+| The logo | `crates/dacode-render/assets/mark*.png` — coverage masks; `examples/icons.rs` builds every icon from them |
 | What a right-click offers | `crates/dacode/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/dacode-theme/src/theme.rs` |
 | LSP behaviour | `crates/dacode-lsp/src/client.rs`, applied in `crates/dacode/src/edits.rs` |
