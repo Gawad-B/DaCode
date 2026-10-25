@@ -702,6 +702,9 @@ fn on_off(value: bool) -> String {
 const MARKER: &str =
     "-- dacode: written by the settings panel (ctrl-,). Edit freely — rewritten on save.";
 
+/// The start of the marker vex wrote, before the editor was called DaCode.
+const LEGACY_MARKER: &str = "-- vex: written by the settings panel";
+
 /// Rewrites `init.lua` so the panel's block reflects `values`.
 ///
 /// Everything the user wrote is preserved verbatim; only the block under [`MARKER`] is replaced, and
@@ -742,7 +745,13 @@ pub fn write_back(existing: &str, values: &Values) -> String {
         values.transparency,
     );
 
-    match existing.find(MARKER) {
+    // The block's marker as vex wrote it, too: an init.lua carried over from before the rename has
+    // that one, and looking only for the new marker appended a second block on the first save —
+    // two `set` calls, the older one silently overridden by the newer.
+    match existing
+        .find(MARKER)
+        .or_else(|| existing.find(LEGACY_MARKER))
+    {
         // Replace the old block. Anything the user added *after* it is kept, which matters because
         // people do add lines below whatever a tool wrote.
         Some(at) => {
@@ -1112,6 +1121,18 @@ mod tests {
         assert!(twice.contains("tab_width = 2"));
         assert!(!twice.contains("tab_width = 4"));
         assert!(twice.contains("dacode.map"), "and the user's line survived");
+    }
+
+    #[test]
+    fn a_block_written_by_vex_is_replaced_rather_than_kept_beside_a_new_one() {
+        // The upgrade case: init.lua copied from ~/.config/vex still has vex's marker and calls
+        // `vex.set`. Saving from the panel must leave one block, under the new marker.
+        let old = "-- vex: written by the settings panel (ctrl-,). Edit freely — rewritten on save.\n\
+                   vex.set {\n  tab_width = 4,\n  theme = \"rose-pine\",\n}\n";
+        let written = write_back(old, &values());
+        assert_eq!(written.matches("dacode.set {").count(), 1);
+        assert!(!written.contains("vex.set"), "the old block is gone:\n{written}");
+        assert!(written.starts_with(MARKER));
     }
 
     #[test]
