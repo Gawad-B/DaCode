@@ -162,6 +162,8 @@ pub struct Settings {
     pub inlay_hints: bool,
     /// Write the file a moment after typing stops.
     pub autosave: bool,
+    /// How much of the desktop shows through the window, as a percentage. 0 is opaque.
+    pub transparency: u8,
     /// What the gutter counts.
     pub line_numbers: LineNumbers,
     /// Which theme file was loaded, for reporting.
@@ -188,7 +190,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             typography: Typography::default(),
-            theme: Theme::dark(),
+            theme: Theme::dacode(),
             tab_width: 4,
             soft_wrap: true,
             // Off by default: a formatter reflowing a file you did not ask it to is worse than no
@@ -201,6 +203,9 @@ impl Default for Settings {
             // without being asked is not a decision to make on their behalf. It is one switch away
             // for the many people who have never pressed ctrl-s and should not lose work for it.
             autosave: false,
+            // Opaque: see-through is a taste, and on a desktop without a compositor it is not
+            // available at all.
+            transparency: 0,
             line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
@@ -326,6 +331,10 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     if let Some(autosave) = config.autosave {
         settings.autosave = autosave;
         settings.sources.insert("autosave".into(), from_config);
+    }
+    if let Some(percent) = config.transparency {
+        settings.transparency = percent.min(90);
+        settings.sources.insert("transparency".into(), from_config);
     }
     // The gutter's default follows the grammar, so it has to be settled *after* `vim_keys` — which
     // is why this is not a plain `unwrap_or`.

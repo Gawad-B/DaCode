@@ -234,6 +234,10 @@ what prevents a half-working engine with ten half-working features on top.
 > texts committed beside them. The editor now renders its own design on a machine with nothing
 > installed, which is what the handoff asked for.
 >
+> *Later:* the code face became Fira Code, and then Fira Code became the only face. The serif
+> headings and sans labels were dropped for one familiar monospaced face everywhere, which also makes
+> every width the chrome estimates exact rather than an average. One file, about 290KB.
+>
 > Loading them costs **0.20ms**. The system font scan that follows costs **~156ms** and buys the
 > fallback coverage four Latin faces cannot provide — CJK, emoji, anything else. Correctness wins by
 > default; `DACODE_NO_SYSTEM_FONTS=1` takes the startup back (0.27s → 0.19s to first frame) for anyone

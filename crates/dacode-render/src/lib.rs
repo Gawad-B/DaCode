@@ -10,14 +10,17 @@
 
 pub mod frame;
 mod headless;
+pub mod icon;
 mod mark;
 mod painter;
 mod quad;
+mod shape;
 mod text;
 mod timer;
 
-pub use frame::{Align, Frame, Layer, MARK_INK_LEFT, Mark, Quad, Rect, TextRun};
+pub use frame::{Align, Frame, Layer, MARK_INK_LEFT, Mark, Quad, Rect, Shape, ShapeKind, TextRun};
 pub use headless::Headless;
+pub use icon::Icon;
 pub use timer::FrameTimer;
 
 use anyhow::{Context, Result};
@@ -52,12 +55,68 @@ pub struct Renderer {
     pub timer: FrameTimer,
 }
 
+/// The surface alpha mode for a window, given what the surface supports and whether it should let
+/// the desktop through.
+///
+/// Premultiplied first, because that is what the blending produces: a background drawn at 85% over
+/// a cleared canvas leaves `rgb * 0.85` beside an alpha of 0.85. Straight alpha is second, and is
+/// given a clear colour that makes it come out nearly right (see [`clear_color`]). With neither, the
+/// window stays opaque — the compositor would ignore the alpha anyway, and an X11 session with no
+/// compositing manager is the common case for that.
+pub fn alpha_mode(
+    supported: &[wgpu::CompositeAlphaMode],
+    translucent: bool,
+) -> wgpu::CompositeAlphaMode {
+    use wgpu::CompositeAlphaMode::{Opaque, PostMultiplied, PreMultiplied};
+    let first = supported.first().copied().unwrap_or(Opaque);
+    if !translucent {
+        return if supported.contains(&Opaque) {
+            Opaque
+        } else {
+            first
+        };
+    }
+    [PreMultiplied, PostMultiplied]
+        .into_iter()
+        .find(|mode| supported.contains(mode))
+        .unwrap_or(if supported.contains(&Opaque) {
+            Opaque
+        } else {
+            first
+        })
+}
+
+/// What the canvas is cleared to before a frame.
+///
+/// An opaque window clears to its background, as it always did, so startup never flashes. A
+/// translucent one clears to nothing at all and lets the backdrops set the alpha: premultiplied to
+/// black, since anything else would add light where nothing was drawn; straight-alpha to the
+/// background's own colour with no opacity, so a backdrop blended over it keeps its hue.
+pub fn clear_color(background: Oklch, mode: wgpu::CompositeAlphaMode) -> [f32; 4] {
+    let [r, g, b, _] = background.to_linear();
+    match mode {
+        wgpu::CompositeAlphaMode::PreMultiplied => [0.0, 0.0, 0.0, 0.0],
+        wgpu::CompositeAlphaMode::PostMultiplied => [r, g, b, 0.0],
+        _ => [r, g, b, 1.0],
+    }
+}
+
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Result<Self> {
-        pollster::block_on(Self::new_async(window))
+    /// `translucent` asks for a surface the desktop can show through. Whether it got one is
+    /// [`Renderer::is_translucent`]: not every platform and compositor can give it.
+    pub fn new(window: Arc<Window>, translucent: bool) -> Result<Self> {
+        pollster::block_on(Self::new_async(window, translucent))
     }
 
-    async fn new_async(window: Arc<Window>) -> Result<Self> {
+    /// Whether the window can actually show the desktop through it.
+    pub fn is_translucent(&self) -> bool {
+        !matches!(
+            self.config.alpha_mode,
+            wgpu::CompositeAlphaMode::Opaque | wgpu::CompositeAlphaMode::Auto
+        )
+    }
+
+    async fn new_async(window: Arc<Window>, translucent: bool) -> Result<Self> {
         let size = window.inner_size();
         let (width, height) = (size.width.max(1), size.height.max(1));
 
@@ -90,6 +149,8 @@ impl Renderer {
             .context("surface is incompatible with this adapter")?;
         // Vsync: an editor that renders faster than the display is burning battery for nothing.
         config.present_mode = wgpu::PresentMode::AutoVsync;
+        config.alpha_mode =
+            alpha_mode(&surface.get_capabilities(&adapter).alpha_modes, translucent);
         surface.configure(&device, &config);
 
         // A GPU error must not take the editor with it. wgpu's default handler panics, and a panic
@@ -122,8 +183,8 @@ impl Renderer {
         (self.config.width, self.config.height)
     }
 
-    pub fn resolved_families(&self) -> [&str; 3] {
-        self.painter.resolved_families()
+    pub fn resolved_face(&self) -> &str {
+        self.painter.resolved_face()
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -192,6 +253,11 @@ impl Renderer {
                     label: Some("dacode frame"),
                 });
 
+        let clear = if frame.transparency() > 0.0 {
+            clear_color(clear, self.config.alpha_mode)
+        } else {
+            clear_color(clear, wgpu::CompositeAlphaMode::Opaque)
+        };
         self.painter
             .paint(&mut encoder, &view, width, height, frame, clear)?;
 
@@ -201,5 +267,37 @@ impl Renderer {
 
         self.timer.end();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wgpu::CompositeAlphaMode::{Inherit, Opaque, PostMultiplied, PreMultiplied};
+
+    #[test]
+    fn a_translucent_window_takes_the_mode_its_blending_produces() {
+        assert_eq!(alpha_mode(&[Opaque, PreMultiplied], true), PreMultiplied);
+        assert_eq!(alpha_mode(&[Opaque, PostMultiplied], true), PostMultiplied);
+        assert_eq!(
+            alpha_mode(&[Opaque, Inherit], true),
+            Opaque,
+            "with no way to show through, the window stays opaque rather than guessing"
+        );
+    }
+
+    #[test]
+    fn an_opaque_window_never_asks_for_alpha() {
+        // A surface told to blend with the desktop while every pixel claims to be opaque costs the
+        // compositor work for nothing — and on some drivers shows garbage where alpha was undefined.
+        assert_eq!(alpha_mode(&[PreMultiplied, Opaque], false), Opaque);
+    }
+
+    #[test]
+    fn a_premultiplied_canvas_is_cleared_to_nothing() {
+        let background = Oklch::new(0.3, 0.02, 250.0);
+        assert_eq!(clear_color(background, PreMultiplied), [0.0; 4]);
+        assert_eq!(clear_color(background, Opaque)[3], 1.0);
+        assert_eq!(clear_color(background, PostMultiplied)[3], 0.0);
     }
 }

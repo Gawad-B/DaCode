@@ -271,6 +271,26 @@ pub fn execute(
                 state.tree = None;
             }
         }
+        Action::ShowSourceControl | Action::ShowRunAndDebug => {
+            let view = if *action == Action::ShowSourceControl {
+                crate::layout::Activity::SourceControl
+            } else {
+                crate::layout::Activity::Debug
+            };
+            // A second press closes it, as the activity icons do in every editor that has them.
+            if state.chrome.activity == Some(view) {
+                state.chrome.activity = None;
+            } else {
+                state.close_sidebar();
+                state.chrome.activity = Some(view);
+            }
+        }
+        Action::ToggleNotifications => {
+            state.chrome.show_notifications = !state.chrome.show_notifications;
+            state.chrome.unread = 0;
+        }
+        // Both need the machine: the clipboard, and the files a link is read from.
+        Action::Share | Action::Run => return Outcome::Window(action.clone()),
         Action::ToggleInlayHints => {
             state.show_inlay_hints = !state.show_inlay_hints;
             state.inlay_hints.clear();

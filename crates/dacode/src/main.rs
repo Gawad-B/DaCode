@@ -281,6 +281,10 @@ fn new_state(
         pointer: (0.0, 0.0),
         help: None,
         menu: None,
+        chrome: dacode::chrome::Chrome {
+            transparency: f32::from(settings.transparency) / 100.0,
+            ..Default::default()
+        },
     };
 
     (state, settings.keymap)
@@ -328,7 +332,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 18] = [
+const VALUE_FLAGS: [&str; 19] = [
     "--which-key",
     "--screenshot",
     "--mode",
@@ -347,6 +351,7 @@ const VALUE_FLAGS: [&str; 18] = [
     "--row",
     "--symbols",
     "--block",
+    "--transparency",
 ];
 
 /// Every flag `dacode` accepts, grouped, as the one description of its command line.
@@ -358,7 +363,7 @@ const VALUE_FLAGS: [&str; 18] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 37] = [
+const FLAGS: [(&str, &str, &str); 38] = [
     // Opening.
     (
         "--no-session",
@@ -380,6 +385,11 @@ const FLAGS: [(&str, &str, &str); 37] = [
     ("--theme", "NAME", "any built-in or installed theme"),
     ("--mode", "NAME", "normal, insert, visual …"),
     ("--no-vim", "", "render with Vim keys off"),
+    (
+        "--transparency",
+        "PERCENT",
+        "see-through, over a checkerboard",
+    ),
     ("--empty", "", "no file open"),
     ("--splash", "", "the cold-start screen"),
     ("--at", "LINE", "put the cursor on a line"),
@@ -495,14 +505,14 @@ fn how_to_run(command: &str, modal: bool) -> String {
     let Some(found) = dacode_input::commands::by_name(command) else {
         return String::new();
     };
-    match found.keys_for(modal) {
-        "" => {
+    match found.shown(modal) {
+        keys if keys.is_empty() => {
             let palette = dacode_input::commands::by_name("command_palette")
-                .map(|command| command.keys_for(modal))
+                .map(|command| command.shown(modal))
                 .unwrap_or_default();
             format!("the command palette ({palette}), \"{}\",", found.what)
         }
-        keys => keys.to_string(),
+        keys => keys,
     }
 }
 
@@ -649,6 +659,17 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     state.worst_ms = 6.4;
     state.scroll = ScrollAnchor::at_line(8);
     fit_wrap_columns(&mut state, width as f32, 1.0);
+    // Again just before drawing, once each view has opened whatever sidebar it opens: the code's
+    // width depends on it, and fitting it here alone wrapped a narrow capture past its own edge.
+    if let Some(percent) = value("--transparency").and_then(|v| v.parse::<u8>().ok()) {
+        state.chrome.transparency = f32::from(percent.min(90)) / 100.0;
+    }
+    let forced_columns = value("--columns").is_some();
+    let refit = |state: &mut EditorState| {
+        if !forced_columns {
+            fit_wrap_columns(state, width as f32, 1.0);
+        }
+    };
 
     // `--columns N` forces a narrow wrap width, so soft wrap can be inspected without resizing
     // a window.
@@ -929,8 +950,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
 
     let mut headless =
         dacode_render::Headless::new(width, height).context("initializing offscreen rendering")?;
-    let [serif, mono, sans] = headless.resolved_families();
-    eprintln!("dacode: fonts — serif {serif}, mono {mono}, sans {sans}");
+    eprintln!("dacode: font — {}", headless.resolved_face());
 
     let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
     let mut frame = Frame::default();
@@ -949,6 +969,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             ],
             state.document.version(),
         );
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--folded") {
         // Fold every top-level block, so the marker and the hidden-line count are inspectable.
@@ -964,9 +985,11 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 None => line += 1,
             }
         }
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--diagnostics-list") {
         state.show_diagnostics = true;
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(step) = value("--welcome") {
         let mut welcome = dacode::welcome::Welcome::new();
@@ -984,16 +1007,20 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         chrome::draw_welcome(&mut frame, &welcome, &state.typography, bounds, 1.0);
     } else if flag("--help-panel") {
         state.help = Some(dacode::help::Help::new(state.modal));
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--menu") {
         state.menu = Some(dacode::menu::Menu::bar(state.modal));
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--context-menu") {
         state.menu = Some(dacode::menu::Menu::context((420.0, 300.0), state.modal));
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(prefix) = value("--which-key") {
         // The popup is driven by the pending display, exactly as a half-typed chord drives it.
         state.pending = prefix;
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(query) = value("--symbols") {
         // A canned outline, so the palette's indenting and its kind column are inspectable without
@@ -1027,11 +1054,13 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         palette.query = query;
         palette.refresh_symbols(&symbols, true);
         state.palette = Some(palette);
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--commands") {
         let mut palette = dacode::palette::Palette::new(dacode::palette::PaletteKind::Commands);
         palette.refresh_commands(state.modal);
         state.palette = Some(palette);
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--settings") {
         let mut settings = dacode::settings_ui::Settings::new();
@@ -1055,6 +1084,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state
             .setting_sources
             .insert("soft_wrap".into(), dacode::settings_ui::Source::Imported);
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--tree") {
         // The tree needs a file list; the screenshot path has no background walk, so index inline.
@@ -1072,8 +1102,10 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         let mut tree = dacode::tree::FileTree::new(root, index.files());
         tree.reveal("crates/dacode-text/src/anchor.rs");
         state.tree = Some(tree);
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(split) = value("--split") {
+        refit(&mut state);
         // `--split N[h]` renders N panes on one buffer, so the layout is inspectable without a
         // window. The panes look at different places in the file, which is the case worth seeing:
         // identical panes would hide a scroll bug.
@@ -1111,6 +1143,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             1.0,
         );
     } else {
+        refit(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     }
 
@@ -1145,10 +1178,23 @@ fn selection_contains(
 /// Soft wrap is in columns, so the window size has to be translated once per resize rather than
 /// assumed. Getting this wrong is how text ends up wrapping in the wrong place after a resize.
 fn fit_wrap_columns(state: &mut EditorState, window_width: f32, scale: f32) {
-    let sidebar = (292.0 * scale).min(window_width * 0.32);
-    let code_width = window_width - sidebar - 78.0 * scale - 24.0 * scale;
-    let advance = state.typography.code_size * 0.6 * scale;
-    state.display.columns = ((code_width / advance).floor() as usize).max(20);
+    // From the layout the chrome draws with, not a sidebar width of its own: this kept a private
+    // copy of the old right-hand sidebar's size, and copies of layout arithmetic drift — a wrap
+    // column that disagrees with the code area is text running under the edge of the window.
+    let regions = dacode::layout::Layout::of(
+        Rect::new(0.0, 0.0, window_width, 1000.0 * scale),
+        scale,
+        None,
+        state.sidebar_open(),
+    );
+    let grid = dacode::layout::CodeGrid::new(
+        regions.pane(0, 1, true, scale).code,
+        state.typography.code_size * 0.6 * scale,
+        state.typography.row_height() * scale,
+        0,
+        scale,
+    );
+    state.display.columns = grid.columns().max(20);
 }
 
 struct App {
@@ -1257,6 +1303,11 @@ struct App {
     /// A file whose outside change the user has been warned about, so the next save they ask for
     /// overwrites it rather than warning again.
     overwrite: Option<std::path::PathBuf>,
+    /// The message last recorded for the bell, so one that stays on screen is recorded once.
+    last_notice: Option<String>,
+    /// The language server's last hover answer. It arrives on the same line as the editor's own
+    /// messages, but it is documentation rather than news, and the bell is not where to keep it.
+    server_hover: Option<String>,
     /// Diffs the buffer against `HEAD`, off the UI thread.
     git: dacode::git::GitWorker,
     /// The version the last diff was asked for, so typing does not spawn a `git show` per keystroke.
@@ -1332,7 +1383,11 @@ impl ApplicationHandler for App {
 
         #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
         let mut attributes = Window::default_attributes()
-            .with_title("dacode")
+            .with_title("DaCode")
+            // Asked for only when it is wanted: a transparent window costs the compositor a blend
+            // for every pixel, and an X11 session without a compositing manager can show garbage
+            // behind one rather than the desktop.
+            .with_transparent(self.state.chrome.transparency > 0.0)
             .with_window_icon(dacode::icon::window_icon())
             .with_inner_size(size);
 
@@ -1375,11 +1430,19 @@ impl ApplicationHandler for App {
         // likely to be editing — was the one file changes were not noticed for.
         self.watch_active();
 
-        match Renderer::new(window.clone()) {
+        match Renderer::new(window.clone(), self.state.chrome.transparency > 0.0) {
             Ok(renderer) => {
-                let [serif, mono, sans] = renderer.resolved_families();
-                // Report substitutions rather than silently rendering a different design.
-                eprintln!("dacode: fonts — serif {serif}, mono {mono}, sans {sans}");
+                // Report a substitution rather than silently rendering a different design.
+                eprintln!("dacode: font — {}", renderer.resolved_face());
+                // Said, not silently ignored: the setting is on and the window is opaque, and the
+                // person who asked for it should know it was the platform that declined.
+                if self.state.chrome.transparency > 0.0 && !renderer.is_translucent() {
+                    self.state.hover = Some(
+                        "transparency is on, but this display cannot show through the window — \
+                         it needs a compositor"
+                            .to_string(),
+                    );
+                }
                 self.renderer = Some(renderer);
             }
             Err(err) => {
@@ -1440,6 +1503,7 @@ impl ApplicationHandler for App {
             self.request_redraw();
         }
         self.hold_lifeline();
+        self.record_notice();
 
         // Sleep until input, or briefly if something is still working. 100ms is far below the
         // threshold where a diagnostic feels late, and a `try_recv` ten times a second costs
@@ -1738,6 +1802,8 @@ impl App {
                 .into_iter()
                 .collect(),
             overwrite: None,
+            last_notice: None,
+            server_hover: None,
             git: dacode::git::GitWorker::spawn(),
             diffed_version: None,
             watcher: match dacode_project::FileWatcher::new() {
@@ -1894,7 +1960,10 @@ impl App {
 
         // The sidebar holds three different panels; which one is showing is the same question
         // `click_sidebar` asks, in the same order.
-        if dacode::layout::contains(layout.sidebar, x, y) {
+        if layout
+            .sidebar
+            .is_some_and(|sidebar| dacode::layout::contains(sidebar, x, y))
+        {
             if let Some(tree) = &mut self.state.tree {
                 tree.move_selection(lines);
                 return true;
@@ -2137,12 +2206,14 @@ impl App {
         // On the tree, a different menu: a right-click is about what is under the pointer, and
         // there it is a file rather than a symbol.
         let layout = self.layout();
-        if self.state.tree.is_some()
-            && dacode::layout::contains(layout.sidebar, self.pointer.0, self.pointer.1)
+        if let Some(sidebar) = layout
+            .sidebar
+            .filter(|sidebar| dacode::layout::contains(*sidebar, self.pointer.0, self.pointer.1))
+            .filter(|_| self.state.tree.is_some())
         {
             if self.state.menu.is_none() {
                 // Select the row first, so the menu acts on what was clicked.
-                self.click_sidebar(layout.sidebar, self.pointer.1, self.scale());
+                self.click_sidebar(sidebar, self.pointer.1, self.scale());
             }
             self.state.menu = Some(dacode::menu::Menu::tree(self.pointer, self.state.modal));
             return;
@@ -3024,11 +3095,13 @@ impl App {
                     self.symbols = symbols;
                 }
                 dacode_lsp::ServerEvent::Hover { text } => {
-                    self.state.hover = Some(if text.trim().is_empty() {
+                    let shown = if text.trim().is_empty() {
                         "no information here".to_string()
                     } else {
                         text
-                    });
+                    };
+                    self.server_hover = Some(shown.clone());
+                    self.state.hover = Some(shown);
                 }
                 dacode_lsp::ServerEvent::Definition { path, position } => {
                     self.jump_to(path, position);
@@ -3397,6 +3470,32 @@ impl App {
 
         self.write_active(Saving::Auto);
         true
+    }
+
+    /// Keeps whatever the editor is saying for the bell, once.
+    ///
+    /// Read from the two places messages appear — the hover line and a prompt's message — rather
+    /// than from every site that sets one, of which there are some sixty: a log that each of them
+    /// had to remember to write to would be missing whichever one was added next.
+    fn record_notice(&mut self) {
+        let current = self
+            .state
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.message.clone())
+            .or_else(|| self.state.hover.clone());
+        if current == self.last_notice {
+            return;
+        }
+        if let Some(message) = &current {
+            if self.server_hover.as_ref() != Some(message) {
+                // The first line: a multi-line message is a paragraph, and the panel lists headlines.
+                let headline = message.lines().next().unwrap_or_default().to_string();
+                self.state.chrome.notify(&headline);
+                self.request_redraw();
+            }
+        }
+        self.last_notice = current;
     }
 
     /// Hands every dirty buffer to the panic hook, if anything about them changed.
@@ -4167,6 +4266,31 @@ impl App {
     fn window_action(&mut self, action: &Action) {
         match action {
             Action::Save => self.save_active(),
+            Action::Share => {
+                let Some(path) = self.state.file_path.clone() else {
+                    self.warn("nothing to share — this buffer has no file");
+                    return;
+                };
+                let line = self.state.cursor_point().line + 1;
+                let root = self.state.project_root.clone();
+                let link = dacode::share::link(&root, std::path::Path::new(&path), line);
+                dacode::clipboard::set(&link);
+                self.state.hover = Some(format!("copied {link}"));
+            }
+            Action::Run => {
+                // No terminal to run it in yet, so the command goes where one can be pasted.
+                let root = self.state.project_root.clone();
+                self.state.hover = Some(match dacode::share::run_command(&root) {
+                    Some(command) => {
+                        dacode::clipboard::set(&command);
+                        format!(
+                            "copied `{command}` — DaCode has no terminal yet, so paste it into one"
+                        )
+                    }
+                    None => "no run command found for this project — DaCode has no terminal yet"
+                        .to_string(),
+                });
+            }
             Action::SplitPane { vertical } => {
                 self.save_pane();
                 self.panes.split(if *vertical {
@@ -4776,9 +4900,9 @@ impl App {
     /// `:q!`, `:wq`, `:w <path>` — to everyone, including the people who had turned Vim off and
     /// whose grammar cannot parse the leading `:`. Read from the command table, so a message cannot
     /// drift from the binding it is teaching.
-    fn key_for(&self, command: &str) -> &'static str {
+    fn key_for(&self, command: &str) -> String {
         dacode_input::commands::by_name(command)
-            .map(|command| command.keys_for(self.state.modal))
+            .map(|command| command.shown(self.state.modal))
             .unwrap_or_default()
     }
 
@@ -5017,6 +5141,7 @@ impl App {
             sticky_scroll: self.state.sticky_scroll,
             inlay_hints: self.state.show_inlay_hints,
             autosave: self.state.autosave,
+            transparency: (self.state.chrome.transparency * 100.0).round() as u8,
         }
     }
 
@@ -5085,6 +5210,27 @@ impl App {
                 self.hinted_version = None;
             }
             Field::Autosave => self.state.autosave = values.autosave,
+            Field::Transparency => self.set_transparency(values.transparency),
+        }
+    }
+
+    /// Changes how see-through the window is.
+    ///
+    /// Between two non-zero values this is immediate. From opaque it cannot be: whether a window can
+    /// show the desktop through it is decided when the window and its surface are made, and remaking
+    /// them mid-session would drop the GPU state everything is drawn with. So it says so, rather
+    /// than leaving a setting that appears to do nothing.
+    fn set_transparency(&mut self, percent: u8) {
+        self.state.chrome.transparency = f32::from(percent.min(90)) / 100.0;
+        let showing = self
+            .renderer
+            .as_ref()
+            .is_some_and(|renderer| renderer.is_translucent());
+        if percent > 0 && !showing && self.renderer.is_some() {
+            self.state.hover = Some(
+                "transparency takes effect when DaCode next starts — the window was made opaque"
+                    .to_string(),
+            );
         }
     }
 
@@ -6180,6 +6326,7 @@ impl App {
                 .results
                 .as_ref()
                 .map(|results| results.visible().0.len()),
+            self.state.sidebar_open(),
         )
     }
 
@@ -6205,21 +6352,28 @@ impl App {
             return;
         }
 
-        // The toolbar, before anything else in the tab strip: it is the mouse's way to the commands
-        // that otherwise need a shortcut, and it is the whole reason someone who chose the
-        // conventional editor can use this without being told anything.
-        if !extend && self.click_toolbar(x, y) {
-            return;
-        }
-
-        if !extend && self.click_tabs(layout.tabs, x, y, scale) {
+        // The chrome's buttons, before anything else: they are the mouse's way to the commands that
+        // otherwise need a shortcut, and the whole reason someone who chose the conventional editor
+        // can use this without being told anything.
+        if !extend && self.click_chrome(&layout, x, y, scale) {
             return;
         }
 
         // The sidebar owns its own clicks: choosing a file in the tree is the whole reason someone
         // reaches for the mouse there.
-        if dacode::layout::contains(layout.sidebar, x, y) && !extend {
-            self.click_sidebar(layout.sidebar, y, scale);
+        if let Some(sidebar) = layout.sidebar {
+            if dacode::layout::contains(sidebar, x, y) {
+                if !extend {
+                    self.click_sidebar(sidebar, y, scale);
+                }
+                return;
+            }
+        }
+        // The title and activity bars have nothing to drag into the text: a press that missed every
+        // button there is a press on nothing.
+        if dacode::layout::contains(layout.title, x, y)
+            || dacode::layout::contains(layout.activity, x, y)
+        {
             return;
         }
 
@@ -6427,59 +6581,134 @@ impl App {
         selection_contains(self.state.document.selections(), offset)
     }
 
-    /// Whether the pointer is over the tab strip — a toolbar button, or a tab.
+    /// Whether the pointer is over chrome that lights up under it — a button, a tab, a row.
     ///
-    /// Both light up under the pointer, so both need the frame redrawn when it arrives or leaves.
+    /// They change when the pointer arrives or leaves, so the frame has to be redrawn then; and only
+    /// then, because repainting on every pointer move over the code would spend a frame per mouse
+    /// event on a window where nothing changed.
     fn over_toolbar(&self) -> bool {
         let (x, y) = self.pointer;
         let layout = self.layout();
         dacode::layout::contains(layout.tabs, x, y)
+            || dacode::layout::contains(layout.title, x, y)
+            || dacode::layout::contains(layout.activity, x, y)
+            || layout
+                .sidebar
+                .is_some_and(|sidebar| dacode::layout::contains(sidebar, x, y))
     }
 
-    /// A click on a tab, or on a tab's close button.
-    ///
-    /// The close button is inside the tab, so it is tested first — otherwise closing a file would
-    /// switch to it instead, which is the more annoying of the two wrong answers.
-    fn click_tabs(&mut self, strip: Rect, x: f32, y: f32, scale: f32) -> bool {
-        let tabs = dacode::layout::tabs(
+    /// The tab bar, laid out for the buffers that are open now.
+    fn tab_bar(&self, strip: Rect, scale: f32) -> dacode::layout::TabBar {
+        let names: Vec<String> = (0..self.state.buffer_count.max(1))
+            .map(|index| {
+                self.state
+                    .buffer_tabs
+                    .get(index)
+                    .map(|(name, _)| name.clone())
+                    .or_else(|| self.state.path.last().cloned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+        dacode::layout::tab_bar(
             strip,
-            self.state.buffer_count,
+            &borrowed,
             self.state.active_buffer,
             &self.state.typography,
             scale,
-        );
+        )
+    }
 
-        for tab in tabs {
-            if dacode::layout::contains(tab.close, x, y) {
-                self.request_close_buffer(tab.index);
-                return true;
+    /// A click on any of the chrome's controls: the title bar, the activity bar, the tab bar.
+    ///
+    /// Every one runs a named command through the same path its key takes, so a button cannot drift
+    /// from the shortcut its tooltip teaches.
+    fn click_chrome(
+        &mut self,
+        layout: &dacode::layout::Layout,
+        x: f32,
+        y: f32,
+        scale: f32,
+    ) -> bool {
+        let at = |rect: Rect| dacode::layout::contains(rect, x, y);
+
+        if at(layout.title) {
+            let bar = dacode::layout::title_bar(layout.title, scale);
+            let command = if bar.search.is_some_and(at) {
+                Some("command_palette")
+            } else if at(bar.account) {
+                Some("menu")
+            } else if at(bar.bell) {
+                Some("notifications")
+            } else if at(bar.share) {
+                Some("share")
+            } else {
+                None
+            };
+            if let Some(action) = command.and_then(Action::from_name) {
+                let _ = self.run(action);
             }
-            if dacode::layout::contains(tab.rect, x, y) {
-                self.switch_to(tab.index);
-                return true;
+            return true;
+        }
+
+        if at(layout.activity) {
+            let hit = dacode::layout::activity_items(layout.activity, scale)
+                .into_iter()
+                .find(|(_, rect)| at(*rect))
+                .map(|(item, _)| item);
+            if let Some(item) = hit {
+                self.choose_activity(item);
             }
+            return true;
+        }
+
+        if at(layout.tabs) {
+            let bar = self.tab_bar(layout.tabs, scale);
+            // The close button is inside the tab, so it is tested first — otherwise closing a file
+            // would switch to it instead, which is the more annoying of the two wrong answers.
+            for tab in &bar.tabs {
+                if at(tab.close) {
+                    self.request_close_buffer(tab.index);
+                    return true;
+                }
+                if at(tab.rect) {
+                    self.switch_to(tab.index);
+                    return true;
+                }
+            }
+            let buttons = [bar.home, bar.back, bar.forward, bar.split, bar.run];
+            if let Some((command, _, _)) = dacode::layout::TAB_BAR_COMMANDS
+                .iter()
+                .zip(buttons)
+                .find(|(_, rect)| at(*rect))
+                .map(|(entry, _)| entry)
+            {
+                if let Some(action) = Action::from_name(command) {
+                    let _ = self.run(action);
+                }
+            }
+            return true;
         }
         false
     }
 
-    /// A click on a toolbar button, if that is where it landed.
-    fn click_toolbar(&mut self, x: f32, y: f32) -> bool {
-        let layout = self.layout();
-        let hit =
-            dacode::layout::toolbar_buttons(layout.tabs, &self.state.typography, self.scale())
-                .into_iter()
-                .find(|placed| dacode::layout::contains(placed.rect, x, y))
-                .map(|placed| placed.button.command);
-
-        let Some(command) = hit else {
-            return false;
-        };
-        // Through the action, exactly as the key does: the button cannot drift from the shortcut it
-        // is teaching, because they are the same call.
-        if let Some(action) = Action::from_name(command) {
+    /// Opens a view from the activity bar, or closes it when it is the one already showing.
+    ///
+    /// The sidebar shows one view at a time. The commands behind the icons each toggle their own
+    /// panel, so on their own two could be "open" at once with one hidden behind the other — and
+    /// closing the visible one would then reveal a panel the user had left minutes ago.
+    fn choose_activity(&mut self, item: dacode::layout::ActivityItem) {
+        if self.state.active_activity() == Some(item.activity) {
+            self.state.close_sidebar();
+            if item.activity == dacode::layout::Activity::Search {
+                self.state.results = None;
+            }
+            return;
+        }
+        self.state.close_sidebar();
+        if let Some(action) = Action::from_name(item.command) {
             let _ = self.run(action);
         }
-        true
     }
 
     /// A click while a menu is open.
@@ -6557,6 +6786,10 @@ impl App {
             // of visible rows. Whenever the tree was longer than the panel that is a different
             // *window* of rows, and clicking one file opened another.
             let panel = dacode::tree::panel(sidebar, scale, tree);
+            if y >= panel.header.y && y < panel.header.bottom() {
+                let _ = self.run(Action::NewFile);
+                return;
+            }
             let Some(index) = panel.row_at(y) else {
                 return;
             };
@@ -6750,6 +6983,7 @@ impl App {
         }
         self.state.sticky_scroll = settings.sticky_scroll;
         self.state.show_inlay_hints = settings.inlay_hints;
+        self.set_transparency(settings.transparency);
         self.state.setting_sources = settings.sources.clone();
         self.grammar.set_keymap(settings.keymap);
 
@@ -7095,6 +7329,9 @@ impl App {
             .as_ref()
             .map(|window| window.scale_factor() as f32)
             .unwrap_or(1.0);
+        // Opening or closing the sidebar changes how wide the code is, and any action can do that.
+        // Constant work, so it is simply asked every frame rather than at each of those actions.
+        fit_wrap_columns(&mut self.state, width as f32, scale);
 
         // Read the previous frame's timings before drawing this one, so the number on screen is
         // a measurement rather than a prediction.

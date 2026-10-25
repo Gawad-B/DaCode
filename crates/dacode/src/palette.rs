@@ -228,7 +228,7 @@ impl Palette {
                     score,
                     Row {
                         name: command.what.to_string(),
-                        context: command.keys_for(modal).to_string(),
+                        context: command.shown(modal),
                         score,
                         highlights: highlight_substring(command.what, &query),
                         target: Target::Command(command.name),

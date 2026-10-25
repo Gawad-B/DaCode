@@ -24,7 +24,7 @@ use std::path::PathBuf;
 /// another.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Panel {
-    /// Where the "Files" heading goes.
+    /// The "New +" button at the top of the panel, which makes a file beside the selection.
     pub header: Rect,
     /// Each visible row and the full-width rectangle it occupies.
     pub rows: Vec<(Row, Rect)>,
@@ -41,13 +41,18 @@ impl Panel {
     }
 }
 
-/// Lays the tree out in `rect`. Read by `chrome::draw_tree` and by `App::click_sidebar`.
+/// Lays the tree out in `rect`. Read by `chrome::draw_explorer` and by `App::click_sidebar`.
 pub fn panel(rect: Rect, scale: f32, tree: &FileTree) -> Panel {
-    let pad = dacode_theme::space::LG * scale;
-    let line = 22.0 * scale;
+    let pad = 12.0 * scale;
+    let line = 26.0 * scale;
     let top = rect.y + pad;
-    let header = Rect::new(rect.x + pad, top, rect.width - pad * 2.0, line);
-    let first = top + line * 1.6;
+    let header = Rect::new(
+        rect.x + pad,
+        top,
+        (rect.width - pad * 2.0).max(0.0),
+        30.0 * scale,
+    );
+    let first = header.bottom() + 10.0 * scale;
 
     // The pad at the bottom is what the two copies disagreed about. It stays: a row flush against
     // the edge of the panel reads as a row that has been cut off.

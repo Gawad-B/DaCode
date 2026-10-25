@@ -51,7 +51,7 @@ and one added to `InsertText` fails it at 111x. `cargo bench` still measures; th
 
 ```
 dacode-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, SelectionSet
-dacode-theme    Oklch, five themes, type roles, mode accents
+dacode-theme    Oklch, six themes, type roles (one face: Fira Code), mode accents
 dacode-display  soft wrap, ScrollAnchor, Folds, sticky scroll
 dacode-buffer   Document = text + undo history + pending changes + pairing
 dacode-input    Action, Grammar, Keymap, JumpList, Macros, the command table
@@ -157,7 +157,7 @@ modifier is held and leaves `shift` on the key for bindings that mean it. Never 
 platform event any other way.
 
 **Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
-the chrome and the toolbar, `menu::geometry`, `welcome::geometry`, `settings_ui::panel`,
+the chrome's bars and buttons, `menu::geometry`, `welcome::geometry`, `settings_ui::panel`,
 `tree::panel`, `layout::CodeArea`. The drawing code reads the same function. A rectangle computed
 twice is a click that lands somewhere other than where it looks.
 
@@ -448,7 +448,8 @@ anything platform-shaped:
 | How something looks | `crates/dacode/src/chrome.rs` |
 | Where something is | `crates/dacode/src/layout.rs` |
 | A config option | `dacode-lua/src/lib.rs`, `dacode/src/config.rs`, `dacode/src/settings_ui.rs` (all three) |
-| What the toolbar offers | `crates/dacode/src/layout.rs` — `TOOLBAR`, read by drawing and by the mouse |
+| What the title, activity and tab bars offer | `crates/dacode/src/layout.rs` — `title_bar`, `ACTIVITIES`, `TAB_BAR_COMMANDS`, read by drawing and by the mouse |
+| An icon | `crates/dacode-render/src/icon.rs` — geometry on a 24-unit grid, drawn by `shape.wgsl` |
 | What a right-click offers | `crates/dacode/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/dacode-theme/src/theme.rs` |
 | LSP behaviour | `crates/dacode-lsp/src/client.rs`, applied in `crates/dacode/src/edits.rs` |

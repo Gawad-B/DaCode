@@ -56,6 +56,11 @@ pub struct Theme {
     pub scrim: Oklch,
     pub shadow: Oklch,
 
+    /// The brand colour: the logo, a primary button, the explorer's selection. Fixed where the mode
+    /// accents move, because a Share button that turned green on entering insert mode would read as
+    /// a state change rather than as the button it is.
+    pub primary: Oklch,
+
     pub syntax: SyntaxPalette,
 
     /// Lightness and chroma shared by all four mode accents. Moving lightness between themes
@@ -69,13 +74,47 @@ pub type BuiltIn = (&'static str, fn() -> Theme);
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::dark()
+        Self::dacode()
     }
 }
 
 impl Theme {
+    /// The default: the palette of the DaCode interface design — a cool charcoal with the chrome a
+    /// shade darker than the code, and syntax colours in the family most editors' dark themes share,
+    /// so nobody arriving from VSCode or Zed has to relearn what a string looks like.
+    pub const fn dacode() -> Self {
+        Self {
+            primary: Oklch::new(0.6467, 0.1912, 256.2),
+            appearance: Appearance::Dark,
+            bg: Oklch::new(0.2713, 0.0086, 255.6),
+            bg_alt: Oklch::new(0.2417, 0.0073, 248.1),
+            bg_panel: Oklch::new(0.2332, 0.0073, 248.1),
+            row_active: Oklch::new(0.3077, 0.0122, 258.4),
+            rule: Oklch::new(0.3152, 0.0105, 254.0),
+            rule_soft: Oklch::new(0.2840, 0.0101, 260.7),
+            ink: Oklch::new(0.8878, 0.0088, 264.5),
+            ink_dim: Oklch::new(0.7203, 0.0236, 263.2),
+            ink_faint: Oklch::new(0.5085, 0.0209, 261.3),
+            scrim: Oklch::new(0.1717, 0.0053, 248.1).with_alpha(0.62),
+            shadow: Oklch::new(0.050, 0.000, 0.0).with_alpha(0.55),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.6936, 0.1635, 318.2),
+                type_: Oklch::new(0.8249, 0.0970, 82.3),
+                function: Oklch::new(0.7304, 0.1213, 245.3),
+                attribute: Oklch::new(0.7273, 0.0949, 63.8),
+                comment: Oklch::new(0.5514, 0.0190, 251.0),
+                string: Oklch::new(0.7683, 0.1103, 133.0),
+                number: Oklch::new(0.7273, 0.0949, 63.8),
+                constant: Oklch::new(0.6709, 0.1448, 17.0),
+            },
+            mode_l: 0.72,
+            mode_c: 0.13,
+        }
+    }
+
     pub const fn dark() -> Self {
         Self {
+            primary: Oklch::new(0.6600, 0.1600, 255.0),
             appearance: Appearance::Dark,
             bg: Oklch::new(0.165, 0.008, 70.0),
             bg_alt: Oklch::new(0.185, 0.009, 70.0),
@@ -105,6 +144,7 @@ impl Theme {
 
     pub const fn light() -> Self {
         Self {
+            primary: Oklch::new(0.5500, 0.1700, 255.0),
             appearance: Appearance::Light,
             bg: Oklch::new(0.965, 0.008, 85.0),
             bg_alt: Oklch::new(0.975, 0.008, 85.0),
@@ -160,6 +200,7 @@ impl Theme {
             "ink_faint" | "text.ink_faint" => &mut self.ink_faint,
             "scrim" | "overlays.scrim" => &mut self.scrim,
             "shadow" | "overlays.shadow" => &mut self.shadow,
+            "primary" | "surfaces.primary" => &mut self.primary,
             "keyword" | "syntax.keyword" => &mut self.syntax.keyword,
             // `type` is a Rust keyword, so the field is `type_`; the token name is not.
             "type" | "syntax.type" => &mut self.syntax.type_,
@@ -176,7 +217,7 @@ impl Theme {
     }
 
     /// Every name [`Theme::set_token`] accepts, for error messages and documentation.
-    pub const TOKENS: [&'static str; 19] = [
+    pub const TOKENS: [&'static str; 20] = [
         "bg",
         "bg_alt",
         "bg_panel",
@@ -188,6 +229,7 @@ impl Theme {
         "ink_faint",
         "scrim",
         "shadow",
+        "primary",
         "keyword",
         "type",
         "function",
@@ -204,6 +246,7 @@ impl Theme {
     /// taken as published rather than "corrected" towards this design's usual separation.
     pub const fn rose_pine() -> Self {
         Self {
+            primary: Oklch::new(0.7300, 0.0800, 300.0),
             appearance: Appearance::Dark,
             bg: Oklch::new(0.2134, 0.0255, 291.1),
             bg_alt: Oklch::new(0.2413, 0.0322, 289.1),
@@ -234,6 +277,7 @@ impl Theme {
     /// Rosé Pine Moon — the same palette a shade lighter at the base.
     pub const fn rose_pine_moon() -> Self {
         Self {
+            primary: Oklch::new(0.7300, 0.0800, 300.0),
             appearance: Appearance::Dark,
             bg: Oklch::new(0.2604, 0.039, 287.7),
             bg_alt: Oklch::new(0.2875, 0.0435, 289.1),
@@ -267,6 +311,7 @@ impl Theme {
     /// theme. The accents carry more chroma than the other themes to hold their own against it.
     pub const fn amoled() -> Self {
         Self {
+            primary: Oklch::new(0.7000, 0.1800, 250.0),
             appearance: Appearance::Dark,
             bg: Oklch::new(0.0, 0.0, 0.0),
             bg_alt: Oklch::new(0.1286, 0.0, 86.0),
@@ -295,7 +340,8 @@ impl Theme {
     }
 
     /// Every theme that ships in the binary, by the name config and the settings panel use.
-    pub const BUILT_IN: [BuiltIn; 5] = [
+    pub const BUILT_IN: [BuiltIn; 6] = [
+        ("dacode", Self::dacode),
         ("dark", Self::dark),
         ("light", Self::light),
         ("rose-pine", Self::rose_pine),

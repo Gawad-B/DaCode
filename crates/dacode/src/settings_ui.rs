@@ -185,10 +185,11 @@ pub enum Field {
     StickyScroll,
     InlayHints,
     Autosave,
+    Transparency,
 }
 
 impl Field {
-    pub const ALL: [Field; 10] = [
+    pub const ALL: [Field; 11] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -199,6 +200,7 @@ impl Field {
         Field::StickyScroll,
         Field::InlayHints,
         Field::Autosave,
+        Field::Transparency,
     ];
 
     pub fn name(self) -> &'static str {
@@ -213,6 +215,7 @@ impl Field {
             Field::StickyScroll => "sticky_scroll",
             Field::InlayHints => "inlay_hints",
             Field::Autosave => "autosave",
+            Field::Transparency => "transparency",
         }
     }
 
@@ -238,12 +241,13 @@ impl Field {
             Field::TabWidth => "columns a tab stands for",
             Field::SoftWrap => "wrap long lines instead of scrolling sideways",
             Field::FormatOnSave => "reformat through the language server after each save",
-            Field::Theme => "one of the five that ship with dacode",
+            Field::Theme => "one of the six that ship with DaCode",
             Field::LineNumbers if modal => "absolute, relative (vim's), or none at all",
             Field::LineNumbers => "absolute, relative, or none at all",
             Field::StickyScroll => "pin enclosing block heads above the viewport",
             Field::InlayHints => "show inferred types and parameter names inline",
             Field::Autosave => "write the file a moment after you stop typing",
+            Field::Transparency => "how much of the desktop shows through the window",
         }
     }
 }
@@ -565,9 +569,15 @@ pub struct Values {
     pub inlay_hints: bool,
     pub autosave: bool,
     pub line_numbers: crate::config::LineNumbers,
+    /// Percent, in steps of [`Values::TRANSPARENCY_STEP`].
+    pub transparency: u8,
 }
 
 impl Values {
+    /// The same ceiling `dacode-lua` clamps a configured value to.
+    pub const MAX_TRANSPARENCY: u8 = 90;
+    pub const TRANSPARENCY_STEP: u8 = 10;
+
     /// What a tab may stand for. The same bounds `dacode-lua` clamps a configured `tab_width` to —
     /// stated once here because the panel and the config file must agree about what is reachable,
     /// and the font size next to it is the case where they did not.
@@ -586,6 +596,10 @@ impl Values {
             Field::StickyScroll => on_off(self.sticky_scroll),
             Field::InlayHints => on_off(self.inlay_hints),
             Field::Autosave => on_off(self.autosave),
+            Field::Transparency => match self.transparency {
+                0 => "off".into(),
+                percent => format!("{percent}%"),
+            },
         }
     }
 
@@ -605,12 +619,14 @@ impl Values {
         let at_limit = match field {
             Field::FontSize => self.font_size >= Typography::MAX_CODE_SIZE,
             Field::TabWidth => self.tab_width >= Self::MAX_TAB_WIDTH,
+            Field::Transparency => self.transparency >= Self::MAX_TRANSPARENCY,
             _ => false,
         };
         if at_limit {
             match field {
                 Field::FontSize => self.font_size = Typography::MIN_CODE_SIZE,
                 Field::TabWidth => self.tab_width = Self::MIN_TAB_WIDTH,
+                Field::Transparency => self.transparency = 0,
                 _ => {}
             }
             return;
@@ -668,6 +684,12 @@ impl Values {
             Field::StickyScroll => self.sticky_scroll = !self.sticky_scroll,
             Field::InlayHints => self.inlay_hints = !self.inlay_hints,
             Field::Autosave => self.autosave = !self.autosave,
+            Field::Transparency => {
+                let step = Self::TRANSPARENCY_STEP as i32;
+                self.transparency = (self.transparency as i32 + delta.signum() * step)
+                    .clamp(0, Self::MAX_TRANSPARENCY as i32)
+                    as u8;
+            }
         }
     }
 }
@@ -706,7 +728,8 @@ pub fn write_back(existing: &str, values: &Values) -> String {
          line_numbers = \"{}\",\n  \
          sticky_scroll = {},\n  \
          inlay_hints = {},\n  \
-         autosave = {},\n}}\n",
+         autosave = {},\n  \
+         transparency = {},\n}}\n",
         values.modal,
         values.font_size,
         values.tab_width,
@@ -716,6 +739,7 @@ pub fn write_back(existing: &str, values: &Values) -> String {
         values.sticky_scroll,
         values.inlay_hints,
         values.autosave,
+        values.transparency,
     );
 
     match existing.find(MARKER) {
@@ -765,6 +789,7 @@ mod tests {
             modal: true,
             theme: Some("dark"),
             line_numbers: crate::config::LineNumbers::Absolute,
+            transparency: 0,
             sticky_scroll: true,
             inlay_hints: false,
             autosave: false,
@@ -942,6 +967,7 @@ mod tests {
             format_on_save: false,
             theme: Some("dark"),
             line_numbers: crate::config::LineNumbers::Relative,
+            transparency: 0,
             sticky_scroll: true,
             inlay_hints: false,
             autosave: false,
@@ -999,10 +1025,16 @@ mod tests {
         assert!(seen.contains(&"rose-pine".to_string()));
         assert!(seen.contains(&"amoled".to_string()));
 
+        // Wherever it started, one more step comes back to it, and one back from there is the last
+        // one seen — the wrap, in both directions, without the test knowing the list's order.
         values.adjust(Field::Theme, 1);
-        assert_eq!(values.get(Field::Theme), "dark", "and wraps round");
+        assert_eq!(values.get(Field::Theme), seen[0], "and wraps round");
         values.adjust(Field::Theme, -1);
-        assert_eq!(values.get(Field::Theme), "amoled", "backwards too");
+        assert_eq!(
+            &values.get(Field::Theme),
+            seen.last().unwrap(),
+            "backwards too"
+        );
     }
 
     #[test]
@@ -1197,6 +1229,7 @@ mod click_tests {
             format_on_save: false,
             theme: Some("dark"),
             line_numbers: crate::config::LineNumbers::Relative,
+            transparency: 0,
             sticky_scroll: true,
             inlay_hints: false,
             autosave: false,

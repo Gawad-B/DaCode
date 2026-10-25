@@ -46,9 +46,121 @@ impl Command {
         if modal { self.keys } else { self.flat }
     }
 
+    /// The keys as a person reads them: Vim's notation for someone using Vim's grammar, and
+    /// `Ctrl+Shift+P` for everyone else (see [`pretty`]).
+    pub fn shown(&self, modal: bool) -> String {
+        if modal {
+            self.keys.to_string()
+        } else {
+            pretty(self.flat)
+        }
+    }
+
     /// The action this command runs.
     pub fn action(&self) -> Option<Action> {
         Action::from_name(self.name)
+    }
+}
+
+/// Keys written the way a desktop application writes them: `<c-s-p>` becomes `Ctrl+Shift+P`.
+///
+/// The table uses Vim's notation because the modal grammar is built on it, and someone who chose
+/// that grammar reads it fluently. Someone who did not has never seen `<c-s-p>`, and a tooltip that
+/// teaches a key in a notation they cannot read teaches nothing. A chord followed by another key —
+/// `<c-k>o` — keeps the gap between them, since that is two presses.
+pub fn pretty(keys: &str) -> String {
+    let mut out = String::new();
+    let mut rest = keys;
+    while let Some(first) = rest.chars().next() {
+        let group = (first == '<')
+            .then(|| rest[1..].find('>').map(|end| &rest[1..1 + end]))
+            .flatten()
+            .filter(|inner| !inner.is_empty() && !inner.contains('<'));
+        let piece = match group {
+            Some(inner) => {
+                rest = &rest[inner.len() + 2..];
+                chord(inner)
+            }
+            None => {
+                rest = &rest[first.len_utf8()..];
+                match first {
+                    ' ' => continue,
+                    other => other.to_uppercase().to_string(),
+                }
+            }
+        };
+        if !out.is_empty() && !out.ends_with(' ') {
+            out.push(' ');
+        }
+        out.push_str(&piece);
+    }
+    out
+}
+
+fn chord(inner: &str) -> String {
+    let parts: Vec<&str> = inner.split('-').collect();
+    // `<c-->` would split into an empty last part; the key there is the dash itself.
+    let (modifiers, key) = match parts.split_last() {
+        Some((&"", before)) if !before.is_empty() => (&before[..before.len() - 1], "-"),
+        Some((key, before)) => (before, *key),
+        None => (&[][..], inner),
+    };
+    let mut names: Vec<String> = modifiers
+        .iter()
+        .map(|modifier| {
+            match *modifier {
+                "c" => "Ctrl",
+                "s" => "Shift",
+                "a" => "Alt",
+                "m" | "d" => "Super",
+                other => other,
+            }
+            .to_string()
+        })
+        .collect();
+    let key = match key {
+        "bs" => "Backspace".to_string(),
+        "del" => "Delete".to_string(),
+        "cr" | "enter" => "Enter".to_string(),
+        "esc" => "Esc".to_string(),
+        "tab" => "Tab".to_string(),
+        "space" => "Space".to_string(),
+        "home" => "Home".to_string(),
+        "end" => "End".to_string(),
+        "pageup" => "PageUp".to_string(),
+        "pagedown" => "PageDown".to_string(),
+        other if other.starts_with('f') && other[1..].parse::<u8>().is_ok() => other.to_uppercase(),
+        other => other.to_uppercase(),
+    };
+    names.push(key);
+    names.join("+")
+}
+
+#[cfg(test)]
+mod pretty_tests {
+    use super::pretty;
+
+    #[test]
+    fn chords_read_the_way_a_desktop_application_writes_them() {
+        assert_eq!(pretty("<c-s-p>"), "Ctrl+Shift+P");
+        assert_eq!(pretty("<f8>"), "F8");
+        assert_eq!(pretty("<s-f8>"), "Shift+F8");
+        assert_eq!(pretty("<c-bs>"), "Ctrl+Backspace");
+        assert_eq!(pretty("<a-↑>"), "Alt+↑");
+        assert_eq!(pretty("<c-,>"), "Ctrl+,");
+    }
+
+    #[test]
+    fn a_sequence_keeps_its_presses_apart() {
+        assert_eq!(pretty("<c-k>o"), "Ctrl+K O");
+        assert_eq!(pretty("gD"), "G D");
+    }
+
+    #[test]
+    fn a_bracket_that_opens_no_chord_is_just_a_bracket() {
+        // Vim's outdent is two less-than signs, not a chord with nothing in it.
+        assert_eq!(pretty("<<"), "< <");
+        assert_eq!(pretty(""), "");
     }
 }
 
@@ -452,6 +564,11 @@ pub const COMMANDS: &[Command] = &[
         "gD",
         "",
     ),
+    command("source_control", "show source control", View, "", ""),
+    command("run_and_debug", "show run and debug", View, "", ""),
+    command("notifications", "show recent messages", View, "", ""),
+    command("share", "copy a link to this line", Files, "", ""),
+    command("run", "run the project", Files, "", ""),
     command(
         "toggle_inlay_hints",
         "show or hide inlay hints",

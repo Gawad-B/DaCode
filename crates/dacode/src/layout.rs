@@ -9,154 +9,180 @@
 use dacode_render::Rect;
 
 /// The regions of the window, in physical pixels.
+///
+/// The shape VSCode and Zed share, because it is the shape people arrive knowing: a title bar across
+/// the top, an icon column down the left that chooses what the sidebar shows, the sidebar, and the
+/// editor column — tabs, panes, and a status bar under them.
 #[derive(Debug, Clone, Copy)]
 pub struct Layout {
     pub title: Rect,
+    /// The column of activity icons.
+    pub activity: Rect,
+    /// The sidebar, when one is open. Closed, the editor takes its width — as it does in both
+    /// editors this one is shaped after.
+    pub sidebar: Option<Rect>,
     pub tabs: Rect,
     pub status: Rect,
     /// The editor area, before it is divided into panes.
     pub editor: Rect,
-    pub sidebar: Rect,
     /// The search-results panel, when it is open.
     pub results: Option<Rect>,
 }
 
-/// A clickable button in the toolbar.
-///
-/// The toolbar exists because a keyboard-first editor that is *only* reachable by keyboard is an
-/// editor most people close. Someone who chose the conventional editor should be able to open a
-/// file, show the tree, search, save and reach the settings without having been told a single
-/// shortcut — and then learn the shortcut from the button's own tooltip when they are ready.
-///
-/// One toolbar button, its box, and the box its label is drawn in.
-///
-/// Two rectangles rather than one because they answer different questions: the mouse and the hover
-/// fill want the whole button, and the text wants the part inside the padding. Returning only the
-/// outer one left the caller to invent the inset, and it invented none — so a label wider than its
-/// estimate ran to the button's own edge and met its neighbour.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ToolButtonBox {
-    pub button: ToolButton,
-    /// The button: what the mouse hits and what lights up under the pointer.
-    pub rect: Rect,
-    /// Where the label goes, inset by the padding.
-    pub text: Rect,
+/// Sizes of the chrome, in logical pixels.
+pub mod size {
+    pub const TITLE: f32 = 48.0;
+    pub const ACTIVITY: f32 = 52.0;
+    pub const SIDEBAR: f32 = 252.0;
+    pub const TABS: f32 = 40.0;
+    pub const STATUS: f32 = 30.0;
+    /// An icon button's square.
+    pub const BUTTON: f32 = 30.0;
+    /// The icon inside it.
+    pub const ICON: f32 = 18.0;
 }
 
+/// One of the views the activity bar chooses between.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum Activity {
+    Explorer,
+    Search,
+    SourceControl,
+    Debug,
+    Problems,
+    Settings,
+}
+
+/// An icon in the activity bar: what it shows, and the command clicking it runs.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct ToolButton {
-    /// The command it runs, by the name in `dacode_input::commands`.
+pub struct ActivityItem {
+    pub activity: Activity,
+    pub icon: dacode_render::Icon,
+    /// By the name in `dacode_input::commands`, so the icon runs exactly what the key does and its
+    /// tooltip can name that key.
     pub command: &'static str,
-    /// The short word drawn on it.
-    ///
-    /// A word rather than an icon glyph: the bundled font has no icon set, and an icon that renders
-    /// as a tofu box teaches nothing. Words also say what they do in the user's language, which a
-    /// hieroglyph of a floppy disk has not done for twenty years.
     pub label: &'static str,
 }
 
-/// The toolbar, left to right.
-///
-/// Ordered by how often someone reaches for it, not by category: open, then the tree, then find,
-/// then save, then the two ways of finding out what else there is.
-pub const TOOLBAR: [ToolButton; 7] = [
-    ToolButton {
-        command: "open_folder",
-        label: "open",
-    },
-    ToolButton {
+/// The activity bar, top to bottom. The last is pinned to the bottom of the column, apart from the
+/// others, as both editors place their settings.
+pub const ACTIVITIES: [ActivityItem; 6] = [
+    ActivityItem {
+        activity: Activity::Explorer,
+        icon: dacode_render::Icon::Explorer,
         command: "toggle_tree",
-        label: "files",
+        label: "Explorer",
     },
-    ToolButton {
-        command: "search",
-        label: "find",
+    ActivityItem {
+        activity: Activity::Search,
+        icon: dacode_render::Icon::Search,
+        command: "search_project",
+        label: "Search",
     },
-    ToolButton {
-        command: "save",
-        label: "save",
+    ActivityItem {
+        activity: Activity::SourceControl,
+        icon: dacode_render::Icon::Branch,
+        command: "source_control",
+        label: "Source control",
     },
-    ToolButton {
+    ActivityItem {
+        activity: Activity::Debug,
+        icon: dacode_render::Icon::Bug,
+        command: "run_and_debug",
+        label: "Run and debug",
+    },
+    ActivityItem {
+        activity: Activity::Problems,
+        icon: dacode_render::Icon::Bulb,
+        command: "toggle_diagnostics",
+        label: "Problems",
+    },
+    ActivityItem {
+        activity: Activity::Settings,
+        icon: dacode_render::Icon::Gear,
         command: "settings",
-        label: "settings",
-    },
-    ToolButton {
-        command: "command_palette",
-        label: "commands",
-    },
-    ToolButton {
-        command: "help",
-        label: "keys",
+        label: "Settings",
     },
 ];
 
-/// Where each toolbar button is, given the tab strip it sits in.
+/// Where each activity icon is. Squares down the column, the last one at the bottom.
 ///
-/// Right-aligned, because the left of that row is the file's tabs and they are the thing you are
-/// looking at. One definition, read by the drawing code and by the mouse — the rule this module
-/// exists for.
-///
-/// A narrow window cannot hold all seven, and the first version simply subtracted the full width
-/// from the right edge — so in a window around 400px the leftmost buttons were laid out at negative
-/// x and drawn off the side of the window, which is what a real Windows run showed. Buttons that do
-/// not fit are dropped from the end instead: [`TOOLBAR`] is ordered by how often each is reached
-/// for, so the tail is the part that can be spared, and a shorter toolbar is honest where half a
-/// button hanging past the edge is not.
-pub fn toolbar_buttons(
-    tabs: Rect,
-    typography: &dacode_theme::Typography,
-    scale: f32,
-) -> Vec<ToolButtonBox> {
-    let height = 22.0 * scale;
-    let gap = 6.0 * scale;
-    let margin = 16.0 * scale;
-    let pad = 8.0 * scale;
-    let y = tabs.y + (tabs.height - height) / 2.0;
+/// A column too short for all of them keeps the bottom one and drops from the end of the rest,
+/// rather than letting the two groups overlap — an icon under another is a click on the wrong view.
+pub fn activity_items(bar: Rect, scale: f32) -> Vec<(ActivityItem, Rect)> {
+    let cell = bar.width.min(48.0 * scale);
+    let x = bar.x + (bar.width - cell) / 2.0;
+    let top = bar.y + 6.0 * scale;
+    let (last, rest) = ACTIVITIES.split_last().expect("the table is not empty");
+    let bottom = Rect::new(x, bar.bottom() - cell - 8.0 * scale, cell, cell);
 
-    // Per character, from the type scale rather than a constant of its own. It was `7.5` — below
-    // the project's own estimate for the role these are drawn in (`Role::Label` is uppercase with
-    // 0.2em tracking, so 8.2px at the default size), and tied to nothing, so it could not follow the
-    // font size at all. The eight-character labels were the first to overflow, which is exactly the
-    // pair that ran together: SETTINGS and COMMANDS. It went unseen here because the fonts Linux
-    // resolves are narrower than the ones Windows does; raising the editor font would have shown it
-    // on either.
-    //
-    // The 1.15 is slack, and it is there because `advance` is an *estimate* — a ratio times the
-    // type size, not a shaped measurement, which is a limitation this codebase states rather than
-    // hides. Without it the label still fitted the arithmetic and not the font: `COMMANDS` came back
-    // from the shaper wider than the estimate and lost its leading C to the clip.
-    let advance = typography.advance(dacode_theme::Role::Label) * scale * 1.15;
-    let widths: Vec<f32> = TOOLBAR
+    let mut placed: Vec<(ActivityItem, Rect)> = rest
         .iter()
-        .map(|button| (button.label.chars().count() as f32 * advance + pad * 2.0).ceil())
+        .enumerate()
+        .map(|(index, item)| (*item, Rect::new(x, top + index as f32 * cell, cell, cell)))
+        .take_while(|(_, rect)| rect.bottom() <= bottom.y)
         .collect();
-
-    let span = |count: usize| -> f32 {
-        widths[..count].iter().sum::<f32>() + gap * (count.saturating_sub(1) as f32)
-    };
-
-    let available = (tabs.width - margin * 2.0).max(0.0);
-    let mut count = TOOLBAR.len();
-    while count > 0 && span(count) > available {
-        count -= 1;
-    }
-
-    let mut x = tabs.right() - margin - span(count);
-    let mut placed = Vec::with_capacity(count);
-    for (button, width) in TOOLBAR.iter().take(count).zip(&widths) {
-        let rect = Rect::new(x, y, *width, height);
-        placed.push(ToolButtonBox {
-            button: *button,
-            rect,
-            // The label is drawn into this, never into `rect`. `advance` is an estimate, and the
-            // renderer clips a run to its own rectangle — so an underestimate now costs a shaved
-            // letter inside the padding rather than a label bleeding into its neighbour. The gap
-            // between two labels cannot fall below `pad * 2 + gap` on any font or platform.
-            text: Rect::new(x + pad, y, (width - pad * 2.0).max(0.0), height),
-        });
-        x += width + gap;
+    if bottom.y >= bar.y {
+        placed.push((*last, bottom));
     }
     placed
+}
+
+/// What the title bar holds, left to right.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TitleBar {
+    pub logo: Rect,
+    pub name: Rect,
+    /// The command centre: a search box that opens the palette. Absent when the bar is too narrow
+    /// to hold it without crowding the buttons, which matter more.
+    pub search: Option<Rect>,
+    pub account: Rect,
+    pub bell: Rect,
+    pub share: Rect,
+}
+
+/// The title bar's controls, for drawing and for the mouse.
+pub fn title_bar(title: Rect, scale: f32) -> TitleBar {
+    let px = |v: f32| v * scale;
+    let centre_y = |height: f32| title.y + (title.height - height) / 2.0;
+
+    let logo = Rect::new(title.x + px(16.0), centre_y(px(28.0)), px(28.0), px(28.0));
+    let name = Rect::new(logo.right() + px(10.0), title.y, px(96.0), title.height);
+
+    let share_width = px(76.0);
+    let share = Rect::new(
+        (title.right() - px(16.0) - share_width).max(name.right()),
+        centre_y(px(30.0)),
+        share_width,
+        px(30.0),
+    );
+    let button = px(size::BUTTON);
+    let bell = Rect::new(
+        share.x - px(12.0) - button,
+        centre_y(button),
+        button,
+        button,
+    );
+    let account = Rect::new(bell.x - px(4.0) - button, centre_y(button), button, button);
+
+    let room = account.x - px(24.0) - (name.right() + px(24.0));
+    let width = room.min(px(440.0));
+    let search = (width >= px(180.0)).then(|| {
+        let middle = title.x + title.width / 2.0;
+        let x = (middle - width / 2.0)
+            .max(name.right() + px(24.0))
+            .min(account.x - px(24.0) - width);
+        Rect::new(x, centre_y(px(28.0)), width, px(28.0))
+    });
+
+    TitleBar {
+        logo,
+        name,
+        search,
+        account,
+        bell,
+        share,
+    }
 }
 
 /// The mapping between a pane's code area and the display grid inside it.
@@ -265,78 +291,182 @@ pub struct Tab {
     pub index: usize,
     /// The whole tab: clicking it switches to that file.
     pub rect: Rect,
+    /// The file's icon at its left.
+    pub icon: Rect,
+    /// Where the name is drawn, between the icon and the close button.
+    pub label: Rect,
     /// The close button at its right end. Inside `rect`, so it must be tested *first*.
     pub close: Rect,
 }
 
-/// Where each open file's tab is.
+/// The row above the code: navigation on the left, the open files, and the pane controls on the
+/// right.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TabBar {
+    pub home: Rect,
+    pub back: Rect,
+    pub forward: Rect,
+    pub tabs: Vec<Tab>,
+    pub split: Rect,
+    pub run: Rect,
+}
+
+/// The buttons the tab bar carries besides the tabs, and the commands they run.
+pub const TAB_BAR_COMMANDS: [(&str, dacode_render::Icon, &str); 5] = [
+    ("open_folder", dacode_render::Icon::Home, "Open a folder"),
+    ("jump_back", dacode_render::Icon::ChevronLeft, "Back"),
+    ("jump_forward", dacode_render::Icon::ChevronRight, "Forward"),
+    (
+        "split_vertical",
+        dacode_render::Icon::Split,
+        "Split the editor",
+    ),
+    ("run", dacode_render::Icon::Play, "Run"),
+];
+
+/// Where everything in the tab bar is.
 ///
-/// The strip drew exactly one tab — the active file's name — which meant the other open buffers
-/// were invisible and the only way between them was `ctrl-b` or the palette. One definition, read
-/// by the drawing code and by the mouse, for the reason this module exists.
-///
-/// Tabs share whatever the toolbar leaves. When they no longer fit they shrink to a floor and then
-/// stop being produced, rather than sliding under the buttons: a tab you cannot read is still a tab
-/// you can click, but one drawn beneath something else is a click that lands on the wrong thing.
-pub fn tabs(
+/// Each tab is as wide as its name needs, between a floor and a ceiling, the way both VSCode and Zed
+/// size them. When they do not all fit, the run that holds the active tab is kept — the file being
+/// edited must always have a tab — and the others are left out rather than squeezed below the
+/// width where a name can be read, or slid under the buttons, where a click would land on the wrong
+/// thing. `names` is one entry per open buffer.
+pub fn tab_bar(
     strip: Rect,
-    count: usize,
+    names: &[&str],
     active: usize,
     typography: &dacode_theme::Typography,
     scale: f32,
-) -> Vec<Tab> {
-    const IDEAL: f32 = 150.0;
-    const FLOOR: f32 = 64.0;
+) -> TabBar {
+    let px = |v: f32| v * scale;
+    let button = px(size::BUTTON);
+    let y = strip.y + (strip.height - button) / 2.0;
 
-    if count == 0 {
-        return Vec::new();
+    let home = Rect::new(strip.x + px(10.0), y, button, button);
+    let back = Rect::new(home.right() + px(8.0), y, button, button);
+    let forward = Rect::new(back.right() + px(2.0), y, button, button);
+    let run = Rect::new(strip.right() - px(10.0) - button, y, button, button);
+    let split = Rect::new(run.x - px(6.0) - button, y, button, button);
+
+    let left = forward.right() + px(12.0);
+    let right = split.x - px(12.0);
+    let height = px(30.0);
+    let tab_y = strip.y + (strip.height - height) / 2.0;
+
+    // With slack: `advance` is a type-scale estimate, not the shaper, and a name a character too
+    // wide for its box is cut to an ellipsis it did not need.
+    let advance = typography.advance(dacode_theme::Role::Ui) * scale * 1.15;
+    // Padding, icon, gap — then gap, close button, padding. The same terms the rectangles below
+    // are built from, so the name's box is exactly what is left.
+    let chrome = px(12.0 + 16.0 + 8.0 + 8.0 + 18.0 + 10.0);
+    let widths: Vec<f32> = names
+        .iter()
+        .map(|name| {
+            (name.chars().count() as f32 * advance + chrome)
+                .clamp(px(96.0), px(220.0))
+                .ceil()
+        })
+        .collect();
+    let gap = px(4.0);
+
+    // Grow a window of tabs outwards from the active one until the next would not fit.
+    let active = active.min(names.len().saturating_sub(1));
+    let available = (right - left).max(0.0);
+    let (mut first, mut last) = (active, active);
+    let mut used = widths.get(active).copied().unwrap_or(0.0);
+    if names.is_empty() || used > available {
+        return TabBar {
+            home,
+            back,
+            forward,
+            tabs: Vec::new(),
+            split,
+            run,
+        };
+    }
+    loop {
+        let after = (last + 1 < names.len()).then(|| widths[last + 1] + gap);
+        let before = (first > 0).then(|| widths[first - 1] + gap);
+        match (after, before) {
+            (Some(width), _) if used + width <= available => {
+                last += 1;
+                used += width;
+            }
+            (_, Some(width)) if used + width <= available => {
+                first -= 1;
+                used += width;
+            }
+            _ => break,
+        }
     }
 
-    let pad = 16.0 * scale;
-    let height = 22.0 * scale;
-    let y = strip.y + (strip.height - height) / 2.0;
-
-    // The toolbar owns the right end of the same row.
-    let toolbar_left = toolbar_buttons(strip, typography, scale)
-        .first()
-        .map(|placed| placed.rect.x)
-        .unwrap_or(strip.right());
-    let available = (toolbar_left - strip.x - pad * 2.0).max(0.0);
-    if available < FLOOR * scale {
-        return Vec::new();
-    }
-
-    let width = (available / count as f32).clamp(FLOOR * scale, IDEAL * scale);
-    let fits = ((available / width).floor() as usize).max(1).min(count);
-
-    // When they do not all fit, keep the window that contains the active one — the file you are
-    // looking at must always have a tab.
-    let first = if active >= fits { active + 1 - fits } else { 0 };
-
-    (first..(first + fits).min(count))
-        .enumerate()
-        .map(|(slot, index)| {
-            let rect = Rect::new(strip.x + pad + slot as f32 * width, y, width, height);
-            let button = 18.0 * scale;
+    let mut x = left;
+    let tabs = (first..=last)
+        .map(|index| {
+            let rect = Rect::new(x, tab_y, widths[index], height);
+            x += widths[index] + gap;
+            let icon_size = px(16.0);
+            let icon = Rect::new(
+                rect.x + px(12.0),
+                rect.y + (height - icon_size) / 2.0,
+                icon_size,
+                icon_size,
+            );
+            let close = Rect::new(
+                rect.right() - px(10.0) - px(18.0),
+                rect.y + (height - px(18.0)) / 2.0,
+                px(18.0),
+                px(18.0),
+            );
+            let label = Rect::new(
+                icon.right() + px(8.0),
+                rect.y,
+                (close.x - px(8.0) - (icon.right() + px(8.0))).max(0.0),
+                height,
+            );
             Tab {
                 index,
                 rect,
-                close: Rect::new(rect.right() - button, y, button, height),
+                icon,
+                label,
+                close,
             }
         })
-        .collect()
+        .collect();
+
+    TabBar {
+        home,
+        back,
+        forward,
+        tabs,
+        split,
+        run,
+    }
 }
 
 impl Layout {
-    /// Computes the layout for a window of this size. The single definition of the chrome's stack.
-    pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>) -> Self {
+    /// Computes the layout for a window of this size. The single definition of the chrome's stack,
+    /// read by the drawing code and by the mouse alike.
+    ///
+    /// The sidebar gives way first when the window is narrow: past a third of the width it would
+    /// leave the code too little room to be worth editing in.
+    pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>, sidebar: bool) -> Self {
         let px = |v: f32| v * scale;
 
-        let (title, rest) = bounds.split_top(px(72.0));
-        let (tabs, rest) = rest.split_top(px(34.0));
-        let (status, body) = rest.split_bottom(px(34.0));
+        let (title, rest) = bounds.split_top(px(size::TITLE).min(bounds.height));
+        let (activity, rest) = rest.split_left(px(size::ACTIVITY).min(rest.width));
+        let (sidebar, column) = if sidebar {
+            let width = px(size::SIDEBAR).min(rest.width * 0.34).floor();
+            let (sidebar, column) = rest.split_left(width);
+            (Some(sidebar), column)
+        } else {
+            (None, rest)
+        };
 
-        let (body, results) = match results_rows {
+        let (tabs, rest) = column.split_top(px(size::TABS).min(column.height));
+        let (status, body) = rest.split_bottom(px(size::STATUS).min(rest.height));
+
+        let (editor, results) = match results_rows {
             Some(rows) => {
                 let height = (rows.max(1) as f32 + 2.0) * 22.0 * scale;
                 let (panel, rest) = body.split_bottom(height.min(body.height * 0.5));
@@ -345,15 +475,13 @@ impl Layout {
             None => (body, None),
         };
 
-        let sidebar_width = px(292.0).min(body.width * 0.32);
-        let (sidebar, editor) = body.split_right(sidebar_width);
-
         Self {
             title,
+            activity,
+            sidebar,
             tabs,
             status,
             editor,
-            sidebar,
             results,
         }
     }
@@ -463,109 +591,183 @@ mod tests {
     }
 
     #[test]
-    fn the_stack_partitions_the_window_exactly() {
-        let layout = Layout::of(bounds(), 1.0, None);
+    fn the_regions_partition_the_window_exactly() {
+        for sidebar in [true, false] {
+            let layout = Layout::of(bounds(), 1.0, None, sidebar);
 
-        assert_eq!(layout.title.y, 0.0);
-        assert_eq!(layout.tabs.y, layout.title.bottom());
-        assert_eq!(layout.editor.y, layout.tabs.bottom());
-        assert_eq!(layout.status.bottom(), 1000.0);
-        assert_eq!(
-            layout.editor.bottom(),
-            layout.status.y,
-            "no gap between the editor area and the statusline"
-        );
-        assert_eq!(
-            layout.editor.right(),
-            layout.sidebar.x,
-            "and none between the code and the sidebar"
-        );
+            assert_eq!(layout.title.y, 0.0);
+            assert_eq!(layout.activity.y, layout.title.bottom());
+            assert_eq!(
+                layout.activity.bottom(),
+                1000.0,
+                "the icon column runs to the bottom"
+            );
+            let column_left = match layout.sidebar {
+                Some(panel) => {
+                    assert_eq!(panel.x, layout.activity.right());
+                    assert_eq!(panel.bottom(), 1000.0);
+                    panel.right()
+                }
+                None => layout.activity.right(),
+            };
+            assert_eq!(
+                layout.tabs.x, column_left,
+                "no gap before the editor column"
+            );
+            assert_eq!(layout.tabs.right(), 1600.0);
+            assert_eq!(layout.editor.y, layout.tabs.bottom());
+            assert_eq!(
+                layout.editor.bottom(),
+                layout.status.y,
+                "no gap between the editor area and the status bar"
+            );
+            assert_eq!(layout.status.bottom(), 1000.0);
+        }
     }
 
     #[test]
-    fn a_narrow_window_drops_toolbar_buttons_rather_than_drawing_them_off_the_edge() {
-        // A real Windows run in a narrow window laid the first buttons out at a negative x, so
-        // `open` and `files` were painted past the left edge — and since the mouse reads the same
-        // rectangles, they could not be clicked either. Every button that is drawn must be inside
-        // the strip it belongs to, at every width.
+    fn closing_the_sidebar_gives_its_width_to_the_editor() {
+        let open = Layout::of(bounds(), 1.0, None, true);
+        let closed = Layout::of(bounds(), 1.0, None, false);
+        let sidebar = open.sidebar.expect("asked for one").width;
+        assert_eq!(closed.editor.width, open.editor.width + sidebar);
+    }
+
+    #[test]
+    fn the_title_bars_controls_stay_inside_it_and_apart_at_every_width() {
+        // Four overflow defects shipped because the harness only ever rendered at 1600x1000. These
+        // are all clickable, so one drawn past the edge or over another is a click on the wrong thing.
+        for width in [360.0, 480.0, 640.0, 900.0, 1280.0, 1600.0, 2560.0] {
+            for scale in [1.0, 1.5, 2.0] {
+                let title = Rect::new(0.0, 0.0, width * scale, size::TITLE * scale);
+                let bar = title_bar(title, scale);
+                let mut controls = vec![bar.logo, bar.account, bar.bell, bar.share];
+                controls.extend(bar.search);
+                for control in &controls {
+                    assert!(
+                        control.x >= title.x - 0.01,
+                        "{control:?} starts left of {width}"
+                    );
+                    assert!(control.y >= title.y && control.bottom() <= title.bottom());
+                }
+                for (index, a) in controls.iter().enumerate() {
+                    for b in &controls[index + 1..] {
+                        assert!(
+                            a.intersect(*b).width <= 0.0 || a.intersect(*b).height <= 0.0,
+                            "{a:?} and {b:?} overlap at {width}px, scale {scale}"
+                        );
+                    }
+                }
+                if width >= 900.0 {
+                    let search = bar.search.expect("a wide bar has the search box");
+                    assert!(search.right() <= bar.account.x);
+                    assert!(search.x >= bar.name.right());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn settings_stays_at_the_bottom_and_no_activity_icon_covers_another() {
+        for height in [120.0, 260.0, 400.0, 800.0] {
+            let bar = Rect::new(0.0, 48.0, size::ACTIVITY, height);
+            let placed = activity_items(bar, 1.0);
+            for pair in placed.windows(2) {
+                assert!(
+                    pair[0].1.bottom() <= pair[1].1.y + 0.01,
+                    "{:?} runs into {:?} in a {height}px column",
+                    pair[0].0.activity,
+                    pair[1].0.activity
+                );
+            }
+            for (_, rect) in &placed {
+                assert!(rect.y >= bar.y && rect.bottom() <= bar.bottom());
+            }
+            if height >= 400.0 {
+                assert_eq!(
+                    placed.len(),
+                    ACTIVITIES.len(),
+                    "a tall column shows them all"
+                );
+                assert_eq!(
+                    placed.last().map(|(item, _)| item.activity),
+                    Some(Activity::Settings)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_tab_is_clickable_and_none_reaches_the_buttons() {
+        // The strip is shared with the navigation and pane buttons, and both are read by the mouse.
+        // A tab drawn under a button is a click that runs the wrong thing.
         let typography = dacode_theme::Typography::default();
-        for width in [120.0, 200.0, 320.0, 434.0, 700.0, 1600.0] {
-            let tabs = Rect::new(0.0, 72.0, width, 34.0);
-            for placed in toolbar_buttons(tabs, &typography, 1.0) {
-                assert!(
-                    placed.rect.x >= tabs.x,
-                    "`{}` starts left of the strip in a {width}px window",
-                    placed.button.label
-                );
-                assert!(
-                    placed.rect.right() <= tabs.right(),
-                    "`{}` runs past the right edge in a {width}px window",
-                    placed.button.label
-                );
+        let names = [
+            "main.rs",
+            "a_much_longer_file_name_than_usual.rs",
+            "x",
+            "lib.rs",
+            "Cargo.toml",
+            "README.md",
+            "layout.rs",
+            "chrome.rs",
+            "e",
+            "settings_ui.rs",
+            "f",
+            "g",
+        ];
+        for width in [500.0, 900.0, 1600.0] {
+            let strip = Rect::new(300.0, 48.0, width, 40.0);
+            for count in 1..=names.len() {
+                for active in 0..count {
+                    let bar = tab_bar(strip, &names[..count], active, &typography, 1.0);
+                    assert!(
+                        bar.tabs.iter().any(|tab| tab.index == active),
+                        "the file being edited must always have a tab: {active} of {count} at {width}"
+                    );
+                    for tab in &bar.tabs {
+                        assert!(
+                            tab.rect.x >= bar.forward.right(),
+                            "a tab under the navigation"
+                        );
+                        assert!(
+                            tab.rect.right() <= bar.split.x,
+                            "a tab under the pane buttons"
+                        );
+                        assert!(
+                            contains(tab.rect, tab.close.x + 1.0, tab.close.y + 1.0),
+                            "the close button must sit inside its own tab"
+                        );
+                        assert!(
+                            tab.label.right() <= tab.close.x,
+                            "a name under the close button"
+                        );
+                    }
+                    for pair in bar.tabs.windows(2) {
+                        assert!(
+                            pair[0].rect.right() <= pair[1].rect.x + 0.01,
+                            "two tabs overlap"
+                        );
+                        assert_eq!(pair[0].index + 1, pair[1].index, "tabs keep their order");
+                    }
+                }
             }
         }
-
-        let wide = toolbar_buttons(Rect::new(0.0, 72.0, 1600.0, 34.0), &typography, 1.0);
-        assert_eq!(wide.len(), TOOLBAR.len(), "a wide window shows all of it");
-        assert_eq!(
-            wide[0].button.command, TOOLBAR[0].command,
-            "and shows it in order"
-        );
-
-        let narrow = toolbar_buttons(Rect::new(0.0, 72.0, 200.0, 34.0), &typography, 1.0);
-        assert!(narrow.len() < TOOLBAR.len(), "a narrow one cannot");
-        assert_eq!(
-            narrow.first().map(|placed| placed.button.command),
-            Some(TOOLBAR[0].command),
-            "what survives is the front of the row — the buttons reached for most"
-        );
     }
 
     #[test]
-    fn a_toolbar_label_always_has_room_and_never_touches_its_neighbour() {
-        // The assertion the test above was missing, and the reason SETTINGS and COMMANDS ran
-        // together on Windows: it only ever checked that the *buttons* stayed inside the strip, and
-        // never that a *label* fitted the button it was drawn in. The width came from a bare `7.5`
-        // per character — below the project's own estimate for the role, and tied to nothing, so it
-        // could not follow the font size either. Linux resolves narrower fonts and hid it.
-        //
-        // Swept over the font sizes the settings panel can produce, because the old constant was
-        // wrong on *every* platform once the editor font was raised.
-        for size in [11.0f32, 13.5, 15.0, 16.5, 18.0] {
-            let typography = dacode_theme::Typography::with_code_size(size);
-            let advance = typography.advance(dacode_theme::Role::Label);
-            for scale in [1.0f32, 1.25, 1.5, 2.0] {
-                let placed = toolbar_buttons(
-                    Rect::new(0.0, 72.0, 1600.0 * scale, 34.0 * scale),
-                    &typography,
-                    scale,
-                );
-                assert_eq!(placed.len(), TOOLBAR.len(), "all seven fit at 1600px");
-
-                for button in &placed {
-                    let needed = button.button.label.chars().count() as f32 * advance * scale;
-                    assert!(
-                        button.text.width >= needed,
-                        "`{}` needs {needed:.1}px and has {:.1}px at size {size}, scale {scale}",
-                        button.button.label,
-                        button.text.width
-                    );
-                    assert!(button.text.x >= button.rect.x);
-                    assert!(button.text.right() <= button.rect.right());
-                }
-
-                // And the labels never meet, whatever the shaper does with them: the clip is to the
-                // inner box, so the blank between two of them is at least the padding plus the gap.
-                for pair in placed.windows(2) {
-                    assert!(
-                        pair[1].text.x - pair[0].text.right() >= 6.0 * scale,
-                        "`{}` and `{}` touch at size {size}, scale {scale}",
-                        pair[0].button.label,
-                        pair[1].button.label
-                    );
-                }
-            }
-        }
+    fn a_strip_with_no_room_gives_up_on_tabs_rather_than_drawing_unreadable_ones() {
+        // At some width there is no honest tab to draw. Returning none is better than a sliver that
+        // cannot show a name but can still be clicked.
+        let typography = dacode_theme::Typography::default();
+        let bar = tab_bar(
+            Rect::new(0.0, 48.0, 200.0, 40.0),
+            &["main.rs"; 5],
+            0,
+            &typography,
+            1.0,
+        );
+        assert!(bar.tabs.is_empty());
     }
 
     #[test]
@@ -612,57 +814,8 @@ mod tests {
     }
 
     #[test]
-    fn every_tab_is_clickable_and_none_reaches_the_toolbar() {
-        // The strip is shared with the toolbar, and both are read by the mouse. A tab drawn under a
-        // button is a click that runs the wrong thing — the failure this module exists to prevent,
-        // and the one that gets blamed on everything else.
-        let strip = Rect::new(0.0, 72.0, 1600.0, 34.0);
-        let typography = dacode_theme::Typography::default();
-        let toolbar_left = toolbar_buttons(strip, &typography, 1.0)
-            .first()
-            .map(|placed| placed.rect.x)
-            .expect("a wide strip has a toolbar");
-
-        for count in 1..=12 {
-            for active in 0..count {
-                let tabs = tabs(strip, count, active, &typography, 1.0);
-                assert!(
-                    tabs.iter().any(|tab| tab.index == active),
-                    "the file being edited must always have a tab: {active} of {count}"
-                );
-                for tab in &tabs {
-                    assert!(tab.rect.x >= strip.x, "a tab starts left of the strip");
-                    assert!(
-                        tab.rect.right() <= toolbar_left,
-                        "a tab runs under the toolbar with {count} open"
-                    );
-                    assert!(
-                        contains(tab.rect, tab.close.x + 1.0, tab.close.y + 1.0),
-                        "the close button must sit inside its own tab"
-                    );
-                }
-                for pair in tabs.windows(2) {
-                    assert!(
-                        pair[0].rect.right() <= pair[1].rect.x + 0.01,
-                        "two tabs overlap"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_narrow_strip_gives_up_on_tabs_rather_than_drawing_unreadable_ones() {
-        // At some width there is no honest tab to draw. Returning none is better than a sliver that
-        // cannot show a name but can still be clicked.
-        let typography = dacode_theme::Typography::default();
-        let tabs = tabs(Rect::new(0.0, 72.0, 120.0, 34.0), 5, 0, &typography, 1.0);
-        assert!(tabs.is_empty());
-    }
-
-    #[test]
     fn panes_tile_the_editor_area_without_gaps_or_overlap() {
-        let layout = Layout::of(bounds(), 1.0, None);
+        let layout = Layout::of(bounds(), 1.0, None, true);
 
         for count in 1..=4 {
             let mut covered = 0.0;
@@ -686,7 +839,7 @@ mod tests {
 
     #[test]
     fn a_point_maps_back_to_the_pane_it_is_in() {
-        let layout = Layout::of(bounds(), 1.0, None);
+        let layout = Layout::of(bounds(), 1.0, None, true);
 
         for count in 1..=3 {
             for index in 0..count {
@@ -704,8 +857,8 @@ mod tests {
 
     #[test]
     fn the_results_panel_takes_space_from_the_editor_not_the_statusline() {
-        let plain = Layout::of(bounds(), 1.0, None);
-        let with_panel = Layout::of(bounds(), 1.0, Some(6));
+        let plain = Layout::of(bounds(), 1.0, None, true);
+        let with_panel = Layout::of(bounds(), 1.0, Some(6), true);
 
         assert!(with_panel.results.is_some());
         assert!(with_panel.editor.height < plain.editor.height);
@@ -717,7 +870,7 @@ mod tests {
 
     #[test]
     fn only_a_split_reserves_a_footer() {
-        let layout = Layout::of(bounds(), 1.0, None);
+        let layout = Layout::of(bounds(), 1.0, None, true);
         assert!(layout.pane(0, 1, true, 1.0).footer.is_none());
         assert!(layout.pane(0, 2, true, 1.0).footer.is_some());
     }

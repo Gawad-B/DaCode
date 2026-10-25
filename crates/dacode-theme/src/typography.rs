@@ -1,42 +1,21 @@
 //! Type roles and metrics.
 //!
-//! The design's central typographic idea is a deliberate contrast between *typeset serif prose*
-//! and *monospaced code*: comments, gutter figures and headings are serif; code and values are
-//! mono; labels are small uppercase sans. Roles are named by intent so a widget asks for
-//! `Role::Label` rather than picking a family and a size.
+//! One face — Fira Code — at a handful of sizes and weights. Roles are named by intent so a widget
+//! asks for `Role::Label` rather than picking a size, and so the type scale can move as one.
 
-/// Font families the editor bundles. Bundled rather than fetched, so the first frame never
-/// waits on a font and the editor works offline.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Family {
-    /// Display serif with a true italic — headings, comments, gutter figures, prose.
-    Serif,
-    /// The code face. Everything monospaced.
-    Mono,
-    /// Small uppercase labels.
-    Sans,
-}
-
-impl Family {
-    /// Preferred face, then fallbacks. The design names Instrument Serif and IBM Plex, and both
-    /// still draw the interface; the *code* face is Fira Code, which is bundled. The fallbacks keep
-    /// the editor usable if a face is missing, since the *contrast* between families is the point
-    /// rather than the specific faces — and IBM Plex Mono stays on the list because a machine that
-    /// has it should reach for it before DejaVu.
-    pub const fn candidates(self) -> &'static [&'static str] {
-        match self {
-            Family::Serif => &["Instrument Serif", "EB Garamond", "Georgia", "serif"],
-            Family::Mono => &[
-                "Fira Code",
-                "JetBrains Mono",
-                "IBM Plex Mono",
-                "DejaVu Sans Mono",
-                "monospace",
-            ],
-            Family::Sans => &["IBM Plex Sans", "Inter", "DejaVu Sans", "sans-serif"],
-        }
-    }
-}
+/// The one face the editor draws everything in, then what to fall back to if it is missing.
+///
+/// Fira Code, for the interface as well as the code. The design once set headings and comments in a
+/// serif and labels in a sans, and the contrast was the idea; what people wanted was one familiar
+/// face, everywhere they look, and a single monospaced face also makes every width estimate in the
+/// chrome exact rather than an average. The fallbacks are monospaced too, so a machine without Fira
+/// Code still lays text out on the same grid.
+pub const FACES: &[&str] = &[
+    "Fira Code",
+    "JetBrains Mono",
+    "DejaVu Sans Mono",
+    "monospace",
+];
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Style {
@@ -61,12 +40,16 @@ pub enum Role {
     Value,
     /// Uppercase tracked labels.
     Label,
+    /// The interface's own words — tab names, the file tree, buttons — in the sans, as people
+    /// expect a desktop application's chrome to be set.
+    Ui,
+    /// The product name in the title bar.
+    Brand,
 }
 
 /// A resolved font request.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct FontSpec {
-    pub family: Family,
     pub style: Style,
     pub weight: u16,
     pub size_px: f32,
@@ -122,24 +105,18 @@ impl Typography {
     /// window showed, and an approximate measure that ends in an ellipsis beats an exact one that
     /// ends in silence.
     ///
-    /// Only Mono has a true constant advance. The others use the average of lower case — which is
-    /// what these strings are — and labels add their tracking, which no other role has.
+    /// Every role is set in one monospaced face, so this is the face's own constant advance — exact,
+    /// not an average — plus the tracking labels add.
     pub fn advance(&self, role: Role) -> f32 {
         let spec = self.spec(role);
-        let ratio = match spec.family {
-            Family::Mono => 0.60,
-            _ if spec.uppercase => 0.62,
-            _ => 0.50,
-        };
-        spec.size_px * (ratio + spec.tracking_em)
+        spec.size_px * (0.60 + spec.tracking_em)
     }
 
     pub fn spec(&self, role: Role) -> FontSpec {
         let code = self.code_size;
         match role {
             Role::Display => FontSpec {
-                family: Family::Serif,
-                style: Style::Italic,
+                style: Style::Roman,
                 weight: 400,
                 size_px: (code * 2.5).round(),
                 line_height: 0.9,
@@ -147,7 +124,6 @@ impl Typography {
                 uppercase: false,
             },
             Role::Prose => FontSpec {
-                family: Family::Serif,
                 style: Style::Roman,
                 weight: 400,
                 size_px: (code * 1.25).round(),
@@ -156,7 +132,6 @@ impl Typography {
                 uppercase: false,
             },
             Role::Code => FontSpec {
-                family: Family::Mono,
                 style: Style::Roman,
                 weight: 400,
                 size_px: code,
@@ -171,7 +146,6 @@ impl Typography {
             // above it, so a commented-out line sat visibly off the one it was commenting out. The
             // theme still dims it, which is the distinction that was doing the work anyway.
             Role::Comment => FontSpec {
-                family: Family::Mono,
                 style: Style::Roman,
                 weight: 400,
                 size_px: code,
@@ -179,17 +153,17 @@ impl Typography {
                 tracking_em: 0.0,
                 uppercase: false,
             },
+            // In the code face, a little smaller than the code: figures that line up in a column and
+            // recede beside the text they number.
             Role::LineNumber => FontSpec {
-                family: Family::Serif,
                 style: Style::Roman,
                 weight: 400,
-                size_px: code,
+                size_px: (code * 0.86).round(),
                 line_height: self.code_line_height,
                 tracking_em: 0.0,
                 uppercase: false,
             },
             Role::Value => FontSpec {
-                family: Family::Mono,
                 style: Style::Roman,
                 weight: 400,
                 size_px: (code * 0.85).round(),
@@ -198,13 +172,28 @@ impl Typography {
                 uppercase: false,
             },
             Role::Label => FontSpec {
-                family: Family::Sans,
                 style: Style::Roman,
                 weight: 500,
                 size_px: (code * 0.74).round(),
                 line_height: 1.2,
                 tracking_em: 0.2,
                 uppercase: true,
+            },
+            Role::Ui => FontSpec {
+                style: Style::Roman,
+                weight: 400,
+                size_px: (code * 0.93).round(),
+                line_height: 1.3,
+                tracking_em: 0.0,
+                uppercase: false,
+            },
+            Role::Brand => FontSpec {
+                style: Style::Roman,
+                weight: 600,
+                size_px: (code * 1.15).round(),
+                line_height: 1.2,
+                tracking_em: 0.01,
+                uppercase: false,
             },
         }
     }

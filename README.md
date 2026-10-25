@@ -144,5 +144,5 @@ only the *active* buffer gets a file watcher, a git diff and a language server.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). The bundled fonts (Fira Code, IBM Plex Sans, Instrument Serif) are under the SIL Open
-Font License 1.1; see `crates/dacode-render/fonts/`. The logo is in `logo/`, with its usage rules.
+MIT — see [LICENSE](LICENSE). The one bundled font, Fira Code, is under the SIL Open Font License
+1.1; see `crates/dacode-render/fonts/`. The logo is in `logo/`, with its usage rules.

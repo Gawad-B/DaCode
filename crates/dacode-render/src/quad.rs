@@ -8,6 +8,7 @@ use bytemuck::{Pod, Zeroable};
 struct Instance {
     rect: [f32; 4],
     color: [f32; 4],
+    shape: [f32; 4],
 }
 
 #[repr(C)]
@@ -17,10 +18,26 @@ struct Params {
     _pad: [f32; 2],
 }
 
-/// `rect` then `color`, matching the `Instance` struct in `quad.wgsl`. A const so the array
+/// `rect`, `color`, `shape`, matching the `Instance` struct in `quad.wgsl`. A const so the array
 /// outlives the descriptor that borrows it.
-const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
+
+/// How every non-text pipeline blends.
+///
+/// Colour is ordinary straight-alpha "over": the cursor and selection are drawn translucent onto the
+/// canvas. Alpha takes the **larger** of what is there and what arrives. In an opaque window that
+/// changes nothing — the canvas is cleared to 1 — but in a translucent one it is what keeps two
+/// backgrounds that overlap from adding up to a darker patch, and what keeps text and highlights
+/// solid on a see-through panel.
+pub(crate) const BLEND: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendState::ALPHA_BLENDING.color,
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Max,
+    },
+};
 
 pub struct QuadPipeline {
     pipeline: wgpu::RenderPipeline,
@@ -96,9 +113,7 @@ impl QuadPipeline {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    // Straight alpha: the cursor and selection are drawn translucent over the
-                    // canvas rather than pre-composited.
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(BLEND),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -161,6 +176,7 @@ impl QuadPipeline {
                 Instance {
                     rect: [quad.rect.x, quad.rect.y, quad.rect.width, quad.rect.height],
                     color: quad.color,
+                    shape: [quad.radius, quad.border, 0.0, 0.0],
                 }
             }));
             let end = instances.len() as u32;

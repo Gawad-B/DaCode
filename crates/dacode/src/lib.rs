@@ -31,6 +31,7 @@ pub mod results;
 pub mod save;
 pub mod session;
 pub mod settings_ui;
+pub mod share;
 pub mod snippet;
 pub mod tree;
 pub mod welcome;

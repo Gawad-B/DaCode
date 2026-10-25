@@ -100,7 +100,7 @@ impl MarkPipeline {
                     // The shader emits coverage in alpha, so the mark composites over whatever is
                     // already there — which is how it sits on the editor's own background rather
                     // than on a tile of its own.
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(crate::quad::BLEND),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),

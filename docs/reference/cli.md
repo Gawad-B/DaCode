@@ -177,6 +177,7 @@ cursor is parked at line 21, column 12, the view scrolled to line 8, and in norm
 | `--theme` | `NAME` | Render a named built-in. Only consulted if neither `--light` nor `--dark` is given. An unknown name falls back to config. |
 | `--mode` | `NAME` | `insert`, `visual` or `replace`. Anything else, including a missing flag, is normal mode. Visual mode also selects 24 characters from the cursor. |
 | `--no-vim` | — | Modal editing off: insert mode, and the seeded `3d` is cleared, since there is no operator-count to be half-way through without the grammar. |
+| `--transparency` | `PERCENT` | Draw the window see-through, composited over a checkerboard so the capture shows what the desktop would. |
 
 Capture at more than one size. The harness was fixed at 1600x1000 for a long time and a whole family
 of defects lives below it — the settings rows collided with the footer under about 900px of height,

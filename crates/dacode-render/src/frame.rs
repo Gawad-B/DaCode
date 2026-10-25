@@ -1,9 +1,9 @@
-//! What a frame consists of: rectangles and runs of text.
+//! What a frame consists of: rectangles, shapes and runs of text.
 //!
-//! Everything the UI layer wants on screen is expressed in these two primitives, in physical
-//! pixels. Building a `Frame` involves no GPU work, so the UI layer can be written and tested
+//! Everything the UI layer wants on screen is expressed in these primitives, in physical pixels. Building a `Frame` involves no GPU work, so the UI layer can be written and tested
 //! without a device.
 
+use crate::icon::{Icon, Stroke};
 use dacode_theme::{FontSpec, Oklch};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -123,6 +123,49 @@ pub struct Quad {
     /// Linear RGBA, already converted out of OKLCH.
     pub color: [f32; 4],
     pub layer: Layer,
+    /// Corner radius in pixels. Zero keeps the edges exactly where the rectangle says, which is
+    /// what a hairline needs to stay a single crisp row of pixels.
+    pub radius: f32,
+    /// Outline width in pixels; zero fills.
+    pub border: f32,
+}
+
+/// An antialiased stroke or filled figure — the parts icons are made of.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shape {
+    pub kind: ShapeKind,
+    /// Stroke width in pixels. Ignored by the filled kinds.
+    pub width: f32,
+    pub color: [f32; 4],
+    pub layer: Layer,
+}
+
+/// Points in physical pixels; angles in radians, from +x and increasing clockwise on screen.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum ShapeKind {
+    Segment {
+        from: [f32; 2],
+        to: [f32; 2],
+    },
+    Ring {
+        centre: [f32; 2],
+        radius: f32,
+    },
+    Arc {
+        centre: [f32; 2],
+        radius: f32,
+        start: f32,
+        end: f32,
+    },
+    Disc {
+        centre: [f32; 2],
+        radius: f32,
+    },
+    Triangle {
+        a: [f32; 2],
+        b: [f32; 2],
+        c: [f32; 2],
+    },
 }
 
 /// The DaCode mark, drawn as a distance field rather than as rectangles.
@@ -189,8 +232,12 @@ pub struct Frame {
     pub quads: Vec<Quad>,
     pub texts: Vec<TextRun>,
     pub marks: Vec<Mark>,
+    pub shapes: Vec<Shape>,
     /// The layer subsequent drawing lands on.
     layer: Layer,
+    /// How see-through the window's backgrounds are: 0 is opaque. Kept across [`Frame::clear`],
+    /// because it belongs to the window rather than to any one frame.
+    transparency: f32,
 }
 
 impl Frame {
@@ -198,7 +245,21 @@ impl Frame {
         self.quads.clear();
         self.texts.clear();
         self.marks.clear();
+        self.shapes.clear();
         self.layer = Layer::Base;
+    }
+
+    /// Sets how see-through backgrounds drawn with [`Frame::fill_backdrop`] are.
+    pub fn set_transparency(&mut self, transparency: f32) {
+        self.transparency = transparency.clamp(0.0, 0.9);
+    }
+
+    pub fn transparency(&self) -> f32 {
+        self.transparency
+    }
+
+    pub fn shapes_on(&self, layer: Layer) -> impl Iterator<Item = &Shape> {
+        self.shapes.iter().filter(move |shape| shape.layer == layer)
     }
 
     /// Sets the layer for everything drawn until it is set again.
@@ -259,13 +320,104 @@ impl Frame {
     /// For colors already resolved to linear RGBA — the mode tints, which are composited
     /// against the canvas before they reach here.
     pub fn fill_linear(&mut self, rect: Rect, color: [f32; 4]) {
+        self.push_quad(rect, color, 0.0, 0.0);
+    }
+
+    /// A window background: a surface the desktop may show through, when the window is translucent.
+    ///
+    /// Only surfaces go through this — panels, bars, the canvas behind the code. Text, highlights,
+    /// the cursor and overlays stay solid, so a translucent editor is still a legible one. The
+    /// renderer combines alpha by taking the larger, so two backdrops overlapping do not add up to a
+    /// more opaque patch where they meet.
+    pub fn fill_backdrop(&mut self, rect: Rect, color: Oklch) {
+        let mut linear = color.to_linear();
+        linear[3] *= 1.0 - self.transparency;
+        self.push_quad(rect, linear, 0.0, 0.0);
+    }
+
+    /// A filled rectangle with rounded corners.
+    pub fn fill_rounded(&mut self, rect: Rect, color: Oklch, radius: f32) {
+        self.push_quad(rect, color.to_linear(), radius, 0.0);
+    }
+
+    /// A rounded rectangle's outline, `width` pixels wide, inside `rect`.
+    pub fn outline_rounded(&mut self, rect: Rect, color: Oklch, radius: f32, width: f32) {
+        self.push_quad(rect, color.to_linear(), radius, width.max(0.5));
+    }
+
+    fn push_quad(&mut self, rect: Rect, color: [f32; 4], radius: f32, border: f32) {
         if rect.is_visible() {
             self.quads.push(Quad {
                 rect,
                 color,
                 layer: self.layer,
+                radius: radius.min(rect.width / 2.0).min(rect.height / 2.0).max(0.0),
+                border,
             });
         }
+    }
+
+    /// Draws an icon inside `rect`, centred, at the largest square that fits.
+    ///
+    /// The stroke thins with the icon but never below a pixel and a quarter: thinner than that and
+    /// antialiasing turns a line into a grey smudge.
+    pub fn icon(&mut self, icon: Icon, rect: Rect, color: Oklch) {
+        let size = rect.width.min(rect.height);
+        if size <= 0.0 {
+            return;
+        }
+        let unit = size / 24.0;
+        let origin = [
+            rect.x + (rect.width - size) / 2.0,
+            rect.y + (rect.height - size) / 2.0,
+        ];
+        let at = |x: f32, y: f32| [origin[0] + x * unit, origin[1] + y * unit];
+        let width = (1.8 * unit).max(1.25);
+        let color = color.to_linear();
+
+        for stroke in icon.strokes() {
+            let kind = match stroke {
+                Stroke::Line(x1, y1, x2, y2) => ShapeKind::Segment {
+                    from: at(x1, y1),
+                    to: at(x2, y2),
+                },
+                Stroke::Ring(x, y, r) => ShapeKind::Ring {
+                    centre: at(x, y),
+                    radius: r * unit,
+                },
+                Stroke::Arc(x, y, r, start, end) => ShapeKind::Arc {
+                    centre: at(x, y),
+                    radius: r * unit,
+                    start: start.to_radians(),
+                    end: end.to_radians(),
+                },
+                Stroke::Disc(x, y, r) => ShapeKind::Disc {
+                    centre: at(x, y),
+                    radius: r * unit,
+                },
+                Stroke::Triangle(x1, y1, x2, y2, x3, y3) => ShapeKind::Triangle {
+                    a: at(x1, y1),
+                    b: at(x2, y2),
+                    c: at(x3, y3),
+                },
+            };
+            self.shapes.push(Shape {
+                kind,
+                width,
+                color,
+                layer: self.layer,
+            });
+        }
+    }
+
+    /// A filled circle — an avatar, a badge, a status dot.
+    pub fn disc(&mut self, centre: [f32; 2], radius: f32, color: Oklch) {
+        self.shapes.push(Shape {
+            kind: ShapeKind::Disc { centre, radius },
+            width: 0.0,
+            color: color.to_linear(),
+            layer: self.layer,
+        });
     }
 
     /// A horizontal gradient approximated by vertical strips. Used only for the gutter's mode

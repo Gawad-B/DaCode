@@ -1,4 +1,4 @@
-//! The editor chrome: title bar, tab strip, gutter, code area, structure sidebar, statusline.
+//! The editor chrome: title bar, activity bar, sidebar, tab bar, gutter, code area, status bar.
 //!
 //! A pure function of state into a [`Frame`], so it is testable without a GPU and can move into
 //! `crates/ui` unchanged. The design's geometry is guidance: proportions are honored, but pixel
@@ -12,7 +12,7 @@ use crate::prompt::Prompt;
 use crate::results::Results;
 use dacode_buffer::Document;
 use dacode_display::{DisplayMap, ScrollAnchor, WrapMode};
-use dacode_render::{Align, Frame, Layer, Rect, TextRun};
+use dacode_render::{Align, Frame, Icon, Layer, Rect, TextRun};
 use dacode_syntax::{Highlight, HighlightSpan};
 use dacode_text::{Bias, CharOffset, Point, Text, Version};
 use dacode_theme::{CursorShape, Mode, Oklch, Role, Theme, Typography, frame as border, space};
@@ -141,9 +141,86 @@ pub struct EditorState {
     pub help: Option<crate::help::Help>,
     /// The menu bar or a context menu, when one is open.
     pub menu: Option<crate::menu::Menu>,
+    /// What the window chrome remembers that the document does not.
+    pub chrome: Chrome,
+}
+
+/// State belonging to the window's chrome rather than to any document.
+#[derive(Debug, Clone, Default)]
+pub struct Chrome {
+    /// The sidebar view chosen from the activity bar, for the views that keep no state of their own.
+    /// The explorer, problems and settings are open when their own state is, as they always were.
+    pub activity: Option<crate::layout::Activity>,
+    /// Every message the editor has shown, oldest first, so one that vanished at the next keystroke
+    /// can still be read from the bell. Bounded: this is a log for a person, not a history.
+    pub notifications: Vec<String>,
+    /// How many of them arrived since the bell was last opened.
+    pub unread: usize,
+    pub show_notifications: bool,
+    /// How see-through the window's backgrounds are: 0 is opaque.
+    pub transparency: f32,
+}
+
+impl Chrome {
+    /// How many messages the bell keeps.
+    pub const KEEP: usize = 100;
+
+    /// Records a message for the bell. A repeat of the last one is not recorded twice: autosave
+    /// saying "saved" every pause in typing would otherwise fill the log with one word.
+    pub fn notify(&mut self, message: &str) {
+        if message.is_empty()
+            || self
+                .notifications
+                .last()
+                .is_some_and(|last| last == message)
+        {
+            return;
+        }
+        self.notifications.push(message.to_string());
+        if self.notifications.len() > Self::KEEP {
+            self.notifications.remove(0);
+        }
+        if !self.show_notifications {
+            self.unread += 1;
+        }
+    }
 }
 
 impl EditorState {
+    /// Whether any view is open in the sidebar.
+    pub fn sidebar_open(&self) -> bool {
+        self.tree.is_some()
+            || self.show_diagnostics
+            || self.settings.is_some()
+            || self.chrome.activity.is_some()
+    }
+
+    /// Which activity icon is lit: the view the sidebar is showing, in the order it would choose.
+    pub fn active_activity(&self) -> Option<crate::layout::Activity> {
+        use crate::layout::Activity;
+        if self.tree.is_some() {
+            Some(Activity::Explorer)
+        } else if self.show_diagnostics {
+            Some(Activity::Problems)
+        } else if self.settings.is_some() {
+            Some(Activity::Settings)
+        } else if self.chrome.activity.is_some() {
+            self.chrome.activity
+        } else if self.results.is_some() {
+            Some(Activity::Search)
+        } else {
+            None
+        }
+    }
+
+    /// Closes whatever the sidebar is showing, so the next view opened replaces it.
+    pub fn close_sidebar(&mut self) {
+        self.tree = None;
+        self.show_diagnostics = false;
+        self.settings = None;
+        self.chrome.activity = None;
+    }
+
     /// Mutates the document and moves everything outside it that names a position in it.
     ///
     /// [`Document::apply`] is the single funnel for changing text, but the folds live out here in
@@ -807,129 +884,67 @@ pub fn draw_panes(
     scale: f32,
 ) {
     let theme = &state.theme;
-    frame.fill(bounds, theme.bg);
+    frame.set_transparency(state.chrome.transparency);
+    let row_height = state.typography.row_height() * scale;
 
-    let px = |v: f32| v * scale;
-    let row_height = px(state.typography.row_height());
+    // The same regions the mouse reads. This used to re-derive the stack itself — a second copy of
+    // the arithmetic `layout.rs` exists to hold once, and the one place this module was breaking
+    // its own rule.
+    let regions = crate::layout::Layout::of(
+        bounds,
+        scale,
+        state
+            .results
+            .as_ref()
+            .map(|results| results.visible().0.len()),
+        state.sidebar_open(),
+    );
 
-    let (title, rest) = bounds.split_top(px(72.0));
-    let (tabs, rest) = rest.split_top(px(34.0));
-    let (status, body) = rest.split_bottom(px(34.0));
+    draw_title(frame, state, regions.title, scale);
+    draw_activity(frame, state, regions.activity, scale);
+    draw_tabs(frame, state, regions.tabs, scale);
+    frame.fill_backdrop(regions.editor, theme.bg);
 
-    draw_title(frame, state, title, scale);
-    draw_tabs(frame, state, tabs, scale);
-
-    // The results panel takes the bottom of the editor area, above the statusline: it is a list
-    // beside the text, not an overlay, because you read the hit and the code together.
-    let (body_area, results_area) = match &state.results {
-        Some(results) => {
-            let rows = results.visible().0.len().max(1);
-            let height = (rows as f32 + 2.0) * 22.0 * scale;
-            let (panel, rest) = body.split_bottom(height.min(body.height * 0.5));
-            (rest, Some(panel))
-        }
-        None => (body, None),
-    };
-
-    let sidebar_width = px(292.0).min(body_area.width * 0.32);
-    let (sidebar, editor) = body_area.split_right(sidebar_width);
-
-    // Panes divide the editor area evenly along one axis. A flat row or column rather than a tree:
-    // a tree buys arbitrary nesting that almost nobody arranges deliberately, at the cost of every
-    // layout question becoming recursive.
+    // Panes divide the editor area evenly along one axis, through the same `Layout::pane` the mouse
+    // asks — a click in the third pane of a split lands in the third pane's text.
     let count = panes.len().max(1);
-    let mut focused_code = editor;
+    let vertical = layout == PaneLayout::Vertical;
+    let mut focused_code = regions.editor;
     for (index, pane) in panes.iter().enumerate() {
-        let slot = match layout {
-            PaneLayout::Vertical => {
-                let width = (editor.width / count as f32).floor();
-                Rect::new(
-                    editor.x + width * index as f32,
-                    editor.y,
-                    if index + 1 == count {
-                        editor.right() - (editor.x + width * index as f32)
-                    } else {
-                        width
-                    },
-                    editor.height,
-                )
-            }
-            PaneLayout::Horizontal => {
-                let height = (editor.height / count as f32).floor();
-                Rect::new(
-                    editor.x,
-                    editor.y + height * index as f32,
-                    editor.width,
-                    if index + 1 == count {
-                        editor.bottom() - (editor.y + height * index as f32)
-                    } else {
-                        height
-                    },
-                )
-            }
-        };
+        let rects = regions.pane(index, count, vertical, scale);
 
         // A hairline between panes, on the leading edge of every pane after the first. Without it
         // two files sitting side by side read as one document with a strange gap in it.
-        let slot = if index == 0 {
-            slot
-        } else {
-            match layout {
-                PaneLayout::Vertical => {
-                    frame.fill(
-                        Rect::new(slot.x, slot.y, border::BORDER * scale, slot.height),
-                        theme.rule,
-                    );
-                    Rect::new(
-                        slot.x + border::BORDER * scale,
-                        slot.y,
-                        slot.width - border::BORDER * scale,
-                        slot.height,
-                    )
-                }
-                PaneLayout::Horizontal => {
-                    frame.fill(
-                        Rect::new(slot.x, slot.y, slot.width, border::BORDER * scale),
-                        theme.rule,
-                    );
-                    Rect::new(
-                        slot.x,
-                        slot.y + border::BORDER * scale,
-                        slot.width,
-                        slot.height - border::BORDER * scale,
-                    )
-                }
-            }
-        };
+        if index > 0 {
+            let line = border::BORDER * scale;
+            frame.fill(
+                if vertical {
+                    Rect::new(rects.slot.x - line, rects.slot.y, line, rects.slot.height)
+                } else {
+                    Rect::new(rects.slot.x, rects.slot.y - line, rects.slot.width, line)
+                },
+                theme.rule,
+            );
+        }
+
+        // Sticky scroll takes its strip before anything measures against the code area — including
+        // the info box, the completion popup and the mouse, all of which read `focused_code` below.
+        let area = crate::layout::CodeArea::new(
+            rects.code,
+            state.sticky_heads(pane.document.text(), pane.scroll.line, pane.focused),
+            row_height,
+        );
+        draw_code(frame, state, pane, rects.gutter, &area, row_height, scale);
 
         // With more than one pane, each takes a footer naming its file. A reserved strip rather than
         // a label floating over the text: an overlay would sit on top of the last row of code, which
         // is exactly where the eye goes when reading down.
-        let (footer, slot) = if count > 1 {
-            let (footer, rest) = slot.split_bottom(22.0 * scale);
-            (Some(footer), rest)
-        } else {
-            (None, slot)
-        };
-
-        // The gutter narrows with the pane, so a three-way split does not spend most of its width
-        // on line numbers.
-        let gutter_width = px(78.0).min(slot.width * 0.22);
-        let (gutter, code) = slot.split_left(gutter_width);
-        // Sticky scroll takes its strip before anything measures against the code area — including
-        // the info box, the completion popup and the mouse, all of which read `focused_code` below.
-        let area = crate::layout::CodeArea::new(
-            code,
-            state.sticky_heads(pane.document.text(), pane.scroll.line, pane.focused),
-            row_height,
-        );
-        draw_code(frame, state, pane, gutter, &area, row_height, scale);
-
-        if let Some(footer) = footer {
-            frame.fill(footer, if pane.focused { theme.bg_alt } else { theme.bg });
+        if let Some(footer) = rects.footer {
+            frame.fill_backdrop(footer, if pane.focused { theme.bg_alt } else { theme.bg });
             frame.rule_top(footer, theme.rule_soft, border::BORDER);
-            frame.text(label(
+            frame.text(run(
                 state,
+                Role::Ui,
                 pane.path.last().cloned().unwrap_or_default(),
                 Rect::new(
                     footer.x + space::MD * scale,
@@ -937,10 +952,10 @@ pub fn draw_panes(
                     footer.width - space::MD * 2.0 * scale,
                     footer.height,
                 ),
-                // The focused pane's name takes the mode accent: with two files open it is the
+                // The focused pane's name is the brighter one: with two files open it is the
                 // fastest way to see where typing will land.
                 if pane.focused {
-                    theme.accent(state.mode)
+                    theme.ink
                 } else {
                     theme.ink_faint
                 },
@@ -955,12 +970,14 @@ pub fn draw_panes(
     }
 
     let code = focused_code;
-    let visible = state.visible_rows(code.height, row_height);
-    draw_sidebar(frame, state, sidebar, visible, scale);
-    if let (Some(results), Some(area)) = (&state.results, results_area) {
+    if let Some(sidebar) = regions.sidebar {
+        let visible = state.visible_rows(code.height, row_height);
+        draw_sidebar(frame, state, sidebar, visible, scale);
+    }
+    if let (Some(results), Some(area)) = (&state.results, regions.results) {
         draw_results(frame, state, results, area, scale);
     }
-    draw_statusline(frame, state, status, scale);
+    draw_statusline(frame, state, regions.status, scale);
 
     // Info boxes sit above the code but below the palette: a hover is contextual, a palette is
     // modal. The layer is what makes them opaque — within one layer, later text still shows through
@@ -972,6 +989,9 @@ pub fn draw_panes(
     // The which-key hint sits with the info boxes: it is contextual, it appears beside what you are
     // doing, and a scrim over the document would be absurd for something that lasts one keystroke.
     draw_which_key(frame, state, code, scale);
+    if state.chrome.show_notifications {
+        draw_notifications(frame, state, regions.title, bounds, scale);
+    }
 
     // Last, so they cover everything: these are modal overlays.
     frame.set_layer(Layer::Modal);
@@ -983,6 +1003,11 @@ pub fn draw_panes(
     }
     if let Some(menu) = &state.menu {
         draw_menu(frame, state, menu, bounds, scale);
+    }
+    // A control's name and key, under the pointer. On top of everything, and only when nothing
+    // modal is open — a tooltip over the palette would be describing a button you cannot reach.
+    if state.palette.is_none() && state.help.is_none() && state.menu.is_none() {
+        draw_tooltip(frame, state, &regions, bounds, scale);
     }
     frame.set_layer(Layer::Base);
 }
@@ -2213,6 +2238,7 @@ fn draw_settings(
         format_on_save: state.format_on_save,
         theme: state.theme.name(),
         line_numbers: state.line_numbers,
+        transparency: (state.chrome.transparency * 100.0).round() as u8,
         sticky_scroll: state.sticky_scroll,
         inlay_hints: state.show_inlay_hints,
         autosave: state.autosave,
@@ -2674,7 +2700,8 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
 }
 
 /// The file tree, in the sidebar.
-fn draw_tree(
+/// The explorer: a "New +" button, then the project's files with their icons.
+fn draw_explorer(
     frame: &mut Frame,
     state: &EditorState,
     tree: &crate::tree::FileTree,
@@ -2682,33 +2709,32 @@ fn draw_tree(
     scale: f32,
 ) {
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    let pad = space::LG * scale;
-    let line = 22.0 * scale;
     // One walk, shared with the click handler. The two used to be written out separately and had
     // already drifted a pad apart, which is a click that opens the file below the one you pointed
     // at as soon as the tree is longer than the panel.
     let panel = crate::tree::panel(rect, scale, tree);
 
-    frame.text(run(
-        state,
-        Role::Prose,
-        "Files",
-        panel.header,
-        theme.ink,
-        Align::Left,
-        scale,
-    ));
+    let button = panel.header;
+    frame.fill_rounded(
+        button,
+        if hovered(state, button) {
+            theme.row_active
+        } else {
+            theme.rule_soft
+        },
+        6.0 * scale,
+    );
+    frame.text(ui(state, "New  +", button, theme.ink, Align::Center, scale));
 
     if tree.is_empty() {
-        frame.text(label(
+        frame.text(ui(
             state,
-            "indexing",
+            "Indexing…",
             Rect::new(
-                rect.x + pad,
-                panel.header.y + line * 1.6,
-                rect.width - pad * 2.0,
-                line,
+                rect.x + 16.0 * scale,
+                button.bottom() + 12.0 * scale,
+                rect.width - 32.0 * scale,
+                24.0 * scale,
             ),
             theme.ink_faint,
             Align::Left,
@@ -2717,47 +2743,107 @@ fn draw_tree(
         return;
     }
 
+    let icon = 16.0 * scale;
     for (index, (row, box_)) in panel.rows.iter().enumerate() {
-        let row_y = box_.y;
         let selected = panel.cursor == Some(index);
-
+        let highlight = Rect::new(
+            box_.x + 8.0 * scale,
+            box_.y + 1.0 * scale,
+            box_.width - 16.0 * scale,
+            box_.height - 2.0 * scale,
+        );
         if selected {
-            frame.fill(*box_, theme.row_active);
-            frame.fill(
-                Rect::new(rect.x, row_y, border::ACCENT_BORDER * scale, line),
-                accent,
+            frame.fill_rounded(highlight, theme.row_active, 5.0 * scale);
+        } else if hovered(state, *box_) {
+            frame.fill_rounded(highlight, theme.rule_soft, 5.0 * scale);
+        }
+
+        // A chevron for a directory and the space it would take for a file, so names at one depth
+        // line up whichever they are.
+        let indent = box_.x + 14.0 * scale + row.depth as f32 * 14.0 * scale;
+        let chevron = Rect::new(indent, box_.y, 12.0 * scale, box_.height);
+        let glyph = Rect::new(chevron.right() + 4.0 * scale, box_.y, icon, box_.height);
+        if row.is_directory {
+            frame.icon(
+                if row.expanded {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
+                centred(chevron, 12.0 * scale),
+                theme.ink_faint,
+            );
+            frame.icon(Icon::Folder, centred(glyph, icon), theme.ink_dim);
+        } else {
+            frame.icon(
+                Icon::File,
+                centred(glyph, icon),
+                file_color(theme, &row.name),
             );
         }
 
-        // One indent step per level, and an ASCII marker. Not a chevron or a folder glyph: the
-        // bundled fonts have neither, and a missing glyph renders as a tofu box — which is how this
-        // first shipped, in a capture where every directory wore a small empty rectangle.
-        // A trailing slash names the directory, `+`/`-` says whether it is open.
-        let indent = pad + row.depth as f32 * 12.0 * scale;
-        let text = if row.is_directory {
-            format!("{} {}/", if row.expanded { "-" } else { "+" }, row.name)
-        } else {
-            format!("  {}", row.name)
-        };
-
-        frame.text(run(
+        let name = Rect::new(
+            glyph.right() + 8.0 * scale,
+            box_.y,
+            (box_.right() - 12.0 * scale - (glyph.right() + 8.0 * scale)).max(0.0),
+            box_.height,
+        );
+        frame.text(ui(
             state,
-            Role::Value,
-            text,
-            Rect::new(
-                rect.x + indent,
-                row_y,
-                (rect.right() - pad - (rect.x + indent)).max(0.0),
-                line,
-            ),
-            match (row.is_directory, selected) {
-                (_, true) => theme.ink,
-                (true, false) => theme.ink_dim,
-                (false, false) => theme.ink_faint,
-            },
+            elide(state, Role::Ui, &row.name, name.width, scale),
+            name,
+            if selected { theme.ink } else { theme.ink_dim },
             Align::Left,
             scale,
         ));
+    }
+}
+
+/// A sidebar view for a feature that is not built yet, saying so plainly.
+///
+/// Better than an icon that does nothing — which reads as broken — and better than a view that
+/// pretends: it names what will be here and what to use meanwhile.
+fn draw_placeholder(
+    frame: &mut Frame,
+    state: &EditorState,
+    rect: Rect,
+    heading: &str,
+    body: &str,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let pad = 16.0 * scale;
+    frame.text(label(
+        state,
+        heading,
+        Rect::new(
+            rect.x + pad,
+            rect.y + 12.0 * scale,
+            rect.width - pad * 2.0,
+            24.0 * scale,
+        ),
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+    let mut y = rect.y + 48.0 * scale;
+    let line = 22.0 * scale;
+    for text in wrap_to(
+        &state.typography,
+        Role::Ui,
+        body,
+        rect.width - pad * 2.0,
+        scale,
+    ) {
+        frame.text(ui(
+            state,
+            text,
+            Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
+            theme.ink_dim,
+            Align::Left,
+            scale,
+        ));
+        y += line;
     }
 }
 
@@ -2810,211 +2896,529 @@ fn advance_for(size_px: f32) -> f32 {
     size_px * 0.6
 }
 
+/// Text in the interface's own face.
+fn ui(
+    state: &EditorState,
+    text: impl Into<String>,
+    rect: Rect,
+    color: Oklch,
+    align: Align,
+    scale: f32,
+) -> TextRun {
+    run(state, Role::Ui, text, rect, color, align, scale)
+}
+
+/// Whether the pointer is over a rectangle.
+fn hovered(state: &EditorState, rect: Rect) -> bool {
+    crate::layout::contains(rect, state.pointer.0, state.pointer.1)
+}
+
+/// An icon button: the icon, and a rounded wash behind it under the pointer.
+fn icon_button(
+    frame: &mut Frame,
+    state: &EditorState,
+    rect: Rect,
+    icon: Icon,
+    color: Oklch,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let over = hovered(state, rect);
+    if over {
+        frame.fill_rounded(rect, theme.row_active, 6.0 * scale);
+    }
+    frame.icon(
+        icon,
+        centred(rect, crate::layout::size::ICON * scale),
+        if over { theme.ink } else { color },
+    );
+}
+
+/// A square of `side` centred in `rect`.
+fn centred(rect: Rect, side: f32) -> Rect {
+    Rect::new(
+        rect.x + (rect.width - side) / 2.0,
+        rect.y + (rect.height - side) / 2.0,
+        side,
+        side,
+    )
+}
+
+/// The colour a file's icon takes, by what kind of file it is.
+///
+/// The hues people already associate with each language — Rust's rust, Python's yellow, Dart's
+/// blue — because an icon is read before the name beside it, and the colour is most of what makes
+/// it readable at sixteen pixels.
+pub fn file_color(theme: &Theme, name: &str) -> Oklch {
+    let lower = name.to_ascii_lowercase();
+    let extension = lower.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("");
+    let hue = |l: f32, c: f32, h: f32| Oklch::new(l, c, h);
+    match (lower.as_str(), extension) {
+        (".gitignore" | ".gitattributes" | ".gitmodules", _) => hue(0.72, 0.15, 145.0),
+        (_, "rs") => hue(0.70, 0.14, 45.0),
+        (_, "py" | "pyi") => hue(0.82, 0.14, 90.0),
+        (_, "js" | "mjs" | "cjs" | "jsx") => hue(0.86, 0.15, 100.0),
+        (_, "ts" | "tsx" | "mts") => hue(0.66, 0.15, 250.0),
+        (_, "dart") => hue(0.72, 0.12, 225.0),
+        (_, "go") => hue(0.76, 0.12, 210.0),
+        (_, "c" | "h" | "cpp" | "cc" | "hpp" | "cxx") => hue(0.66, 0.12, 255.0),
+        (_, "html" | "htm") => hue(0.66, 0.18, 35.0),
+        (_, "css" | "scss" | "sass") => hue(0.64, 0.15, 285.0),
+        (_, "lua") => hue(0.58, 0.15, 265.0),
+        (_, "json" | "toml" | "yaml" | "yml") => hue(0.80, 0.11, 75.0),
+        (_, "md" | "markdown" | "txt") => hue(0.74, 0.05, 250.0),
+        (_, "sh" | "bash" | "zsh" | "fish") => hue(0.74, 0.14, 140.0),
+        _ => theme.ink_dim,
+    }
+}
+
+/// The window's top bar: the logo and name, the command centre, and the account, bell and Share
+/// controls.
 fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    frame.fill(rect, theme.bg_alt);
-    frame.rule_bottom(rect, theme.rule, border::BORDER);
+    frame.fill_backdrop(rect, theme.bg_alt);
+    frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
+    let bar = crate::layout::title_bar(rect, scale);
+    let white = Oklch::new(0.99, 0.0, 0.0);
 
-    let inner = Rect::new(
-        rect.x + space::XL * scale,
-        rect.y,
-        rect.width - space::XL * 2.0 * scale,
-        rect.height,
+    // The logo: code brackets in a disc of the brand colour. A circle and a word, so it reads at
+    // the size of a title bar the way the old serif wordmark did not.
+    frame.disc(
+        [
+            bar.logo.x + bar.logo.width / 2.0,
+            bar.logo.y + bar.logo.height / 2.0,
+        ],
+        bar.logo.width / 2.0,
+        theme.primary,
     );
-
-    // The mark, then the wordmark. The mark is dimmer on purpose — it is a maker's stamp, and
-    // nothing in the title bar should compete with the mode indicator on the right. It is also the
-    // one element in the chrome immune to the mode hue, which is what makes it read as identity
-    // rather than state.
-    let mark_size = 26.0 * scale;
-    let (mark_box, after) = inner.split_left(mark_size);
-    frame.mark(
-        Rect::new(
-            mark_box.x,
-            mark_box.y + (mark_box.height - mark_size) / 2.0,
-            mark_size,
-            mark_size,
-        ),
-        theme.ink_faint,
-        theme.bg_alt,
-    );
-
-    // Wordmark: lowercase italic serif, always.
-    let (wordmark, after) = after.split_left(20.0 * scale).1.split_left(78.0 * scale);
     frame.text(run(
         state,
-        Role::Display,
-        "dacode",
-        wordmark,
+        Role::Value,
+        "</>",
+        bar.logo,
+        white,
+        Align::Center,
+        scale,
+    ));
+    frame.text(run(
+        state,
+        Role::Brand,
+        "DaCode",
+        bar.name,
         theme.ink,
         Align::Left,
         scale,
     ));
 
-    let mut breadcrumb = state.path.join(" / ");
-    if state.document.is_dirty() {
-        breadcrumb.push_str(" •");
+    // The command centre, as VSCode and Zed both have it: a box that looks like a search field,
+    // opens the palette, and says what it is for and which key does the same.
+    // Hidden while the menu bar is open: its titles sit in the same strip.
+    if let Some(search) = bar.search.filter(|_| state.menu.is_none()) {
+        let over = hovered(state, search);
+        frame.fill_rounded(
+            search,
+            if over { theme.row_active } else { theme.bg },
+            6.0 * scale,
+        );
+        frame.outline_rounded(search, theme.rule_soft, 6.0 * scale, border::BORDER * scale);
+        let icon = Rect::new(
+            search.x + 10.0 * scale,
+            search.y,
+            14.0 * scale,
+            search.height,
+        );
+        frame.icon(Icon::Search, centred(icon, 14.0 * scale), theme.ink_faint);
+        let key = key_hint(state, "command_palette");
+        let text = Rect::new(
+            icon.right() + 8.0 * scale,
+            search.y,
+            (search.right() - 10.0 * scale - (icon.right() + 8.0 * scale)).max(0.0),
+            search.height,
+        );
+        let project = state
+            .project_root
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let prompt = if project.is_empty() {
+            "Search files and commands".to_string()
+        } else {
+            format!("Search {project}")
+        };
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, &prompt, text.width * 0.7, scale),
+            text,
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+        if !key.is_empty() {
+            frame.text(run(
+                state,
+                Role::Value,
+                key,
+                text,
+                theme.ink_faint,
+                Align::Right,
+                scale,
+            ));
+        }
     }
-    let (crumbs, right) = after.split_left(after.width * 0.55);
-    frame.text(run(
-        state,
-        Role::Prose,
-        breadcrumb,
-        crumbs,
-        theme.ink_dim,
-        Align::Left,
-        scale,
-    ));
 
-    let (bar, name) = right.split_right(34.0 * scale);
-    frame.text(label(
-        state,
-        // No mode word when there are no modes. The statusline already knew this; the title bar did
-        // not, so someone who turned Vim off was told "INSERT MODE" by the largest label on screen
-        // while the editor underneath had no modes at all. It says what the file is instead, which
-        // is the thing that is actually true of a non-modal editor.
-        match state.modal {
-            true => format!("{} mode", state.mode.label()),
-            false => state
-                .file_path
-                .as_deref()
-                .and_then(dacode_syntax::Language::from_path)
-                .map(|language| language.name().to_string())
-                .unwrap_or_default(),
+    icon_button(frame, state, bar.account, Icon::User, theme.ink_dim, scale);
+    icon_button(frame, state, bar.bell, Icon::Bell, theme.ink_dim, scale);
+    // Unread messages: a dot on the bell, the way every desktop says "something happened".
+    if state.chrome.unread > 0 {
+        frame.disc(
+            [bar.bell.right() - 8.0 * scale, bar.bell.y + 8.0 * scale],
+            3.5 * scale,
+            theme.primary,
+        );
+    }
+
+    let over = hovered(state, bar.share);
+    frame.fill_rounded(
+        bar.share,
+        if over {
+            theme.primary.mix(white, 0.12)
+        } else {
+            theme.primary
         },
-        name,
-        theme.ink_faint,
-        Align::Right,
-        scale,
-    ));
-    frame.fill(
-        Rect::new(
-            bar.x + space::SM * scale,
-            bar.y + (bar.height - 3.0 * scale) / 2.0,
-            34.0 * scale,
-            3.0 * scale,
-        ),
-        accent,
+        6.0 * scale,
     );
+    frame.text(ui(state, "Share", bar.share, white, Align::Center, scale));
 }
 
-fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
+/// The column of view icons down the left edge.
+fn draw_activity(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    frame.fill(rect, theme.bg_alt);
-    frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
+    frame.fill_backdrop(rect, theme.bg_panel);
+    frame.fill(
+        Rect::new(
+            rect.right() - border::BORDER * scale,
+            rect.y,
+            border::BORDER * scale,
+            rect.height,
+        ),
+        theme.rule_soft,
+    );
 
-    // One tab per open file, from the same function the mouse hit-tests. The strip used to draw a
-    // single tab — the active file's name — so every other open buffer was invisible, and there was
-    // no way to close one at all.
-    for tab in crate::layout::tabs(
-        rect,
-        state.buffer_count,
+    let active = state.active_activity();
+    for (item, cell) in crate::layout::activity_items(rect, scale) {
+        let lit = active == Some(item.activity);
+        let over = hovered(state, cell);
+        if lit {
+            // The bar on the open view's edge, as both editors mark it.
+            frame.fill_rounded(
+                Rect::new(
+                    rect.x,
+                    cell.y + cell.height * 0.22,
+                    2.5 * scale,
+                    cell.height * 0.56,
+                ),
+                theme.primary,
+                1.25 * scale,
+            );
+        }
+        frame.icon(
+            item.icon,
+            centred(cell, 22.0 * scale),
+            if lit {
+                theme.ink
+            } else if over {
+                theme.ink_dim
+            } else {
+                theme.ink_faint
+            },
+        );
+
+        // A count on Problems, so a broken project is visible without opening anything.
+        if item.activity == crate::layout::Activity::Problems {
+            let (errors, warnings) = state.problems.counts();
+            let total = errors + warnings;
+            if total > 0 {
+                let badge = Rect::new(
+                    cell.right() - 20.0 * scale,
+                    cell.y + 7.0 * scale,
+                    16.0 * scale,
+                    14.0 * scale,
+                );
+                frame.fill_rounded(
+                    badge,
+                    if errors > 0 {
+                        theme.over_budget()
+                    } else {
+                        theme.stale()
+                    },
+                    7.0 * scale,
+                );
+                frame.text(run(
+                    state,
+                    Role::Label,
+                    if total > 99 {
+                        "99".to_string()
+                    } else {
+                        total.to_string()
+                    },
+                    badge,
+                    theme.bg_panel,
+                    Align::Center,
+                    scale,
+                ));
+            }
+        }
+    }
+}
+
+/// The key that runs a command in the grammar the user chose, from the one table that knows —
+/// written in Vim's notation for someone who chose Vim, and as `Ctrl+Shift+P` for everyone else.
+fn key_hint(state: &EditorState, command: &str) -> String {
+    dacode_input::commands::COMMANDS
+        .iter()
+        .find(|row| row.name == command)
+        .map(|row| row.shown(state.modal))
+        .unwrap_or_default()
+}
+
+/// The name and key of whatever control is under the pointer.
+///
+/// Every icon in the chrome teaches its shortcut this way, which is the bargain the mouse paths in
+/// this editor make: the button is there so that, after using it twice, you no longer need it.
+fn draw_tooltip(
+    frame: &mut Frame,
+    state: &EditorState,
+    regions: &crate::layout::Layout,
+    bounds: Rect,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let (x, y) = state.pointer;
+    let mut found: Option<(&str, &str, Rect)> = None;
+
+    for (item, cell) in crate::layout::activity_items(regions.activity, scale) {
+        if crate::layout::contains(cell, x, y) {
+            found = Some((item.label, item.command, cell));
+        }
+    }
+    let bar = crate::layout::title_bar(regions.title, scale);
+    for (label_text, command, rect) in [
+        ("Menu", "menu", bar.account),
+        ("Notifications", "notifications", bar.bell),
+        ("Copy a link to this line", "share", bar.share),
+    ] {
+        if crate::layout::contains(rect, x, y) {
+            found = Some((label_text, command, rect));
+        }
+    }
+    let names = tab_names(state);
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let tabs = crate::layout::tab_bar(
+        regions.tabs,
+        &names,
         state.active_buffer,
         &state.typography,
         scale,
-    ) {
-        let (name, dirty) = state
+    );
+    let buttons = [tabs.home, tabs.back, tabs.forward, tabs.split, tabs.run];
+    for ((command, _, label_text), rect) in crate::layout::TAB_BAR_COMMANDS.iter().zip(buttons) {
+        if crate::layout::contains(rect, x, y) {
+            found = Some((label_text, command, rect));
+        }
+    }
+
+    let Some((name, command, anchor)) = found else {
+        return;
+    };
+    let key = key_hint(state, command);
+    let text = if key.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}   {key}")
+    };
+    let advance = state.typography.advance(Role::Ui) * scale;
+    let width = text.chars().count() as f32 * advance + 20.0 * scale;
+    let height = 26.0 * scale;
+    // Beside the activity bar, below everything else — and never off the window.
+    let (mut tip_x, mut tip_y) = if crate::layout::contains(regions.activity, x, y) {
+        (
+            anchor.right() + 6.0 * scale,
+            anchor.y + (anchor.height - height) / 2.0,
+        )
+    } else {
+        (
+            anchor.x + (anchor.width - width) / 2.0,
+            anchor.bottom() + 6.0 * scale,
+        )
+    };
+    tip_x = tip_x.clamp(
+        bounds.x + 4.0 * scale,
+        (bounds.right() - width - 4.0 * scale).max(0.0),
+    );
+    tip_y = tip_y.min(bounds.bottom() - height - 4.0 * scale);
+    let tip = Rect::new(tip_x, tip_y, width, height);
+    frame.fill_rounded(tip, theme.row_active, 5.0 * scale);
+    frame.outline_rounded(tip, theme.rule, 5.0 * scale, border::BORDER * scale);
+    frame.text(ui(state, text, tip, theme.ink, Align::Center, scale));
+}
+
+/// The bell's panel: the editor's recent messages, newest first.
+fn draw_notifications(
+    frame: &mut Frame,
+    state: &EditorState,
+    title: Rect,
+    bounds: Rect,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let bar = crate::layout::title_bar(title, scale);
+    let width = (380.0 * scale).min(bounds.width - 16.0 * scale);
+    let line = 22.0 * scale;
+    let shown: Vec<&String> = state.chrome.notifications.iter().rev().take(12).collect();
+    let rows = shown.len().max(1);
+    let card = Rect::new(
+        (bar.bell.right() - width).max(bounds.x + 8.0 * scale),
+        title.bottom() + 6.0 * scale,
+        width,
+        line * (rows as f32 + 1.6),
+    );
+    frame.fill_rounded(card, theme.bg_panel, 8.0 * scale);
+    frame.outline_rounded(card, theme.rule, 8.0 * scale, border::BORDER * scale);
+    let inner = card.inset(12.0 * scale);
+    frame.text(label(
+        state,
+        "notifications",
+        Rect::new(inner.x, card.y + 6.0 * scale, inner.width, line),
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+    if shown.is_empty() {
+        frame.text(ui(
+            state,
+            "Nothing yet. Messages the editor shows land here.",
+            Rect::new(inner.x, card.y + line * 1.2, inner.width, line),
+            theme.ink_dim,
+            Align::Left,
+            scale,
+        ));
+        return;
+    }
+    for (index, message) in shown.iter().enumerate() {
+        let row = Rect::new(
+            inner.x,
+            card.y + line * (1.2 + index as f32),
+            inner.width,
+            line,
+        );
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, message, row.width, scale),
+            row,
+            if index == 0 { theme.ink } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+    }
+}
+
+/// One name per open buffer, for the tab bar. The live buffer's list can be shorter than the
+/// buffer count in the single-pane drawing path, and a missing name is filled from the path.
+fn tab_names(state: &EditorState) -> Vec<String> {
+    (0..state.buffer_count.max(1))
+        .map(|index| {
+            state
+                .buffer_tabs
+                .get(index)
+                .map(|(name, _)| name.clone())
+                .or_else(|| state.path.last().cloned())
+                .unwrap_or_else(|| "untitled".to_string())
+        })
+        .collect()
+}
+
+/// The row above the code: navigation, the open files, and the pane controls.
+fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
+    let theme = &state.theme;
+    frame.fill_backdrop(rect, theme.bg_alt);
+    frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
+
+    let names = tab_names(state);
+    let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+    let bar = crate::layout::tab_bar(
+        rect,
+        &borrowed,
+        state.active_buffer,
+        &state.typography,
+        scale,
+    );
+
+    icon_button(frame, state, bar.home, Icon::Home, theme.ink_dim, scale);
+    icon_button(
+        frame,
+        state,
+        bar.back,
+        Icon::ChevronLeft,
+        theme.ink_dim,
+        scale,
+    );
+    icon_button(
+        frame,
+        state,
+        bar.forward,
+        Icon::ChevronRight,
+        theme.ink_faint,
+        scale,
+    );
+    icon_button(frame, state, bar.split, Icon::Split, theme.ink_dim, scale);
+    icon_button(frame, state, bar.run, Icon::Play, theme.ink, scale);
+
+    // One tab per open file, from the same function the mouse hit-tests.
+    for tab in &bar.tabs {
+        let name = &names[tab.index];
+        let dirty = state
             .buffer_tabs
             .get(tab.index)
-            .cloned()
-            .unwrap_or_else(|| (String::from("untitled"), false));
+            .map(|(_, dirty)| *dirty)
+            .unwrap_or(tab.index == state.active_buffer && state.document.is_dirty());
         let active = tab.index == state.active_buffer;
-        let hovered = crate::layout::contains(tab.rect, state.pointer.0, state.pointer.1);
+        let over = hovered(state, tab.rect);
 
         if active {
-            frame.fill(tab.rect, theme.bg);
-        } else if hovered {
-            frame.fill(tab.rect, theme.row_active);
+            frame.fill_rounded(tab.rect, theme.bg, 6.0 * scale);
+        } else if over {
+            frame.fill_rounded(tab.rect, theme.rule_soft, 6.0 * scale);
         }
-
-        // A dot rather than a second word: the tab is narrow, and "modified" spelled out would
-        // take the room the name needs.
-        let label_text = if dirty { format!("{name} ·") } else { name };
-        let label_area = Rect::new(
-            tab.rect.x + space::XS * scale,
-            tab.rect.y,
-            (tab.close.x - tab.rect.x - space::XS * 2.0 * scale).max(0.0),
-            tab.rect.height,
-        );
-        frame.text(run(
+        frame.icon(Icon::File, tab.icon, file_color(theme, name));
+        frame.text(ui(
             state,
-            Role::Value,
-            elide(state, Role::Value, &label_text, label_area.width, scale),
-            label_area,
+            elide(state, Role::Ui, name, tab.label.width, scale),
+            tab.label,
             if active { theme.ink } else { theme.ink_dim },
             Align::Left,
             scale,
         ));
 
-        // `x` rather than a multiplication sign or a cross glyph: the bundled font has the letter,
-        // and the tree's chevrons shipped as tofu boxes once already.
-        if active || hovered {
-            frame.text(run(
-                state,
-                Role::Value,
-                "x",
-                tab.close,
-                if crate::layout::contains(tab.close, state.pointer.0, state.pointer.1) {
-                    theme.ink
+        // The close button where the pointer can use it, and a dot where the file is unsaved —
+        // the same trade both editors make, so the one glance answers "is this saved?".
+        if active || over {
+            let on_close = hovered(state, tab.close);
+            if on_close {
+                frame.fill_rounded(tab.close, theme.row_active, 4.0 * scale);
+            }
+            frame.icon(
+                if dirty && !on_close {
+                    Icon::Dot
                 } else {
-                    theme.ink_faint
+                    Icon::Close
                 },
-                Align::Center,
-                scale,
-            ));
-        }
-
-        if active {
-            frame.fill(
-                Rect::new(
-                    tab.rect.x,
-                    tab.rect.bottom() - border::ACCENT_BORDER * scale,
-                    tab.rect.width,
-                    border::ACCENT_BORDER * scale,
-                ),
-                accent,
+                centred(tab.close, 12.0 * scale),
+                if on_close { theme.ink } else { theme.ink_dim },
             );
+        } else if dirty {
+            frame.icon(Icon::Dot, centred(tab.close, 12.0 * scale), theme.ink_dim);
         }
     }
-
-    // Buttons rather than a line of advice. This row used to advertise `i / v / R / esc mode` to
-    // people who had turned modes off — keys that do nothing, shown to exactly the person least able
-    // to tell — and even at its best it was a list of shortcuts for someone who had just told the
-    // wizard they did not want to memorise shortcuts.
-    //
-    // Each one prints its own key beside it in the menu and the palette, so using the button twice
-    // teaches the shortcut and the third time it is not needed. That is the same bargain the menus
-    // make: the mouse path exists to make itself redundant, not to replace the keyboard.
-    let buttons = crate::layout::toolbar_buttons(rect, &state.typography, scale);
-    for placed in &buttons {
-        let hovered = crate::layout::contains(placed.rect, state.pointer.0, state.pointer.1);
-        if hovered {
-            frame.fill(placed.rect, theme.row_active);
-        }
-        // Into `text`, never `rect`: the padding is what guarantees a gap between two labels even
-        // when the width estimate is short, and it only does that if the run is clipped to the
-        // inner box. Elided for the same reason every variable-length string here is — an
-        // approximate ellipsis beats an exact guillotine.
-        frame.text(label(
-            state,
-            elide(
-                state,
-                Role::Label,
-                placed.button.label,
-                placed.text.width,
-                scale,
-            ),
-            placed.text,
-            if hovered { accent } else { theme.ink_dim },
-            Align::Center,
-            scale,
-        ));
-    }
-
-    // `buffer 3 of 7` used to live here, which was the strip apologising for not showing the tabs.
-    // It shows them now.
 }
 
 fn draw_code(
@@ -3041,12 +3445,8 @@ fn draw_code(
     let cursor = pane.document.selections().primary().head;
     let cursor_line = text.char_to_point(cursor).line;
 
-    let (from, to) = theme.gutter_tint(state.mode);
-    if pane.focused {
-        frame.fill_gradient_x(gutter, from, to, 24);
-    } else {
-        frame.fill(gutter, theme.bg_alt);
-    }
+    // The gutter is the editor's own background — the backdrop under the whole editor area — so
+    // line numbers sit on the code's surface, as they do in both editors this one is shaped after.
 
     if pane.focused && state.is_empty() {
         draw_empty_state(frame, state, code, scale);
@@ -3054,7 +3454,7 @@ fn draw_code(
     }
 
     if let Some(pinned) = area.pinned {
-        frame.fill(pinned, theme.bg_alt);
+        frame.fill_backdrop(pinned, theme.bg_alt);
         frame.rule_bottom(pinned, theme.rule_soft, border::BORDER);
 
         for (index, head) in area.heads.iter().enumerate() {
@@ -3182,14 +3582,29 @@ fn draw_code(
         let on_cursor_line = row.line == cursor_line;
 
         if on_cursor_line && pane.focused {
-            frame.fill_linear(
-                Rect::new(code.x, y, code.width, row_height),
-                theme.line_tint(state.mode),
-            );
-            frame.fill(
-                Rect::new(code.x, y, border::ACCENT_BORDER * scale, row_height),
-                accent,
-            );
+            // Across the gutter and the code, translucent so it works on any surface — including
+            // a see-through one. With modes on it takes the mode's hue, which is how the line
+            // itself says what typing will do; with them off there is no mode to say, and a
+            // coloured band would be a signal that means nothing.
+            //
+            // Mixed in OKLCH and drawn as part of the backdrop, not blended as a faint wash: five
+            // percent of ink blended in linear light comes out several times lighter than five
+            // percent looks, and a backdrop stays as see-through as the surface around it.
+            let band = Rect::new(gutter.x, y, code.right() - gutter.x, row_height);
+            if state.modal {
+                frame.fill_backdrop(
+                    band,
+                    theme
+                        .bg
+                        .mix(theme.accent(state.mode), state.mode.line_tint_alpha()),
+                );
+                frame.fill(
+                    Rect::new(code.x, y, border::ACCENT_BORDER * scale, row_height),
+                    accent,
+                );
+            } else {
+                frame.fill_backdrop(band, theme.bg.mix(theme.ink, 0.06));
+            }
         }
 
         // Diagnostic underlines. Drawn as a 2px rule beneath the offending span rather than as a
@@ -3340,10 +3755,10 @@ fn draw_code(
                 Role::LineNumber,
                 number,
                 Rect::new(gutter.x, y, gutter.width - space::LG * scale, row_height),
-                if on_cursor_line {
-                    accent
-                } else {
-                    theme.ink_faint
+                match (on_cursor_line, state.modal) {
+                    (true, true) => accent,
+                    (true, false) => theme.ink,
+                    (false, _) => theme.ink_faint,
                 },
                 Align::Right,
                 scale,
@@ -3604,6 +4019,7 @@ fn expand_tabs<'a>(state: &EditorState, line: &'a str) -> std::borrow::Cow<'a, s
     std::borrow::Cow::Owned(out)
 }
 
+/// The sidebar: whichever view the activity bar has open.
 fn draw_sidebar(
     frame: &mut Frame,
     state: &EditorState,
@@ -3612,22 +4028,54 @@ fn draw_sidebar(
     scale: f32,
 ) {
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    frame.fill(rect, theme.bg_panel);
-    frame.rule_left(rect, theme.rule, border::BORDER);
+    frame.fill_backdrop(rect, theme.bg_panel);
+    frame.fill(
+        Rect::new(
+            rect.right() - border::BORDER * scale,
+            rect.y,
+            border::BORDER * scale,
+            rect.height,
+        ),
+        theme.rule_soft,
+    );
 
     if let Some(tree) = &state.tree {
-        draw_tree(frame, state, tree, rect, scale);
-        return;
-    }
-    if state.show_diagnostics {
+        draw_explorer(frame, state, tree, rect, scale);
+    } else if state.show_diagnostics {
         draw_diagnostics_list(frame, state, rect, scale);
-        return;
-    }
-    if let Some(settings) = &state.settings {
+    } else if let Some(settings) = &state.settings {
         draw_settings(frame, state, settings, rect, scale);
-        return;
+    } else {
+        match state.chrome.activity {
+            Some(crate::layout::Activity::SourceControl) => draw_placeholder(
+                frame,
+                state,
+                rect,
+                "source control",
+                "Staging, committing and branches are coming to this panel. Until then the \
+                 gutter marks every change against HEAD, and ]c and [c step between them.",
+                scale,
+            ),
+            Some(crate::layout::Activity::Debug) => {
+                draw_internals(frame, state, rect, visible_rows, scale)
+            }
+            _ => {}
+        }
     }
+}
+
+/// What the editor is doing underneath, shown in the run-and-debug view until a debugger lives
+/// there: the cursor in all four coordinate spaces, the version every background result was
+/// computed against, and the frame time.
+fn draw_internals(
+    frame: &mut Frame,
+    state: &EditorState,
+    rect: Rect,
+    visible_rows: usize,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
 
     let pad = space::LG * scale;
     let line = 20.0 * scale;
@@ -3639,12 +4087,11 @@ fn draw_sidebar(
     let point = state.cursor_point();
 
     // Heading.
-    frame.text(run(
+    frame.text(label(
         state,
-        Role::Prose,
-        "Structure",
+        "run and debug",
         Rect::new(rect.x + pad, y, width, line * 1.4),
-        theme.ink,
+        theme.ink_faint,
         Align::Left,
         scale,
     ));
@@ -3903,8 +4350,8 @@ fn draw_sidebar(
 fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
     let accent = theme.accent(state.mode);
-    frame.fill(rect, theme.bg_alt);
-    frame.rule_top(rect, theme.rule, border::BORDER);
+    frame.fill_backdrop(rect, theme.bg_alt);
+    frame.rule_top(rect, theme.rule_soft, border::BORDER);
 
     // While a prompt is open it owns this line, as it does in Vim: `/` is used mid-thought, and an
     // overlay large enough for its own chrome would hide the text being searched.
@@ -3988,24 +4435,80 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     }
 
     let inner = Rect::new(
-        rect.x + space::XL * scale,
+        rect.x + space::MD * scale,
         rect.y,
-        rect.width - space::XL * 2.0 * scale,
+        rect.width - space::MD * 2.0 * scale,
         rect.height,
     );
     let point = state.cursor_point();
     let (left, right) = inner.split_left(inner.width * 0.5);
 
-    let (mode_cell, after_mode) = left.split_left(110.0 * scale);
+    // Problems first, with their icons, as both editors open the bar: the count that decides
+    // whether to stop and look is the one the eye should land on. Across the project, not just this
+    // file — a clean bar over a broken project is the misleading answer.
+    // The larger of the project's count and this file's: the project store is filled as servers
+    // report, and the file on screen may have been answered before the rest of it.
+    let (project_errors, project_warnings) = state.problems.counts();
+    let (file_errors, file_warnings) = state.diagnostics.counts();
+    let (errors, warnings) = (
+        project_errors.max(file_errors),
+        project_warnings.max(file_warnings),
+    );
+    let notes = state
+        .diagnostics
+        .items()
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic.severity,
+                Some(dacode_lsp::lsp_types::DiagnosticSeverity::INFORMATION)
+                    | Some(dacode_lsp::lsp_types::DiagnosticSeverity::HINT)
+            )
+        })
+        .count();
+    let mut x = left.x;
+    for (icon, count, lit) in [
+        (Icon::ErrorCircle, errors, theme.over_budget()),
+        (Icon::Warning, warnings, theme.stale()),
+        (Icon::Info, notes, theme.ink_dim),
+    ] {
+        let color = if count > 0 { lit } else { theme.ink_faint };
+        frame.icon(
+            icon,
+            centred(
+                Rect::new(x, left.y, 15.0 * scale, left.height),
+                15.0 * scale,
+            ),
+            color,
+        );
+        let number = Rect::new(x + 19.0 * scale, left.y, 30.0 * scale, left.height);
+        frame.text(ui(
+            state,
+            count.to_string(),
+            number,
+            color,
+            Align::Left,
+            scale,
+        ));
+        x += 19.0 * scale + (count.to_string().len() as f32 * 8.0 + 14.0) * scale;
+    }
+    let left = Rect::new(
+        x + 8.0 * scale,
+        left.y,
+        (left.right() - x - 8.0 * scale).max(0.0),
+        left.height,
+    );
+
+    let (mode_cell, after_mode) = left.split_left(96.0 * scale);
     frame.text(label(
         state,
         // Recording replaces the mode word, in the mode's own accent. An editor that is silently
-        // recording is an editor that surprises you ten minutes later.
+        // recording is an editor that surprises you ten minutes later. With modal editing off there
+        // is no mode to report — "NORMAL" would be a lie, and a word that never changes is noise.
         match (state.recording, state.modal) {
             (Some(register), _) => format!("rec @{register}"),
             (None, true) => state.mode.label().to_string(),
-            // With modal editing off there is no mode to report, and "NORMAL" would be a lie.
-            (None, false) => "editing".to_string(),
+            (None, false) => String::new(),
         },
         mode_cell,
         accent,
@@ -4038,11 +4541,7 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     frame.text(run(
         state,
         Role::Value,
-        if state.pending.is_empty() {
-            "—".to_string()
-        } else {
-            state.pending.clone()
-        },
+        state.pending.clone(),
         pending,
         accent,
         Align::Left,
@@ -4074,45 +4573,15 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
             ),
             theme.ink_dim,
         ),
-        {
-            let (errors, warnings) = state.diagnostics.counts();
-            let (project_errors, project_warnings) = state.problems.counts();
-            let elsewhere = (project_errors + project_warnings).saturating_sub(errors + warnings);
-
-            if errors + warnings == 0 {
-                // Nothing wrong here. If something is wrong *elsewhere*, say so — that is the whole
-                // reason the project store exists, and a clean statusline over a broken project is
-                // the misleading answer.
-                if elsewhere > 0 {
-                    (format!("{elsewhere} elsewhere"), theme.stale())
-                } else {
-                    (state.server_status.clone(), theme.ink_faint)
-                }
-            } else {
-                let plural = |count: usize, word: &str| {
-                    if count == 1 {
-                        format!("{count} {word}")
-                    } else {
-                        format!("{count} {word}s")
-                    }
-                };
-                (
-                    format!(
-                        "{} · {}",
-                        plural(errors, "error"),
-                        plural(warnings, "warning")
-                    ),
-                    if errors > 0 {
-                        theme.over_budget()
-                    } else {
-                        theme.stale()
-                    },
-                )
-            }
-        },
+        // The counts are on the left now, with their icons; this cell says who is producing them.
+        (state.server_status.clone(), theme.ink_faint),
         (
             format!("{:.2} ms", state.frame_ms),
-            if over { theme.over_budget() } else { theme.ink },
+            if over {
+                theme.over_budget()
+            } else {
+                theme.ink_faint
+            },
         ),
     ];
 

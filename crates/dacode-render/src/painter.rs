@@ -7,15 +7,16 @@
 use crate::frame::{Frame, Layer};
 use crate::mark::MarkPipeline;
 use crate::quad::QuadPipeline;
+use crate::shape::ShapePipeline;
 use crate::text::TextStack;
 use anyhow::Result;
-use dacode_theme::Oklch;
 
 pub struct Painter {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     quads: QuadPipeline,
     marks: MarkPipeline,
+    shapes: ShapePipeline,
     text: TextStack,
 }
 
@@ -23,18 +24,20 @@ impl Painter {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let quads = QuadPipeline::new(&device, format);
         let marks = MarkPipeline::new(&device, format);
+        let shapes = ShapePipeline::new(&device, format);
         let text = TextStack::new(&device, &queue, format);
         Self {
             device,
             queue,
             quads,
             marks,
+            shapes,
             text,
         }
     }
 
-    pub fn resolved_families(&self) -> [&str; 3] {
-        self.text.resolved_families()
+    pub fn resolved_face(&self) -> &str {
+        self.text.resolved_face()
     }
 
     /// Uploads this frame's geometry and glyphs, then records the draw calls into `encoder`.
@@ -45,16 +48,18 @@ impl Painter {
         width: u32,
         height: u32,
         frame: &Frame,
-        clear: Oklch,
+        clear: [f32; 4],
     ) -> Result<()> {
         self.quads
             .prepare(&self.device, &self.queue, width, height, &frame.quads);
         self.marks
             .prepare(&self.device, &self.queue, width, height, &frame.marks);
+        self.shapes
+            .prepare(&self.device, &self.queue, width, height, &frame.shapes);
         self.text
             .prepare(&self.device, &self.queue, width, height, &frame.texts)?;
 
-        let [r, g, b, a] = clear.to_linear();
+        let [r, g, b, a] = clear;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("dacode main pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -84,6 +89,9 @@ impl Painter {
             // Between the rectangles and the glyphs: the mark sits on a surface and never over
             // text — it is chrome, not content.
             self.marks.render(&mut pass, layer);
+            // Icons sit with the rectangles, under the text: a button's icon and its label are
+            // both on the button, and neither should cover a panel above it.
+            self.shapes.render(&mut pass, layer);
             self.text.render(&mut pass, layer)?;
         }
         Ok(())

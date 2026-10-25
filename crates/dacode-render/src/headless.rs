@@ -64,8 +64,8 @@ impl Headless {
         })
     }
 
-    pub fn resolved_families(&self) -> [&str; 3] {
-        self.painter.resolved_families()
+    pub fn resolved_face(&self) -> &str {
+        self.painter.resolved_face()
     }
 
     /// Renders a frame and reads it back as tightly-packed RGBA8.
@@ -90,13 +90,22 @@ impl Headless {
                     label: Some("dacode headless frame"),
                 });
 
+        // A translucent frame is drawn the way the window draws it, premultiplied over nothing, and
+        // then laid over a checkerboard below — a PNG of it would otherwise show the image viewer's
+        // own background through the holes and prove nothing about what the desktop would see.
+        let translucent = frame.transparency() > 0.0;
+        let clear_with = if translucent {
+            crate::clear_color(clear, wgpu::CompositeAlphaMode::PreMultiplied)
+        } else {
+            crate::clear_color(clear, wgpu::CompositeAlphaMode::Opaque)
+        };
         self.painter.paint(
             &mut encoder,
             &self.view,
             self.width,
             self.height,
             frame,
-            clear,
+            clear_with,
         )?;
 
         encoder.copy_texture_to_buffer(
@@ -153,6 +162,9 @@ impl Headless {
         drop(mapped);
         readback.unmap();
 
+        if translucent {
+            over_checkerboard(&mut pixels, self.width);
+        }
         Ok(pixels)
     }
 
@@ -177,5 +189,23 @@ impl Headless {
             .write_image_data(&pixels)
             .context("writing PNG pixels")?;
         Ok(())
+    }
+}
+
+/// Composites premultiplied pixels over a light-and-dark checkerboard, in place, leaving them opaque.
+///
+/// Done on the encoded bytes rather than in linear light: it is a picture for a person to check,
+/// and the difference is invisible at the size of a square.
+fn over_checkerboard(pixels: &mut [u8], width: u32) {
+    const SQUARE: u32 = 16;
+    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        let (x, y) = (index as u32 % width, index as u32 / width);
+        let light = (x / SQUARE + y / SQUARE) % 2 == 0;
+        let under = if light { 200.0 } else { 120.0 };
+        let alpha = pixel[3] as f32 / 255.0;
+        for channel in &mut pixel[..3] {
+            *channel = (*channel as f32 + under * (1.0 - alpha)).round().min(255.0) as u8;
+        }
+        pixel[3] = 255;
     }
 }

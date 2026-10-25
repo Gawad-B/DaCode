@@ -40,6 +40,7 @@ than logged.
 | `sticky_scroll` | boolean | `true` | Pin enclosing block heads above the viewport. |
 | `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |
+| `transparency` | number, 0–90 | `0` | How much of the desktop shows through the window, in percent. Backgrounds go see-through; text, highlights and popups stay solid. Needs a compositor, and turning it on from `0` takes effect at the next start. |
 | `leader` | string | `"<space>"` | What `<leader>` expands to in `dacode.map`. |
 
 Anything not named in a `dacode.set` call is left alone, and unset is not the same as false: reading a

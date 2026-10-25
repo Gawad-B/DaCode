@@ -72,6 +72,7 @@ impl Session {
                 pointer: (0.0, 0.0),
                 help: None,
                 menu: None,
+                chrome: Default::default(),
             },
             grammar: Grammar::new(),
             registers: Registers::new(),

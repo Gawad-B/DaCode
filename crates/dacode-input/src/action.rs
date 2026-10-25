@@ -293,6 +293,18 @@ pub enum Action {
     ToggleInlayHints,
     /// `gD` — list every diagnostic in the file, rather than walking them one at a time.
     ToggleDiagnosticsList,
+    /// The source-control view in the sidebar.
+    ShowSourceControl,
+    /// The run-and-debug view in the sidebar.
+    ShowRunAndDebug,
+    /// Every message the editor has shown, newest first — so one that vanished at the next
+    /// keystroke can still be read.
+    ToggleNotifications,
+    /// Copy a reference to the cursor's line — a link to it on the repository's host when there is
+    /// one, `path:line` when there is not.
+    Share,
+    /// Run the project.
+    Run,
 
     /// `za` — fold or unfold the block at the cursor.
     ToggleFold,
@@ -472,6 +484,11 @@ impl Action {
         "revert_hunk",
         "toggle_inlay_hints",
         "toggle_diagnostics",
+        "source_control",
+        "run_and_debug",
+        "notifications",
+        "share",
+        "run",
         "toggle_fold",
         "fold_all",
         "unfold_all",
@@ -624,6 +641,11 @@ impl Action {
             "goto_symbol_in_project" => Action::GotoSymbolInProject,
             "toggle_inlay_hints" => Action::ToggleInlayHints,
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
+            "source_control" => Action::ShowSourceControl,
+            "run_and_debug" => Action::ShowRunAndDebug,
+            "notifications" => Action::ToggleNotifications,
+            "share" => Action::Share,
+            "run" => Action::Run,
             "toggle_fold" => Action::ToggleFold,
             "fold_all" => Action::FoldAll { close: true },
             "unfold_all" => Action::FoldAll { close: false },

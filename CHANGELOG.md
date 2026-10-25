@@ -11,12 +11,38 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Changed
 
+- A new interface, shaped like VSCode and Zed: a title bar with the logo, a search box that opens
+  the command palette, and Share, notifications and menu buttons; an icon column down the left that
+  switches the sidebar between the explorer, search, source control, run and debug, problems and
+  settings; the explorer on the left with file icons and a New button; tabs with icons, dots for
+  unsaved files and close buttons, between back/forward and split/run buttons; and a status bar that
+  counts errors, warnings and notes with their icons. Every button shows its name and shortcut when
+  the pointer rests on it.
+- One font: everything is set in Fira Code. The serif headings and sans labels, and the two fonts
+  they came from, are gone.
+- A new default theme, `dacode`, with the chrome a shade darker than the code. The other five are
+  still there.
+- With Vim keys off, shortcuts are written the usual way — `Ctrl+Shift+P` rather than `<c-s-p>` — in
+  the menus, the palette, tooltips and messages.
+
 - vex is now **DaCode**. The command is `dacode`, the configuration lives in
   `~/.config/dacode/init.lua` (`%APPDATA%\dacode` on Windows), and the Lua table is `dacode`. Nothing
   needs doing by hand: on first start DaCode copies the vex configuration and state directories —
   settings, themes, sessions and any crash-recovery copies — and leaves the originals where they
   were. An `init.lua` that says `vex.set` still runs, `VEX_CONFIG_DIR` and `VEX_STATE_DIR` are still
   read, and the Windows installer upgrades a vex install in place rather than adding a second one.
+
+### Added
+
+- `transparency` — how much of the desktop shows through the window, from `0` to `90` percent, in
+  `init.lua` or the settings panel. Backgrounds go see-through; text, highlights and popups stay
+  solid so the editor stays readable. It needs a compositor, and says so when there is none.
+- Share copies a permanent link to the cursor's line — on GitHub, GitLab, Bitbucket, Codeberg and
+  the like, pinned to the checked-out commit — or `path:line` when the project has no remote.
+- The bell keeps the editor's recent messages, so one that vanished at the next keystroke can still
+  be read.
+- Run copies the command a project of its kind is run with (`cargo run`, `npm run dev`,
+  `flutter run`…). There is no terminal to run it in yet, and it says so.
 
 ### Fixed
 

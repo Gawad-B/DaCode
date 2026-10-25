@@ -55,7 +55,7 @@ impl Item {
     fn from_command(command: &Command, modal: bool) -> Self {
         Self {
             label: command.what.to_string(),
-            keys: command.keys_for(modal).to_string(),
+            keys: command.shown(modal),
             // Every entry comes from the command table, so a menu cannot offer something the editor
             // does not have — and cannot show the wrong key for it either.
             action: command.action().unwrap_or(Action::DismissInfo),
@@ -267,9 +267,17 @@ impl Menu {
 
         let mut titles = Vec::new();
         let (x, y) = match self.kind {
+            // In the title bar, after the product's name, where VSCode and Zed both put their menus —
+            // read from the same title-bar geometry the chrome draws, so the two cannot drift.
             Kind::Bar => {
-                let title_y = bounds.y + 40.0 * scale;
-                let mut x = bounds.x + space::LG * scale;
+                let title = Rect::new(
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    crate::layout::size::TITLE * scale,
+                );
+                let title_y = title.y + (title.height - row_height) / 2.0;
+                let mut x = crate::layout::title_bar(title, scale).name.right() + space::XS * scale;
                 let mut open_x = x;
                 for (index, title) in self.titles.iter().enumerate() {
                     let width = (title.chars().count() as f32 + 2.0) * 9.0 * scale;

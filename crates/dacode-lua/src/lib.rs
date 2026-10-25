@@ -40,6 +40,8 @@ pub struct Config {
     pub inlay_hints: Option<bool>,
     /// Write the file a moment after typing stops.
     pub autosave: Option<bool>,
+    /// How much of the desktop shows through the window, as a percentage: 0 is opaque.
+    pub transparency: Option<u8>,
     /// "absolute", "relative" or "off" — parsed by the caller, which owns the enum.
     pub line_numbers: Option<String>,
     pub appearance: Option<Appearance>,
@@ -90,6 +92,7 @@ impl Config {
             && self.sticky_scroll.is_none()
             && self.inlay_hints.is_none()
             && self.autosave.is_none()
+            && self.transparency.is_none()
             && self.line_numbers.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
@@ -184,6 +187,11 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(autosave) = boolean(&options, "autosave") {
                 config.autosave = Some(autosave);
+            }
+            // Capped at 90: past that the window is a ghost of itself, and the text on it — which
+            // stays solid — floats over whatever is behind with nothing to read it against.
+            if let Some(percent) = number(&options, "transparency") {
+                config.transparency = Some(percent.clamp(0.0, 90.0).round() as u8);
             }
             // Kept as a string here: this crate owns no editor types, and the caller that has the
             // enum is also the one that can report a bad value in the user's terms.
@@ -512,6 +520,23 @@ mod tests {
 
     fn run(source: &str) -> Config {
         eval(source, "test.lua")
+    }
+
+    #[test]
+    fn transparency_is_a_percentage_and_never_a_vanishing_window() {
+        assert_eq!(
+            run("dacode.set { transparency = 20 }").transparency,
+            Some(20)
+        );
+        assert_eq!(
+            run("dacode.set { transparency = 400 }").transparency,
+            Some(90),
+            "a window that is all desktop has nothing left to edit in"
+        );
+        assert_eq!(
+            run("dacode.set { transparency = -5 }").transparency,
+            Some(0)
+        );
     }
 
     #[test]

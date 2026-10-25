@@ -6,7 +6,7 @@
 //! exactly the kind of unbounded per-frame work the 60fps contract forbids.
 
 use crate::frame::{Align, Layer, TextRun};
-use dacode_theme::{Family, Style};
+use dacode_theme::Style;
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family as CtFamily, FontSystem, Metrics, Resolution, Shaping,
     Style as CtStyle, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -15,28 +15,18 @@ use glyphon::{
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-/// The bundled faces.
+/// The bundled face: Fira Code, and nothing else.
 ///
-/// Embedded in the binary rather than fetched or installed, for the reason the design gives: the
-/// first frame must never wait on a font, and the editor has to look like itself on a machine where
-/// nothing is installed. All of them are SIL OFL; the licence texts sit beside them.
+/// Embedded in the binary rather than fetched or installed, so the first frame never waits on a font
+/// and the editor looks like itself on a machine where nothing is installed. SIL OFL; the licence
+/// text sits beside it.
 ///
-/// The code face is Fira Code. It was IBM Plex Mono, which is the face the design names and is a
-/// good one — but the code face is the single thing somebody looks at for hours, and enough people
-/// said the same thing about this one that being defensible stopped being the point. Familiarity is
-/// a real property of a code font: an unfamiliar one is read as a mistake before it is read as a
-/// choice, and a reader deciding whether to trust an editor should not be spending that on the
-/// letterforms.
-///
-/// Only the code face moved. Instrument Serif still draws the wordmark and the headings, which is
-/// what the editor looks like and is not what anybody was objecting to.
+/// One face for everything — the code, the chrome, the headings. There were three: a serif for
+/// headings and the wordmark and a sans for labels beside the code face. The contrast was the
+/// design's idea; one familiar face everywhere is what people asked for, and it is also what makes
+/// every width the chrome estimates exact, because a monospaced face has one advance.
 mod bundled {
-    pub const SERIF_REGULAR: &[u8] = include_bytes!("../fonts/InstrumentSerif-Regular.ttf");
-    pub const SERIF_ITALIC: &[u8] = include_bytes!("../fonts/InstrumentSerif-Italic.ttf");
-    pub const MONO_REGULAR: &[u8] = include_bytes!("../fonts/FiraCode-Regular.ttf");
-    pub const SANS_MEDIUM: &[u8] = include_bytes!("../fonts/IBMPlexSans-Medium.ttf");
-
-    pub const ALL: [&[u8]; 4] = [SERIF_REGULAR, SERIF_ITALIC, MONO_REGULAR, SANS_MEDIUM];
+    pub const FIRA_CODE: &[u8] = include_bytes!("../fonts/FiraCode-Regular.ttf");
 }
 
 /// Frames a shaped buffer may go unused before it is dropped. Generous: re-shaping a line the
@@ -79,14 +69,6 @@ impl Identity {
     }
 }
 
-/// Which concrete font family name to use for each of the design's three roles, resolved once
-/// against the installed fonts.
-struct ResolvedFamilies {
-    serif: FamilyChoice,
-    mono: FamilyChoice,
-    sans: FamilyChoice,
-}
-
 enum FamilyChoice {
     Named(String),
     Generic(&'static str),
@@ -96,9 +78,7 @@ impl FamilyChoice {
     fn as_ct(&self) -> CtFamily<'_> {
         match self {
             FamilyChoice::Named(name) => CtFamily::Name(name),
-            FamilyChoice::Generic("serif") => CtFamily::Serif,
-            FamilyChoice::Generic("monospace") => CtFamily::Monospace,
-            _ => CtFamily::SansSerif,
+            FamilyChoice::Generic(_) => CtFamily::Monospace,
         }
     }
 
@@ -119,18 +99,15 @@ pub struct TextStack {
     /// be drawn at different points in the pass cannot share one.
     renderers: Vec<(Layer, TextRenderer)>,
     buffers: HashMap<u64, Cached>,
-    families: ResolvedFamilies,
+    /// The face in use, resolved once against what is installed.
+    face: FamilyChoice,
     frame: u64,
 }
 
 impl TextStack {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let mut font_system = load_fonts();
-        let families = ResolvedFamilies {
-            serif: resolve(&mut font_system, Family::Serif, "serif"),
-            mono: resolve(&mut font_system, Family::Mono, "monospace"),
-            sans: resolve(&mut font_system, Family::Sans, "sans-serif"),
-        };
+        let face = resolve(&mut font_system);
 
         let cache = Cache::new(device);
         let viewport = Viewport::new(device, &cache);
@@ -152,27 +129,15 @@ impl TextStack {
             viewport,
             renderers,
             buffers: HashMap::new(),
-            families,
+            face,
             frame: 0,
         }
     }
 
-    /// The faces actually in use — worth surfacing, since a silently-substituted serif is the
+    /// The face actually in use — worth surfacing, since a silently substituted face is the
     /// difference between the intended design and something that merely resembles it.
-    pub fn resolved_families(&self) -> [&str; 3] {
-        [
-            self.families.serif.describe(),
-            self.families.mono.describe(),
-            self.families.sans.describe(),
-        ]
-    }
-
-    fn family_for(&self, family: Family) -> CtFamily<'_> {
-        match family {
-            Family::Serif => self.families.serif.as_ct(),
-            Family::Mono => self.families.mono.as_ct(),
-            Family::Sans => self.families.sans.as_ct(),
-        }
+    pub fn resolved_face(&self) -> &str {
+        self.face.describe()
     }
 
     pub fn prepare(
@@ -219,7 +184,7 @@ impl TextStack {
             }
 
             let attrs = Attrs::new()
-                .family(self.family_for(run.spec.family))
+                .family(self.face.as_ct())
                 .weight(CtWeight(run.spec.weight))
                 .style(match run.spec.style {
                     Style::Roman => CtStyle::Normal,
@@ -336,13 +301,12 @@ fn load_fonts() -> FontSystem {
     let started = std::time::Instant::now();
 
     let mut db = fontdb::Database::new();
-    for face in bundled::ALL {
-        db.load_font_data(face.to_vec());
-    }
+    db.load_font_data(bundled::FIRA_CODE.to_vec());
     let bundled_count = db.len();
     let bundled_time = started.elapsed();
 
-    // The system scan costs ~150ms and buys fallback coverage the four bundled faces cannot provide.
+    // The system scan costs ~150ms and buys fallback coverage — CJK, emoji, scripts Fira Code does
+    // not draw — that one bundled face cannot provide.
     // Correctness wins by default, but a user who only ever edits Latin text can have the startup
     // back — the cost is real and this is the one place it is paid.
     let skip_system = std::env::var_os("DACODE_NO_SYSTEM_FONTS").is_some();
@@ -352,11 +316,11 @@ fn load_fonts() -> FontSystem {
     }
     let system_time = system_started.elapsed();
 
-    // Generic names resolve to the bundled faces, so anything asking for "serif" gets the design's
-    // serif rather than whatever the system considers one.
-    db.set_serif_family("Instrument Serif");
+    // Every generic name resolves to the one face, so nothing asking for "sans-serif" reaches for
+    // whatever the system considers one and comes back in a different face from everything else.
+    db.set_serif_family("Fira Code");
     db.set_monospace_family("Fira Code");
-    db.set_sans_serif_family("IBM Plex Sans");
+    db.set_sans_serif_family("Fira Code");
 
     if std::env::var_os("DACODE_FONT_TRACE").is_some() {
         eprintln!(
@@ -375,28 +339,27 @@ fn load_fonts() -> FontSystem {
     FontSystem::new_with_locale_and_db(locale, db)
 }
 
-/// Picks the first installed family from the design's preference list, falling back to a
-/// generic. Done by inspection rather than by relying on the shaper's fallback, so the editor
-/// can report what it actually got.
-fn resolve(font_system: &mut FontSystem, family: Family, generic: &'static str) -> FamilyChoice {
+/// Picks the first installed face from the preference list, falling back to the generic monospace.
+/// Done by inspection rather than by relying on the shaper's fallback, so the editor can report
+/// what it actually got.
+fn resolve(font_system: &mut FontSystem) -> FamilyChoice {
     let installed: Vec<String> = font_system
         .db()
         .faces()
         .flat_map(|face| face.families.iter().map(|(name, _)| name.clone()))
         .collect();
 
-    for candidate in family.candidates() {
+    for candidate in dacode_theme::FACES {
         if installed.iter().any(|name| name == candidate) {
             return FamilyChoice::Named((*candidate).to_string());
         }
     }
-    FamilyChoice::Generic(generic)
+    FamilyChoice::Generic("monospace")
 }
 
 fn run_key(run: &TextRun) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     run.text.hash(&mut hasher);
-    run.spec.family.hash(&mut hasher);
     run.spec.style.hash(&mut hasher);
     run.spec.weight.hash(&mut hasher);
     run.spec.size_px.to_bits().hash(&mut hasher);

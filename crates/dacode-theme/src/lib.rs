@@ -17,7 +17,7 @@ pub mod typography;
 pub use color::Oklch;
 pub use mode::{CursorShape, Mode};
 pub use theme::{Appearance, BuiltIn, SyntaxPalette, Theme};
-pub use typography::{Family, FontSpec, Role, Style, Typography, frame, space};
+pub use typography::{FACES, FontSpec, Role, Style, Typography, frame, space};
 
 /// Frame budget in milliseconds. Not decoration: the statusline shows measured frame time
 /// against this number, because a performance target you cannot see is a target you will lose.
@@ -112,7 +112,6 @@ mod tests {
         let comment = typo.spec(Role::Comment);
         let code = typo.spec(Role::Code);
 
-        assert_eq!(comment.family, Family::Mono, "the same face as the code");
         assert_eq!(comment.style, Style::Roman, "upright");
         assert_eq!(comment.size_px, code.size_px, "and the same size");
         assert_eq!(
@@ -121,13 +120,25 @@ mod tests {
         );
     }
 
-    /// The wordmark keeps the serif italic that every complaint about the code face spared.
+    /// One face, so nothing asks for an italic it does not have: a request for one would be met by
+    /// whatever italic the system happened to have, in a different face from everything around it.
     #[test]
-    fn the_display_face_is_still_the_serif() {
+    fn every_role_is_upright_in_the_one_face() {
         let typo = Typography::default();
-        let display = typo.spec(Role::Display);
-        assert_eq!(display.family, Family::Serif);
-        assert_eq!(display.style, Style::Italic);
+        for role in [
+            Role::Display,
+            Role::Prose,
+            Role::Code,
+            Role::Comment,
+            Role::LineNumber,
+            Role::Value,
+            Role::Label,
+            Role::Ui,
+            Role::Brand,
+        ] {
+            assert_eq!(typo.spec(role).style, Style::Roman, "{role:?}");
+        }
+        assert_eq!(crate::FACES.first(), Some(&"Fira Code"));
     }
 
     #[test]
