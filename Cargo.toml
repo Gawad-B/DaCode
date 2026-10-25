@@ -8,17 +8,17 @@ license = "MIT"
 rust-version = "1.85"
 
 [workspace.dependencies]
-vex-text = { path = "crates/vex-text" }
-vex-theme = { path = "crates/vex-theme" }
-vex-render = { path = "crates/vex-render" }
-vex-buffer = { path = "crates/vex-buffer" }
-vex-display = { path = "crates/vex-display" }
-vex-input = { path = "crates/vex-input" }
-vex-syntax = { path = "crates/vex-syntax" }
-vex-import = { path = "crates/vex-import" }
-vex-project = { path = "crates/vex-project" }
-vex-lsp = { path = "crates/vex-lsp" }
-vex-lua = { path = "crates/vex-lua" }
+dacode-text = { path = "crates/dacode-text" }
+dacode-theme = { path = "crates/dacode-theme" }
+dacode-render = { path = "crates/dacode-render" }
+dacode-buffer = { path = "crates/dacode-buffer" }
+dacode-display = { path = "crates/dacode-display" }
+dacode-input = { path = "crates/dacode-input" }
+dacode-syntax = { path = "crates/dacode-syntax" }
+dacode-import = { path = "crates/dacode-import" }
+dacode-project = { path = "crates/dacode-project" }
+dacode-lsp = { path = "crates/dacode-lsp" }
+dacode-lua = { path = "crates/dacode-lua" }
 
 # Rendering. glyphon pins the wgpu and cosmic-text versions, so it is the crate that decides
 # this trio: glyphon 0.12 -> wgpu 30, cosmic-text 0.19.
@@ -52,7 +52,7 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.25"
 
 # Import. `zip` reads .vsix packages (they are zip archives); no JS runtime is involved, because
-# running VSCode extensions is out of scope — see crates/vex-import/src/lib.rs.
+# running VSCode extensions is out of scope — see crates/dacode-import/src/lib.rs.
 serde_json = "1"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 

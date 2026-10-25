@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=DaCode
+GenericName=Text Editor
+Comment=A modal editor that never stalls on your keystroke
+Exec=dacode %F
+Icon=dacode
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;text/x-rust;text/x-python;text/javascript;text/x-c;text/x-c++;text/html;text/css;
+StartupNotify=true
+StartupWMClass=dacode

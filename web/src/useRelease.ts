@@ -40,7 +40,7 @@ export type Release = {
 };
 
 /*
- * Downloads come from a release on Gawad-B/vex-releases, a public repository
+ * Downloads come from a release on Gawad-B/dacode-releases, a public repository
  * that holds nothing at all — one empty commit, so that a tag can exist, and
  * four assets hanging off it. The editor's own repository is private, which
  * took its releases private with it: the assets and the API that listed them
@@ -61,26 +61,26 @@ export type Release = {
  * and the version written in here. `conventions.rs` fails the build if this
  * table names a version the crate is not.
  */
-const ASSETS = "https://github.com/Gawad-B/vex-releases/releases/download";
+const ASSETS = "https://github.com/Gawad-B/dacode-releases/releases/download";
 
 const RELEASE: Release = {
   version: "0.4.3",
   published: "2026-08-16",
   assets: {
-    "vex-setup.exe": {
-      url: `${ASSETS}/v0.4.3/vex-setup.exe`,
+    "dacode-setup.exe": {
+      url: `${ASSETS}/v0.4.3/dacode-setup.exe`,
       size: 7953718,
     },
-    "vex_0.4.3_amd64.deb": {
-      url: `${ASSETS}/v0.4.3/vex_0.4.3_amd64.deb`,
+    "dacode_0.4.3_amd64.deb": {
+      url: `${ASSETS}/v0.4.3/dacode_0.4.3_amd64.deb`,
       size: 9849304,
     },
-    "vex-0.4.3-1.x86_64.rpm": {
-      url: `${ASSETS}/v0.4.3/vex-0.4.3-1.x86_64.rpm`,
+    "dacode-0.4.3-1.x86_64.rpm": {
+      url: `${ASSETS}/v0.4.3/dacode-0.4.3-1.x86_64.rpm`,
       size: 9748746,
     },
-    "vex-0.4.3-x86_64-linux.tar.gz": {
-      url: `${ASSETS}/v0.4.3/vex-0.4.3-x86_64-linux.tar.gz`,
+    "dacode-0.4.3-x86_64-linux.tar.gz": {
+      url: `${ASSETS}/v0.4.3/dacode-0.4.3-x86_64-linux.tar.gz`,
       size: 9848676,
     },
   },
@@ -159,9 +159,9 @@ export function platformFor(os: Os, release: Release): Platform {
         },
         pending: null,
         alternatives: [],
-        note: "Per-user, under %LOCALAPPDATA%\\Programs\\vex — no admin prompt. Adds a Start Menu entry, vex on your PATH, “Open with vex” on a folder, and an uninstaller.",
+        note: "Per-user, under %LOCALAPPDATA%\\Programs\\dacode — no admin prompt. Adds a Start Menu entry, dacode on your PATH, “Open with dacode” on a folder, and an uninstaller.",
         prompt: ">",
-        command: ".\\vex-setup.exe",
+        command: ".\\dacode-setup.exe",
       };
 
     case "linux":
@@ -191,7 +191,7 @@ export function platformFor(os: Os, release: Release): Platform {
         primary: null,
         pending: "macOS build coming soon",
         alternatives: [],
-        note: "There is no macOS build yet, and nobody has ever run vex on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
+        note: "There is no macOS build yet, and nobody has ever run dacode on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
         prompt: "#",
         command: "no macOS build yet",
       };
@@ -203,12 +203,12 @@ export function platformFor(os: Os, release: Release): Platform {
         primary: null,
         pending: null,
         alternatives: present([
-          exe && { label: "Windows — vex-setup.exe", detail: exe.name, url: exe.url, size: exe.size },
+          exe && { label: "Windows — dacode-setup.exe", detail: exe.name, url: exe.url, size: exe.size },
           deb && { label: "Linux — .deb", detail: deb.name, url: deb.url, size: deb.size },
           rpm && { label: "Linux — .rpm", detail: rpm.name, url: rpm.url, size: rpm.size },
           tar && { label: "Linux — .tar.gz", detail: tar.name, url: tar.url, size: tar.size },
         ]),
-        note: "vex is a desktop editor for x86-64 Linux and Windows. Pick the artifact for the machine you will run it on.",
+        note: "dacode is a desktop editor for x86-64 Linux and Windows. Pick the artifact for the machine you will run it on.",
         prompt: "#",
         command: "pick the artifact for your machine",
       };

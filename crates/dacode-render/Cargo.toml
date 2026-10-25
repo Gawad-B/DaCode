@@ -1,0 +1,21 @@
+[package]
+name = "dacode-render"
+version = "0.4.3"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GPU rendering for the dacode editor: rectangles and shaped text"
+
+[dependencies]
+dacode-theme = { path = "../dacode-theme" }
+
+wgpu.workspace = true
+glyphon.workspace = true
+# The font database is built here rather than letting cosmic-text scan for us, so the bundled faces
+# load first and the design renders on the first frame.
+fontdb = "0.23"
+winit.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true
+pollster.workspace = true
+png.workspace = true

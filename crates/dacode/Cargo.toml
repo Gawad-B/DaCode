@@ -1,0 +1,43 @@
+[package]
+name = "dacode"
+version = "0.4.3"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "dacode — a modal code editor"
+
+[lib]
+name = "dacode"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dacode"
+path = "src/main.rs"
+
+[dependencies]
+dacode-text.workspace = true
+dacode-theme.workspace = true
+dacode-render.workspace = true
+dacode-buffer.workspace = true
+dacode-display.workspace = true
+dacode-input.workspace = true
+dacode-syntax.workspace = true
+dacode-import.workspace = true
+dacode-project.workspace = true
+dacode-lsp.workspace = true
+dacode-lua.workspace = true
+serde_json.workspace = true
+
+winit.workspace = true
+arboard.workspace = true
+# For decoding the embedded window icon; already here for the offscreen capture.
+png.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+lsp-types.workspace = true
+
+[[bench]]
+name = "editor"
+harness = false

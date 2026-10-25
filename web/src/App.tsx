@@ -35,7 +35,7 @@ export default function App() {
   return (
     <div className="page">
       <header className={`nav ${scrolled ? "condensed" : ""}`}>
-        <span className="wordmark">vex</span>
+        <span className="wordmark">dacode</span>
         <span className="caret" />
         <span style={{ flex: 1 }} />
         {/* One link per section that exists, in the order they appear. */}
@@ -223,7 +223,7 @@ export default function App() {
                 className="wordmark"
                 style={{ fontSize: 58 }}
               >
-                vex
+                dacode
               </span>
               <span style={{ width: 9, height: 40, background: "var(--mode)" }} />
             </div>
@@ -311,7 +311,7 @@ export default function App() {
 
       <footer className="footer">
         <span className="wordmark" style={{ fontSize: 20 }}>
-          vex
+          dacode
         </span>
         <span className="caret" style={{ height: 14, width: 6 }} />
         <span style={{ flex: 1 }} />

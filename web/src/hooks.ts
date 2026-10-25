@@ -186,7 +186,7 @@ export function useTheme() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try {
-      localStorage.setItem("vex-theme", theme);
+      localStorage.setItem("dacode-theme", theme);
     } catch {
       /* Private browsing. The page still works; the choice just will not stick. */
     }

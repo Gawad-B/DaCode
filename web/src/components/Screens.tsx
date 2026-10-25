@@ -21,7 +21,7 @@ export function Screens() {
       <div className="shots-head reveal">
         <h2>The editor itself</h2>
         <span className="prose" style={{ fontSize: 13, color: "var(--ink-faint)" }}>
-          rendered offscreen by vex, not captured from a screen
+          rendered offscreen by dacode, not captured from a screen
         </span>
       </div>
 
@@ -46,7 +46,7 @@ export function Screens() {
             <img
               key={s.id}
               src={SRC[s.id]}
-              alt={s.id === active ? `vex — ${s.label}` : ""}
+              alt={s.id === active ? `dacode — ${s.label}` : ""}
               width={1440}
               height={900}
               loading="lazy"

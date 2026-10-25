@@ -1,4 +1,4 @@
-# vex — Project Plan
+# DaCode — Project Plan
 
 **Target:** VSCode's feature surface, Zed's performance characteristics, Neovim's modal keybindings.
 **Language:** Rust. **Primary success criterion:** I use it as my daily editor.
@@ -7,11 +7,11 @@
 
 | Decision | Choice | Consequence |
 |---|---|---|
-| Name | **vex** — binary `vex`, config `~/.config/vex/init.lua` | crate prefix `vex-` |
+| Name | **DaCode** — binary `dacode`, config `~/.config/dacode/init.lua` | crate prefix `dacode-` |
 | Soft wrap | **In v1**, designed into the display layer at M2 | `DisplayPoint` is wrap-aware from the start; viewport math is row-based, not line-based |
 | Selection model | **Always a set** (Zed/Helix data model); a cursor is a 1-wide selection with one primary | Every operator maps over the set; multi-cursor is never a special case |
 | Command grammar | **Vim grammar** (`dw` — operator then motion) **plus Helix-style extras** where strictly better (structural tree-sitter selection, split-selection, multi-cursor ops) | Operators must resolve a motion into a per-cursor selection; two entry paths into one operator implementation |
-| Config | **Lua from the start** (`mlua`) | **Done** (`crates/vex-lua`). The `Action` enum is a public scripting API from day one — naming and stability matter earlier than they otherwise would. Two things kept the accepted cost in check: the interpreter is *transient* (it runs once at startup, returns a plain value and is dropped, so no Lua ever runs on the UI thread), and bindings resolve to `Action` names rather than Lua callbacks, so a config cannot inject work into the keystroke path. What that forgoes for now is autocommands and user-defined commands; those need a callback budget and get one when they are built. |
+| Config | **Lua from the start** (`mlua`) | **Done** (`crates/dacode-lua`). The `Action` enum is a public scripting API from day one — naming and stability matter earlier than they otherwise would. Two things kept the accepted cost in check: the interpreter is *transient* (it runs once at startup, returns a plain value and is dropped, so no Lua ever runs on the UI thread), and bindings resolve to `Action` names rather than Lua callbacks, so a config cannot inject work into the keystroke path. What that forgoes for now is autocommands and user-defined commands; those need a callback budget and get one when they are built. |
 | Languages | Rust, TypeScript/JS/HTML/CSS, Python, C/C++, Dart | tree-sitter grammars + LSP: rust-analyzer, tsserver + vscode-langservers, pyright/ruff, clangd, `dart language-server` |
 | Milestone order | **M5 (project layer) before M6 (LSP)** | Navigation friction blocks daily use before missing completion does |
 | Toolchain | rustup stable (1.97.1), edition 2024 | — |
@@ -188,19 +188,19 @@ what prevents a half-working engine with ten half-working features on top.
 > importer, a measured optimization pass, Lua configuration and the logo. 452 tests, zero clippy
 > warnings.
 > Crates:
-> `vex-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
-> `vex-theme` (OKLCH color, mode accents, type roles, theme tokens — 15 tests),
-> `vex-buffer` (document, versioning, undo grouping, multi-cursor editing — 19 tests),
-> `vex-display` (soft wrap, anchored viewport, display-aware motion, folding, sticky scroll — 31 tests),
-> `vex-input` (Action vocabulary, modal grammar, motions, text objects, user keymap, jumplist, macros — 82 tests),
-> `vex-syntax` (tree-sitter parsing, incremental reparse, version-tagged worker — 18 tests),
-> `vex-render` (wgpu quad pipeline + glyphon text, paint layers, frame timer, offscreen capture — 10 tests),
-> `vex-import` (VSCode settings/keys/themes/snippets, `.vsix` reading — 19 tests),
-> `vex-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search, file watching — 25 tests),
-> `vex-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics, rename, formatting — 17 tests),
-> `vex-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 14 tests),
-> `vex` (window, chrome, executor, config, panes, file tree, git gutter, sessions, snippets, edit
-> application, `vex import` — 154 tests).
+> `dacode-text` (rope, coordinates, transactions, anchors, selections — 13 tests),
+> `dacode-theme` (OKLCH color, mode accents, type roles, theme tokens — 15 tests),
+> `dacode-buffer` (document, versioning, undo grouping, multi-cursor editing — 19 tests),
+> `dacode-display` (soft wrap, anchored viewport, display-aware motion, folding, sticky scroll — 31 tests),
+> `dacode-input` (Action vocabulary, modal grammar, motions, text objects, user keymap, jumplist, macros — 82 tests),
+> `dacode-syntax` (tree-sitter parsing, incremental reparse, version-tagged worker — 18 tests),
+> `dacode-render` (wgpu quad pipeline + glyphon text, paint layers, frame timer, offscreen capture — 10 tests),
+> `dacode-import` (VSCode settings/keys/themes/snippets, `.vsix` reading — 19 tests),
+> `dacode-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search, file watching — 25 tests),
+> `dacode-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics, rename, formatting — 17 tests),
+> `dacode-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 14 tests),
+> `dacode` (window, chrome, executor, config, panes, file tree, git gutter, sessions, snippets, edit
+> application, `dacode import` — 154 tests).
 >
 > **Everything is an `Action`.** Keys resolve to Actions, the executor consumes them, dot-repeat
 > replays them, and the end-to-end tests drive them — so `3dw` and `ci"` are verified as behavior,
@@ -223,7 +223,7 @@ what prevents a half-working engine with ten half-working features on top.
 >
 > Only Rust has a grammar so far. Files without one render unhighlighted rather than not at all.
 >
-> **Still stand-ins, deliberately:** structural text objects (`if`/`ic`) exist in `vex-syntax`
+> **Still stand-ins, deliberately:** structural text objects (`if`/`ic`) exist in `dacode-syntax`
 > (`enclosing_node`) but are not yet bound in the grammar; no macros, marks or jumplist; no search
 > (`/`) or command line (`:`); tree-sitter indent queries are unused, so `insert_newline` still
 > just copies the previous line's whitespace; the column advance is derived from the type scale
@@ -236,10 +236,10 @@ what prevents a half-working engine with ten half-working features on top.
 >
 > Loading them costs **0.20ms**. The system font scan that follows costs **~156ms** and buys the
 > fallback coverage four Latin faces cannot provide — CJK, emoji, anything else. Correctness wins by
-> default; `VEX_NO_SYSTEM_FONTS=1` takes the startup back (0.27s → 0.19s to first frame) for anyone
+> default; `DACODE_NO_SYSTEM_FONTS=1` takes the startup back (0.27s → 0.19s to first frame) for anyone
 > who only edits Latin text.
 >
-> **Verifying the look.** `vex --screenshot out.png [--mode insert|visual|replace] [--light]
+> **Verifying the look.** `dacode --screenshot out.png [--mode insert|visual|replace] [--light]
 > [file]` renders one frame offscreen and exits — no window server needed, so the design can be
 > checked in CI, over SSH, or in a headless VM. This is also the basis for reference-image tests
 > once the chrome settles.
@@ -286,7 +286,7 @@ highlight queries; theme file; tree-sitter-driven indent.
 > switches buffers, and each buffer keeps its own undo history and scroll position.
 >
 > Two bugs the smoke test caught, both of which unit tests could not: `find_root` returned
-> `crates/vex` because the first `Cargo.toml` walking up is a workspace *member* manifest — `.git`
+> `crates/dacode` because the first `Cargo.toml` walking up is a workspace *member* manifest — `.git`
 > now wins, so the palette indexes the project rather than one crate; and the file walk was
 > collected *after* key handling, so the first `ctrl-p` would have opened onto an empty list.
 >
@@ -302,7 +302,7 @@ highlight queries; theme file; tree-sitter-driven indent.
 > cursor line and a mode-tinted gutter** — a second blinking cursor is the most confusing thing a
 > split view can do, and an unfocused pane is not in insert mode just because its neighbour is.
 >
-> The index arithmetic lives in `crates/vex/src/panes.rs` rather than the event loop, because
+> The index arithmetic lives in `crates/dacode/src/panes.rs` rather than the event loop, because
 > arithmetic only reachable by pressing keys in a window is arithmetic that never gets tested.
 >
 > **M5 is complete.** The file tree is derived from the project's flat index rather than a second
@@ -342,7 +342,7 @@ search and replace, file watching.
 > A finding worth keeping: `~/.cargo/bin/rust-analyzer` is a **rustup shim** that exists whether or
 > not the component is installed. `is_installed` returning true is not proof a server works, which is
 > why the client keeps the server's stderr and surfaces it — that is how the first integration failure
-> explained itself instead of looking like a vex bug.
+> explained itself instead of looking like a DaCode bug.
 >
 > **M6 is now user-facing.** `K` hovers, `gd` goes to the definition (opening another file when the
 > target is there), and `]d` / `[d` walk the diagnostics with the same wrapping `n` uses. Diagnostics
@@ -361,7 +361,7 @@ search and replace, file watching.
 > **M6 is complete but for one thing.** Code actions arrive in the *command palette* rather than a
 > menu of their own — it is a list you filter and choose from, which is what the palette already is —
 > and only actions carrying edits are listed: an action whose work is a server-side `command` is
-> something vex cannot perform, and offering a menu entry that does nothing is worse than offering
+> something DaCode cannot perform, and offering a menu entry that does nothing is worse than offering
 > nothing. References land in the *search results panel* for the same reason: both are `path:line`
 > plus a line of context that you move through and open, and two implementations of that would drift.
 >
@@ -388,7 +388,7 @@ rename, code actions, format-on-save.
 where the async architecture is truly tested — expect this milestone to expose latent design
 mistakes, and budget for that rather than being surprised by it.
 
-> **M6: rename and formatting.** Both go through one place — `crates/vex/src/edits.rs` — because the
+> **M6: rename and formatting.** Both go through one place — `crates/dacode/src/edits.rs` — because the
 > hard parts are shared and worth getting right once. A rename touching nine sites is **one** undo
 > press, which falls out of the document's single mutation funnel: every edit enters as one
 > `Transaction` tagged `Discrete`. A reply computed against a version the buffer has moved past is
@@ -417,7 +417,7 @@ mistakes, and budget for that rather than being surprised by it.
 >   original cursor position — a search that loses your place is worse than no search. Commands:
 >   `:w`, `:w path`, `:q`, `:q!`, `:wq`/`:x`, `:42`, `:e path`, `:grep`, `:set wrap`/`nowrap`. An
 >   unknown command names itself, so a typo is distinguishable from an unimplemented feature.
-> - **Crash recovery.** Dirty buffers are written to `$XDG_STATE_HOME/vex/recovery` on a two-second
+> - **Crash recovery.** Dirty buffers are written to `$XDG_STATE_HOME/dacode/recovery` on a two-second
 >   timer and forced before quitting, so a crash costs seconds rather than work. Writes are atomic
 >   (temp file plus rename) because a crash *during* the recovery write would otherwise replace a
 >   good copy with a truncated one. A copy older than the saved file is discarded rather than
@@ -493,7 +493,7 @@ inlay hints.
 > this milestone sets. Blame is a smaller gap: the gutter machinery is there and `git blame --porcelain`
 > would feed it, but per-line authorship earns its screen space far less often than per-line change.
 
-> **The folder chooser shells out.** vex draws its own interface with `wgpu` and has no GTK or Qt in
+> **The folder chooser shells out.** DaCode draws its own interface with `wgpu` and has no GTK or Qt in
 > it; linking one — or `rfd`, which links one for you — to show a single dialog would add a second UI
 > stack, theme engine and event loop to an editor premised on staying light. So it runs `zenity`,
 > `kdialog` or the XDG portal, whichever exists, **on a thread**: a dialog is a subprocess someone may
@@ -505,7 +505,7 @@ inlay hints.
 
 > **Colour schemes in four formats.** People do not have "a VSCode theme"; they have a theme, in
 > whichever format the page they found it on serves. VSCode JSON, TextMate `.tmTheme` plists, base16
-> YAML and vex's own TOML are all read, by hand rather than with a plist crate and a YAML crate: both
+> YAML and DaCode's own TOML are all read, by hand rather than with a plist crate and a YAML crate: both
 > are used here in one narrow shape — a flat map of names to hex — and two dependencies with their own
 > error types to read that would cost more than the fifty lines it took. What is deliberately *not*
 > attempted is the general case; a scope selector that does not map cleanly is ignored rather than
@@ -535,7 +535,7 @@ inlay hints.
 >
 > Changes apply immediately — a settings panel whose effect you cannot see is a form — and are written
 > back only when asked, into a marked block at the end of `init.lua`. The user's own lines are never
-> rewritten: a `vex.set` call may be inside a loop or a condition, and an editor that reformats your
+> rewritten: a `dacode.set` call may be inside a loop or a condition, and an editor that reformats your
 > program to store a checkbox has overstepped. Appending works because `init.lua` applies in order, so
 > the panel's block is simply the last word. A test round-trips what the panel writes through the real
 > Lua reader, because a block that will not parse loses every setting on the next launch.
@@ -617,21 +617,21 @@ the hard, unglamorous part and roughly half the difficulty.
 
 ## 5a. VSCode compatibility — what is possible, and what is not
 
-**VSCode extensions cannot run in vex.** Two independent blockers, neither of which is an
+**VSCode extensions cannot run in DaCode.** Two independent blockers, neither of which is an
 engineering matter:
 
 1. **Legal.** Microsoft's marketplace terms restrict use to "in-scope products" — Visual Studio,
    VS Code, Codespaces, Azure DevOps. Non-Microsoft editors may not fetch from it; this is what
    Cursor and Windsurf hit in 2025. **Open VSX** (Eclipse Foundation) is the legally
-   redistributable, API-compatible registry, and is what vex targets.
+   redistributable, API-compatible registry, and is what DaCode targets.
 2. **Architectural.** Extensions are JavaScript against the `vscode` API in Node. Supporting them
    means embedding a JS runtime, reimplementing that API, and paying a Node-sized process per
    extension — precisely what makes VSCode heavy, and the opposite of this project's premise.
 
 What *is* portable: extension **data** (themes, snippets, language configuration) and the
-**language server** most valuable extensions merely wrap, which vex will drive over LSP directly.
+**language server** most valuable extensions merely wrap, which DaCode will drive over LSP directly.
 
-`vex import` implements that. Nothing is imported unless explicitly listed — the checklist defaults
+`dacode import` implements that. Nothing is imported unless explicitly listed — the checklist defaults
 to taking nothing, because an importer that quietly rewrites configuration is worse than none. Every
 item is accounted for in a report: imported, skipped, not present, or unsupported *with the reason*.
 An imported theme is converted into OKLCH, so it joins the same palette relationships as a native
@@ -644,16 +644,16 @@ exist), language configuration (needs an auto-close/comment-toggle engine, M7), 
 ## 6. Visual design
 
 Source: `Vex modal state design/design_handoff_vex/`, a handoff bundle kept out of the repo (it is
-exported HTML nothing builds from) — implement **`vex Editor Paper.dc.html`**
-only. The landing page (`vex Landing.dc.html`) is out of scope for now, and
-`vex Editor.dc.html` ("Ink") is an unchosen alternate.
+exported HTML nothing builds from) — implement **`dacode Editor Paper.dc.html`**
+only. The landing page (`dacode Landing.dc.html`) is out of scope for now, and
+`dacode Editor.dc.html` ("Ink") is an unchosen alternate.
 
 **The mock is a reference, not a target to mirror.** It is HTML standing in for a native
 `winit`/`wgpu`/`glyphon` UI, so what carries over is the visual *language* — palette,
 relationships, type roles, behavior — while geometry is guidance the render layer is free to
 resolve its own way. Nothing here gets ported as markup or wrapped in a webview.
 
-Encoded in `crates/vex-theme`:
+Encoded in `crates/dacode-theme`:
 
 - **Mode is the environment.** One `Mode` value drives every accent through `Theme::accent`.
   Four hues (normal 250, insert 155, visual 70, replace 25) at **one lightness and one chroma**
@@ -685,7 +685,7 @@ Encoded in `crates/vex-theme`:
 
 ## 6a. Performance, measured
 
-Benchmarks live in `crates/vex-syntax/benches/parse.rs` and `crates/vex/benches/editor.rs`. They
+Benchmarks live in `crates/dacode-syntax/benches/parse.rs` and `crates/dacode/benches/editor.rs`. They
 exist because the 60fps contract is a claim about numbers, and three of my own guesses about where
 time went were wrong.
 

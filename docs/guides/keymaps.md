@@ -1,10 +1,10 @@
 # Choosing how you type
 
-For someone who has vex open and wants the keys to be the ones their hands already know. By the end
+For someone who has DaCode open and wants the keys to be the ones their hands already know. By the end
 you will have picked a keymap, know exactly what changed when you did, and be able to rebind any of
 it.
 
-vex ships two keymaps. Vim's modal grammar is the default; turning it off gives you a conventional
+DaCode ships two keymaps. Vim's modal grammar is the default; turning it off gives you a conventional
 editor. The choice is one setting, it changes live, and nothing about your open files is affected by
 flipping it.
 
@@ -19,14 +19,14 @@ block at the end of `init.lua` and leaves your own lines alone.
 The same thing from config:
 
 ```lua
-vex.set { vim_keys = false }
+dacode.set { vim_keys = false }
 ```
 
 Saving `init.lua` reloads it in place — the keymap, the theme and the metrics all change without
 restarting and without touching the documents you have open. If you have never written one:
 
 ```sh
-mkdir -p ~/.config/vex && cp examples/init.lua ~/.config/vex/init.lua
+mkdir -p ~/.config/dacode && cp examples/init.lua ~/.config/dacode/init.lua
 ```
 
 The first-run wizard asks this question before anything else, so on a fresh install the answer is
@@ -100,7 +100,7 @@ time. And only far-reaching moves enter the jumplist — `gg`, `G`, `}`, `%`, `g
 Structural text objects (`if`, `ic` — "inner function", "inner class") are not implemented. That is
 a deliberate gap with the reasoning in [PLAN.md](../../PLAN.md), not an oversight.
 
-## The keys that are vex's own
+## The keys that are DaCode's own
 
 These are the editor's, not Vim's, and they work in both keymaps:
 
@@ -132,18 +132,18 @@ palette exists.
 
 ## Rebinding
 
-`vex.map(mode, keys, action)` in `init.lua`:
+`dacode.map(mode, keys, action)` in `init.lua`:
 
 ```lua
-vex.set { leader = "<space>" }
+dacode.set { leader = "<space>" }
 
-vex.map("normal", "<leader>w", "save")
-vex.map("insert", "<c-s>", "save")
-vex.map("v", "<leader>y", "copy")
+dacode.map("normal", "<leader>w", "save")
+dacode.map("insert", "<c-s>", "save")
+dacode.map("v", "<leader>y", "copy")
 ```
 
 The mode is `normal`, `insert`, `visual` or `replace`; the single letters `n`, `i`, `v` and `r` also
-work. The keys are a *sequence*, not a single key. The action is one of the names in `vex.actions`,
+work. The keys are a *sequence*, not a single key. The action is one of the names in `dacode.actions`,
 which is a plain Lua array you can print from your own config — it is filtered through the same
 lookup the binder uses, so a name that no longer resolves disappears from the list rather than being
 advertised and then rejected. A typo earns a did-you-mean at startup, not a key that silently does
@@ -155,7 +155,7 @@ Four rules that are not obvious:
 accumulating a binding that can never fire — is worse.
 
 **`leader` applies to bindings made afterwards.** It is expanded when the binding is created, so
-change it before the `vex.map` calls that use it.
+change it before the `dacode.map` calls that use it.
 
 **Bindings are consulted before the built-in grammar, but only when no command is half-typed.** So
 `d<leader>` stays the grammar's business, and a config file can never leave an operator dangling.
@@ -171,12 +171,12 @@ motion does.
 
 ### Macros survive rebinding
 
-Everything user-visible in vex is an `Action`: keys resolve to one, the palette lists them, config
+Everything user-visible in DaCode is an `Action`: keys resolve to one, the palette lists them, config
 binds them, and **macros record them**. A recorded macro holds actions rather than keystrokes, so
 rebinding a key afterwards does not break a macro that used it, and a replay is one undo step. Record
 with `q` and a letter, stop with `q`, replay with `@` and that letter.
 
-The full `vex.map` reference — every field, every mode spelling, and the exact resolution order — is
+The full `dacode.map` reference — every field, every mode spelling, and the exact resolution order — is
 in [the settings reference](../reference/settings.md#vexmapmode-keys-action).
 
 ## Finding a key you do not know

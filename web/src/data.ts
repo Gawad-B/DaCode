@@ -5,11 +5,11 @@
  * two disagree the repository wins. Notable replacements, so the next person
  * knows they were deliberate:
  *
- *   - `cargo install vex` is not real; vex is not published to crates.io. The
+ *   - `cargo install dacode` is not real; dacode is not published to crates.io. The
  *     hero now offers the actual artifact for the visitor's platform.
  *   - "no Windows or macOS build in v1" was true when it was written. Windows
  *     has shipped since 0.1.1 and has been run by real people since 0.3.0.
- *     macOS is the remaining one, and nobody has ever run vex there.
+ *     macOS is the remaining one, and nobody has ever run dacode there.
  *   - "no settings GUI" was a non-goal; there has been a clickable settings
  *     panel since 0.1.0.
  *   - The mock's `"ayif` demonstrates a structural text object. Those are a
@@ -93,7 +93,7 @@ export const SHOTS: { id: ShotId; label: string; caption: string }[] = [
     id: "editor",
     label: "editing",
     caption:
-      "Tree-sitter highlighting on a worker thread, a git diff gutter, sticky scroll and inlay hints from the language server. Every capture on this page is rendered offscreen by the editor itself — vex --screenshot out.png renders any state and exits, which is how the visual work gets verified in a repository whose author cannot take a screen capture at all.",
+      "Tree-sitter highlighting on a worker thread, a git diff gutter, sticky scroll and inlay hints from the language server. Every capture on this page is rendered offscreen by the editor itself — dacode --screenshot out.png renders any state and exits, which is how the visual work gets verified in a repository whose author cannot take a screen capture at all.",
   },
   {
     id: "commands",
@@ -180,7 +180,7 @@ export const RELEASES: ReleaseCard[] = [
   },
   {
     name: "next · macOS",
-    body: "No packaging, and nobody has ever run vex there. Stated rather than hidden — the Linux and Windows builds are the ones in real use.",
+    body: "No packaging, and nobody has ever run dacode there. Stated rather than hidden — the Linux and Windows builds are the ones in real use.",
     state: "next",
   },
 ];
@@ -194,10 +194,10 @@ export const IDENTITY_CAPTIONS = {
 };
 
 export const SCOPE = {
-  notTitle: "What vex will not do",
+  notTitle: "What dacode will not do",
   not: "No plugin system and no extension runtime — extension *code* is never run, because a JavaScript runtime is most of what makes VSCode heavy. Extension *data* imports fine: themes, snippets, keybindings, language configuration, .vsix files. No integrated terminal, no git blame, no remote editing, no collaboration, no macOS packaging. Deferring the extension API is what keeps the rest honest; it constrains every internal API the moment it exists.",
   successTitle: "Success has one criterion",
   success:
-    "Not feature parity — daily use. vex is written inside vex, and its own bug tracker is the friction of using it. That is where 0.4.1 came from: an afternoon of real use, which found more than two rounds of adversarial review had.",
+    "Not feature parity — daily use. dacode is written inside dacode, and its own bug tracker is the friction of using it. That is where 0.4.1 came from: an afternoon of real use, which found more than two rounds of adversarial review had.",
   stamp: "used daily by its author · windows since 0.3.0",
 };

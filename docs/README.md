@@ -1,4 +1,4 @@
-# vex documentation
+# DaCode documentation
 
 Four kinds of document, because they answer four different questions and mixing them serves none of
 them well. This split follows [Diátaxis](https://diataxis.fr/): if you cannot find something, the
@@ -14,7 +14,7 @@ question you are asking tells you which column to look in.
 ## Getting started
 
 **[getting-started.md](getting-started.md)** — installing, the three first-run questions, opening a
-project, and editing and saving your first file. Start here if you have not run vex before. It
+project, and editing and saving your first file. Start here if you have not run DaCode before. It
 assumes nothing and takes about ten minutes.
 
 ## Guides
@@ -36,7 +36,7 @@ Consult while working. Exhaustive, and derived from the source rather than from 
 | | |
 |---|---|
 | [Settings](reference/settings.md) | every option, its type, its default, and where it is read |
-| [Command line](reference/cli.md) | every flag, every environment variable, and `vex import` |
+| [Command line](reference/cli.md) | every flag, every environment variable, and `dacode import` |
 | [Files on disk](reference/files.md) | where configuration, sessions and crash recovery live, per platform |
 | [Keys](../CHEATSHEET.md) | every binding in both grammars — checked against the real grammar by a test |
 

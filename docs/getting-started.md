@@ -1,10 +1,10 @@
 # Getting started
 
-By the end of this you will have vex installed, configured the way you like to type, and you will
-have opened a project, edited a file and saved it. It assumes you have never used vex and takes about
+By the end of this you will have DaCode installed, configured the way you like to type, and you will
+have opened a project, edited a file and saved it. It assumes you have never used DaCode and takes about
 ten minutes. Nothing here needs a language server, a config file or a terminal.
 
-If you already have vex running and want to do one specific thing, the [guides](guides/) are the
+If you already have DaCode running and want to do one specific thing, the [guides](guides/) are the
 faster read.
 
 ## 1. Install it
@@ -14,9 +14,9 @@ Pick your platform. Every artifact is on the
 
 ### Windows
 
-Download `vex-setup.exe` and run it. It installs under `%LOCALAPPDATA%\Programs\vex`, which is
+Download `dacode-setup.exe` and run it. It installs under `%LOCALAPPDATA%\Programs\dacode`, which is
 per-user — no administrator rights and no UAC prompt. When it finishes you have a Start Menu entry,
-`vex` on your `PATH`, "Open with vex" on a folder's right-click menu, and an uninstaller.
+`dacode` on your `PATH`, "Open with DaCode" on a folder's right-click menu, and an uninstaller.
 
 Windows may warn that the publisher is unknown. The installer is unsigned; code-signing certificates
 cost money this project does not have. You can verify what you downloaded against the release page.
@@ -24,20 +24,20 @@ cost money this project does not have. You can verify what you downloaded agains
 ### Debian, Ubuntu, Mint
 
 ```sh
-sudo apt install ./vex_0.4.3_amd64.deb
+sudo apt install ./dacode_0.4.3_amd64.deb
 ```
 
 ### Fedora, RHEL, openSUSE
 
 ```sh
-sudo dnf install ./vex-0.4.3-1.x86_64.rpm
+sudo dnf install ./dacode-0.4.3-1.x86_64.rpm
 ```
 
 ### Any Linux, without a package manager
 
 ```sh
-tar xzf vex-0.4.3-x86_64-linux.tar.gz
-./vex-0.4.3-x86_64-linux/install.sh
+tar xzf dacode-0.4.3-x86_64-linux.tar.gz
+./dacode-0.4.3-x86_64-linux/install.sh
 ```
 
 That installs into `~/.local`, so it needs no root. Pass a prefix to put it elsewhere. To remove it
@@ -45,14 +45,14 @@ again — including before switching to the `.deb` or `.rpm` — run the `uninst
 the same prefix if you gave one:
 
 ```sh
-./vex-0.4.3-x86_64-linux/uninstall.sh
+./dacode-0.4.3-x86_64-linux/uninstall.sh
 ```
 
 Use it rather than deleting the files by hand. GTK keeps an *index* of what each icon theme
 directory holds and trusts it over the filesystem, so icons removed without refreshing that index go
 on being handed out as a path nothing can open — and since `~/.local` comes before `/usr` in the
 search path, the leftover entry also hides the icon a later packaged install put in the right place.
-The symptom is a blank tile with `vex` written under it, in the launcher and beside the running
+The symptom is a blank tile with `dacode` written under it, in the launcher and beside the running
 window, while the packaged icon sits untouched one directory down. If you have already met it:
 
 ```sh
@@ -74,16 +74,16 @@ packaging/linux/install.sh     # packaging/linux/uninstall.sh removes it
 ### Check it worked
 
 ```sh
-vex --version
+dacode --version
 ```
 
-You should see `vex 0.4.3`. On Windows this prints nothing when run directly in `cmd.exe` — the
+You should see `dacode 0.4.3`. On Windows this prints nothing when run directly in `cmd.exe` — the
 release build is a windowed application and owns no console — but it works from PowerShell or when
-piped. `vex --help` lists every flag.
+piped. `dacode --help` lists every flag.
 
 ## 2. Answer three questions
 
-The first time vex starts with no configuration, it asks three things before anything else. You can
+The first time DaCode starts with no configuration, it asks three things before anything else. You can
 click the cards or use the arrow keys; every card shows the key that picks it.
 
 **How do you want to type?** This is the one that matters. *Conventional* gives you the editor you
@@ -103,14 +103,14 @@ because of one stray keypress.
 
 ## 3. Open a project
 
-Close vex and start it again, naming a folder:
+Close DaCode and start it again, naming a folder:
 
 ```sh
-vex ~/code/some-project
+dacode ~/code/some-project
 ```
 
 The folder you name becomes the project root — even if it sits inside a larger repository, because
-asking for one crate should not index the whole workspace. vex indexes it in the background and opens
+asking for one crate should not index the whole workspace. DaCode indexes it in the background and opens
 the file tree.
 
 Three things are now available:
@@ -157,7 +157,7 @@ one of them prints the shortcut for what it does, so using the mouse teaches you
 
 ## Where to go next
 
-- **Diagnostics and completion** need a language server. vex can install one for you —
+- **Diagnostics and completion** need a language server. DaCode can install one for you —
   [language servers](guides/language-servers.md).
 - **Changing how it types** — [choosing how you type](guides/keymaps.md).
 - **Changing how it looks** — [themes](guides/themes.md).
@@ -166,7 +166,7 @@ one of them prints the shortcut for what it does, so using the mouse teaches you
 
 ## If something goes wrong
 
-vex writes a message across the bottom of the window rather than failing silently; it disappears when
+DaCode writes a message across the bottom of the window rather than failing silently; it disappears when
 you do something else. A configuration mistake gets a box at startup with a suggestion, and never
 prevents the editor from opening.
 
@@ -174,6 +174,6 @@ Dirty buffers are written to a recovery directory every two seconds, so a crash 
 seconds rather than work — reopening the file offers the copy back. See
 [files on disk](reference/files.md) for where that lives.
 
-If vex is doing something wrong, [open an issue](https://github.com/Gawad-B/Vex/issues/new/choose).
-The bug form asks for `vex --version` and your platform, which between them explain most of what is
+If DaCode is doing something wrong, [open an issue](https://github.com/Gawad-B/Vex/issues/new/choose).
+The bug form asks for `dacode --version` and your platform, which between them explain most of what is
 otherwise guesswork.

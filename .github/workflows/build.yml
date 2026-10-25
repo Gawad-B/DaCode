@@ -1,4 +1,4 @@
-# Builds the three installable artifacts: vex-setup.exe, a .deb and an .rpm.
+# Builds the three installable artifacts: dacode-setup.exe, a .deb and an .rpm.
 #
 # The Windows job exists because a Windows build cannot be verified from a Linux machine — the crates
 # needing a C toolchain (tree-sitter, Lua) cannot even be type-checked without one. This is where that
@@ -36,23 +36,23 @@ jobs:
       - name: Render the interface
         continue-on-error: true
         env:
-          VEX_NO_SYSTEM_FONTS: "1"
+          DACODE_NO_SYSTEM_FONTS: "1"
           LIBGL_ALWAYS_SOFTWARE: "1"
           WGPU_BACKEND: vulkan
         run: |
           sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
           mkdir -p target/shots
-          file=crates/vex/src/execute.rs
+          file=crates/dacode/src/execute.rs
           for view in help-panel menu context-menu commands tree settings; do
-            ./target/release/vex --$view --screenshot target/shots/$view.png $file || true
+            ./target/release/dacode --$view --screenshot target/shots/$view.png $file || true
           done
-          ./target/release/vex --which-key '<c-w>' --screenshot target/shots/which-key.png $file || true
+          ./target/release/dacode --which-key '<c-w>' --screenshot target/shots/which-key.png $file || true
           # The same panel for the other grammar: it must show conventional keys, not Vim's, and
           # that difference is the whole point of the change.
-          ./target/release/vex --help-panel --no-vim --screenshot target/shots/help-no-vim.png $file || true
-          ./target/release/vex --commands --no-vim --screenshot target/shots/commands-no-vim.png $file || true
-          ./target/release/vex --screenshot target/shots/plain.png $file || true
-          ./target/release/vex --empty --screenshot target/shots/empty.png || true
+          ./target/release/dacode --help-panel --no-vim --screenshot target/shots/help-no-vim.png $file || true
+          ./target/release/dacode --commands --no-vim --screenshot target/shots/commands-no-vim.png $file || true
+          ./target/release/dacode --screenshot target/shots/plain.png $file || true
+          ./target/release/dacode --empty --screenshot target/shots/empty.png || true
           ls -l target/shots
       - uses: actions/upload-artifact@v4
         if: always()
@@ -81,7 +81,7 @@ jobs:
       # not linted on Windows and code that is only *used* there produces warnings that only Windows
       # sees. A `mut` that Linux needed and Windows did not sat in `main.rs` for months because of it.
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      # What a Windows user should be downloading is an installer. The bare vex.exe went out as the
+      # What a Windows user should be downloading is an installer. The bare dacode.exe went out as the
       # release artifact and behaved exactly as it looks — it opened the editor instead of installing
       # it. Inno Setup is on the runner image; installed here if that ever stops being true.
       - name: Build the installer
@@ -93,7 +93,7 @@ jobs:
           packaging\windows\build-installer.ps1 -SkipBuild
       - uses: actions/upload-artifact@v4
         with:
-          name: vex-windows
+          name: dacode-windows
           path: |
-            target/packages/vex-setup.exe
-            target/release/vex.exe
+            target/packages/dacode-setup.exe
+            target/release/dacode.exe

@@ -2,10 +2,10 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="logo/design_handoff_vex/logo/png/paper/vex-128.png">
-  <img src="logo/design_handoff_vex/logo/png/ink/vex-128.png" alt="vex" width="96">
+  <img src="logo/design_handoff_vex/logo/png/ink/vex-128.png" alt="DaCode" width="96">
 </picture>
 
-# vex
+# DaCode
 
 **A code editor that never stalls on your keystroke.**
 
@@ -27,32 +27,32 @@ One rule is enforced above every other: **nothing unbounded ever runs on the UI 
 a keystroke costs the same in a 100,000-line file as in a ten-line one — about 7 µs either way — and
 it is asserted by a test that fails the build if it stops being true.
 
-![vex editing a Rust file](docs/images/editor.png)
+![DaCode editing a Rust file](docs/images/editor.png)
 
 ## Install
 
-**Windows** — download [`vex-setup.exe`](https://github.com/Gawad-B/Vex/releases/latest) and run it.
-It installs per-user under `%LOCALAPPDATA%\Programs\vex`, so there is no UAC prompt, and it adds a
-Start Menu entry, `vex` on your `PATH`, "Open with vex" on a folder's right-click menu, and an
+**Windows** — download [`dacode-setup.exe`](https://github.com/Gawad-B/Vex/releases/latest) and run it.
+It installs per-user under `%LOCALAPPDATA%\Programs\dacode`, so there is no UAC prompt, and it adds a
+Start Menu entry, `dacode` on your `PATH`, "Open with DaCode" on a folder's right-click menu, and an
 uninstaller.
 
 **Debian, Ubuntu, Mint**
 
 ```sh
-sudo apt install ./vex_0.4.3_amd64.deb
+sudo apt install ./dacode_0.4.3_amd64.deb
 ```
 
 **Fedora, RHEL, openSUSE**
 
 ```sh
-sudo dnf install ./vex-0.4.3-1.x86_64.rpm
+sudo dnf install ./dacode-0.4.3-1.x86_64.rpm
 ```
 
 **Any Linux, no package manager**
 
 ```sh
-tar xzf vex-0.4.3-x86_64-linux.tar.gz
-./vex-0.4.3-x86_64-linux/install.sh        # into ~/.local, no root needed
+tar xzf dacode-0.4.3-x86_64-linux.tar.gz
+./dacode-0.4.3-x86_64-linux/install.sh        # into ~/.local, no root needed
 ```
 
 **From source** — needs Rust 1.85 or newer.
@@ -67,12 +67,12 @@ Every artifact is on the [releases page](https://github.com/Gawad-B/Vex/releases
 ## Start
 
 ```sh
-vex path/to/file.rs      # a file
-vex path/to/project      # a folder: indexes it and opens the file tree
-vex                      # nothing: reopens the last project you worked in
+dacode path/to/file.rs      # a file
+dacode path/to/project      # a folder: indexes it and opens the file tree
+dacode                      # nothing: reopens the last project you worked in
 ```
 
-Started with no argument — from a Start Menu entry, a desktop icon, a dock — vex reopens the last
+Started with no argument — from a Start Menu entry, a desktop icon, a dock — DaCode reopens the last
 project you were in, with the files you had open. Not the current working directory, which for a
 launcher is wherever the shortcut happened to point.
 
@@ -107,11 +107,11 @@ Every key both modes offer comes from [one table in the source][commands], which
 palette, the help panel and the menus read. A test presses each of them through the real grammar, so
 a shortcut this documentation claims that did nothing would fail the build.
 
-[commands]: crates/vex-input/src/commands.rs
+[commands]: crates/dacode-input/src/commands.rs
 
 ## Language support
 
-Install a language server and vex drives it over LSP directly — or ask the editor to install it for
+Install a language server and DaCode drives it over LSP directly — or ask the editor to install it for
 you, from the command palette. There is no marketplace and no extension runtime: **extension code is
 never run**, because a JavaScript runtime is most of what makes VSCode heavy. Extension *data* —
 themes, snippets, keybindings, language configuration — imports fine.
@@ -135,7 +135,7 @@ and brings its import with it; formatting works through the server when it can a
 ## Status
 
 Used daily by its author on Linux, and run on Windows since 0.3.0 — where real use immediately found
-things no test could, which is what 0.4.1 and 0.4.2 are both made of. **Nobody has ever run vex on macOS.**
+things no test could, which is what 0.4.1 and 0.4.2 are both made of. **Nobody has ever run DaCode on macOS.**
 
 Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no integrated terminal, no git blame, no
 structural text objects, no macOS packaging. Known limitations, stated rather than hidden: buffer
@@ -145,4 +145,4 @@ only the *active* buffer gets a file watcher, a git diff and a language server.
 ## Licence
 
 MIT — see [LICENSE](LICENSE). The bundled fonts (Fira Code, IBM Plex Sans, Instrument Serif) are under the SIL Open
-Font License 1.1; see `crates/vex-render/fonts/`. The logo is in `logo/`, with its usage rules.
+Font License 1.1; see `crates/dacode-render/fonts/`. The logo is in `logo/`, with its usage rules.

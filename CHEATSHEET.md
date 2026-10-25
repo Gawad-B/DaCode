@@ -1,10 +1,10 @@
-# vex — every key
+# DaCode — every key
 
 Vim's grammar, so the usual composition works: `[count] ["register] operator [count] {motion|object}`.
 `3dw`, `d2f)`, `ci"`, `"ayy`, `.` to repeat. Everything below is the vocabulary that composes.
 
 Every entry here is checked against the real grammar by
-`cargo run -p vex-input --example cheatsheet`, which feeds all 113 of them through it and fails if
+`cargo run -p dacode-input --example cheatsheet`, which feeds all 113 of them through it and fails if
 one stops resolving. That check found `ctrl-p` falling through to `p` and pasting.
 
 ---
@@ -68,7 +68,7 @@ opinions about.
 than running on a timer, so what lands on disk is always something you stopped at.
 
 `ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …`, `ctrl-,`, `F1`, `F10` and `ctrl-shift-p` are
-vex's own and work in both modes. Everything below this line describes the Vim grammar, which is on
+DaCode's own and work in both modes. Everything below this line describes the Vim grammar, which is on
 by default.
 
 ## Modes
@@ -212,7 +212,7 @@ again discards them. `ctrl-w` is the pane prefix here, which is why closing a fi
 | `esc` | dismiss a hover or message box |
 
 The completion list shows each suggestion's type beside its name, in the order the **server** ranked
-them rather than one vex invented. Accepting one inserts what the server asked for — so `println!`
+them rather than one DaCode invented. Accepting one inserts what the server asked for — so `println!`
 lands as `println!()` with the cursor inside, and `tab` walks any further stops — and brings its
 **import** with it: completing `HashMap` in a file without `use std::collections::HashMap` adds that
 line too, as one undo step.
@@ -246,8 +246,8 @@ one undo step.
 |---|---|
 | `tab` (insert mode) | expand the snippet before the cursor, then walk its tab stops |
 
-With no snippet to expand, `tab` indents. Snippets live in `~/.config/vex/snippets/*.json`, which is
-what `vex import --snippets` writes.
+With no snippet to expand, `tab` indents. Snippets live in `~/.config/dacode/snippets/*.json`, which is
+what `dacode import --snippets` writes.
 
 ## Settings
 
@@ -299,28 +299,28 @@ Bindings are consulted before the built-in grammar, but only when no command is 
 `d<leader>` stays the grammar's business and an operator can never be left dangling by a config file.
 
 ```lua
-vex.set { leader = "<space>" }
-vex.map("normal", "<leader>w", "save")
-vex.map("insert", "<c-s>", "save")
+dacode.set { leader = "<space>" }
+dacode.map("normal", "<leader>w", "save")
+dacode.map("insert", "<c-s>", "save")
 ```
 
 ## Naming a language server
 
 ```lua
-vex.server("python", { command = ".venv/bin/pylsp" })
-vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+dacode.server("python", { command = ".venv/bin/pylsp" })
+dacode.server("zig", { command = "zls", extensions = { "zig", "zon" } })
 ```
 
 A **formatter** is named the same way, and `gf` uses it when no language server can format — which
 is every plain JavaScript, CSS or Markdown project, and Python, since pyright does not format:
 
 ```lua
-vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+dacode.formatter("python", { command = ".venv/bin/black", args = { "-" } })
 ```
 
-Yours is tried before vex's own list, which stays behind it as the fallback. A command with a slash
+Yours is tried before DaCode's own list, which stays behind it as the fallback. A command with a slash
 in it is a path — resolved against the project root — rather than a name to look up on `PATH`, and
-`~/` is your home directory. A language vex already knows (`rust`, `typescript`, `python`, `cpp`,
+`~/` is your home directory. A language DaCode already knows (`rust`, `typescript`, `python`, `cpp`,
 `go`, `lua`, `dart`) fills in the extensions for you; any other language has to list them, because a
 server that can never match a file would otherwise be a line of config that silently does nothing.
 The settings panel's last section says what was found and where.
@@ -328,6 +328,6 @@ The settings panel's last section says what was found and where.
 In insert mode only modified and named keys can be bound: a letter binding would have to hold the
 letter back to see what came next, and typing would stutter.
 
-`vex.actions` lists every name you can bind to. Print it from your config, or read
-`Action::from_name` in `crates/vex-input/src/action.rs` — they are the same list, and a typo gets a
+`dacode.actions` lists every name you can bind to. Print it from your config, or read
+`Action::from_name` in `crates/dacode-input/src/action.rs` — they are the same list, and a typo gets a
 did-you-mean at startup rather than a key that silently does nothing.

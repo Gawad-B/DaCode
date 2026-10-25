@@ -22,5 +22,5 @@ SOFTWARE.
 
 ---
 
-The bundled fonts in crates/vex-render/fonts/ are licensed separately under the
+The bundled fonts in crates/dacode-render/fonts/ are licensed separately under the
 SIL Open Font License 1.1; their licence texts are alongside them.

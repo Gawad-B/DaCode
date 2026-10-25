@@ -1,10 +1,10 @@
-# How vex is put together
+# How DaCode is put together
 
 This is an explanation, not a manual. Nothing here tells you which key to press or which option to
 set — [the reference](../reference/) does that. This is for the reader who wants to know why the
 editor behaves the way it does, and for anyone thinking about changing it.
 
-Almost every structural decision in vex descends from a single constraint, so that is where to start.
+Almost every structural decision in DaCode descends from a single constraint, so that is where to start.
 
 ## The one rule
 
@@ -61,7 +61,7 @@ the same as the one beside it.
 
 ### The rule is a test that fails the build
 
-`crates/vex/tests/latency.rs` is the rule written down as something that can go red, and its design
+`crates/dacode/tests/latency.rs` is the rule written down as something that can go red, and its design
 is worth explaining because the obvious version does not work.
 
 The obvious version asserts milliseconds. That fails, and it fails in the worst way: a loaded CI
@@ -91,26 +91,26 @@ fail is a guard nobody knows works.
 
 ## The twelve crates
 
-vex is a Cargo workspace of twelve crates, arranged so that dependencies only ever point one way —
+DaCode is a Cargo workspace of twelve crates, arranged so that dependencies only ever point one way —
 down this list. Nothing below reaches back up.
 
 | Crate | What it owns |
 |---|---|
-| `vex-text` | The rope (`ropey`), the typed coordinate types, `Edit`/`Transaction`, `Anchor`, `SelectionSet`. |
-| `vex-theme` | Oklch colour, the five built-in themes, the type roles, the per-mode accents. |
-| `vex-display` | Soft wrap, `ScrollAnchor`, folds, sticky scroll — the mapping from buffer lines to display rows. |
-| `vex-buffer` | `Document`: text plus undo history plus pending changes plus bracket pairing. |
-| `vex-input` | `Action`, the modal `Grammar`, `Keymap`, the jump list, macros, and the command table. |
-| `vex-syntax` | Tree-sitter on a worker thread, version-tagged. |
-| `vex-render` | `Frame` to quads, glyphs and marks; the paint layers; the headless capture path. |
-| `vex-project` | `FileIndex`, `FileWalk`, `ProjectSearch`, `FileWatcher` — gitignore-aware discovery and search. |
-| `vex-lsp` | The JSON-RPC transport, the client, diagnostics, and the language table. |
-| `vex-lua` | Reads `init.lua` and hands back a plain `Config` value. |
-| `vex-import` | VSCode data, `.vsix` packages, colour schemes in four formats. |
-| `vex` | The binary: chrome, execute, panes, layout, settings, session, welcome, palette, help, menu, clipboard, process. |
+| `dacode-text` | The rope (`ropey`), the typed coordinate types, `Edit`/`Transaction`, `Anchor`, `SelectionSet`. |
+| `dacode-theme` | Oklch colour, the five built-in themes, the type roles, the per-mode accents. |
+| `dacode-display` | Soft wrap, `ScrollAnchor`, folds, sticky scroll — the mapping from buffer lines to display rows. |
+| `dacode-buffer` | `Document`: text plus undo history plus pending changes plus bracket pairing. |
+| `dacode-input` | `Action`, the modal `Grammar`, `Keymap`, the jump list, macros, and the command table. |
+| `dacode-syntax` | Tree-sitter on a worker thread, version-tagged. |
+| `dacode-render` | `Frame` to quads, glyphs and marks; the paint layers; the headless capture path. |
+| `dacode-project` | `FileIndex`, `FileWalk`, `ProjectSearch`, `FileWatcher` — gitignore-aware discovery and search. |
+| `dacode-lsp` | The JSON-RPC transport, the client, diagnostics, and the language table. |
+| `dacode-lua` | Reads `init.lua` and hands back a plain `Config` value. |
+| `dacode-import` | VSCode data, `.vsix` packages, colour schemes in four formats. |
+| `dacode` | The binary: chrome, execute, panes, layout, settings, session, welcome, palette, help, menu, clipboard, process. |
 
-The ordering is not bureaucracy. `vex-text` knows nothing about display, which is why coordinates in
-the rope cannot accidentally acquire a notion of what is on screen; `vex-lsp` sits below the binary,
+The ordering is not bureaucracy. `dacode-text` knows nothing about display, which is why coordinates in
+the rope cannot accidentally acquire a notion of what is on screen; `dacode-lsp` sits below the binary,
 which is why hover and rename can be tested with no server running at all.
 
 ## The ideas that shape the code
@@ -168,7 +168,7 @@ needs no window.
 
 The cost is that adding a user-visible operation means adding it in four places: the `Action`, its
 name in `Action::from_name`, that name in `Action::NAMES`, and a row in
-`vex_input::commands::COMMANDS`. Three tests fail until all four exist. That is deliberate — the
+`dacode_input::commands::COMMANDS`. Three tests fail until all four exist. That is deliberate — the
 name is public API that people's config files depend on, and the command table is what the palette,
 the help panel, the menu bar and the which-key popup all read. Four features maintaining four
 separate lists would disagree within a month, and a discoverability feature that lies is worse than
@@ -176,7 +176,7 @@ none: it teaches a key that does nothing.
 
 ### Layout is data
 
-`crates/vex/src/layout.rs` is the single definition of where things are on screen. Drawing reads it;
+`crates/dacode/src/layout.rs` is the single definition of where things are on screen. Drawing reads it;
 mouse hit-testing reads the same function.
 
 The failure this prevents is specific and recurrent. If the code that draws a row and the code that
@@ -207,7 +207,7 @@ layer as the text underneath it, so the text won.
 
 ## How it is verified
 
-The whole appearance renders offscreen. `vex --screenshot out.png` builds one frame, writes a PNG
+The whole appearance renders offscreen. `dacode --screenshot out.png` builds one frame, writes a PNG
 and exits, with flags to put the editor into any state worth looking at — a theme, a mode, a split,
 the file tree, the settings panel at a chosen row, the first-run wizard at a chosen step, folded
 blocks, the git gutter, any of the palettes, the completion popup, a diagnostic, the menu bar, a
@@ -238,10 +238,10 @@ the most considered one. VSCode extensions are JavaScript written against the `v
 in Node; supporting them means embedding a JS runtime, reimplementing that API, and paying a
 Node-sized process per extension — which is precisely what makes VSCode heavy, and the opposite of
 this editor's premise. There is a legal blocker too: Microsoft's marketplace terms restrict it to
-their own products, which is what other editors hit in 2025, so the registry vex targets is Open VSX.
+their own products, which is what other editors hit in 2025, so the registry DaCode targets is Open VSX.
 
-What is portable is extension **data**, and `vex import` takes it: themes, snippets, keybindings,
-language configuration. What most valuable extensions really wrap is a language server, and vex
+What is portable is extension **data**, and `dacode import` takes it: themes, snippets, keybindings,
+language configuration. What most valuable extensions really wrap is a language server, and DaCode
 drives those over LSP directly, so the loss is smaller than the omission sounds.
 
 **No integrated terminal, no git blame, no structural text objects** (`if`, `ic`). Each is deferred
@@ -260,7 +260,7 @@ a clever workaround:
   buffers get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused
   buffer is noticed when you switch to it rather than when it happens. The alternative is N watchers
   and N servers; this is a deliberate trade, but it is a limitation.
-- **Nobody has ever run vex on macOS.** It has no macOS packaging, and while the path resolution has
+- **Nobody has ever run DaCode on macOS.** It has no macOS packaging, and while the path resolution has
   a non-Windows branch that macOS would take, that branch has never been exercised there.
 
 ## Further reading

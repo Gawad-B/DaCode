@@ -1,28 +1,28 @@
 # Getting diagnostics, completion and go-to-definition
 
 For someone whose code is highlighted but who gets no errors, no completion and no
-<kbd>F12</kbd>. By the end you will have a language server running, know how to point vex at a
+<kbd>F12</kbd>. By the end you will have a language server running, know how to point DaCode at a
 different one, and know where to look when it does not start.
 
 ## A language server is a separate program from the language
 
 This is the thing that catches almost everyone. Having Python installed does not give you a Python
 language server; having the Rust toolchain does not give you rust-analyzer. They are different
-programs, installed separately, and vex drives whichever one it finds over LSP.
+programs, installed separately, and DaCode drives whichever one it finds over LSP.
 
-vex has no marketplace and no extension runtime, so there is nothing to install *inside* the editor
-in the VSCode sense. What there is instead: vex knows the common servers by name, will run the
+DaCode has no marketplace and no extension runtime, so there is nothing to install *inside* the editor
+in the VSCode sense. What there is instead: DaCode knows the common servers by name, will run the
 install command for you if you ask, and will use any other server you name in `init.lua`.
 
 When it cannot find one, the statusline says `no python server` — the *language*, not a binary you
 have never heard of — and the message box says what it looked for and what would fix it. Once per
 language per session: useful the first time you open a `.py` file, nagging by the third.
 
-## What vex looks for
+## What DaCode looks for
 
 The first program on this list that exists on `PATH` is the one that starts.
 
-| Language | Files | Servers vex looks for, in order | Installed by |
+| Language | Files | Servers DaCode looks for, in order | Installed by |
 |---|---|---|---|
 | Rust | `.rs` | `rust-analyzer` | `rustup component add rust-analyzer` |
 | JavaScript | `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server` | `npm install --global typescript-language-server typescript` |
@@ -53,7 +53,7 @@ it is not something to fire off by muscle memory.
 It runs the *same command it already told you to type*, derived from the same argument list, so what
 is shown and what happens cannot drift apart. The first request explains the command and arms it:
 
-> install a Python language server? vex will run: npm install --global pyright — choose it again to
+> install a Python language server? DaCode will run: npm install --global pyright — choose it again to
 > go ahead
 
 Choose it a second time and it runs. It is worth being precise about what it will and will not do,
@@ -64,12 +64,12 @@ because "an editor that runs package managers" is a reasonable thing to be wary 
 - **It never asks for root.** Anything that would need it is not offered.
 - **It never acts on one request.** Two, always, with the exact command printed in between.
 - **It checks the toolchain first.** `npm install -g pyright` on a machine with no Node fails with
-  "program not found", which names neither npm nor the thing to go and get. vex looks for the
+  "program not found", which names neither npm nor the thing to go and get. DaCode looks for the
   toolchain first and says that npm is not installed and that this command needs it — the program
   that installs a server is usually not the server, and the thing missing is usually the toolchain.
-- **It does not believe the exit code.** "The installer exited zero" is not "vex can now run it". On
+- **It does not believe the exit code.** "The installer exited zero" is not "DaCode can now run it". On
   Windows both `pip install --user` and `go install` write to directories `PATH` does not cover, so
-  after a successful install vex looks for the program again and says so if it is still not there,
+  after a successful install DaCode looks for the program again and says so if it is still not there,
   rather than claiming a server it cannot start.
 - **It offers nothing it cannot honestly run.** clangd, lua-language-server and the Dart SDK come
   from a system package manager whose name differs per distribution and which wants root, so they
@@ -82,7 +82,7 @@ package manager's progress is carriage-return animation that means nothing once 
 useful report is "it worked" or the last few lines of why it did not. When it works, the server
 starts immediately; you do not have to reopen the file.
 
-Where more than one command would work, vex picks the one your machine can actually run. For
+Where more than one command would work, DaCode picks the one your machine can actually run. For
 basedpyright and pylsp it tries `uv`, then `pipx`, then `pip`, because `pip install` is refused
 outright under PEP 668 on Debian, Ubuntu, Fedora, Arch and Homebrew Python — picking one at build
 time would mean choosing which platform the button is broken on.
@@ -93,10 +93,10 @@ The built-in table is a default, not a limit. In `init.lua`:
 
 ```lua
 -- A project's own virtualenv.
-vex.server("python", { command = ".venv/bin/pylsp" })
+dacode.server("python", { command = ".venv/bin/pylsp" })
 
--- A language vex has never heard of has to say which files it serves.
-vex.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig", "zon" } })
+-- A language dacode has never heard of has to say which files it serves.
+dacode.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig", "zon" } })
 ```
 
 Three things about this are load-bearing.
@@ -113,7 +113,7 @@ windowed editor that directory is wherever the desktop launched it from, and nev
 also throw away the fallback for when that venv is not there. The statusline names whichever one
 actually started, so the order is visible rather than a guess.
 
-A language vex already knows — `rust`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — fills in
+A language DaCode already knows — `rust`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — fills in
 the extension list for you. Any other name must list its own, because a server that can never match
 a file is a line of config that silently does nothing, which is the worst outcome available. On
 Windows the lookup honours `PATHEXT`, so the `.cmd` shims that npm installs are found.
@@ -142,7 +142,7 @@ Anything with no conventional key is in the command palette
 find references, rename, code actions and format with their keys printed beside them.
 
 Completion is the one worth describing, because it carries more than a list of names. Each suggestion
-shows its **type** beside it, in the order the *server* ranked them rather than one vex invented.
+shows its **type** beside it, in the order the *server* ranked them rather than one DaCode invented.
 Accepting one inserts what the server asked for, so `println!` lands as `println!()` with the cursor
 already inside and <kbd>tab</kbd> walks any further stops. And it brings its **import**: completing
 `HashMap` in a file with no `use std::collections::HashMap` adds that line as part of the same undo
@@ -156,15 +156,15 @@ touched.
 
 ## Formatting
 
-`gf`, or turn on `format_on_save`. There are two answers to "how is this file formatted", and vex
+`gf`, or turn on `format_on_save`. There are two answers to "how is this file formatted", and DaCode
 asks the server at the handshake which one applies: if it advertises `documentFormattingProvider`,
 the request goes there — rust-analyzer runs rustfmt, gopls runs gofmt. If it does not, or there is no
-server at all, vex runs a formatter itself.
+server at all, DaCode runs a formatter itself.
 
 That second path is not an edge case. pyright says no, so Python formats through ruff or black; a
 plain JavaScript, CSS or Markdown project has no language server in the first place.
 
-| Language | Formatters vex looks for |
+| Language | Formatters DaCode looks for |
 |---|---|
 | Rust | `rustfmt` |
 | JavaScript, TypeScript | `prettier`, `biome` |
@@ -176,8 +176,8 @@ plain JavaScript, CSS or Markdown project has no language server in the first pl
 Name your own the same way you name a server, with the same path rules:
 
 ```lua
-vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
-vex.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
+dacode.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+dacode.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
 ```
 
 It runs on a worker thread, from the project root so it finds your `.prettierrc` or `pyproject.toml`.
@@ -192,24 +192,24 @@ replaced, so the cursor stays where you left it.
 
 | It says | Meaning |
 |---|---|
-| `no server for this language` | vex knows no server for this kind of file |
+| `no server for this language` | DaCode knows no server for this kind of file |
 | `no python server` | it knows one and could not find it — the message box says what it looked for |
 | `pyright-langserver starting` | the handshake is in progress |
-| `pyright-langserver found but would not start` | it is there and the spawn failed; this one is vex's fault, not your `PATH`'s |
+| `pyright-langserver found but would not start` | it is there and the spawn failed; this one is DaCode's fault, not your `PATH`'s |
 | `scratch buffer` | the buffer has no path, so there is no language to serve |
 
 **Open the settings panel.** <kbd>ctrl</kbd>+<kbd>,</kbd>, then scroll to the language-server
-section. It lists every language vex knows, with the full path of the server it found or the line
+section. It lists every language DaCode knows, with the full path of the server it found or the line
 that would install one — and a row for each server `init.lua` named, first, so a mistyped path shows
 up instead of hiding behind a working fallback. These rows are a report, not a control: they do not
 cycle, and pressing one puts the whole line in the info box, which is how a path too long for a
 narrow sidebar becomes readable. There is a formatter section below it doing the same job for
 formatters.
 
-The section is always below the fold, so scroll. Headless: `vex --screenshot out.png --settings
+The section is always below the fold, so scroll. Headless: `dacode --screenshot out.png --settings
 --row N` scrolls the panel to a row.
 
-**Turn on tracing.** `VEX_LSP_TRACE=1 vex file.py` logs every message to and from the server, plus
+**Turn on tracing.** `DACODE_LSP_TRACE=1 dacode file.py` logs every message to and from the server, plus
 why a reply was dropped. A reply computed against a document version you have since typed past is
 discarded by design, and the trace says so rather than leaving you wondering why nothing appeared.
 
@@ -218,21 +218,21 @@ against the project root and you meant something else. The message names the roo
 
 **A rustup machine always has a `rust-analyzer` file** whether or not the component is installed — it
 is a shim that exists either way and exits with an explanation when the component is missing. So "the
-program is there" is not "the server works", which is why vex keeps the server's stderr and reports
+program is there" is not "the server works", which is why DaCode keeps the server's stderr and reports
 it.
 
-**If a server seems not to support something, check what vex asked for.** A capability the client
+**If a server seems not to support something, check what DaCode asked for.** A capability the client
 does not declare is a feature the server silently withholds — rust-analyzer will not offer an
 out-of-scope name for auto-import unless the client advertises that it can resolve additional edits,
 because computing an import for each of a hundred candidates up front is too slow to be worth doing.
-The list comes back looking perfectly normal with the useful entry missing. vex declares both that
+The list comes back looking perfectly normal with the useful entry missing. DaCode declares both that
 and label details; if you are chasing something similar, the handshake is the first place to look
 rather than the last.
 
 ## See also
 
 - [Configuration](configuration.md) — where `init.lua` lives and how it is loaded
-- [Settings reference](../reference/settings.md) — `vex.server`, `vex.formatter`, `format_on_save`,
+- [Settings reference](../reference/settings.md) — `dacode.server`, `dacode.formatter`, `format_on_save`,
   `inlay_hints`
-- [Command line reference](../reference/cli.md) — `VEX_LSP_TRACE` and the rest of the environment
+- [Command line reference](../reference/cli.md) — `DACODE_LSP_TRACE` and the rest of the environment
 - [CHEATSHEET.md](../../CHEATSHEET.md) — every language-server key in both keymaps

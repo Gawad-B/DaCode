@@ -1,4 +1,4 @@
-# Contributing to vex
+# Contributing to DaCode
 
 Patches are welcome, and so is an issue that only says what went wrong. This file is the front door:
 how to build it, what has to pass before a pull request, and the handful of rules that are not
@@ -11,7 +11,7 @@ Three files matter more than this one:
   first change; this document points at it rather than repeating it.
 - **`PLAN.md`** — the long-form architecture and decision record, including the decisions that turned
   out wrong. When the two disagree, `PLAN.md` is the reasoning and `CLAUDE.md` is the summary.
-- **`README.md`** — what vex is, from outside.
+- **`README.md`** — what DaCode is, from outside.
 
 ## Building and running
 
@@ -26,8 +26,8 @@ sudo apt-get install -y libwayland-dev libxkbcommon-dev
 sudo apt-get install -y rpm            # only if you want packaging/build-rpm.sh to work
 ```
 
-**On Windows**, you need the MSVC toolchain and a working C compiler: `vex-syntax` builds nine
-tree-sitter grammars from C and `vex-lua` builds Lua 5.4 from source. Those are also precisely the
+**On Windows**, you need the MSVC toolchain and a working C compiler: `dacode-syntax` builds nine
+tree-sitter grammars from C and `dacode-lua` builds Lua 5.4 from source. Those are also precisely the
 two crates that cannot be type-checked for Windows from a Linux machine.
 
 Then:
@@ -63,9 +63,9 @@ fails on a machine without a dependency is testing the machine.
 And, when they apply:
 
 ```sh
-cargo run -p vex-input --example cheatsheet              # after touching the grammar or CHEATSHEET.md
+cargo run -p dacode-input --example cheatsheet              # after touching the grammar or CHEATSHEET.md
 cargo check --workspace --target x86_64-pc-windows-msvc  # 7 of 9 crates, from Linux
-cargo bench -p vex -p vex-syntax                         # measurement, not a gate
+cargo bench -p dacode -p dacode-syntax                         # measurement, not a gate
 ```
 
 If you cannot build for Windows locally, push the branch and let the Windows job tell you. It earned
@@ -82,7 +82,7 @@ document. `CLAUDE.md`'s "The one rule" section has the whole of it, and if you a
 producer it needs a `Version`, a `poll()` that never blocks, and a line in `about_to_wait` beside the
 others.
 
-**`crates/vex/tests/latency.rs` is that rule as a test that fails the build.** It asserts *flatness*
+**`crates/dacode/tests/latency.rs` is that rule as a test that fails the build.** It asserts *flatness*
 rather than milliseconds — a hundredfold larger document may cost at most three times more — because
 an absolute budget tight enough to catch a regression is also tight enough to fail at random on a
 loaded runner. It works: injecting a document-length walk into `chrome::draw` fails it at 104x, and
@@ -94,11 +94,11 @@ Do not review drawing code by reading it. `--screenshot` renders any state offsc
 you look at the actual pixels:
 
 ```sh
-VEX_NO_SYSTEM_FONTS=1 cargo run --release -- --screenshot /tmp/vex.png --settings
-VEX_NO_SYSTEM_FONTS=1 cargo run --release -- --screenshot /tmp/small.png --settings --size 900x700
+DACODE_NO_SYSTEM_FONTS=1 cargo run --release -- --screenshot /tmp/dacode.png --settings
+DACODE_NO_SYSTEM_FONTS=1 cargo run --release -- --screenshot /tmp/small.png --settings --size 900x700
 ```
 
-`VEX_NO_SYSTEM_FONTS=1` makes the capture reproducible and startup faster; use it every time. The
+`DACODE_NO_SYSTEM_FONTS=1` makes the capture reproducible and startup faster; use it every time. The
 full flag list is in `CLAUDE.md` and in the README, and it covers every overlay — the palette, the
 menus, the tree, the completion popup, the welcome wizard, diagnostics, folds, git marks.
 
@@ -120,7 +120,7 @@ record them, config binds them, tests drive them. That is why a macro survives r
 1. the `Action` variant,
 2. its name in `Action::from_name`,
 3. that same name in `Action::NAMES`,
-4. a row in `vex_input::commands::COMMANDS`.
+4. a row in `dacode_input::commands::COMMANDS`.
 
 Three tests fail until all four exist, and that is deliberate — the name is public API that people's
 `init.lua` files depend on, and `COMMANDS` is the *only* description of what the keys are. The
@@ -131,8 +131,8 @@ teaches a key that does nothing.
 
 ## Adding a config option: three places
 
-`crates/vex-lua/src/lib.rs` (the Lua reader), `crates/vex/src/config.rs` (the settings struct) and
-`crates/vex/src/settings_ui.rs` (the panel). All three, by design. Add it to fewer and it will
+`crates/dacode-lua/src/lib.rs` (the Lua reader), `crates/dacode/src/config.rs` (the settings struct) and
+`crates/dacode/src/settings_ui.rs` (the panel). All three, by design. Add it to fewer and it will
 silently not work somewhere — most often it reads from `init.lua` and is invisible in the panel, or
 the panel writes a value the reader then rejects at the next start.
 
@@ -143,7 +143,7 @@ The long version is in `CLAUDE.md`. The parts that get missed:
 - **Test names are sentences about behaviour**: `a_stale_reply_is_refused_whole`, not `test_apply_2`.
   And when the behaviour is not obvious, a comment says *why it matters*. A test that only asserts is
   a test nobody can safely change.
-- **Verify a guard by injecting a violation.** The first version of `crates/vex/tests/conventions.rs`
+- **Verify a guard by injecting a violation.** The first version of `crates/dacode/tests/conventions.rs`
   scanned zero files — cargo runs tests with the crate as the working directory, not the workspace —
   and passed while checking nothing. The second version looked for context a few lines away and the
   injected violation happened to sit under an unrelated match: green, and worthless. If you add a
@@ -159,10 +159,10 @@ The long version is in `CLAUDE.md`. The parts that get missed:
 - **A test that names a program must name one the platform guarantees.** `cmd` on Windows, `sh`
   elsewhere. Asserting `which("sh")` passed everywhere it had ever run, including the Windows runner,
   whose image ships Git's `sh.exe` — then failed on the first real Windows developer machine.
-- **A test needing an external program skips when it is absent**, and skips on `vex_lsp::can_start`
+- **A test needing an external program skips when it is absent**, and skips on `dacode_lsp::can_start`
   rather than on the program merely existing: on a rustup machine `rust-analyzer` is a shim that is
   present whether or not the component is, and speaking LSP to it fails in a way that looks like a
-  vex bug. CI failed on exactly that.
+  DaCode bug. CI failed on exactly that.
 - Property tests (`proptest`) for anything about coordinates or text invariants.
 
 ## Commit messages and pull requests
@@ -185,12 +185,12 @@ few common ones:
 
 | Want to change | Look at |
 |---|---|
-| A key binding | `crates/vex-input/src/grammar.rs`, then `commands.rs` and `CHEATSHEET.md` |
-| What a command does | `crates/vex/src/execute.rs` |
-| How something looks | `crates/vex/src/chrome.rs` |
-| Where something is on screen | `crates/vex/src/layout.rs` |
-| A theme | `crates/vex-theme/src/theme.rs` |
-| Language-server behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
+| A key binding | `crates/dacode-input/src/grammar.rs`, then `commands.rs` and `CHEATSHEET.md` |
+| What a command does | `crates/dacode/src/execute.rs` |
+| How something looks | `crates/dacode/src/chrome.rs` |
+| Where something is on screen | `crates/dacode/src/layout.rs` |
+| A theme | `crates/dacode-theme/src/theme.rs` |
+| Language-server behaviour | `crates/dacode-lsp/src/client.rs`, applied in `crates/dacode/src/edits.rs` |
 
 Before a large change, open an issue. Some of the obvious missing features — an integrated terminal,
 git blame, structural text objects — are *deliberate* omissions, listed under "Known gaps" at the

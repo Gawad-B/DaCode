@@ -1,13 +1,13 @@
-# vex on Windows
+# DaCode on Windows
 
 ## Install
 
-Run **`vex-setup.exe`**, from the `vex-windows` artifact of a `build` run. It installs per-user under
-`%LOCALAPPDATA%\Programs\vex` — no administrator rights, no UAC prompt — and gives you a Start Menu
-entry, `vex` on your `PATH`, "Open with vex" on a folder's right-click menu, and an uninstaller that
-takes the `PATH` entry back out. Your settings under `%APPDATA%\vex` survive an uninstall.
+Run **`dacode-setup.exe`**, from the `dacode-windows` artifact of a `build` run. It installs per-user under
+`%LOCALAPPDATA%\Programs\dacode` — no administrator rights, no UAC prompt — and gives you a Start Menu
+entry, `dacode` on your `PATH`, "Open with DaCode" on a folder's right-click menu, and an uninstaller that
+takes the `PATH` entry back out. Your settings under `%APPDATA%\dacode` survive an uninstall.
 
-`vex.exe` is in the same artifact, but it is the *editor*, not an installer: double-clicking it opens
+`dacode.exe` is in the same artifact, but it is the *editor*, not an installer: double-clicking it opens
 the editor without installing anything.
 
 ## Build it yourself
@@ -18,7 +18,7 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build-installer.ps1
 
 Needs [Inno Setup](https://jrsoftware.org/isdl.php) 6.3 or newer (`winget install
 JRSoftware.InnoSetup`); the script builds the release binary, reads the version out of
-`crates/vex/Cargo.toml` and writes `target\packages\vex-setup.exe`. `packaging\windows\vex.iss` is the
+`crates/dacode/Cargo.toml` and writes `target\packages\dacode-setup.exe`. `packaging\windows\dacode.iss` is the
 script it compiles.
 
 To place the binary without an installer at all:
@@ -28,15 +28,15 @@ cargo build --release
 powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
 ```
 
-That puts `vex.exe` in `%LOCALAPPDATA%\Programs\vex`, adds it to your user `PATH` and makes a Start
+That puts `dacode.exe` in `%LOCALAPPDATA%\Programs\dacode`, adds it to your user `PATH` and makes a Start
 Menu entry. No administrator rights needed.
 
 ## Where things go
 
 | | |
 |---|---|
-| Settings, themes, snippets | `%APPDATA%\vex\` — `init.lua` lives here |
-| Sessions and crash recovery | `%LOCALAPPDATA%\vex\` |
+| Settings, themes, snippets | `%APPDATA%\dacode\` — `init.lua` lives here |
+| Sessions and crash recovery | `%LOCALAPPDATA%\dacode\` |
 
 Configuration is under the *roaming* profile because it is yours and follows you between machines;
 sessions and recovery copies are machine-local, since a recovery copy of a file that exists on one
@@ -45,7 +45,7 @@ computer is meaningless on another.
 ## What needs installing separately
 
 - **A language server**, for diagnostics, hover, rename and completion — `rustup component add
-  rust-analyzer`, `npm i -g typescript-language-server`, and so on. vex finds them on `PATH`,
+  rust-analyzer`, `npm i -g typescript-language-server`, and so on. dacode finds them on `PATH`,
   including `.cmd` and `.bat` shims, which is how most of them install on Windows.
 - **git**, for the diff gutter. Any git in `PATH` will do.
 
@@ -56,8 +56,8 @@ Everything else — fonts, syntax highlighting, the folder chooser — is in the
 A release build is a **GUI application**: no console window appears behind the editor. Because it has
 no console of its own, every console program it starts — `git` for the diff gutter, `powershell` for
 the folder chooser, a language server — would be given a *fresh* one, which Windows shows as a black
-window flashing over the editor. They are all spawned through `vex::process::command`, which sets
-`CREATE_NO_WINDOW`. Anything new that spawns a process must go through it too; `vex-lsp` keeps its own
+window flashing over the editor. They are all spawned through `dacode::process::command`, which sets
+`CREATE_NO_WINDOW`. Anything new that spawns a process must go through it too; `dacode-lsp` keeps its own
 copy of that helper because it sits below the binary in the dependency order.
 
 Being a GUI application also means

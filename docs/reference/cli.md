@@ -1,52 +1,52 @@
 # Command line reference
 
-Every flag and every environment variable, derived from `crates/vex/src/main.rs`,
-`crates/vex/src/import_cli.rs`, `crates/vex/src/paths.rs` and the crates they delegate to.
+Every flag and every environment variable, derived from `crates/dacode/src/main.rs`,
+`crates/dacode/src/import_cli.rs`, `crates/dacode/src/paths.rs` and the crates they delegate to.
 
 ```
-vex [FILE|DIR] [--no-session] [--no-welcome]
-vex --screenshot OUT.png [RENDERING FLAGS] [FILE]
-vex import [SOURCE] [WHAT...] [--out DIR]
-vex --help | --version
+dacode [FILE|DIR] [--no-session] [--no-welcome]
+dacode --screenshot OUT.png [RENDERING FLAGS] [FILE]
+dacode import [SOURCE] [WHAT...] [--out DIR]
+dacode --help | --version
 ```
 
 `--version` / `-V` and `--help` / `-h` are checked at the top of `main()` — after the `import`
-subcommand is dispatched, so `vex import --help` still reaches the importer's own help, and before
+subcommand is dispatched, so `dacode import --help` still reaches the importer's own help, and before
 anything that could open a window. Each prints and exits.
 `--help` renders the `FLAGS` table (37 entries of flag, value placeholder, description) rather than
 carrying its own prose, so the help text and the flag list cannot disagree — the same one-table
-discipline `vex_input::commands::COMMANDS` follows. **That table is the source of truth for this
+discipline `dacode_input::commands::COMMANDS` follows. **That table is the source of truth for this
 document**; everything under "Normal use" and "Headless rendering" below is the same set with the
 reasoning attached.
 
 `-h` and `-V` are the **only** single-dash forms accepted. `positional()` skips arguments beginning
-with `--` and nothing else, so any other single-dash argument is taken as the file to open: `vex -x`
+with `--` and nothing else, so any other single-dash argument is taken as the file to open: `dacode -x`
 opens an empty buffer named `-x`.
 
 An unrecognised long flag is ignored silently by the editor and rejected with a message by
-`vex import`.
+`dacode import`.
 
 **Neither `--help` nor `--version` prints anything on a plain Windows release build.** The binary is
 compiled `windows_subsystem = "windows"` so that launching it from the Start Menu does not open a
 black console behind the editor, which means the process owns no console of its own. A shell that
-pipes or redirects — `vex --help | more`, `vex --help > out.txt`, or any PowerShell capture — sees
-the text; `cmd.exe` run plainly shows nothing. `vex import --help` has always behaved this way.
+pipes or redirects — `dacode --help | more`, `dacode --help > out.txt`, or any PowerShell capture — sees
+the text; `cmd.exe` run plainly shows nothing. `dacode import --help` has always behaved this way.
 Attaching the parent console would fix it, needs FFI that cannot be tested from Linux, and is
 therefore written down rather than half-fixed. Debug builds keep their console and print normally.
 
-## `vex --help`
+## `dacode --help`
 
 Verbatim, from a Windows build. The configuration path in the penultimate paragraph is the only
-part that varies: it reads `~/.config/vex` everywhere else.
+part that varies: it reads `~/.config/dacode` everywhere else.
 
 ```
-vex 0.4.3 — a code editor that never stalls on your keystroke
+dacode 0.4.3 — a code editor that never stalls on your keystroke
 
 USAGE
-    vex [FILE]              open a file
-    vex [FOLDER]            open a folder as the project
-    vex                     reopen the last project
-    vex import …            bring settings over from VSCode (`vex import --help`)
+    dacode [FILE]              open a file
+    dacode [FOLDER]            open a folder as the project
+    dacode                     reopen the last project
+    dacode import …            bring settings over from VSCode (`dacode import --help`)
 
 OPTIONS
     --no-session           start empty rather than reopening the last session
@@ -92,8 +92,8 @@ RENDERING WITHOUT A WINDOW
     --which-key PREFIX     what can follow a half-typed chord
     --block LINE:COLUMN    a rectangular selection to that corner
 
-Configuration lives in %APPDATA%\vex. VEX_CONFIG_DIR and VEX_STATE_DIR move it;
-VEX_NO_SYSTEM_FONTS=1 makes a render reproducible.
+Configuration lives in %APPDATA%\dacode. DACODE_CONFIG_DIR and DACODE_STATE_DIR move it;
+DACODE_NO_SYSTEM_FONTS=1 makes a render reproducible.
 
 Keys: press F1 in the editor, or read CHEATSHEET.md.
 Docs: https://github.com/Gawad-B/Vex/tree/main/docs
@@ -101,7 +101,7 @@ Docs: https://github.com/Gawad-B/Vex/tree/main/docs
 
 Column widths are computed from the longest entry, so adding a flag cannot leave them ragged. The
 version comes from `CARGO_PKG_VERSION` and a test asserts the help text carries it, because
-`vex --version` is what a bug report is asked for.
+`dacode --version` is what a bug report is asked for.
 
 `FLAGS` is split at `PLAIN_FLAGS` (5) into the two groups above. The headless group is long because
 it is the whole visual test surface, and someone reaching for it is reproducing a capture from CI
@@ -113,14 +113,14 @@ The first argument that is not a flag — and is not the value belonging to one 
 
 | Argument | Takes | What it does |
 |---|---|---|
-| *(positional)* `FILE` | — | Opens the file. A path that does not exist yet becomes a named empty buffer, so `vex newfile.rs` works. A file that is too large, binary or not UTF-8 is refused with a sentence and the buffer keeps no path, so it can never be saved over what it failed to read. |
+| *(positional)* `FILE` | — | Opens the file. A path that does not exist yet becomes a named empty buffer, so `dacode newfile.rs` works. A file that is too large, binary or not UTF-8 is refused with a sentence and the buffer keeps no path, so it can never be saved over what it failed to read. |
 | *(positional)* `DIR` | — | Opens the directory as the project root and shows the file tree. The directory itself becomes the root rather than searching upwards for a `.git`, because naming a folder is an explicit choice about what the project is. |
 | `--no-session` | — | Do not restore the previous session, and do not fall back to the last project when started with no argument. |
 | `--no-welcome` | — | Skip the first-run wizard even when no configuration exists. |
-| `--version`, `-V` | — | Print `vex 0.4.3` and exit. |
+| `--version`, `-V` | — | Print `dacode 0.4.3` and exit. |
 | `--help`, `-h` | — | Print the usage text and exit. |
 
-With no argument at all, vex reopens the last session for the last project worked in — not whatever
+With no argument at all, DaCode reopens the last session for the last project worked in — not whatever
 directory the launcher happened to point at, which on Windows is where the program was installed.
 Naming a file explicitly wins over the session: asking for one file and getting the last three back
 would be surprising.
@@ -158,10 +158,10 @@ different ways, so a scan that silently stopped matching would fail rather than 
 
 `--screenshot OUT.png` renders one frame offscreen and exits. It needs no window server, which is how
 the design is checked in CI and over SSH — and it is reproducible in a way a screen capture is not.
-Set `VEX_NO_SYSTEM_FONTS=1` for every capture: it makes the font set deterministic and startup
+Set `DACODE_NO_SYSTEM_FONTS=1` for every capture: it makes the font set deterministic and startup
 faster.
 
-With no file named, the capture opens `crates/vex-text/src/anchor.rs`, a real file in this repo, so
+With no file named, the capture opens `crates/dacode-text/src/anchor.rs`, a real file in this repo, so
 the shot shows real code with real highlighting rather than a fixture that could hide a defect. The
 cursor is parked at line 21, column 12, the view scrolled to line 8, and in normal mode a half-typed
 `3d` is seeded into the pending cell.
@@ -220,7 +220,7 @@ order.
 | 11 | `--commands` | — | The command palette listing every command. |
 | 12 | `--settings` | — | The settings panel, with the language-server and formatter sections detected against this machine — the section is a report, and a screenshot of a report with invented contents verifies nothing. |
 | 12a | `--row` | `N` | Which settings row is selected, clamped to the list. Only meaningful with `--settings`; the panel scrolls to its selection, which is the only way to capture a section below the fold. |
-| 13 | `--tree` | — | The file tree, revealing `crates/vex-text/src/anchor.rs`. Indexes inline, waiting up to two seconds. |
+| 13 | `--tree` | — | The file tree, revealing `crates/dacode-text/src/anchor.rs`. Indexes inline, waiting up to two seconds. |
 | 14 | `--split` | `N[h]` | N panes on one buffer, clamped to 1–4, defaulting to 2 if unparseable. A trailing `h` stacks them horizontally; anything else is vertical. Each pane looks at a different place in the file, because identical panes would hide a scroll bug. |
 
 Anything that only *modifies state* — `--palette`, `--search`, `--grep`, `--complete`,
@@ -228,14 +228,14 @@ Anything that only *modifies state* — `--palette`, `--search`, `--grep`, `--co
 all the way through to the plain editor to be visible. Combining `--palette` with `--splash` shows
 the splash and nothing else.
 
-## `vex import`
+## `dacode import`
 
 A separate, explicit operation rather than something that happens at startup, because it rewrites
 configuration and its results should be reviewable afterwards. **Nothing is imported unless it is
 named.** An importer that quietly replaced your theme because you wanted your keybindings is one
 nobody runs twice.
 
-VSCode extensions are JavaScript against the `vscode` API and vex has no JS runtime. Extension
+VSCode extensions are JavaScript against the `vscode` API and DaCode has no JS runtime. Extension
 *data* — themes, snippets, language configuration — is imported; extension *code* is reported as
 unsupported and skipped. Packages come from Open VSX, not Microsoft's marketplace, whose terms permit
 only Microsoft products.
@@ -256,8 +256,8 @@ Omitting a source is an error naming the three that exist.
 | Flag | What it covers |
 |---|---|
 | `--settings` | Editor preferences from `settings.json`, written as `imported-settings.toml`. |
-| `--keybindings` | Key bindings, where a vex equivalent exists, written as `imported-keys.toml`. |
-| `--theme` | Colour theme, converted to vex's perceptual palette and written to `themes/<slug>.toml`. |
+| `--keybindings` | Key bindings, where a DaCode equivalent exists, written as `imported-keys.toml`. |
+| `--theme` | Colour theme, converted to DaCode's perceptual palette and written to `themes/<slug>.toml`. |
 | `--snippets` | Snippet definitions, one file per language under `snippets/`. |
 | `--language-config` | Brackets, comment tokens, auto-close pairs. Recognised and reported, not yet consumed. |
 | `--language-server` | A language server named by the extension. Recognised and reported. |
@@ -273,11 +273,11 @@ Selecting nothing is an error rather than a silent no-op.
 | `--out` | `DIR` | Write to DIR instead of the default config directory. |
 | `--help`, `-h` | — | Print the help text. Checked before anything else. |
 
-`vex import` exits non-zero if any selected item failed.
+`dacode import` exits non-zero if any selected item failed.
 
 **The default output directory is not the config directory the editor reads.**
-`import_cli::default_config_dir` is `$HOME/.config/vex`, hard-coded: it does not consult
-`VEX_CONFIG_DIR`, and it does not fall back to `USERPROFILE` the way `paths::home` does, so on
+`import_cli::default_config_dir` is `$HOME/.config/dacode`, hard-coded: it does not consult
+`DACODE_CONFIG_DIR`, and it does not fall back to `USERPROFILE` the way `paths::home` does, so on
 Windows without `HOME` it resolves relative to the working directory. Use `--out` to be sure.
 
 ## Environment variables
@@ -287,36 +287,36 @@ one turns them on. The directory variables treat an empty value as unset, becaus
 a stripped environment presents and joining onto it would put the config directory at the filesystem
 root.
 
-### vex's own
+### DaCode's own
 
 | Variable | Read by | What it changes |
 |---|---|---|
-| `VEX_CONFIG_DIR` | `paths::config_dir` | The configuration directory — `init.lua`, `themes/`, `snippets/`, the imported TOML. Overrides the platform default on every platform. Not consulted by `vex import`'s default output path. |
-| `VEX_STATE_DIR` | `paths::state_dir` | The state directory: sessions and crash-recovery copies. |
-| `VEX_LSP_TRACE` | `vex_lsp::client`, `main.rs` | Presence only. Logs every message to and from the language server, plus a wake-up counter every twenty event-loop turns and why a reply was dropped. |
-| `VEX_NO_SYSTEM_FONTS` | `vex-render/src/text.rs` | Presence only. Skips the system font scan, which costs about 150ms and buys fallback coverage the four bundled faces cannot. Use it for every screenshot. |
-| `VEX_FONT_TRACE` | `vex-render/src/text.rs` | Presence only. Prints how many faces were bundled and loaded from the system, and how long each took. |
+| `DACODE_CONFIG_DIR` | `paths::config_dir` | The configuration directory — `init.lua`, `themes/`, `snippets/`, the imported TOML. Overrides the platform default on every platform. Not consulted by `dacode import`'s default output path. |
+| `DACODE_STATE_DIR` | `paths::state_dir` | The state directory: sessions and crash-recovery copies. |
+| `DACODE_LSP_TRACE` | `dacode_lsp::client`, `main.rs` | Presence only. Logs every message to and from the language server, plus a wake-up counter every twenty event-loop turns and why a reply was dropped. |
+| `DACODE_NO_SYSTEM_FONTS` | `dacode-render/src/text.rs` | Presence only. Skips the system font scan, which costs about 150ms and buys fallback coverage the four bundled faces cannot. Use it for every screenshot. |
+| `DACODE_FONT_TRACE` | `dacode-render/src/text.rs` | Presence only. Prints how many faces were bundled and loaded from the system, and how long each took. |
 
 ### Platform
 
 | Variable | Read by | What it changes |
 |---|---|---|
-| `HOME` | `paths::home`, `import_cli`, `vex_import::vscode_config_dir`, the open-folder prompt | The home directory, tried first — it is set and correct under a POSIX shell on Windows too. Also the only source for `vex import`'s default output directory and for `~/` in the open-folder prompt. |
-| `USERPROFILE` | `paths::home`, `vex_import::vscode_config_dir` | The Windows home directory, used when `HOME` is unset. |
-| `APPDATA` | `paths::resolve`, `vex_import::vscode_config_dir` | The roaming profile. Config goes here on Windows, because it is the user's and follows them. Also where VSCode's own configuration is looked for first. Falling back to the profile root when unset. |
+| `HOME` | `paths::home`, `import_cli`, `dacode_import::vscode_config_dir`, the open-folder prompt | The home directory, tried first — it is set and correct under a POSIX shell on Windows too. Also the only source for `dacode import`'s default output directory and for `~/` in the open-folder prompt. |
+| `USERPROFILE` | `paths::home`, `dacode_import::vscode_config_dir` | The Windows home directory, used when `HOME` is unset. |
+| `APPDATA` | `paths::resolve`, `dacode_import::vscode_config_dir` | The roaming profile. Config goes here on Windows, because it is the user's and follows them. Also where VSCode's own configuration is looked for first. Falling back to the profile root when unset. |
 | `LOCALAPPDATA` | `paths::resolve` | The machine-local profile. State goes here on Windows and must not roam: a recovery copy of a file that exists on one machine is meaningless on another. |
-| `XDG_CONFIG_HOME` | `paths::resolve` | The config directory on non-Windows platforms, before falling back to `~/.config/vex`. |
-| `XDG_STATE_HOME` | `paths::resolve` | The state directory on non-Windows platforms, before falling back to `~/.local/state/vex`. |
-| `PATH` | `vex_lsp::resolve`, `resolve_command`, `paths::program_on_path` | Where a language server, formatter or installer is looked for. A configured command containing a separator is treated as a path and never looked up here. |
+| `XDG_CONFIG_HOME` | `paths::resolve` | The config directory on non-Windows platforms, before falling back to `~/.config/dacode`. |
+| `XDG_STATE_HOME` | `paths::resolve` | The state directory on non-Windows platforms, before falling back to `~/.local/state/dacode`. |
+| `PATH` | `dacode_lsp::resolve`, `resolve_command`, `paths::program_on_path` | Where a language server, formatter or installer is looked for. A configured command containing a separator is treated as a path and never looked up here. |
 | `PATHEXT` | the same three | Which extensions count as executable on Windows. Defaulted to `.EXE;.CMD;.BAT;.COM` when unset. Consulting it is what finds the `.cmd` shims most npm-installed language servers arrive as; a bare-name check finds none of them. |
-| `LANG` | `vex-render/src/text.rs` | The locale handed to the shaper, taken as everything before the first `.` and defaulting to `en-US`. |
+| `LANG` | `dacode-render/src/text.rs` | The locale handed to the shaper, taken as everything before the first `.` and defaulting to `en-US`. |
 
 ### Where things end up
 
 | | Unix | Windows |
 |---|---|---|
-| Config, themes, snippets | `$XDG_CONFIG_HOME/vex` or `~/.config/vex` | `%APPDATA%\vex` |
-| Sessions, crash recovery | `$XDG_STATE_HOME/vex` or `~/.local/state/vex` | `%LOCALAPPDATA%\vex` |
+| Config, themes, snippets | `$XDG_CONFIG_HOME/dacode` or `~/.config/dacode` | `%APPDATA%\dacode` |
+| Sessions, crash recovery | `$XDG_STATE_HOME/dacode` or `~/.local/state/dacode` | `%LOCALAPPDATA%\dacode` |
 
-`VEX_CONFIG_DIR` and `VEX_STATE_DIR` override both columns. Config and state never share a directory
+`DACODE_CONFIG_DIR` and `DACODE_STATE_DIR` override both columns. Config and state never share a directory
 on any platform, and there is a test that says so.

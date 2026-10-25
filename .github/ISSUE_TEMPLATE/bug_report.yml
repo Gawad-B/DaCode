@@ -1,5 +1,5 @@
 name: Bug report
-description: Something vex does that it should not.
+description: Something dacode does that it should not.
 labels: ["bug"]
 body:
   - type: markdown
@@ -16,7 +16,7 @@ body:
     id: what-happened
     attributes:
       label: What happened
-      description: What vex did, in as much detail as you can stand.
+      description: What dacode did, in as much detail as you can stand.
     validations:
       required: true
 
@@ -33,10 +33,10 @@ body:
       label: Steps to reproduce
       description: >
         Numbered, from a fresh start if you can. Say which keys you pressed and what was on screen.
-        `VEX_CONFIG_DIR=/tmp/vexcfg vex` starts against a throwaway config, which is the quickest way
+        `DACODE_CONFIG_DIR=/tmp/vexcfg dacode` starts against a throwaway config, which is the quickest way
         to find out whether your own `init.lua` is involved.
       placeholder: |
-        1. vex some/file.rs
+        1. dacode some/file.rs
         2. Press ctrl-e to open the file tree
         3. Click the third file
         4. The wrong file opens
@@ -46,11 +46,11 @@ body:
   - type: input
     id: version
     attributes:
-      label: Which vex
+      label: Which dacode
       description: >
-        `vex --version`. If you built it from source, the commit as well —
+        `dacode --version`. If you built it from source, the commit as well —
         `git rev-parse --short HEAD` — since a release number does not say which `main` you are on.
-      placeholder: "vex 0.4.1, built from source at 6d962ad"
+      placeholder: "dacode 0.4.1, built from source at 6d962ad"
     validations:
       required: true
 
@@ -84,12 +84,12 @@ body:
     attributes:
       label: A render, if it is visual
       description: >
-        vex draws itself offscreen and exits, so you can capture the exact state without a screen
+        dacode draws itself offscreen and exits, so you can capture the exact state without a screen
         grab. Run it and drag the PNG in here. Add the flag for whatever was on screen — `--settings`,
         `--tree`, `--menu`, `--palette QUERY`, `--complete PREFIX` — and `--size WxH` if the window
         size is part of the problem.
       placeholder: |
-        VEX_NO_SYSTEM_FONTS=1 vex --screenshot /tmp/vex.png --tree path/to/file.rs
+        DACODE_NO_SYSTEM_FONTS=1 dacode --screenshot /tmp/dacode.png --tree path/to/file.rs
 
   - type: textarea
     id: anything-else
@@ -97,5 +97,5 @@ body:
       label: Anything else
       description: >
         Your `init.lua` if it is not the default, which language server was running, the text of any
-        message vex printed. For a language-server problem, `VEX_LSP_TRACE=1` logs every message in
+        message dacode printed. For a language-server problem, `DACODE_LSP_TRACE=1` logs every message in
         both directions — the last few before it went wrong are usually the whole story.

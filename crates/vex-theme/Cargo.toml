@@ -1,9 +1,0 @@
-[package]
-name = "vex-theme"
-version = "0.4.3"
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
-description = "Visual language for the vex editor: OKLCH color, mode accents, type roles, spacing"
-
-[dependencies]

@@ -9,22 +9,22 @@ packaging/linux/install.sh /usr/local # or system-wide
 packaging/linux/uninstall.sh          # same prefix argument, and always use it
 ```
 
-That places the binary, `vex.desktop` and the icon theme under the chosen prefix, and `uninstall.sh`
-takes them away again. Removing them by hand is what leaves the icon cache claiming a `vex` icon at
+That places the binary, `dacode.desktop` and the icon theme under the chosen prefix, and `uninstall.sh`
+takes them away again. Removing them by hand is what leaves the icon cache claiming a `dacode` icon at
 a path that no longer exists — which GTK believes, and which shadows the icon a later `.rpm` or
 `.deb` installs into `/usr`, because `~/.local` is searched first. That is a blank tile in the
 launcher with a perfectly good icon installed one directory down. The icon is the
 **paper** (light) variant of the mark at every size the handoff ships, plus the scalable SVG —
 desktop environments composite app icons onto dark panels far more often than light ones.
 
-The window icon is separate: it is embedded in the binary (`crates/vex/src/icon.rs`), so a vex run
+The window icon is separate: it is embedded in the binary (`crates/dacode/src/icon.rs`), so a DaCode run
 straight out of a build directory has the same icon as an installed one.
 
 ## Packages
 
 ```sh
 cargo build --release
-packaging/build-deb.sh     # target/packages/vex_<version>_amd64.deb
+packaging/build-deb.sh     # target/packages/dacode_<version>_amd64.deb
 packaging/build-rpm.sh     # needs rpm-build: sudo dnf install rpm-build
 ```
 
@@ -34,8 +34,8 @@ in a container with no Debian tooling — which is where release builds usually 
 Install them the usual way:
 
 ```sh
-sudo apt install ./target/packages/vex_0.1.0_amd64.deb
-sudo dnf install ./target/packages/vex-0.1.0-1.x86_64.rpm
+sudo apt install ./target/packages/dacode_0.1.0_amd64.deb
+sudo dnf install ./target/packages/dacode-0.1.0-1.x86_64.rpm
 ```
 
 ## Windows
@@ -50,5 +50,5 @@ when that build exists.
 
 ## CI
 
-`.github/workflows/build.yml` builds all three artifacts on every push — including `vex.exe`, which is
+`.github/workflows/build.yml` builds all three artifacts on every push — including `dacode.exe`, which is
 the only way a Windows build gets verified from a Linux machine.

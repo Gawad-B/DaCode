@@ -584,6 +584,150 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "dacode"
+version = "0.4.3"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "criterion",
+ "dacode-buffer",
+ "dacode-display",
+ "dacode-import",
+ "dacode-input",
+ "dacode-lsp",
+ "dacode-lua",
+ "dacode-project",
+ "dacode-render",
+ "dacode-syntax",
+ "dacode-text",
+ "dacode-theme",
+ "lsp-types",
+ "png",
+ "serde_json",
+ "winit",
+]
+
+[[package]]
+name = "dacode-buffer"
+version = "0.4.3"
+dependencies = [
+ "dacode-text",
+ "proptest",
+]
+
+[[package]]
+name = "dacode-display"
+version = "0.4.3"
+dependencies = [
+ "dacode-text",
+ "proptest",
+]
+
+[[package]]
+name = "dacode-import"
+version = "0.4.3"
+dependencies = [
+ "anyhow",
+ "dacode-input",
+ "dacode-theme",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
+name = "dacode-input"
+version = "0.4.3"
+dependencies = [
+ "dacode-text",
+ "dacode-theme",
+ "proptest",
+]
+
+[[package]]
+name = "dacode-lsp"
+version = "0.4.3"
+dependencies = [
+ "anyhow",
+ "dacode-text",
+ "lsp-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dacode-lua"
+version = "0.4.3"
+dependencies = [
+ "anyhow",
+ "dacode-input",
+ "dacode-theme",
+ "mlua",
+]
+
+[[package]]
+name = "dacode-project"
+version = "0.4.3"
+dependencies = [
+ "anyhow",
+ "dacode-text",
+ "grep-matcher",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "notify",
+ "nucleo-matcher",
+]
+
+[[package]]
+name = "dacode-render"
+version = "0.4.3"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "dacode-theme",
+ "fontdb",
+ "glyphon",
+ "png",
+ "pollster",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
+name = "dacode-syntax"
+version = "0.4.3"
+dependencies = [
+ "criterion",
+ "dacode-text",
+ "dacode-theme",
+ "ropey",
+ "tree-sitter",
+ "tree-sitter-c",
+ "tree-sitter-cpp",
+ "tree-sitter-css",
+ "tree-sitter-html",
+ "tree-sitter-javascript",
+ "tree-sitter-python",
+ "tree-sitter-rust",
+ "tree-sitter-typescript",
+]
+
+[[package]]
+name = "dacode-text"
+version = "0.4.3"
+dependencies = [
+ "proptest",
+ "ropey",
+ "smallvec",
+ "thiserror 2.0.20",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "dacode-theme"
+version = "0.4.3"
+
+[[package]]
 name = "derive_arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3039,150 +3183,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vex"
-version = "0.4.3"
-dependencies = [
- "anyhow",
- "arboard",
- "criterion",
- "lsp-types",
- "png",
- "serde_json",
- "vex-buffer",
- "vex-display",
- "vex-import",
- "vex-input",
- "vex-lsp",
- "vex-lua",
- "vex-project",
- "vex-render",
- "vex-syntax",
- "vex-text",
- "vex-theme",
- "winit",
-]
-
-[[package]]
-name = "vex-buffer"
-version = "0.4.3"
-dependencies = [
- "proptest",
- "vex-text",
-]
-
-[[package]]
-name = "vex-display"
-version = "0.4.3"
-dependencies = [
- "proptest",
- "vex-text",
-]
-
-[[package]]
-name = "vex-import"
-version = "0.4.3"
-dependencies = [
- "anyhow",
- "serde_json",
- "vex-input",
- "vex-theme",
- "zip",
-]
-
-[[package]]
-name = "vex-input"
-version = "0.4.3"
-dependencies = [
- "proptest",
- "vex-text",
- "vex-theme",
-]
-
-[[package]]
-name = "vex-lsp"
-version = "0.4.3"
-dependencies = [
- "anyhow",
- "lsp-types",
- "serde",
- "serde_json",
- "vex-text",
-]
-
-[[package]]
-name = "vex-lua"
-version = "0.4.3"
-dependencies = [
- "anyhow",
- "mlua",
- "vex-input",
- "vex-theme",
-]
-
-[[package]]
-name = "vex-project"
-version = "0.4.3"
-dependencies = [
- "anyhow",
- "grep-matcher",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "notify",
- "nucleo-matcher",
- "vex-text",
-]
-
-[[package]]
-name = "vex-render"
-version = "0.4.3"
-dependencies = [
- "anyhow",
- "bytemuck",
- "fontdb",
- "glyphon",
- "png",
- "pollster",
- "vex-theme",
- "wgpu",
- "winit",
-]
-
-[[package]]
-name = "vex-syntax"
-version = "0.4.3"
-dependencies = [
- "criterion",
- "ropey",
- "tree-sitter",
- "tree-sitter-c",
- "tree-sitter-cpp",
- "tree-sitter-css",
- "tree-sitter-html",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-rust",
- "tree-sitter-typescript",
- "vex-text",
- "vex-theme",
-]
-
-[[package]]
-name = "vex-text"
-version = "0.4.3"
-dependencies = [
- "proptest",
- "ropey",
- "smallvec",
- "thiserror 2.0.20",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "vex-theme"
-version = "0.4.3"
 
 [[package]]
 name = "wait-timeout"

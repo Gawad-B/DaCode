@@ -4,8 +4,8 @@
 #
 # The icon cache is the reason this script exists rather than being a line of documentation saying
 # "delete three files". `gtk-update-icon-cache` writes an index of what a theme directory contains,
-# and GTK *trusts* that index: an entry for `vex` makes it hand out
-# `$prefix/share/icons/hicolor/256x256/apps/vex.png` without asking whether the file is still there.
+# and GTK *trusts* that index: an entry for `dacode` makes it hand out
+# `$prefix/share/icons/hicolor/256x256/apps/dacode.png` without asking whether the file is still there.
 # So deleting the icons by hand leaves a cache that promises an icon nobody can open — and because
 # ~/.local comes before /usr in the icon search path, that stale promise also shadows the icon a
 # later .rpm or .deb install put in the right place. The symptom is a blank tile with the name under
@@ -17,8 +17,8 @@ set -eu
 prefix="${1:-$HOME/.local}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
-rm -f "$prefix/bin/vex"
-rm -f "$prefix/share/applications/vex.desktop"
+rm -f "$prefix/bin/dacode"
+rm -f "$prefix/share/applications/dacode.desktop"
 
 # Only the files this install put there, named from the same tree install.sh reads, so a shared
 # hicolor directory keeps everybody else's icons.
@@ -33,4 +33,4 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" 2>/dev/null || true
 fi
 
-echo "removed vex from $prefix"
+echo "removed dacode from $prefix"

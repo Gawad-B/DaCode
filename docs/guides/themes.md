@@ -25,7 +25,7 @@ With Vim keys on, `gt` toggles between light and dark. Either way it is in the c
 From config:
 
 ```lua
-vex.set { theme = "amoled" }
+dacode.set { theme = "amoled" }
 ```
 
 There is also `appearance = "dark" | "light"`, which flips the built-in theme — but it is a
@@ -55,30 +55,30 @@ The name is slugified rather than used verbatim, so `theme = "One Dark Pro"` fin
 a built-in is reported at startup with both the list of built-ins and the path that was tried,
 rather than silently falling back.
 
-Where the config directory is: `~/.config/vex/` on Unix, `%APPDATA%\vex\` on Windows, or wherever
-`VEX_CONFIG_DIR` points. Themes live in `themes/` under it.
+Where the config directory is: `~/.config/dacode/` on Unix, `%APPDATA%\dacode\` on Windows, or wherever
+`DACODE_CONFIG_DIR` points. Themes live in `themes/` under it.
 
 ## Bringing a theme over
 
-vex reads colour schemes in four formats and converts all of them to its own palette:
+DaCode reads colour schemes in four formats and converts all of them to its own palette:
 
 | Format | Extensions |
 |---|---|
 | VSCode JSON | `.json`, `.jsonc` |
 | TextMate | `.tmTheme`, `.plist`, `.xml` |
 | base16 YAML | `.yaml`, `.yml` |
-| vex's own TOML | `.toml` |
+| DaCode's own TOML | `.toml` |
 
 From the command line:
 
 ```sh
-vex import --palette ~/Downloads/gruvbox.yaml
+dacode import --palette ~/Downloads/gruvbox.yaml
 ```
 
 That writes `themes/gruvbox.toml`, which you then name like any other:
 
 ```lua
-vex.set { theme = "gruvbox" }
+dacode.set { theme = "gruvbox" }
 ```
 
 `--palette` needs no checklist — a colour scheme is one thing rather than a set to choose between.
@@ -87,7 +87,7 @@ It always writes to the default config directory, ignoring `--out`.
 From inside the editor, the **last row of the settings panel** is *load a theme file…*. Press
 <kbd>enter</kbd> on it or click it, and a prompt opens pre-filled with your home directory, since a
 downloaded theme is usually in Downloads (`~/` works there too). It reads the same four formats,
-applies the result at once, and saves it under `themes/` as vex's own TOML — so neither importing a
+applies the result at once, and saves it under `themes/` as DaCode's own TOML — so neither importing a
 theme nor choosing one ever needs a terminal.
 
 It also tells you how many colours it recognised and what slug it saved under, and that is worth
@@ -98,7 +98,7 @@ exact line to write.
 To take the theme out of a VSCode extension, ask Open VSX for it by publisher and name:
 
 ```sh
-vex import --openvsx zhuangtongfa.material-theme --theme
+dacode import --openvsx zhuangtongfa.material-theme --theme
 ```
 
 The package is downloaded into the output directory and kept, so re-importing later needs no
@@ -127,12 +127,12 @@ nothing. Otherwise changing the font size would quietly throw away an imported t
 
 ## Changing individual colours
 
-`vex.theme` overrides tokens on top of whichever theme resolved:
+`dacode.theme` overrides tokens on top of whichever theme resolved:
 
 ```lua
-vex.set { theme = "rose-pine" }
+dacode.set { theme = "rose-pine" }
 
-vex.theme {
+dacode.theme {
   bg      = "#101418",
   comment = "oklch(0.62 0.04 250)",
 }
@@ -143,7 +143,7 @@ stored in it. Overrides are applied *after* the theme resolves, so they land on 
 including an imported one.
 
 There are nineteen tokens, listed in [the settings reference](../reference/settings.md#vextheme--individual-colours)
-and readable from Lua as `vex.tokens`. They are validated when the config is read rather than when
+and readable from Lua as `dacode.tokens`. They are validated when the config is read rather than when
 the theme is painted, so a misspelled name is reported with the spelling you typed and a suggestion,
 instead of vanishing.
 
@@ -154,7 +154,7 @@ labels, gutter figures, the serif comments — so changing it scales the interfa
 than making one thing bigger inside a layout built for something else.
 
 ```lua
-vex.set { font_size = 15 }
+dacode.set { font_size = 15 }
 ```
 
 Or the `font_size` row in the settings panel. With Vim keys on, `=` and `-` change it directly; in
@@ -185,17 +185,17 @@ guillotine, but it is an approximation and it is written down as one.
 Any state renders offscreen to a PNG, which is how the design is checked in CI and over SSH:
 
 ```sh
-VEX_NO_SYSTEM_FONTS=1 vex --screenshot out.png --theme rose-pine
-VEX_NO_SYSTEM_FONTS=1 vex --screenshot out.png --light --size 900x700
+DACODE_NO_SYSTEM_FONTS=1 dacode --screenshot out.png --theme rose-pine
+DACODE_NO_SYSTEM_FONTS=1 dacode --screenshot out.png --light --size 900x700
 ```
 
-Set `VEX_NO_SYSTEM_FONTS=1` for every capture: it makes the font set deterministic and startup
+Set `DACODE_NO_SYSTEM_FONTS=1` for every capture: it makes the font set deterministic and startup
 faster. `--theme` takes a built-in name only, and an unknown one falls back to your config. Every
 rendering flag is in the [command line reference](../reference/cli.md#headless-rendering).
 
 ## See also
 
 - [Configuration](configuration.md) — the panel, `init.lua`, and which of them wins
-- [Settings reference](../reference/settings.md) — `theme`, `appearance`, `font_size`, `vex.theme`
-- [Command line reference](../reference/cli.md#vex-import) — every `vex import` flag
+- [Settings reference](../reference/settings.md) — `theme`, `appearance`, `font_size`, `dacode.theme`
+- [Command line reference](../reference/cli.md#dacode-import) — every `dacode import` flag
 - [Migrating from VSCode](migrating-from-vscode.md) — themes as part of a whole setup

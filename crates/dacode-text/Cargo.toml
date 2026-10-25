@@ -1,0 +1,16 @@
+[package]
+name = "dacode-text"
+version = "0.4.3"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Text storage, coordinate spaces, edits and anchors for the dacode editor"
+
+[dependencies]
+ropey.workspace = true
+unicode-segmentation.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

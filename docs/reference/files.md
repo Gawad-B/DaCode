@@ -1,8 +1,8 @@
 # Files and directories
 
-Everywhere vex reads or writes outside your project. Derived from `crates/vex/src/paths.rs` (the
-platform rules), `crates/vex/src/config.rs` (what is read), `crates/vex/src/session.rs` and
-`crates/vex/src/recovery.rs` (what is written).
+Everywhere DaCode reads or writes outside your project. Derived from `crates/dacode/src/paths.rs` (the
+platform rules), `crates/dacode/src/config.rs` (what is read), `crates/dacode/src/session.rs` and
+`crates/dacode/src/recovery.rs` (what is written).
 
 ## The two directories
 
@@ -20,25 +20,25 @@ and joining onto it would put the config directory at the filesystem root.
 
 | Platform | Path |
 |---|---|
-| any | `$VEX_CONFIG_DIR` |
-| Linux, BSD, macOS | `$XDG_CONFIG_HOME/vex` |
-| Linux, BSD, macOS | `~/.config/vex` |
-| Windows | `%APPDATA%\vex` |
-| Windows, no `APPDATA` | `%USERPROFILE%\vex` |
+| any | `$DACODE_CONFIG_DIR` |
+| Linux, BSD, macOS | `$XDG_CONFIG_HOME/dacode` |
+| Linux, BSD, macOS | `~/.config/dacode` |
+| Windows | `%APPDATA%\dacode` |
+| Windows, no `APPDATA` | `%USERPROFILE%\dacode` |
 
 ### State
 
 | Platform | Path |
 |---|---|
-| any | `$VEX_STATE_DIR` |
-| Linux, BSD, macOS | `$XDG_STATE_HOME/vex` |
-| Linux, BSD, macOS | `~/.local/state/vex` |
-| Windows | `%LOCALAPPDATA%\vex` |
-| Windows, no `LOCALAPPDATA` | `%USERPROFILE%\vex` |
+| any | `$DACODE_STATE_DIR` |
+| Linux, BSD, macOS | `$XDG_STATE_HOME/dacode` |
+| Linux, BSD, macOS | `~/.local/state/dacode` |
+| Windows | `%LOCALAPPDATA%\dacode` |
+| Windows, no `LOCALAPPDATA` | `%USERPROFILE%\dacode` |
 
 `paths::resolve` branches on `cfg!(windows)` and nothing else, so **macOS takes the Unix rows
-above**: `~/.config/vex` and `~/.local/state/vex`, not `~/Library/Application Support`. That is what
-the code does; nobody has ever run vex on macOS, so treat the row as documented rather than
+above**: `~/.config/dacode` and `~/.local/state/dacode`, not `~/Library/Application Support`. That is what
+the code does; nobody has ever run DaCode on macOS, so treat the row as documented rather than
 verified.
 
 The home directory is `HOME` first and `USERPROFILE` second — `HOME` is set and correct under a
@@ -56,22 +56,22 @@ than no session at all.
 |---|---|---|
 | `init.lua` | Lua | The configuration. Read last, so it has the last word. Its **absence is what makes a start a first run**, so deleting it brings the wizard back. |
 | `config.toml` | TOML | Hand-written, read before `init.lua`. Carries only `editor.font_size`, `editor.tab_width`, `editor.soft_wrap`, `editor.format_on_save`, `theme.name` and `theme.appearance`. |
-| `imported-settings.toml` | TOML | Written by `vex import --settings`. Same keys as `config.toml`, read before it. |
-| `imported-keys.toml` | TOML | Written by `vex import --keybindings`. **Nothing reads it back**; imported keys do not currently reach the keymap. |
-| `themes/<slug>.toml` | TOML | Theme files. `config::resolve_theme` tries `themes/<slug>.toml` before the built-in of that name, so a file shadows a built-in. Written by `vex import --theme` and by `vex import --palette`. |
+| `imported-settings.toml` | TOML | Written by `dacode import --settings`. Same keys as `config.toml`, read before it. |
+| `imported-keys.toml` | TOML | Written by `dacode import --keybindings`. **Nothing reads it back**; imported keys do not currently reach the keymap. |
+| `themes/<slug>.toml` | TOML | Theme files. `config::resolve_theme` tries `themes/<slug>.toml` before the built-in of that name, so a file shadows a built-in. Written by `dacode import --theme` and by `dacode import --palette`. |
 | `snippets/*.json` | VSCode snippet JSON | Read once at startup. Files without a `.json` extension are ignored; one that will not parse is skipped with a note on stderr rather than stopping the editor. |
 
 Load order for settings is `imported-settings.toml`, then `config.toml`, then `init.lua`, each
 overriding the one before. [`settings.md`](settings.md) has the full option list.
 
 The settings panel (`ctrl-,`) writes back into `init.lua` rather than a file of its own. It appends
-a block under a marker line reading `-- vex: written by the settings panel (ctrl-,)`, replacing that
+a block under a marker line reading `-- dacode: written by the settings panel (ctrl-,)`, replacing that
 block in place on later writes; everything else in the file is preserved verbatim. Because Lua runs
-in order and the block is last, it wins over your own `vex.set` calls above it — deleting a line
+in order and the block is last, it wins over your own `dacode.set` calls above it — deleting a line
 from the block hands that setting back to your code.
 
-`vex import`'s **default output directory is not the config directory the editor reads**.
-`import_cli::default_config_dir` is `$HOME/.config/vex`, hard-coded: it ignores `VEX_CONFIG_DIR` and
+`dacode import`'s **default output directory is not the config directory the editor reads**.
+`import_cli::default_config_dir` is `$HOME/.config/dacode`, hard-coded: it ignores `DACODE_CONFIG_DIR` and
 does not fall back to `USERPROFILE`. Pass `--out` to be sure. See [`cli.md`](cli.md).
 
 ## In the state directory
@@ -89,7 +89,7 @@ Named after the project root with every non-alphanumeric character flattened to 
 trimmed, so two projects whose directories share a name do not collide.
 
 ```
-# vex session
+# dacode session
 !1600x900
 */home/me/project/src/main.rs	42	8
  /home/me/project/README.md	0	0
@@ -108,7 +108,7 @@ active index follows the file it pointed at rather than the slot.
 
 `last-project` answers a different question from the session files. Sessions are keyed by root and
 say *what you were doing in this project*; `last-project` says *which project you were in*, which is
-what vex needs when it is started from a Start Menu entry, a desktop icon or a dock with no argument
+what DaCode needs when it is started from a Start Menu entry, a desktop icon or a dock with no argument
 at all. It is written when a project is **opened**, not on the way out, so it survives a crash. A
 recorded directory that no longer exists is ignored rather than opened.
 
@@ -118,7 +118,7 @@ The name is the FNV-1a hash of the buffer's full path as sixteen hex digits, a `
 name: `9a3f…c2-main.rs`. Derived from the full path so that two files called `main.rs` in different
 directories keep separate copies, and so that reopening a file finds its own.
 
-The first line is `vex-recovery: <original path>`, followed by the buffer text verbatim. The header
+The first line is `dacode-recovery: <original path>`, followed by the buffer text verbatim. The header
 is stripped when the copy is read back; it exists so a recovery file found later is traceable
 without decoding the hashed name.
 
@@ -149,11 +149,11 @@ offered — restoring text you already superseded would be worse than silence.
 
 | Variable | Moves |
 |---|---|
-| `VEX_CONFIG_DIR` | The config directory, on every platform. Not consulted by `vex import`'s default output path. |
-| `VEX_STATE_DIR` | The state directory, on every platform. |
+| `DACODE_CONFIG_DIR` | The config directory, on every platform. Not consulted by `dacode import`'s default output path. |
+| `DACODE_STATE_DIR` | The state directory, on every platform. |
 | `XDG_CONFIG_HOME`, `XDG_STATE_HOME` | The two directories on non-Windows platforms, before the `~` fallbacks. |
 | `APPDATA`, `LOCALAPPDATA` | The two directories on Windows. |
 | `HOME`, `USERPROFILE` | The home directory both fall back to. |
 
-[`cli.md`](cli.md) lists all fourteen variables vex reads, including the ones that change fonts,
+[`cli.md`](cli.md) lists all fourteen variables DaCode reads, including the ones that change fonts,
 tracing and program lookup rather than paths.

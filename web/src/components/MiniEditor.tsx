@@ -1,7 +1,7 @@
 import type { Mode } from "../data";
 
 /*
- * Real lines from `crates/vex-text/src/anchor.rs`, at their real numbers — the
+ * Real lines from `crates/dacode-text/src/anchor.rs`, at their real numbers — the
  * design's mock had a `version: Version` field that Anchor does not have. The
  * cursor sits on 25, and its shape is what changes with the mode: a wide
  * underlined block, a blinking bar, a selection, a filled block.

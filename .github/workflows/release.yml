@@ -7,7 +7,7 @@
 #
 # Tag and push, and this does the rest:
 #
-#     git tag -a v0.1.1 -m "vex 0.1.1" && git push origin v0.1.1
+#     git tag -a v0.1.1 -m "dacode 0.1.1" && git push origin v0.1.1
 #
 # Nothing is published unless both builds *and both test suites* pass, so a bad tag fails loudly
 # rather than shipping.
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: target/packages/vex-setup.exe
+          path: target/packages/dacode-setup.exe
 
   publish:
     needs: [linux, windows]
@@ -100,27 +100,27 @@ jobs:
 
           **Windows**
 
-          Run \`vex-setup.exe\`. It installs per-user under \`%LOCALAPPDATA%\Programs\vex\` — no
-          administrator rights, no UAC prompt — and adds a Start Menu entry, \`vex\` on your \`PATH\`,
-          "Open with vex" on a folder's right-click menu, and an uninstaller.
+          Run \`dacode-setup.exe\`. It installs per-user under \`%LOCALAPPDATA%\Programs\dacode\` — no
+          administrator rights, no UAC prompt — and adds a Start Menu entry, \`dacode\` on your \`PATH\`,
+          "Open with dacode" on a folder's right-click menu, and an uninstaller.
 
           **Debian, Ubuntu, Mint**
 
           \`\`\`sh
-          sudo apt install ./vex_${version}_amd64.deb
+          sudo apt install ./dacode_${version}_amd64.deb
           \`\`\`
 
           **Fedora, RHEL, openSUSE**
 
           \`\`\`sh
-          sudo dnf install ./vex-${version}-1.x86_64.rpm
+          sudo dnf install ./dacode-${version}-1.x86_64.rpm
           \`\`\`
 
           **Any Linux, no package manager**
 
           \`\`\`sh
-          tar xzf vex-${version}-x86_64-linux.tar.gz
-          ./vex-${version}-x86_64-linux/install.sh        # into ~/.local, no root needed
+          tar xzf dacode-${version}-x86_64-linux.tar.gz
+          ./dacode-${version}-x86_64-linux/install.sh        # into ~/.local, no root needed
           \`\`\`
 
           A language server (\`rust-analyzer\`, \`pyright-langserver\`, …) and \`git\` are found on
@@ -134,8 +134,8 @@ jobs:
           set -eu
           # Created if it is not there, updated if it is, so re-running a failed publish is safe.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "vex ${TAG#v}" --notes-file notes.md
+            gh release edit "$TAG" --title "dacode ${TAG#v}" --notes-file notes.md
             gh release upload "$TAG" artifacts/*/* --clobber
           else
-            gh release create "$TAG" --title "vex ${TAG#v}" --notes-file notes.md artifacts/*/*
+            gh release create "$TAG" --title "dacode ${TAG#v}" --notes-file notes.md artifacts/*/*
           fi

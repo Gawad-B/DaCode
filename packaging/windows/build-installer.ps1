@@ -1,4 +1,4 @@
-# Builds target\packages\vex-setup.exe — the thing a Windows user downloads.
+# Builds target\packages\dacode-setup.exe — the thing a Windows user downloads.
 #
 # Needs Inno Setup 6.3 or newer (`winget install JRSoftware.InnoSetup`). Everything else it needs is
 # in the repository. Run it from anywhere:
@@ -19,14 +19,14 @@ if (-not $SkipBuild) {
     finally { Pop-Location }
 }
 
-$binary = Join-Path $root 'target\release\vex.exe'
+$binary = Join-Path $root 'target\release\dacode.exe'
 if (-not (Test-Path $binary)) {
     Write-Error "no $binary — build it first: cargo build --release"
 }
 
 # One version number, and it lives in Cargo.toml. An installer that names a different one than the
 # binary it carries is a support question nobody can answer.
-$cargo = Get-Content (Join-Path $root 'crates\vex\Cargo.toml')
+$cargo = Get-Content (Join-Path $root 'crates\dacode\Cargo.toml')
 $version = ($cargo | Select-String -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
 
 # ISCC is not on PATH after a default install, so the usual places are tried before giving up.
@@ -44,7 +44,7 @@ if (-not $iscc) {
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $root 'target\packages') | Out-Null
-& $iscc "/DAppVersion=$version" (Join-Path $PSScriptRoot 'vex.iss')
+& $iscc "/DAppVersion=$version" (Join-Path $PSScriptRoot 'dacode.iss')
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
-Write-Host "built $(Join-Path $root 'target\packages\vex-setup.exe') for vex $version"
+Write-Host "built $(Join-Path $root 'target\packages\dacode-setup.exe') for dacode $version"

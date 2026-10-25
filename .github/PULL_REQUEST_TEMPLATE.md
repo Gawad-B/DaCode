@@ -19,10 +19,10 @@ Closes #
 - [ ] **Visual change** — a `--screenshot` render is attached, at a small `--size` too if it involves
       a panel
 - [ ] **New command** — all four places: the `Action` variant, `Action::from_name`, `Action::NAMES`,
-      and a row in `vex_input::commands::COMMANDS`
+      and a row in `dacode_input::commands::COMMANDS`
 - [ ] **New config option** — all three places: the Lua reader, the settings struct, the settings
       panel
-- [ ] **New key binding** — `cargo run -p vex-input --example cheatsheet` still passes, and
+- [ ] **New key binding** — `cargo run -p dacode-input --example cheatsheet` still passes, and
       `CHEATSHEET.md` is updated
 - [ ] **Background work** — it carries a `Version`, its `poll()` never blocks, and nothing unbounded
       landed on the UI thread

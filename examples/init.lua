@@ -1,14 +1,14 @@
--- vex configuration.
+-- dacode configuration.
 --
--- Copy to ~/.config/vex/init.lua (or $VEX_CONFIG_DIR/init.lua) and edit. Every line is optional:
--- vex starts with no configuration at all, and the defaults here are the built-in ones.
+-- Copy to ~/.config/dacode/init.lua (or $DACODE_CONFIG_DIR/init.lua) and edit. Every line is optional:
+-- dacode starts with no configuration at all, and the defaults here are the built-in ones.
 --
 -- Mistakes are reported, not swallowed. A typo in an action name, an unknown theme token or a
 -- syntax error shows up in a box when the editor opens, and everything the file managed to set
 -- before the error still applies.
 
-vex.set {
-  -- Vim's modal editing. Turn it off and vex behaves like any other editor: typing always inserts,
+dacode.set {
+  -- Vim's modal editing. Turn it off and dacode behaves like any other editor: typing always inserts,
   -- and the shortcuts are the familiar ones — ctrl-c, ctrl-v, ctrl-z, shift-arrow to select. The
   -- editor's own chords (ctrl-e, ctrl-p, ctrl-w, ctrl-,) keep working either way.
   vim_keys = true,
@@ -23,7 +23,7 @@ vex.set {
   format_on_save = false,
 
   -- One of the five built-in themes: dark, light, rose-pine, rose-pine-moon, amoled.
-  -- Or the name of a file in ~/.config/vex/themes/ — which is what `vex import --theme` writes,
+  -- Or the name of a file in ~/.config/dacode/themes/ — which is what `dacode import --theme` writes,
   -- slugified, so "One Dark Pro" finds one-dark-pro.toml.
   --
   -- The *file* is tried first, so putting dark.toml in themes/ replaces the built-in dark rather
@@ -55,50 +55,50 @@ vex.set {
 
 -- Individual colors, over whatever the theme set. Either notation works: oklch(L C H) is the one
 -- worth editing by hand, because it lets you change lightness without shifting the hue.
-vex.theme {
+dacode.theme {
   -- bg      = "#101418",
   -- comment = "oklch(0.62 0.04 250)",
 }
 
--- A language server, driven over LSP. Yours is tried *first* and vex's own list stays behind it, so
+-- A language server, driven over LSP. Yours is tried *first* and dacode's own list stays behind it, so
 -- naming a virtualenv does not cost you the fallback on a machine where that virtualenv is absent.
 --
 -- A command containing a separator is a path rather than a name to look for on PATH, and a relative
 -- one resolves against the **project root** — not the directory the editor was launched from, which
 -- for a desktop icon is nobody's project. `~/` means your home directory.
 --
--- vex.server("python", { command = ".venv/bin/pylsp" })
+-- dacode.server("python", { command = ".venv/bin/pylsp" })
 --
--- A language vex has never heard of has to say which files it serves.
--- vex.server("zig", { command = "zls", extensions = { "zig", "zon" } })
+-- A language dacode has never heard of has to say which files it serves.
+-- dacode.server("zig", { command = "zls", extensions = { "zig", "zon" } })
 
 -- An external formatter, for when the language server does not format — pyright does not, and a
 -- plain JavaScript or Markdown project has no server at all. Same shape, because it is the same
 -- kind of fact. Text goes in on stdin and comes back on stdout; the formatter is never handed the
 -- path, because one given the file would rewrite it behind a buffer you have unsaved changes in.
 --
--- vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
--- vex.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
+-- dacode.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+-- dacode.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
 
--- Bindings. The third argument is one of `vex.actions` — print it to see the whole list.
+-- Bindings. The third argument is one of `dacode.actions` — print it to see the whole list.
 --
 -- These are consulted before the built-in Vim grammar, but only when no command is half-typed:
 -- `d<leader>` is the grammar's business, not a binding's, so an operator can never be left
 -- dangling by a config file.
-vex.map("normal", "<leader>w", "save")
-vex.map("normal", "<leader>q", "quit")
-vex.map("normal", "<leader>f", "search_project")
-vex.map("normal", "<leader>d", "goto_definition")
-vex.map("normal", "<leader>k", "hover")
-vex.map("normal", "<leader>z", "toggle_soft_wrap")
-vex.map("normal", "<leader>n", "rename")
-vex.map("normal", "<leader>=", "format")
+dacode.map("normal", "<leader>w", "save")
+dacode.map("normal", "<leader>q", "quit")
+dacode.map("normal", "<leader>f", "search_project")
+dacode.map("normal", "<leader>d", "goto_definition")
+dacode.map("normal", "<leader>k", "hover")
+dacode.map("normal", "<leader>z", "toggle_soft_wrap")
+dacode.map("normal", "<leader>n", "rename")
+dacode.map("normal", "<leader>=", "format")
 
 -- In insert mode only modified and named keys can be bound: a letter binding would have to hold
 -- the letter back to see what came next, and typing would stutter.
-vex.map("insert", "<c-s>", "save")
+dacode.map("insert", "<c-s>", "save")
 
 -- Config is a program, which is the reason it is Lua rather than a data format.
 for i, action in ipairs { "keep_primary_selection", "split_selection_into_lines" } do
-  vex.map("visual", tostring(i), action)
+  dacode.map("visual", tostring(i), action)
 end

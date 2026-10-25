@@ -1,4 +1,4 @@
-# web — the vex landing page
+# web — the DaCode landing page
 
 Vite + React + TypeScript. No CSS framework, no UI library, no images beyond the editor
 screenshots: every other graphic on the page is a rectangle, which is what the design handoff asked
@@ -53,7 +53,7 @@ after any layout change.
 `CLAUDE.md`, `CHEATSHEET.md`, and the release assets on GitHub. The design handoff's copy was
 written before any of it shipped, so where the two disagree the repository wins. The header comment
 in that file lists each replacement and why, including the three that were outright false by the
-time the page was built: `cargo install vex` (vex is not on crates.io), "no Windows build in v1"
+time the page was built: `cargo install dacode` (DaCode is not on crates.io), "no Windows build in v1"
 (Windows has shipped since 0.1.1), and a structural text object in the grammar table (still a known
 gap).
 
@@ -73,6 +73,6 @@ limited per IP without a token and a download button that fails closed on the si
 the hour is worse than one link out of date. **When the fallback moves, update it in that file** —
 it is the only hard-coded version on the page.
 
-macOS gets no download button. There is no macOS build and nobody has ever run vex there; the
+macOS gets no download button. There is no macOS build and nobody has ever run DaCode there; the
 button says "Build from source" and the note says why. That is the honest button, and it should stay
 that way until someone has actually run it.

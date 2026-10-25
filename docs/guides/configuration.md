@@ -1,6 +1,6 @@
 # Configuration
 
-How to change vex's settings, whether you prefer a panel or a file, and what happens when the two
+How to change DaCode's settings, whether you prefer a panel or a file, and what happens when the two
 disagree. For the exhaustive list of what you can set, see the
 [settings reference](../reference/settings.md).
 
@@ -26,26 +26,26 @@ Configuration is a Lua file:
 
 | | |
 |---|---|
-| Linux, macOS | `~/.config/vex/init.lua` |
-| Windows | `%APPDATA%\vex\init.lua` |
+| Linux, macOS | `~/.config/dacode/init.lua` |
+| Windows | `%APPDATA%\dacode\init.lua` |
 
 There is a documented example in the repository. Copy it and edit:
 
 ```sh
-mkdir -p ~/.config/vex && cp examples/init.lua ~/.config/vex/init.lua
+mkdir -p ~/.config/dacode && cp examples/init.lua ~/.config/dacode/init.lua
 ```
 
 A minimal file looks like this:
 
 ```lua
-vex.set {
+dacode.set {
   vim_keys = false,
   theme = "rose-pine",
   font_size = 14,
   autosave = true,
 }
 
-vex.map("normal", "<leader>w", "save")
+dacode.map("normal", "<leader>w", "save")
 ```
 
 **Saving reloads it immediately.** The theme, the metrics and the bindings change in place, and
@@ -65,7 +65,7 @@ with no editor to fix the configuration file in.
 Later beats earlier, and there are four layers:
 
 1. **Built-in defaults.**
-2. **An import**, if you ran one — `vex import --settings` writes into your config.
+2. **An import**, if you ran one — `dacode import --settings` writes into your config.
 3. **`init.lua`**, read at startup and again whenever you save it.
 4. **The settings panel**, for the current session, until you write it back with
    <kbd>ctrl</kbd>+<kbd>S</kbd>.
@@ -79,26 +79,26 @@ same name as a built-in **shadows** the built-in rather than the other way round
 
 ## Beyond options
 
-`vex.set` covers the options. Three other functions cover the rest, and all three are documented in
+`dacode.set` covers the options. Three other functions cover the rest, and all three are documented in
 full in the [settings reference](../reference/settings.md):
 
 | | |
 |---|---|
-| `vex.map(mode, keys, action)` | bind a key to any command — see [choosing how you type](keymaps.md) |
-| `vex.server(language, spec)` | name a language server — see [language servers](language-servers.md) |
-| `vex.formatter(language, spec)` | name a formatter |
+| `dacode.map(mode, keys, action)` | bind a key to any command — see [choosing how you type](keymaps.md) |
+| `dacode.server(language, spec)` | name a language server — see [language servers](language-servers.md) |
+| `dacode.formatter(language, spec)` | name a formatter |
 
 Everything bindable is an `Action`, and the action names are the same ones the command palette shows.
 Press <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>P</kbd>, find the command you want, and its name is what
-goes in `vex.map`.
+goes in `dacode.map`.
 
 ## Trying something without committing to it
 
 ```sh
-VEX_CONFIG_DIR=/tmp/experiment vex
+DACODE_CONFIG_DIR=/tmp/experiment dacode
 ```
 
-runs vex against a throwaway configuration directory, leaving yours untouched. `VEX_STATE_DIR` does
+runs DaCode against a throwaway configuration directory, leaving yours untouched. `DACODE_STATE_DIR` does
 the same for sessions and crash recovery. Both are listed with the rest in the
 [command-line reference](../reference/cli.md).
 

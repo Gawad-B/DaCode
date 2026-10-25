@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Working notes for this codebase. `README.md` is for people using vex; this is for whoever is changing
+Working notes for this codebase. `README.md` is for people using DaCode; this is for whoever is changing
 it. `PLAN.md` is the long-form architecture and decision record — when this file and `PLAN.md`
 disagree, `PLAN.md` is the reasoning and this is the summary.
 
@@ -17,12 +17,12 @@ cargo clippy --workspace --all-targets     # must stay at zero warnings
 cargo fmt --all
 cargo build --release
 
-cargo run -p vex-input --example cheatsheet   # CHEATSHEET.md vs the real grammar
-cargo bench -p vex -p vex-syntax
+cargo run -p dacode-input --example cheatsheet   # CHEATSHEET.md vs the real grammar
+cargo bench -p dacode -p dacode-syntax
 cargo check --workspace --target x86_64-pc-windows-msvc   # not all of them; see "Windows" below
 ```
 
-`VEX_NO_SYSTEM_FONTS=1` makes captures reproducible and startup faster. Use it for every screenshot.
+`DACODE_NO_SYSTEM_FONTS=1` makes captures reproducible and startup faster. Use it for every screenshot.
 
 ## The one rule
 
@@ -39,7 +39,7 @@ cargo check --workspace --target x86_64-pc-windows-msvc   # not all of them; see
 If you add a background producer, give it a `Version` and a `poll()` that never blocks, and wire it
 into `about_to_wait` beside the others.
 
-**`crates/vex/tests/latency.rs` is the rule as a test that fails the build.** It asserts *flatness*,
+**`crates/dacode/tests/latency.rs` is the rule as a test that fails the build.** It asserts *flatness*,
 not milliseconds: a hundredfold larger document may cost at most 3x more, which is machine-
 independent in a way an absolute budget is not — a loaded runner is slower at everything, so any
 threshold tight enough to catch a regression is also tight enough to fail at random. Absolute
@@ -50,28 +50,28 @@ and one added to `InsertText` fails it at 111x. `cargo bench` still measures; th
 ## Architecture, in dependency order
 
 ```
-vex-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, SelectionSet
-vex-theme    Oklch, five themes, type roles, mode accents
-vex-display  soft wrap, ScrollAnchor, Folds, sticky scroll
-vex-buffer   Document = text + undo history + pending changes + pairing
-vex-input    Action, Grammar, Keymap, JumpList, Macros, the command table
-vex-syntax   tree-sitter on a worker thread
-vex-render   Frame -> quads/glyphs/marks, paint Layers, Headless capture
-vex-project  FileIndex, FileWalk, ProjectSearch, FileWatcher
-vex-lsp      transport, client, Diagnostics
-vex-lua      init.lua -> Config
-vex-import   VSCode data, .vsix, colour schemes in four formats
-vex          the binary: chrome, execute, panes, layout, settings, session, welcome,
+dacode-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, SelectionSet
+dacode-theme    Oklch, five themes, type roles, mode accents
+dacode-display  soft wrap, ScrollAnchor, Folds, sticky scroll
+dacode-buffer   Document = text + undo history + pending changes + pairing
+dacode-input    Action, Grammar, Keymap, JumpList, Macros, the command table
+dacode-syntax   tree-sitter on a worker thread
+dacode-render   Frame -> quads/glyphs/marks, paint Layers, Headless capture
+dacode-project  FileIndex, FileWalk, ProjectSearch, FileWatcher
+dacode-lsp      transport, client, Diagnostics
+dacode-lua      init.lua -> Config
+dacode-import   VSCode data, .vsix, colour schemes in four formats
+dacode          the binary: chrome, execute, panes, layout, settings, session, welcome,
              palette, help, menu, clipboard, process
 ```
 
 ### Non-obvious invariants
 
-**Resolve paths through `vex_project::canonical`, never `canonicalize` directly.** On Windows the
+**Resolve paths through `dacode_project::canonical`, never `canonicalize` directly.** On Windows the
 latter returns `\\?\C:\x`, which is correct for the filesystem API and wrong for displaying,
 comparing and URI-building. Two separate CI failures came from this one difference: a URI a language
 server refused, and a root compared against `temp_dir()`. There are now zero bare `canonicalize()`
-calls in `crates/vex`; keep it that way.
+calls in `crates/dacode`; keep it that way.
 
 **URIs are not paths.** LSP wants `file:///C:/x/y.rs` on Windows — three slashes, forward separators,
 no `\\?\` prefix from `canonicalize`. `file://C:/x` names a *host* called `C:`. Go through
@@ -91,7 +91,7 @@ funnel for changing text, but folds live *outside* it in the display map and are
 nothing moved them, so deleting a function above a closed fold left a range running off the end of
 the file, and since `is_hidden` only asks whether a line falls inside the range, that hid everything
 below the fold's head. `mutate` takes a closure, runs it against the document, then replays
-`changes_since` over the folds through `vex_text::transform_offset`. `conventions.rs` greps for it,
+`changes_since` over the folds through `dacode_text::transform_offset`. `conventions.rs` greps for it,
 because "remember to call the other thing too" is not a rule that survives a year — and that grep
 found two sites hand-editing had already missed.
 
@@ -125,7 +125,7 @@ say which.
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
 headlessly. Adding a user-visible operation means adding an `Action`, a name in `Action::from_name`,
-that name in `Action::NAMES`, and a row in `vex_input::commands::COMMANDS` — the name is public API
+that name in `Action::NAMES`, and a row in `dacode_input::commands::COMMANDS` — the name is public API
 that config depends on, and three tests fail until all four exist.
 
 **`commands::COMMANDS` is the only description of what the keys are.** The command palette, the help
@@ -189,7 +189,7 @@ it out. That split is what lets hover and rename be tested with no server runnin
 **Never configure the surface while holding a frame.** wgpu requires the acquired `SurfaceOutput` to
 be dropped *before* `Surface::configure`. Doing both at once is a validation error, which the default
 handler turns into a panic, whose unwind drops the texture, whose drop is a second validation error,
-which panics again — and a panic during a panic aborts. That was the whole of "minimise vex and it
+which panics again — and a panic during a panic aborts. That was the whole of "minimise DaCode and it
 closes": minimising is what makes the surface start reporting `Suboptimal`, and that branch
 reconfigured inline. `Renderer` now sets a `reconfigure` flag and acts on it at the top of the *next*
 frame. The device also has an uncaptured-error handler that reports instead of panicking, because a
@@ -218,7 +218,7 @@ visible rows and their boxes; drawing and hit-testing both read it. Teaching the
 scroll while the click handler kept its own copy of the walk immediately produced clicks landing on
 the row that *used* to be there — the same failure `layout.rs` exists to prevent, one panel over.
 
-**Resolve a program to a path before spawning it.** `vex_lsp::resolve` returns the `PathBuf`, not a
+**Resolve a program to a path before spawning it.** `dacode_lsp::resolve` returns the `PathBuf`, not a
 yes/no, because on Windows the two are different questions: the check honours `PATHEXT` and finds
 `pyright-langserver.cmd`, while `Command::new` on a bare name only ever appends `.exe`. They
 disagreed, so no npm-installed language server could start at all. Hand the resolved path to
@@ -237,7 +237,7 @@ against whatever directory the desktop launched the editor from, so `src/notes.r
 user could not find. Go through `absolute_in`. An absolute path is left alone — saving a copy outside
 the project is a real thing to want.
 
-**Containment is decided lexically, not by the filesystem.** `vex_project::within` folds `.` and `..`
+**Containment is decided lexically, not by the filesystem.** `dacode_project::within` folds `.` and `..`
 itself and refuses a climb above the root. Asking `canonicalize` cannot work for a file that does not
 exist yet, which is the normal case for one being created: it fails with `NotFound`, `canonical`
 falls back to returning its input with the `..` chain intact, and `Path::starts_with` compares
@@ -254,7 +254,7 @@ anyway, and that is exactly how `switch_to` came to renumber the whole list on e
 switch. Anything that removes a buffer must also tell `Panes::buffer_closed`, or a split pane keeps
 an index that now names a different file.
 
-**A file the user owns is written through `vex::save::write`, and a buffer is saved by
+**A file the user owns is written through `dacode::save::write`, and a buffer is saved by
 `App::write_active` alone.** `fs::write` truncates and then fills, so a crash or a full disk between
 the two left an empty file — and the recovery copy was deleted the moment the save returned.
 `save::write` goes through a hidden temporary beside the file, fsyncs it, takes the original's mode
@@ -280,17 +280,17 @@ request — which is why `route_format` runs at the *top* of that function rathe
 callers. A formatter is given text on stdin and never a path: one handed the file would rewrite it
 behind a dirty buffer.
 
-**A capability vex does not declare is a feature the server silently withholds.** rust-analyzer will
+**A capability DaCode does not declare is a feature the server silently withholds.** rust-analyzer will
 not offer an out-of-scope name at all unless the client advertises `completionItem.resolveSupport`
 for `additionalTextEdits` — computing an import for each of a hundred candidates up front is too
 slow to be worth doing, so it simply does not. Auto-import was therefore not a parsing gap but a
 handshake one, and nothing in the editor could see it: the list came back looking perfectly normal
 with the one useful entry missing. `labelDetailsSupport` is the same shape — without it the server
 folds the detail into the label and an item arrives named `HashMap(use std::collections::HashMap)`.
-When a server "does not support" something, check what vex claimed before assuming it does not.
+When a server "does not support" something, check what DaCode claimed before assuming it does not.
 
-**The language table is pivoted around the language, not the program.** `vex_lsp::LANGUAGES` carries
-the extensions, the `languageId` and the servers together, because `vex.server("python", …)` names a
+**The language table is pivoted around the language, not the program.** `dacode_lsp::LANGUAGES` carries
+the extensions, the `languageId` and the servers together, because `dacode.server("python", …)` names a
 *language* and matching that to a file needs the extension list — which used to exist only as arms
 of a `match`, reachable by nothing. `ServerSpec` is owned rather than `&'static str` for the same
 reason: a server named in `init.lua` is not static, and pretending otherwise costs more than the
@@ -309,7 +309,7 @@ which is the exact thing `cycle` exists to prevent, and its doc comment said so 
 opposite. Three tests asserted 8 and 32 and passed throughout, because they drove a bare `Values`
 rather than the editor's path. Take the limit from the type that enforces it.
 
-**Layout is data.** `crates/vex/src/layout.rs` is the single definition of where things are; both
+**Layout is data.** `crates/dacode/src/layout.rs` is the single definition of where things are; both
 drawing and mouse hit-testing read it. Two copies of that arithmetic drift, and the symptom — clicks
 landing a line off — gets blamed on the display map.
 
@@ -327,14 +327,14 @@ They are cleared on buffer change: they are line numbers and nothing more.
   asserts is a test nobody can safely change.
 - Property tests (`proptest`) for anything about coordinates or text invariants.
 - Live `rust-analyzer` tests **skip** when it is absent rather than failing. A test that fails on a
-  machine without a dependency is testing the machine. Skip on `vex_lsp::can_start`, not
+  machine without a dependency is testing the machine. Skip on `dacode_lsp::can_start`, not
   `is_installed`: on any rustup machine `rust-analyzer` is a *shim* that exists whether or not the
-  component does, and speaking LSP to it fails in a way that looks like a vex bug. CI failed on exactly
+  component does, and speaking LSP to it fails in a way that looks like a DaCode bug. CI failed on exactly
   this.
 - When a test asserts against a list of allowed values, adding a new value means updating the list. The
   Windows CI run's only failure was `describe()` returning `"windows shell"`, which the test's list did
   not include — a value that cannot occur on the machine the test was written on.
-- **A rule that keeps being broken becomes a test.** `crates/vex/tests/conventions.rs` greps the
+- **A rule that keeps being broken becomes a test.** `crates/dacode/tests/conventions.rs` greps the
   workspace for direct `canonicalize()` calls, because that one slip caused three consecutive Windows CI
   failures and each cost a fifteen-minute round trip to find. It also greps for text changed outside
   `EditorState::mutate`, which is what carries the folds. Verify such a guard by *injecting a
@@ -356,7 +356,7 @@ They are cleared on buffer change: they are line numbers and nothing more.
   `dedent_for_closer` directly for that reason. Injecting the unbounded walk back reports 96x.
 - **Documentation is checked the same way code is.** `conventions.rs` resolves every relative link in
   every `.md` file, because a dead link costs nothing to write, nothing notices, and the person who
-  meets it was looking for exactly the thing it promised. It found four on its first run. `vex-lua`
+  meets it was looking for exactly the thing it promised. It found four on its first run. `dacode-lua`
   loads `examples/init.lua` through the real reader for the same reason: that file is what the
   documentation tells people to copy, and nothing read it until a test did — a renamed option or a
   mistyped action name would have been found by the first person to follow the instructions. Both
@@ -367,7 +367,7 @@ They are cleared on buffer change: they are line numbers and nothing more.
   machine, which does not have one. `cmd` on Windows, `sh` elsewhere, as `paths.rs` already did.
 - **The same goes for a path.** A test opening `sub/../a.rs` without creating `sub` passes on Windows
   and nowhere else: Win32 collapses `..` lexically before the syscall, and every other kernel walks
-  it and returns `ENOENT`. That asymmetry is the reason `vex_project::within` exists at all, and it
+  it and returns `ENOENT`. That asymmetry is the reason `dacode_project::within` exists at all, and it
   still caught a test written an hour after the function was. Create every directory a test path
   names, even the ones it only passes through.
 - **Never mutate process-wide state in a test.** Environment variables in particular: `setenv` is not
@@ -413,22 +413,22 @@ The workspace **builds and its tests pass on Windows** in CI, including a live r
 Nobody has *run* the editor there — the window, mouse and folder chooser are unverified. When touching
 anything platform-shaped:
 
-- Paths go through `crates/vex/src/paths.rs`. `%APPDATA%` for config (roams), `%LOCALAPPDATA%` for
+- Paths go through `crates/dacode/src/paths.rs`. `%APPDATA%` for config (roams), `%LOCALAPPDATA%` for
   state (must not roam).
 - Program lookup must consult `PATHEXT` — a bare-name check finds neither `rust-analyzer.exe` nor the
   `.cmd` shims most language servers install as.
 - Write Windows-only functions **without** `#[cfg(windows)]` and select them with a runtime
   `cfg!(windows)`. A `#[cfg(windows)]` body is never type-checked on Linux, and that is exactly the
   code that cannot be tested here.
-- Not every crate type-checks for the MSVC target from Linux; `vex-syntax` and `vex-lua` need a
+- Not every crate type-checks for the MSVC target from Linux; `dacode-syntax` and `dacode-lua` need a
   Windows C toolchain. `.github/workflows/build.yml` has a Windows job for that reason — and it earned
   its keep immediately: it caught `file://` URIs being built by percent-encoding a whole Windows path,
   which made rust-analyzer reject every request as an "invalid international domain name" and broke
   every language-server feature on Windows. Nothing on Linux could have seen it.
-- **Spawn through `vex::process::command`, never `Command::new`.** A release build is a GUI
+- **Spawn through `dacode::process::command`, never `Command::new`.** A release build is a GUI
   application with no console, so Windows gives every console child — git, powershell, a language
   server — a brand new console window, in front of the editor. `CREATE_NO_WINDOW` is what suppresses
-  it. `vex-lsp` keeps its own copy of the helper because it sits below the binary; `crates/vex/tests/
+  it. `dacode-lsp` keeps its own copy of the helper because it sits below the binary; `crates/dacode/tests/
   conventions.rs` enforces both.
 - **Anything platform-shaped gets the platform as a parameter**, like `paths::resolve` and
   `position::encode_uri(path, windows)`. Then the Windows rules have tests that run here. A
@@ -439,27 +439,27 @@ anything platform-shaped:
 
 | Want to change | Look at |
 |---|---|
-| A key binding | `crates/vex-input/src/grammar.rs`, then `commands.rs`, `CHEATSHEET.md` + the example |
-| What the palette, help and menus say | `crates/vex-input/src/commands.rs` — one table, four readers |
-| What a command does | `crates/vex/src/execute.rs` |
-| A command-line flag | `crates/vex/src/main.rs` — `FLAGS` and `VALUE_FLAGS`, both checked against the source |
+| A key binding | `crates/dacode-input/src/grammar.rs`, then `commands.rs`, `CHEATSHEET.md` + the example |
+| What the palette, help and menus say | `crates/dacode-input/src/commands.rs` — one table, four readers |
+| What a command does | `crates/dacode/src/execute.rs` |
+| A command-line flag | `crates/dacode/src/main.rs` — `FLAGS` and `VALUE_FLAGS`, both checked against the source |
 | What the docs say | `docs/` — tutorial, guides, reference, explanation; `README.md` is the landing page |
 | The web landing page | `web/` — Vite + React, no framework beyond it; `web/README.md` says what drives it |
-| How something looks | `crates/vex/src/chrome.rs` |
-| Where something is | `crates/vex/src/layout.rs` |
-| A config option | `vex-lua/src/lib.rs`, `vex/src/config.rs`, `vex/src/settings_ui.rs` (all three) |
-| What the toolbar offers | `crates/vex/src/layout.rs` — `TOOLBAR`, read by drawing and by the mouse |
-| What a right-click offers | `crates/vex/src/menu.rs` — `CONTEXT`, names from the command table |
-| A theme | `crates/vex-theme/src/theme.rs` |
-| LSP behaviour | `crates/vex-lsp/src/client.rs`, applied in `crates/vex/src/edits.rs` |
-| Which language server runs | `crates/vex-lsp/src/lib.rs` — `LANGUAGES`, plus `vex.server` in config |
-| Where the settings rows are | `crates/vex/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
-| Where the tree's rows are | `crates/vex/src/tree.rs` — `panel`, same rule |
-| Whether a file may be opened | `crates/vex/src/open.rs` — every refusal is a sentence for the screen |
-| Whether a path is inside the project | `crates/vex-project/src/lib.rs` — `within`, lexical and testable |
-| Which buffer is which | `crates/vex/src/main.rs` — `buffer_key` for identity, `stored_index` for order |
-| What survives an edit | `crates/vex/src/chrome.rs` — `EditorState::mutate` |
-| How a file is written | `crates/vex/src/save.rs` — `write`, and `App::write_active` for buffers |
+| How something looks | `crates/dacode/src/chrome.rs` |
+| Where something is | `crates/dacode/src/layout.rs` |
+| A config option | `dacode-lua/src/lib.rs`, `dacode/src/config.rs`, `dacode/src/settings_ui.rs` (all three) |
+| What the toolbar offers | `crates/dacode/src/layout.rs` — `TOOLBAR`, read by drawing and by the mouse |
+| What a right-click offers | `crates/dacode/src/menu.rs` — `CONTEXT`, names from the command table |
+| A theme | `crates/dacode-theme/src/theme.rs` |
+| LSP behaviour | `crates/dacode-lsp/src/client.rs`, applied in `crates/dacode/src/edits.rs` |
+| Which language server runs | `crates/dacode-lsp/src/lib.rs` — `LANGUAGES`, plus `dacode.server` in config |
+| Where the settings rows are | `crates/dacode/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
+| Where the tree's rows are | `crates/dacode/src/tree.rs` — `panel`, same rule |
+| Whether a file may be opened | `crates/dacode/src/open.rs` — every refusal is a sentence for the screen |
+| Whether a path is inside the project | `crates/dacode-project/src/lib.rs` — `within`, lexical and testable |
+| Which buffer is which | `crates/dacode/src/main.rs` — `buffer_key` for identity, `stored_index` for order |
+| What survives an edit | `crates/dacode/src/chrome.rs` — `EditorState::mutate` |
+| How a file is written | `crates/dacode/src/save.rs` — `write`, and `App::write_active` for buffers |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
 panel. If you add it to fewer, it will silently not work somewhere.

@@ -1,0 +1,18 @@
+[package]
+name = "dacode-project"
+version = "0.4.3"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Project layer for dacode: file discovery, fuzzy matching, project-wide search"
+
+[dependencies]
+dacode-text.workspace = true
+
+ignore.workspace = true
+notify.workspace = true
+nucleo-matcher.workspace = true
+grep-searcher.workspace = true
+grep-regex.workspace = true
+grep-matcher.workspace = true
+anyhow.workspace = true

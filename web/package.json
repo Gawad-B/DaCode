@@ -1,9 +1,9 @@
 {
-  "name": "vex-landing",
+  "name": "dacode-landing",
   "private": true,
   "version": "0.4.1",
   "type": "module",
-  "description": "The vex landing page.",
+  "description": "The dacode landing page.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

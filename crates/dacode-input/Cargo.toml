@@ -1,0 +1,14 @@
+[package]
+name = "dacode-input"
+version = "0.4.3"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Modal grammar for the dacode editor: keys into Actions, motions and text objects"
+
+[dependencies]
+dacode-text.workspace = true
+dacode-theme.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

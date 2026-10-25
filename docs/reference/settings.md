@@ -1,31 +1,31 @@
 # Settings reference
 
-Every option vex reads, where it is read, and what it does. Derived from
-`crates/vex-lua/src/lib.rs` (the Lua reader), `crates/vex/src/config.rs` (the settings struct and
-its defaults) and `crates/vex/src/settings_ui.rs` (the panel). Where the three disagree, this file
+Every option DaCode reads, where it is read, and what it does. Derived from
+`crates/dacode-lua/src/lib.rs` (the Lua reader), `crates/dacode/src/config.rs` (the settings struct and
+its defaults) and `crates/dacode/src/settings_ui.rs` (the panel). Where the three disagree, this file
 says so rather than picking one.
 
-Config lives in `init.lua` in the config directory — `~/.config/vex/` on Unix, `%APPDATA%\vex\` on
-Windows, or wherever `VEX_CONFIG_DIR` points. See `cli.md` for the full resolution rules.
+Config lives in `init.lua` in the config directory — `~/.config/dacode/` on Unix, `%APPDATA%\dacode\` on
+Windows, or wherever `DACODE_CONFIG_DIR` points. See `cli.md` for the full resolution rules.
 
 ## Load order
 
 Four layers, each overriding the one before:
 
 1. the built-in defaults in `config::Settings::default`
-2. `imported-settings.toml` — written by `vex import`, never hand-edited
+2. `imported-settings.toml` — written by `dacode import`, never hand-edited
 3. `config.toml` — the hand-written TOML, for anything the importer's format can carry
 4. `init.lua` — the real config, and therefore the last word
 
 The settings panel (`ctrl-,`) writes into a marked block appended to the end of `init.lua`. Because
-Lua applies in order, the panel's block is authoritative over your own `vex.set` calls above it;
+Lua applies in order, the panel's block is authoritative over your own `dacode.set` calls above it;
 deleting a line from that block hands the setting back to your own code.
 
 A missing file at any layer is not an error, and a broken one is not fatal. Everything an `init.lua`
 managed to set before it failed still applies, and the failure is shown in a box at startup rather
 than logged.
 
-## `vex.set` options
+## `dacode.set` options
 
 | Name | Type | Default | What it does |
 |---|---|---|---|
@@ -40,10 +40,10 @@ than logged.
 | `sticky_scroll` | boolean | `true` | Pin enclosing block heads above the viewport. |
 | `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |
-| `leader` | string | `"<space>"` | What `<leader>` expands to in `vex.map`. |
+| `leader` | string | `"<space>"` | What `<leader>` expands to in `dacode.map`. |
 
-Anything not named in a `vex.set` call is left alone, and unset is not the same as false: reading a
-boolean naively would have made every `vex.set` that omitted `soft_wrap` turn wrapping off, because
+Anything not named in a `dacode.set` call is left alone, and unset is not the same as false: reading a
+boolean naively would have made every `dacode.set` that omitted `soft_wrap` turn wrapping off, because
 Lua coerces a missing key to `false`. So a boolean is taken **only** when the value really is a
 boolean — which also means `soft_wrap = "yes"` reads as absent and is not reported. Numbers and
 strings go through mlua's own coercion, so `tab_width = "2"` works and `theme = 5` becomes `"5"`.
@@ -58,12 +58,12 @@ just noise. `config::LineNumbers::default_for` is the one place that decides, an
 `vim_keys` has settled, which is why it is not a plain fallback. A value that is none of the three
 is reported as a problem and the default applies.
 
-**`font_size` is clamped twice, at the same limits.** `vex.set` stores whatever number it is given;
+**`font_size` is clamped twice, at the same limits.** `dacode.set` stores whatever number it is given;
 `Typography::with_code_size` then clamps it to 11.0–18.0. Values outside that range are silently
 brought inside it, so `font_size = 40` renders at 18. The settings panel takes its bounds from
 `Typography` rather than repeating them, so clicking the row up to 18 wraps back round to 11.
 
-**`tab_width` is clamped twice, at the same limits.** `vex.set` clamps to 1–16 and `config::apply_lua`
+**`tab_width` is clamped twice, at the same limits.** `dacode.set` clamps to 1–16 and `config::apply_lua`
 clamps again. Never zero, which would divide by it.
 
 **`theme` prefers a file over a built-in.** `config::resolve_theme` tries `themes/<slug>.toml` first
@@ -85,10 +85,10 @@ loses trust the first time it fires.
 name; a file's colours have no name it could write, so it shows `from a file` and writes nothing for
 that row — otherwise changing the font size would throw away an imported theme.
 
-## `vex.theme` — individual colours
+## `dacode.theme` — individual colours
 
 ```lua
-vex.theme {
+dacode.theme {
   bg      = "#101418",
   comment = "oklch(0.62 0.04 250)",
 }
@@ -100,41 +100,41 @@ resolved, so they land on top of whichever base was chosen.
 
 Tokens are validated when the config is read, not when the theme is painted, so an unknown name is
 reported with the spelling you typed and a suggestion rather than vanishing. The nineteen tokens
-are readable from Lua as `vex.tokens`:
+are readable from Lua as `dacode.tokens`:
 
 `bg`, `bg_alt`, `bg_panel`, `row_active`, `rule`, `rule_soft`, `ink`, `ink_dim`, `ink_faint`,
 `scrim`, `shadow`, `keyword`, `type`, `function`, `attribute`, `comment`, `string`, `number`,
 `constant`.
 
-## `vex.map(mode, keys, action)`
+## `dacode.map(mode, keys, action)`
 
 | Argument | Type | Notes |
 |---|---|---|
 | `mode` | string | `normal`, `insert`, `visual`, `replace`. Single-letter forms `n`, `i`, `v`, `r` also work. |
 | `keys` | string | A key *sequence*, not a single key. `<leader>` expands to whatever `leader` was when the binding was made. |
-| `action` | string | One of `vex.actions`. |
+| `action` | string | One of `dacode.actions`. |
 
 Later bindings replace earlier ones for the same mode and sequence, so setting a key twice behaves
 like assignment rather than accumulating a binding that can never fire. An empty sequence, an unknown
 mode and an unknown action are each reported, the last with a did-you-mean.
 
 `leader` affects bindings added *afterwards*, so a config that changes it must do so before the
-`vex.map` calls that use it.
+`dacode.map` calls that use it.
 
 Bindings are consulted before the built-in grammar, but only when no command is half-typed:
 `d<leader>` is the grammar's business, so a config file can never leave an operator dangling. In
 insert mode only modified and named keys can be bound — a letter binding would have to hold the
 letter back to see what came next, and typing would stutter.
 
-`vex.actions` is a Lua array of every name `vex.map` accepts, filtered through `Action::from_name`
+`dacode.actions` is a Lua array of every name `dacode.map` accepts, filtered through `Action::from_name`
 so a name that no longer resolves disappears from the list instead of being advertised and then
 rejected. There are 79 of them.
 
-## `vex.server(language, spec)`
+## `dacode.server(language, spec)`
 
 ```lua
-vex.server("python", { command = ".venv/bin/pylsp" })
-vex.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig" } })
+dacode.server("python", { command = ".venv/bin/pylsp" })
+dacode.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig" } })
 ```
 
 | Field | Type | Required | Notes |
@@ -143,9 +143,9 @@ vex.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zig" 
 | `args` | list of strings | no | Passed verbatim. |
 | `extensions` | list of strings | conditionally | Without the dot; a leading dot is stripped and the value lowercased. |
 
-The language is positional because it is what the entry is *about*. It is matched against vex's own
+The language is positional because it is what the entry is *about*. It is matched against DaCode's own
 table — `rust`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — case-insensitively. For one of
-those, `extensions` may be omitted and vex fills in the list it already knows. For any other name,
+those, `extensions` may be omitted and DaCode fills in the list it already knows. For any other name,
 `extensions` is required, because otherwise nothing would ever reach the server; the error message
 says so and shows the shape.
 
@@ -158,20 +158,20 @@ one. Relative paths resolve against the **project root**, not the process's work
 for a windowed editor is wherever the desktop launched it from. `~/` is expanded. On Windows the
 lookup honours `PATHEXT`, so a `.cmd` shim is found.
 
-## `vex.formatter(language, spec)`
+## `dacode.formatter(language, spec)`
 
 ```lua
-vex.formatter("python", { command = ".venv/bin/black", args = { "-" } })
-vex.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
+dacode.formatter("python", { command = ".venv/bin/black", args = { "-" } })
+dacode.formatter("nix", { command = "nixfmt", extensions = { "nix" } })
 ```
 
-The same three fields and the same rules as `vex.server`, against a different language table:
+The same three fields and the same rules as `dacode.server`, against a different language table:
 `rust`, `typescript`, `python`, `cpp`, `go`, `json`, `css`, `markdown`.
 
 A formatter is given the file's text on **stdin** and never a path — one handed the file would
 rewrite it behind a dirty buffer. Some programs still need to be told what they are looking at, which
 is what `args` is for: `prettier` takes `--stdin-filepath`, `clang-format` takes `--assume-filename`,
-and vex appends the path to either one.
+and DaCode appends the path to either one.
 
 Whether `Action::Format` goes to the language server or to a formatter is decided at the LSP
 handshake, from `documentFormattingProvider` in the `initialize` reply. pyright says no, so a Python
@@ -225,11 +225,11 @@ that every size a click can produce is one the typography will keep.
 **The importer writes four keys nothing reads.** `ImportedSettings::to_config` emits
 `editor.font_family`, `editor.insert_spaces`, `editor.ruler_column` and
 `editor.relative_line_numbers`; `config::load_from` reads none of them. They are counted in the
-import report, so `vex import --settings` can claim to have brought over settings that do nothing.
+import report, so `dacode import --settings` can claim to have brought over settings that do nothing.
 
 ## Example file
 
-`examples/init.lua` is meant to document every option, and `vex-lua` now loads it through the real
+`examples/init.lua` is meant to document every option, and `dacode-lua` now loads it through the real
 reader in a test — so a renamed option or a mistyped action name fails the build rather than the
 first person to follow the instructions.
 
@@ -237,6 +237,6 @@ Three drifts found when that test was written have been corrected: it claimed a 
 over a file of the same name (the opposite is true — `resolve_theme` tries the file first, and there
 is a test named for it), it set `line_numbers = "absolute"` under a header claiming the values shown
 are the defaults when with `vim_keys = true` the default is `relative`, and it never mentioned
-`appearance`, `vex.server` or `vex.formatter` at all.
+`appearance`, `dacode.server` or `dacode.formatter` at all.
 
-One remains: it shows only the long mode names for `vex.map`, where `n`, `i`, `v` and `r` also work.
+One remains: it shows only the long mode names for `dacode.map`, where `n`, `i`, `v` and `r` also work.

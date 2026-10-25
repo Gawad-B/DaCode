@@ -9,6 +9,15 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+### Changed
+
+- vex is now **DaCode**. The command is `dacode`, the configuration lives in
+  `~/.config/dacode/init.lua` (`%APPDATA%\dacode` on Windows), and the Lua table is `dacode`. Nothing
+  needs doing by hand: on first start DaCode copies the vex configuration and state directories —
+  settings, themes, sessions and any crash-recovery copies — and leaves the originals where they
+  were. An `init.lua` that says `vex.set` still runs, `VEX_CONFIG_DIR` and `VEX_STATE_DIR` are still
+  read, and the Windows installer upgrades a vex install in place rather than adding a second one.
+
 ### Fixed
 
 - Saving can no longer destroy the file. Every save used to truncate the file and then write it, so
