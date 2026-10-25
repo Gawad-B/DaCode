@@ -254,6 +254,19 @@ anyway, and that is exactly how `switch_to` came to renumber the whole list on e
 switch. Anything that removes a buffer must also tell `Panes::buffer_closed`, or a split pane keeps
 an index that now names a different file.
 
+**A file the user owns is written through `vex::save::write`, and a buffer is saved by
+`App::write_active` alone.** `fs::write` truncates and then fills, so a crash or a full disk between
+the two left an empty file — and the recovery copy was deleted the moment the save returned.
+`save::write` goes through a hidden temporary beside the file, fsyncs it, takes the original's mode
+and owner, and renames it over; it follows symbolic links rather than replacing them, and writes in
+place (still fsynced) for a hard-linked file or one whose owner it cannot keep. `ctrl-s` used to reach
+a second save in the executor that skipped the recovery discard, the watcher and `format_on_save`;
+`conventions.rs` now counts `mark_saved()` calls so a second writer fails the build. Before writing,
+`write_active` compares the file against the `save::Stamp` recorded when it was opened, reloaded or
+last saved: a change from outside refuses the save once and says so, and asking again overwrites.
+Autosave never takes that second step. Every dirty buffer is also handed to a `recovery::Lifeline`
+once per batch of events, which the panic hook flushes before the stack unwinds.
+
 **Every `didOpen` owes a `didClose`.** `opened_document` records what the server was told, and
 `start_language_server` closes it before the next one opens — which covers switching, closing,
 renaming and deleting, because all four reach `after_buffer_change`. Without it a server accumulated
@@ -446,6 +459,7 @@ anything platform-shaped:
 | Whether a path is inside the project | `crates/vex-project/src/lib.rs` — `within`, lexical and testable |
 | Which buffer is which | `crates/vex/src/main.rs` — `buffer_key` for identity, `stored_index` for order |
 | What survives an edit | `crates/vex/src/chrome.rs` — `EditorState::mutate` |
+| How a file is written | `crates/vex/src/save.rs` — `write`, and `App::write_active` for buffers |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
 panel. If you add it to fewer, it will silently not work somewhere.

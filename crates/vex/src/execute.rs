@@ -133,7 +133,10 @@ pub fn execute(
                 vex_theme::Typography::with_code_size(state.typography.code_size - 1.0);
         }
 
-        Action::Save => save(state),
+        // The app saves, not the executor: a save also clears the recovery copy, tells the watcher
+        // the write was its own, checks nobody else changed the file, and may start a format. This
+        // arm wrote the file and did none of that, and it was the one `ctrl-s` reached.
+        Action::Save => return Outcome::Window(action.clone()),
         Action::SaveAs => {
             // Pre-filled with where the file already is, so "save a copy beside it" is an edit of
             // the name rather than typing a path out.
@@ -1127,22 +1130,5 @@ fn next_diagnostic(state: &mut EditorState, forward: bool) {
         state.document.set_primary_caret(target);
         // The message for the diagnostic just jumped to is the point of jumping there.
         state.hover = None;
-    }
-}
-
-fn save(state: &mut EditorState) {
-    let Some(path) = state.file_path.clone() else {
-        eprintln!("vex: no file to save to");
-        return;
-    };
-
-    match std::fs::write(&path, state.document.text().to_string()) {
-        Ok(()) => {
-            state.document.mark_saved();
-            eprintln!("vex: wrote {path}");
-        }
-        // Reported, never silent: a save that failed while the user believes it succeeded is
-        // the worst failure an editor has.
-        Err(err) => eprintln!("vex: could not write {path}: {err}"),
     }
 }

@@ -11,7 +11,10 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant, SystemTime};
+
+use vex_text::Text;
 
 /// How often a dirty buffer is persisted. Two seconds bounds the loss at roughly a sentence, and a
 /// write of a few kilobytes at that rate is invisible.
@@ -79,8 +82,9 @@ impl Recovery {
 
     /// Persists the text if the interval has elapsed. Returns true if a write happened.
     ///
-    /// `force` skips the timer, for the moments where losing anything is unacceptable: quitting,
-    /// switching buffers, or a panic on the way out.
+    /// `force` skips the timer, for the moments where losing anything is unacceptable: quitting, or
+    /// closing with work unsaved. A panic is the other one, and is [`Lifeline`]'s, because by then
+    /// nothing can call this.
     pub fn maybe_write(&mut self, path: &Path, text: &str, force: bool) -> bool {
         let due = force
             || self
@@ -154,6 +158,78 @@ pub fn write_in(directory: &Path, path: &Path, text: &str) -> std::io::Result<()
     std::fs::rename(&temporary, &final_path)
 }
 
+/// Every dirty buffer's text, held where a panic hook can reach it.
+///
+/// The timed write leaves up to [`INTERVAL`] of typing unprotected, and a panic is exactly when the
+/// editor stops being able to finish anything it was doing — the `force` write on quit never comes.
+/// A hook runs before the stack unwinds, but it is a `'static` closure with no way to borrow the
+/// editor, which is in the middle of being mutated by whatever panicked. So the editor hands this a
+/// copy instead. [`Text`] clones share structure, so refilling it costs a few reference counts, not
+/// a copy of the document.
+///
+/// Background buffers are here as well as the active one. Switching away from a buffer does not
+/// write its recovery copy, so the last timed write — up to two seconds before the switch — was all a
+/// crash would have given back.
+#[derive(Clone, Default)]
+pub struct Lifeline {
+    held: Arc<Mutex<Held>>,
+}
+
+#[derive(Default)]
+struct Held {
+    directory: PathBuf,
+    buffers: Vec<(PathBuf, Text)>,
+}
+
+impl Lifeline {
+    /// Replaces what is held. An empty list means nothing is unsaved.
+    pub fn hold(&self, directory: &Path, buffers: Vec<(PathBuf, Text)>) {
+        let mut held = match self.held.lock() {
+            Ok(held) => held,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        held.directory = directory.to_path_buf();
+        held.buffers = buffers;
+    }
+
+    /// Writes every held buffer's recovery copy. Returns how many were written.
+    ///
+    /// `try_lock`, because the panic may have happened inside [`Self::hold`] on this same thread, and
+    /// waiting for a lock this thread holds is a hang in place of a crash — the one outcome worse
+    /// than losing the text. A poisoned lock is still read: the panic that poisoned it is usually the
+    /// one being handled, and the text inside is whole.
+    pub fn flush(&self) -> usize {
+        let held = match self.held.try_lock() {
+            Ok(held) => held,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return 0,
+        };
+        held.buffers
+            .iter()
+            .filter(|(path, text)| write_in(&held.directory, path, &text.to_string()).is_ok())
+            .count()
+    }
+}
+
+/// Makes a panic write every unsaved buffer before anything else happens.
+///
+/// The previous hook runs afterwards, so the message and backtrace still appear — after the work is
+/// safe rather than instead of it. Installed by `main` only: a hook is process-wide, and a test
+/// installing one would change what every other test's panic does.
+pub fn install_panic_hook(lifeline: Lifeline) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let saved = lifeline.flush();
+        if saved > 0 {
+            eprintln!(
+                "vex: panicked — {saved} unsaved buffer{} written to the recovery directory",
+                if saved == 1 { "" } else { "s" }
+            );
+        }
+        previous(info);
+    }));
+}
+
 /// A recovery copy that is newer than the file it came from.
 #[derive(Debug, Clone)]
 pub struct Found {
@@ -192,6 +268,45 @@ pub fn find_in(directory: &Path, path: &Path) -> Option<Found> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lifeline_writes_every_buffer_it_holds() {
+        let dir = std::env::temp_dir().join(format!("vex-lifeline-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let lifeline = Lifeline::default();
+        lifeline.hold(
+            &dir,
+            vec![
+                (PathBuf::from("/project/a.rs"), Text::from_str("unsaved a")),
+                (PathBuf::from("/project/b.rs"), Text::from_str("unsaved b")),
+            ],
+        );
+
+        assert_eq!(lifeline.flush(), 2);
+        for (path, text) in [
+            ("/project/a.rs", "unsaved a"),
+            ("/project/b.rs", "unsaved b"),
+        ] {
+            let written = std::fs::read_to_string(recovery_path_in(&dir, Path::new(path))).unwrap();
+            assert!(
+                written.ends_with(text),
+                "{path} should have been written to its own recovery copy"
+            );
+        }
+
+        lifeline.hold(&dir, Vec::new());
+        assert_eq!(lifeline.flush(), 0, "nothing unsaved, nothing written");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_lifeline_gives_up_rather_than_waiting_on_itself() {
+        // A panic inside `hold` happens with the lock taken, on the thread that then runs the hook.
+        // Waiting for it would hang the editor where it should have crashed.
+        let lifeline = Lifeline::default();
+        let _taken = lifeline.held.lock().unwrap();
+        assert_eq!(lifeline.flush(), 0);
+    }
 
     #[test]
     fn several_dirty_files_each_keep_their_own_copy() {

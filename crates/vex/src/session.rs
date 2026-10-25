@@ -137,9 +137,9 @@ pub fn remember_project(directory: &Path, root: &Path) {
     if std::fs::create_dir_all(directory).is_err() {
         return;
     }
-    let _ = std::fs::write(
-        last_project_path(directory),
-        root.to_string_lossy().as_ref(),
+    let _ = crate::save::write(
+        &last_project_path(directory),
+        root.to_string_lossy().as_bytes(),
     );
 }
 
@@ -162,7 +162,9 @@ pub fn save(directory: &Path, root: &Path, session: &Session) {
     if std::fs::create_dir_all(directory).is_err() {
         return;
     }
-    let _ = std::fs::write(session_path(directory, root), session.encode());
+    // Replaced whole, like a buffer: a session cut short by a crash mid-write would otherwise be
+    // read back as a list of half the files, or as nothing.
+    let _ = crate::save::write(&session_path(directory, root), session.encode().as_bytes());
 }
 
 /// Loads a project's session, dropping files that no longer exist.

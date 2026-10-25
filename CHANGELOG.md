@@ -9,6 +9,27 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Saving can no longer destroy the file. Every save used to truncate the file and then write it, so
+  a crash, a power cut or a full disk in between left it empty — and the crash-recovery copy had
+  already been deleted. Files are now written to a temporary beside them, flushed to the disk, and
+  renamed into place, keeping their permissions and owner. A symbolic link stays a link, and a
+  hard-linked file is still written in place so its other names see the change.
+- `ctrl-s` saves the same way `:w` does. It went through a separate, older save that skipped
+  clearing the recovery copy, so work you had saved was offered back to you after a crash, and it
+  never ran `format_on_save`.
+- A save no longer silently overwrites a change another program made since you opened the file. The
+  first save is refused, with a message saying so; saving again overwrites. Autosave never
+  overwrites.
+- A panic loses no unsaved work. Every unsaved buffer is written to the recovery directory the
+  moment the editor panics, where before up to two seconds of typing, and more in a buffer you had
+  switched away from, was lost. A kill or a power cut still loses up to the last two seconds.
+- Saving no longer makes the project re-index itself. A save-by-rename looks like a new file to the
+  file watcher, which would have started a full walk after every save.
+- The session file and `init.lua` are written the same safe way, so a crash on the way out cannot
+  leave the next start without its open files or its settings.
+
 ## [0.4.3] - 2026-08-16
 
 A typographic release, and it came from readers rather than from use: enough people said the same

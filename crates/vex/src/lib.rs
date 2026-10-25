@@ -28,6 +28,7 @@ pub mod process;
 pub mod prompt;
 pub mod recovery;
 pub mod results;
+pub mod save;
 pub mod session;
 pub mod settings_ui;
 pub mod snippet;

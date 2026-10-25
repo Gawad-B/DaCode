@@ -185,6 +185,43 @@ fn helper_processes_are_spawned_without_a_console_window() {
     );
 }
 
+#[test]
+fn a_buffer_is_saved_through_one_path() {
+    // There were two. `:w` and autosave went through the app's `write_active`, which clears the
+    // recovery copy, tells the watcher the write was its own and starts a format; `ctrl-s` reached
+    // the executor's own `Save` arm, which wrote the file and did none of that. Nothing showed it —
+    // the file was saved either way — until a crash copy was offered for work that had been saved.
+    //
+    // Marking a document saved is the one thing every save path must do, so it is what is counted:
+    // a second writer has to call it too, and then this fails.
+    let mut sites = Vec::new();
+
+    for file in rust_files(&workspace_root()) {
+        let relative = file.to_string_lossy().replace('\\', "/");
+        if !relative.contains("/vex/src/") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        // Every test module in the binary sits below its first `#[cfg(test)]`, and they mark
+        // documents saved freely to set up what they check.
+        let source = text.split("\n#[cfg(test)]").next().unwrap_or(&text);
+        for (number, line) in source.lines().enumerate() {
+            if line.contains(".mark_saved()") && !line.trim_start().starts_with("//") {
+                sites.push(format!("{relative}:{}: {}", number + 1, line.trim()));
+            }
+        }
+    }
+
+    assert!(
+        sites.len() == 1 && sites[0].contains("crates/vex/src/main.rs"),
+        "a buffer must be saved only by `App::write_active`, which is what clears its recovery copy \
+         and checks nobody else changed the file — found:\n{}",
+        sites.join("\n")
+    );
+}
+
 /// Every `Document` method that changes the text, and so moves the lines folds are named by.
 const MUTATES_TEXT: [&str; 10] = [
     "apply",

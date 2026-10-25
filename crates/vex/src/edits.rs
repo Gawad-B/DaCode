@@ -145,9 +145,9 @@ pub fn apply_to_document(
 
 /// Applies edits to a file that is not open, in place.
 ///
-/// Written whole through a temporary file in the same directory and renamed over the original, so an
-/// interrupted rename cannot leave a half-written source file. The same reasoning as the crash
-/// recovery writer.
+/// Written through [`crate::save::write`], the same as a buffer, so an interrupted rename cannot
+/// leave a half-written source file. It wrote its own temporary here before that existed, which
+/// replaced a symbolic link with a copy and dropped a script's executable bit.
 fn apply_to_file(path: &Path, edits: &[TextEdit]) -> Result<usize, EditError> {
     let io = |message: String| EditError::Io {
         path: path.to_path_buf(),
@@ -171,12 +171,7 @@ fn apply_to_file(path: &Path, edits: &[TextEdit]) -> Result<usize, EditError> {
         .apply(&mut text)
         .map_err(|err| EditError::Invalid(format!("{}: {err}", path.display())))?;
 
-    let temporary = path.with_extension(format!(
-        "{}.vex-tmp",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("")
-    ));
-    std::fs::write(&temporary, text.to_string()).map_err(|err| io(err.to_string()))?;
-    std::fs::rename(&temporary, path).map_err(|err| io(err.to_string()))?;
+    crate::save::write(path, text.to_string().as_bytes()).map_err(|err| io(err.to_string()))?;
 
     Ok(count)
 }

@@ -17,9 +17,10 @@
 //! is built by one walk at startup and nothing ever asked for a second.
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
+use std::time::{Duration, Instant};
 
 /// How many directories of a project may be watched.
 ///
@@ -29,6 +30,14 @@ use std::sync::mpsc::{Receiver, channel};
 /// a new one — and far better than exhausting a limit that would stop *other* programs watching
 /// anything.
 const MAX_DIRECTORIES: usize = 2_048;
+
+/// How long a file the editor replaced is not mistaken for one appearing.
+///
+/// A window rather than one event, because one rename arrives as several: inotify reports the
+/// destination in a `To` event and again in the `Both` that pairs it with its source, and a drain can
+/// fall between them. Long enough for both, short enough that a real deletion moments after a save
+/// is the only thing it can hide — and that only until the next walk.
+const REPLACEMENT_WINDOW: Duration = Duration::from_secs(2);
 
 /// What happened, reduced to the distinction the editor acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +63,8 @@ pub struct FileWatcher {
     project: HashSet<PathBuf>,
     /// An existence change arrived under a project directory since this was last asked.
     dirty: bool,
+    /// Files the editor is replacing by rename, and when it said so.
+    replacing: HashMap<PathBuf, Instant>,
 }
 
 impl FileWatcher {
@@ -87,6 +98,7 @@ impl FileWatcher {
             files: HashSet::new(),
             project: HashSet::new(),
             dirty: false,
+            replacing: HashMap::new(),
         })
     }
 
@@ -140,6 +152,17 @@ impl FileWatcher {
         all
     }
 
+    /// Says that `path` is about to be replaced by a rename, which is how the editor saves.
+    ///
+    /// A rename reports its destination as appearing, and a file appearing in the project is what
+    /// starts a fresh walk — so without this, every save reindexed the project, and with autosave
+    /// that meant after every pause in typing. The file list cannot change when a file that was
+    /// already there is replaced. Its own contents change is still reported by [`Self::poll`].
+    pub fn replacing(&mut self, path: &Path) {
+        self.replacing
+            .insert(crate::canonical(path), Instant::now());
+    }
+
     /// Whether a file appeared or disappeared in the project since this was last asked.
     ///
     /// Deliberately a single flag rather than a list of paths: the answer is used to start another
@@ -165,6 +188,9 @@ impl FileWatcher {
     /// One drain for both, because two independent ones would race: whichever ran first would take
     /// the events the other needed. This is why `poll` takes `&mut self`.
     fn drain(&mut self) {
+        self.replacing
+            .retain(|_, at| at.elapsed() < REPLACEMENT_WINDOW);
+
         while let Ok((path, change)) = self.events.try_recv() {
             let path = crate::canonical(&path);
 
@@ -172,7 +198,11 @@ impl FileWatcher {
                 self.changed.push(path.clone());
             }
 
-            if change == Change::Existence && !self.dirty && self.in_project(&path) {
+            if change == Change::Existence
+                && !self.dirty
+                && !self.replacing.contains_key(&path)
+                && self.in_project(&path)
+            {
                 self.dirty = true;
             }
         }
@@ -428,6 +458,42 @@ mod project_tests {
         assert!(
             !became_dirty(&mut watcher, Duration::from_millis(600)),
             "a hidden file is not in the project list, so it cannot change it"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The editor saves by rename, and a rename reports its destination as appearing. Replacing a
+    /// file that was already there cannot change the file list, so it must not start a walk —
+    /// otherwise autosave reindexed the project every time typing paused.
+    #[test]
+    fn a_file_the_editor_replaces_does_not_ask_for_a_walk() {
+        let dir = scratch("replaced");
+        let file = dir.join("open.rs");
+        std::fs::write(&file, "before\n").unwrap();
+
+        let mut watcher = FileWatcher::new().expect("a watcher starts");
+        watcher.watch(&file).expect("watching the open file");
+        watcher.watch_project([dir.clone()]);
+
+        watcher.replacing(&file);
+        let temporary = dir.join(".open.rs.tmp");
+        std::fs::write(&temporary, "after\n").unwrap();
+        std::fs::rename(&temporary, &file).unwrap();
+
+        // Waiting for the file's own report is what proves the rename's events have arrived, so
+        // the assertion below is about them rather than about how fast the kernel is.
+        let target = crate::canonical(&file);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut reported = false;
+        while Instant::now() < deadline && !reported {
+            reported = watcher.poll().contains(&target);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(reported, "the replaced file's change is still reported");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !watcher.project_changed(),
+            "replacing a file that was already there is not a change to the file list"
         );
         std::fs::remove_dir_all(&dir).ok();
     }

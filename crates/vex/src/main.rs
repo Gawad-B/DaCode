@@ -157,6 +157,7 @@ fn main() -> Result<()> {
 
     let mut app = App::new(root.clone(), state, grammar, &starting_settings);
     app.walk = Some(FileWalk::start(root.clone()));
+    vex::recovery::install_panic_hook(app.lifeline.clone());
 
     // First run: no configuration means nobody has answered the two questions that decide whether
     // this editor is usable for them at all.
@@ -1233,6 +1234,19 @@ struct App {
     hinted_version: Option<vex_text::Version>,
     /// Persists dirty buffers so a crash loses seconds, not work.
     recovery: Recovery,
+    /// Every dirty buffer's text, where the panic hook can reach it — so a panic loses nothing at
+    /// all, rather than the seconds since the last timed write.
+    lifeline: vex::recovery::Lifeline,
+    /// What `lifeline` was last filled from, so it is refilled when that changes rather than on
+    /// every wake.
+    held: Option<Held>,
+    /// What each open file looked like on disk when this editor last read or wrote it, keyed by
+    /// `buffer_key`. A save compares against it, so another program's change is not overwritten
+    /// without anyone being told.
+    on_disk: std::collections::HashMap<std::path::PathBuf, vex::save::Stamp>,
+    /// A file whose outside change the user has been warned about, so the next save they ask for
+    /// overwrites it rather than warning again.
+    overwrite: Option<std::path::PathBuf>,
     /// Diffs the buffer against `HEAD`, off the UI thread.
     git: vex::git::GitWorker,
     /// The version the last diff was asked for, so typing does not spawn a `git show` per keystroke.
@@ -1415,6 +1429,7 @@ impl ApplicationHandler for App {
         if changed {
             self.request_redraw();
         }
+        self.hold_lifeline();
 
         // Sleep until input, or briefly if something is still working. 100ms is far below the
         // threshold where a diagnostic feels late, and a `try_recv` ten times a second costs
@@ -1701,6 +1716,18 @@ impl App {
             symbols: Vec::new(),
             hinted_version: None,
             recovery: Recovery::new(),
+            lifeline: vex::recovery::Lifeline::default(),
+            held: None,
+            on_disk: buffer_key(state.file_path.as_deref())
+                .zip(
+                    state
+                        .file_path
+                        .as_deref()
+                        .and_then(|path| vex::save::Stamp::of(std::path::Path::new(path))),
+                )
+                .into_iter()
+                .collect(),
+            overwrite: None,
             git: vex::git::GitWorker::spawn(),
             diffed_version: None,
             watcher: match vex_project::FileWatcher::new() {
@@ -2623,7 +2650,7 @@ impl App {
         // Save-after-format, the same handshake the language-server path uses: `format_on_save`
         // formats first and writes what came back, or the file on disk is the unformatted one.
         if std::mem::take(&mut self.save_after_format) {
-            self.write_active(false);
+            self.write_active(Saving::AfterFormat);
         }
         self.reveal_cursor();
         true
@@ -3353,8 +3380,44 @@ impl App {
             return false;
         }
 
-        self.save_active();
+        self.write_active(Saving::Auto);
         true
+    }
+
+    /// Hands every dirty buffer to the panic hook, if anything about them changed.
+    ///
+    /// Here, once per batch of events, rather than after each edit: everything that changes text
+    /// runs inside an event, and every event is followed by this. A panic inside a batch loses that
+    /// batch's keystrokes and nothing older. Bounded by the number of open buffers, never by their
+    /// length — a [`Text`] clone shares the rope.
+    fn hold_lifeline(&mut self) {
+        let now = Held {
+            active: self.state.active_buffer,
+            buffers: self.buffers.len(),
+            version: self.state.document.version(),
+            dirty: self.state.document.is_dirty(),
+            path: self.state.file_path.clone(),
+        };
+        if self.held.as_ref() == Some(&now) {
+            return;
+        }
+
+        let active = (self.state.file_path.as_deref(), &self.state.document);
+        let others = self
+            .buffers
+            .iter()
+            .map(|buffer| (buffer.file_path.as_deref(), &buffer.document));
+        // A scratch buffer has no path to recover to, so it is not held — the same limitation the
+        // timed write has.
+        let dirty = std::iter::once(active)
+            .chain(others)
+            .filter(|(_, document)| document.is_dirty())
+            .filter_map(|(path, document)| {
+                Some((std::path::PathBuf::from(path?), document.text().clone()))
+            })
+            .collect();
+        self.lifeline.hold(self.recovery.directory(), dirty);
+        self.held = Some(now);
     }
 
     fn persist_recovery(&mut self, force: bool) {
@@ -4036,6 +4099,29 @@ fn stored_index(buffer: usize, active: usize) -> Option<usize> {
 ///
 /// `None` for a scratch buffer, and two scratch buffers are never the same one: nothing on disk
 /// backs them, so there is nothing for them to share.
+/// Who asked for a save, which decides what it may overwrite and how a refusal is said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Saving {
+    /// A key, a menu, `:w`: someone chose to.
+    Asked,
+    /// Autosave, after typing paused.
+    Auto,
+    /// The write that follows a format, which must not arm another.
+    AfterFormat,
+}
+
+/// What the panic lifeline was last filled from. Background buffers cannot change without the
+/// active one changing places or the list changing length, so this is enough to know when it is
+/// stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    active: usize,
+    buffers: usize,
+    version: vex_text::Version,
+    dirty: bool,
+    path: Option<String>,
+}
+
 fn buffer_key(file_path: Option<&str>) -> Option<std::path::PathBuf> {
     file_path.map(|path| vex_project::canonical(std::path::Path::new(path)))
 }
@@ -4063,6 +4149,7 @@ impl App {
     /// Carries out a window action.
     fn window_action(&mut self, action: &Action) {
         match action {
+            Action::Save => self.save_active(),
             Action::SplitPane { vertical } => {
                 self.save_pane();
                 self.panes.split(if *vertical {
@@ -4244,6 +4331,7 @@ impl App {
                 return;
             }
         };
+        self.remember_disk(&path.to_string_lossy());
 
         // Unsaved work from a crash, for *this* file rather than only for whichever one ends up
         // active. Restoring it clean was worse than losing it silently: the first save of that
@@ -4598,7 +4686,7 @@ impl App {
                 // Not `save_active`: a save that follows a format must not arm another one, or a
                 // formatter that is not idempotent rewrites the file forever.
                 if std::mem::take(&mut self.save_after_format) {
-                    self.write_active(false);
+                    self.write_active(Saving::AfterFormat);
                 }
                 if !applied.files.is_empty() {
                     let names: Vec<String> = applied
@@ -4806,7 +4894,7 @@ impl App {
 
         if std::fs::create_dir_all(&directory).is_ok() {
             self.self_written.insert(vex_project::canonical(&path));
-            match std::fs::write(&path, written) {
+            match vex::save::write(&path, written.as_bytes()) {
                 Ok(()) => {
                     self.self_written.insert(vex_project::canonical(&path));
                     eprintln!("vex: wrote {}", path.display());
@@ -5113,7 +5201,7 @@ impl App {
 
         // The editor's own write, so the watcher does not treat it as an outside edit and reload.
         self.self_written.insert(vex_project::canonical(&path));
-        match std::fs::write(&path, updated) {
+        match vex::save::write(&path, updated.as_bytes()) {
             Ok(()) => {
                 self.self_written.insert(vex_project::canonical(&path));
                 if let Some(settings) = &mut self.state.settings {
@@ -5184,17 +5272,15 @@ impl App {
 
     /// Writes the active buffer, keeping the recovery copy in step.
     fn save_active(&mut self) {
-        self.write_active(true);
+        self.write_active(Saving::Asked);
     }
 
-    /// The same, without arming another format.
+    /// The one path every save of a buffer takes.
     ///
-    /// Used by the save that *follows* a format. Arming there is a loop with no fixed point when
-    /// the formatter is not idempotent: format changes the text, save writes it, `format_on_save`
-    /// arms again, format changes it again. A misconfigured prettier or a formatter with a bug is
-    /// enough, and the symptom is an editor rewriting your file forever — which is exactly what a
-    /// test of the whole path did, twenty seconds of it, before this existed.
-    fn write_active(&mut self, then_format: bool) {
+    /// `ctrl-s` used to take another: the executor's own `Save` arm, which wrote the file and did
+    /// none of what follows — the recovery copy stayed behind to be offered again, the watcher saw
+    /// the write as someone else's, and `format_on_save` never ran for the key most people press.
+    fn write_active(&mut self, saving: Saving) {
         let Some(path) = self.state.file_path.clone() else {
             let message = if self.state.modal {
                 "this buffer has no file name — use :w <path>".to_string()
@@ -5207,20 +5293,40 @@ impl App {
             self.warn(&message);
             return;
         };
+        let file = std::path::Path::new(&path);
+        let key = buffer_key(Some(&path));
+        let before = vex::save::Stamp::of(file);
+
+        let recorded = key.as_ref().and_then(|key| self.on_disk.get(key)).copied();
+        if vex::save::changed_since(recorded, before) {
+            let confirmed = saving == Saving::Asked && key.is_some() && self.overwrite == key;
+            if !confirmed {
+                self.refuse_overwrite(&path, key, saving);
+                return;
+            }
+        }
+        self.overwrite = None;
+
         let text = self.state.document.text().to_string();
+        let canonical = vex_project::canonical(file);
+        self.self_written.insert(canonical.clone());
+        // Saved by rename, which the watcher reports as the file appearing — and a file appearing
+        // in the project is what starts a fresh walk. Told first, so a save is not a reindex.
+        if before.is_some() {
+            if let Some(watcher) = &mut self.watcher {
+                watcher.replacing(&canonical);
+            }
+        }
 
-        self.self_written
-            .insert(vex_project::canonical(std::path::Path::new(&path)));
-
-        match std::fs::write(&path, &text) {
+        match vex::save::write(file, text.as_bytes()) {
             Ok(()) => {
                 // Canonicalization only works once the file exists, so a first save records it here.
-                self.self_written
-                    .insert(vex_project::canonical(std::path::Path::new(&path)));
+                self.self_written.insert(vex_project::canonical(file));
+                self.remember_disk(&path);
                 self.state.document.mark_saved();
                 // The file on disk is authoritative now, so the recovery copy must go — otherwise it
                 // would be offered again on the next open.
-                self.recovery.discard(std::path::Path::new(&path));
+                self.recovery.discard(file);
                 eprintln!("vex: wrote {path}");
 
                 // Formatting is a round trip, so it cannot come *before* the write without either
@@ -5231,13 +5337,66 @@ impl App {
                 // Markdown project there is no server and never will be, and `format_on_save`
                 // silently doing nothing there was the whole shape of this defect. `route_format`
                 // decides which of the two can actually answer.
-                if then_format && self.state.format_on_save && self.can_format() {
+                if saving != Saving::AfterFormat && self.state.format_on_save && self.can_format() {
                     self.save_after_format = true;
                     self.state.pending_request = Some(Action::Format);
                 }
             }
+            // Reported, never silent: a save that failed while the user believes it succeeded is
+            // the worst failure an editor has.
             Err(error) => self.warn(&format!("could not write {path}: {error}")),
         }
+    }
+
+    /// Declines a save that would overwrite someone else's change, and says how to make it anyway.
+    ///
+    /// An asked-for save is armed so that asking again overwrites: the user has now been told, and
+    /// a second refusal would be an editor that cannot save. Autosave is armed too — the person
+    /// pressing the key next has read the message — but it never *takes* the arming, so a file is
+    /// only ever overwritten by someone who chose to.
+    fn refuse_overwrite(&mut self, path: &str, key: Option<std::path::PathBuf>, saving: Saving) {
+        self.overwrite = key;
+        let name = std::path::Path::new(path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let again = match (self.state.modal, saving) {
+            (true, Saving::Asked) => ":w again overwrites it, :e loads theirs".to_string(),
+            (true, _) => ":w overwrites it, :e loads theirs".to_string(),
+            (false, Saving::Asked) => format!("{} again overwrites it", self.key_for("save")),
+            (false, _) => format!("{} overwrites it", self.key_for("save")),
+        };
+
+        match saving {
+            Saving::Asked => self.warn(&format!(
+                "{name} changed on disk since it was opened — {again}"
+            )),
+            // On the hover line, not in a prompt: autosave fires the moment typing pauses, and a
+            // prompt would take the next keystroke. Pushed back to the next edit, or it would ask
+            // the filesystem and say the same thing on every wake.
+            Saving::Auto | Saving::AfterFormat => {
+                self.last_edit = None;
+                self.state.hover = Some(format!(
+                    "not saved: {name} changed on disk since it was opened — {again}"
+                ));
+            }
+        }
+    }
+
+    /// Records what `path` looks like on disk now, as the version this editor last saw.
+    ///
+    /// Called wherever a buffer's text and its file agree: opening, reloading, saving. A site that
+    /// forgets leaves no record, which turns the overwrite check off for that file rather than
+    /// making it refuse to save.
+    fn remember_disk(&mut self, path: &str) {
+        let Some(key) = buffer_key(Some(path)) else {
+            return;
+        };
+        match vex::save::Stamp::of(std::path::Path::new(path)) {
+            Some(stamp) => self.on_disk.insert(key, stamp),
+            None => self.on_disk.remove(&key),
+        };
     }
 
     fn open_palette(&mut self, kind: PaletteKind) {
@@ -5443,6 +5602,7 @@ impl App {
 
                 match vex::open::read(&path) {
                     vex::open::Opened::Text(contents) => {
+                        self.remember_disk(&path_string);
                         // Unsaved work from a crash, if there is any for this file. Only the file
                         // open at startup was ever offered it, so a crash that took three dirty
                         // buffers gave one of them back — and the other two sat in the recovery
@@ -6706,6 +6866,9 @@ impl App {
             }
 
             if self.state.document.is_dirty() {
+                // Told here, so the save this message offers is the one that overwrites — the
+                // check in `write_active` would otherwise refuse it and say the same thing again.
+                self.overwrite = Some(path.clone());
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 self.state.hover = Some(if self.state.modal {
                     format!(
@@ -6726,6 +6889,11 @@ impl App {
             match std::fs::read_to_string(&path) {
                 Ok(contents) => {
                     if contents == self.state.document.text().to_string() {
+                        // Touched, or rewritten identically. Nothing to reload, but the stamp
+                        // moved, and a stale one would refuse the next save for no reason.
+                        if let Some(open) = self.state.file_path.clone() {
+                            self.remember_disk(&open);
+                        }
                         continue;
                     }
                     // The cursor is kept by offset rather than reset: a formatter run should not
@@ -6738,6 +6906,9 @@ impl App {
                     self.state.document.resume_from(previous);
                     let clamped = cursor.min(self.state.document.text().len_chars());
                     self.state.document.set_primary_caret(clamped);
+                    if let Some(open) = self.state.file_path.clone() {
+                        self.remember_disk(&open);
+                    }
                     self.after_buffer_change();
                     let name = relative_crumbs(&path.to_string_lossy()).join("/");
                     eprintln!("vex: reloaded {name} — changed on disk");
@@ -7261,6 +7432,156 @@ mod wiring_tests {
             .text()
             .slice(span.range.clone())
             .to_string()
+    }
+
+    /// The same editor, with its recovery directory inside the test's own.
+    fn recovering(dir: &std::path::Path, name: &str, contents: &str) -> App {
+        let mut app = editor(dir, name, contents);
+        app.recovery = Recovery::in_dir(dir.join("recovery"));
+        app
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        execute(
+            &mut app.state,
+            &mut app.registers,
+            &Action::InsertText(text.into()),
+            40,
+        );
+    }
+
+    /// `ctrl-s` saves through the same path as `:w`.
+    ///
+    /// It reached the executor's own `Save` arm, which wrote the file and nothing else: the recovery
+    /// copy stayed behind and was offered again on the next open, as though the save had never
+    /// happened, and `format_on_save` never ran for the key most people actually press.
+    #[test]
+    fn the_save_key_clears_the_recovery_copy_like_any_other_save() {
+        let dir = scratch("save-key");
+        let mut app = recovering(&dir, "a.rs", "fn main() {}\n");
+        type_text(&mut app, "// edited\n");
+        app.persist_recovery(true);
+        let file = dir.join("a.rs");
+        // Asked of the path, not of `find`: that drops a copy no newer than the file, and the file
+        // was written a moment ago — inside one tick of the kernel's clock on a loaded machine.
+        assert!(
+            app.recovery.path_for(&file).exists(),
+            "the edit has a recovery copy"
+        );
+
+        app.run(Action::Save);
+
+        assert!(!app.state.document.is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            app.state.document.text().to_string()
+        );
+        assert!(
+            !app.recovery.path_for(&file).exists(),
+            "a saved file's recovery copy must go, or it is offered again as unsaved work"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A save does not silently overwrite a change another program made since the file was opened.
+    ///
+    /// The watcher only says so for the active buffer, and only on the hover line, which the next
+    /// keystroke replaces. Nothing checked at the moment it matters, so a `git checkout`, a
+    /// formatter run in a terminal, or a teammate's edit on a shared mount was undone by the next
+    /// save without a word.
+    #[test]
+    fn a_save_does_not_overwrite_a_change_made_on_disk() {
+        let dir = scratch("conflict");
+        let file = dir.join("a.rs");
+        let mut app = recovering(&dir, "a.rs", "fn main() {}\n");
+        type_text(&mut app, "// mine\n");
+        std::fs::write(&file, "fn main() { theirs() }\n").unwrap();
+
+        app.run(Action::Save);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "fn main() { theirs() }\n",
+            "the first save is refused, and says why"
+        );
+        assert!(
+            app.state.document.is_dirty(),
+            "and the buffer is still unsaved"
+        );
+
+        app.run(Action::Save);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            app.state.document.text().to_string(),
+            "asking again, having been told, overwrites — an editor that cannot save is worse"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Autosave is never the thing that overwrites someone else's change: it fires because typing
+    /// paused, not because anyone chose to.
+    #[test]
+    fn autosave_never_overwrites_a_change_made_on_disk() {
+        let dir = scratch("conflict-auto");
+        let file = dir.join("a.rs");
+        let mut app = recovering(&dir, "a.rs", "fn main() {}\n");
+        type_text(&mut app, "// mine\n");
+        std::fs::write(&file, "fn main() { theirs() }\n").unwrap();
+
+        app.write_active(Saving::Auto);
+        app.write_active(Saving::Auto);
+
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "fn main() { theirs() }\n"
+        );
+        assert!(
+            app.state.prompt.is_none(),
+            "autosave reports on the hover line; a prompt would take the next keystroke"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file the editor itself rewrote, or one reloaded from disk, is not a conflict.
+    #[test]
+    fn saving_twice_in_a_row_is_not_a_conflict() {
+        let dir = scratch("no-conflict");
+        let file = dir.join("a.rs");
+        let mut app = recovering(&dir, "a.rs", "fn main() {}\n");
+        type_text(&mut app, "// one\n");
+        app.run(Action::Save);
+        type_text(&mut app, "// two\n");
+        app.run(Action::Save);
+
+        assert!(
+            !app.state.document.is_dirty(),
+            "the second save went through first time"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            app.state.document.text().to_string()
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// What the panic hook will write is what is on screen, not what the last timed write saw.
+    #[test]
+    fn every_dirty_buffer_is_held_for_the_panic_hook() {
+        let dir = scratch("lifeline");
+        let file = dir.join("a.rs");
+        let mut app = recovering(&dir, "a.rs", "fn main() {}\n");
+        app.hold_lifeline();
+        assert_eq!(app.lifeline.flush(), 0, "nothing is unsaved yet");
+
+        type_text(&mut app, "// unsaved\n");
+        app.hold_lifeline();
+
+        assert_eq!(app.lifeline.flush(), 1);
+        // Read directly rather than through `find`, which drops a copy written in the same clock
+        // tick as the file — and this one is, on a loaded machine.
+        let written = std::fs::read_to_string(app.recovery.path_for(&file))
+            .expect("the flush wrote a recovery copy");
+        assert!(written.ends_with(&app.state.document.text().to_string()));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Highlight spans move with the text they describe, rather than staying where they were.
