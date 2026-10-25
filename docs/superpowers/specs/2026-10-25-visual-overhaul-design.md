@@ -12,7 +12,9 @@ their own.
 | Motion feel | **Expressive**: springs with a little overshoot, ~300 ms for panels and popups |
 | Settings placement | **An editor tab**, VSCode's placement, with JetBrains' layout inside |
 | Settings saving | **Automatic**: no save button, no ctrl-s |
-| Sub-headers | **None**: a setting row is its name and its control; no `INIT.LUA` source captions |
+| Sub-headers | **Meaningful ones, as VSCode has them**: section headings that group settings, and an explanation under any setting that needs one. Captions that say nothing — `INIT.LUA`, `IMPORTED` — are removed |
+| Focus | **Where you click is where keys go**: the editor, the sidebar or a panel, one at a time |
+| Syntax colours | **Arrive on their own**, the moment the parse finishes — not on the next keypress |
 | Animation architecture | **One motion engine** (approach A below) |
 
 ## 1. Title bar
@@ -96,8 +98,9 @@ Restyled: command palette (drops from the command centre, like VSCode and Zed), 
 menu, completion, hover/info, which-key, the help panel (F1), project search results, the problems
 list, the welcome wizard, and the empty-editor screen.
 
-- **No sub-headers or captions that do not carry information.** A heading stays only where it names
-  something the reader is choosing between.
+- **Headings and explanations where they help, as VSCode does** — a palette group ("recently opened",
+  "commands"), a help section, a line under a menu item whose effect is not obvious. Captions that
+  carry no information are removed.
 - Palette and help-panel rows become **clickable** — closing a gap `CLAUDE.md` lists.
 - Every card's rectangles come from a geometry function the mouse also reads (the existing rule).
 
@@ -107,9 +110,13 @@ Opened by the gear, `ctrl-,`, or the palette, as a tab beside the files — a ta
 not a file.
 
 - **Left: a category tree** — Appearance, Editor, Files & saving, Keys, Languages, Import from VSCode.
-- **Right: the settings of the chosen category**, each a row of name, one-line description and a
-  control: switch, stepper, or dropdown. **No source captions.** A ● marks a value that differs from
-  the default, with a ⟲ to reset it.
+- **Right: the settings of the chosen category**, grouped under **section headings** as VSCode groups
+  them (Editor › Font, Editor › Wrapping, Files › Saving). Each setting is its name in bold, an
+  **explanation underneath when it needs one** — what it does, and what the choices mean ("Relative:
+  each line shows its distance from the cursor, for Vim counts like `12j`") — and its control:
+  switch, stepper or dropdown. A setting whose name says everything gets no explanation. The source
+  captions (`INIT.LUA`, `IMPORTED`) are removed. A ● marks a value that differs from the default,
+  with a ⟲ to reset it.
 - **Search** at the top filters across every category live, highlighting matches; categories with no
   match collapse.
 - **Saving is automatic**: a change applies instantly and is written to `init.lua` (the panel's
@@ -123,6 +130,40 @@ not a file.
 
 The old settings sidebar panel is removed; the activity bar's gear opens the tab.
 
+## 5. Focus
+
+The bug: whenever the file tree is open, its key handler runs before the editor's and takes every
+arrow key (`main.rs`, `handle_tree_key` ahead of the grammar), so ↑/↓ move through files instead of
+lines. The settings panel does the same. There is no notion of focus — only "the open panel wins".
+
+- `EditorState` gains `focus: Focus` — `Editor`, `Sidebar`, `Panel` (search results; the terminal
+  later). Exactly one has the keyboard; overlays (palette, menus, completion) still take it while
+  they are open, as they do now.
+- **A click sets focus** to the region it lands in. Keys are routed by `focus`, not by which panel
+  happens to be open: arrows in the editor move lines even with the tree showing.
+- Keyboard: `ctrl-shift-e` focuses the explorer (opening it if closed), `esc` from the sidebar returns
+  to the editor, `ctrl-1` focuses the editor — VSCode's keys, added to the command table.
+- The focused region shows it: the tree's selected row is bright with a focus ring when the sidebar
+  has focus and dims when it does not, and the editor's cursor stops blinking-solid when it loses
+  focus — VSCode's cues.
+
+## 6. Syntax colours arrive on their own
+
+The bug: the highlighter parses on its own thread as it should, but its answers are only collected
+inside `sync_syntax`, which runs on input events — `about_to_wait`, where every other background
+service is polled, never collects them. And `services_busy` counts the highlighter as busy only
+before its very first result. So after opening a file, scrolling or editing, the finished colours
+sit unread until some unrelated key or click wakes the editor.
+
+- Background workers **wake the event loop when they have an answer**, through a winit
+  `EventLoopProxy` handed to them as a small waker. The highlighter first; the git, format and
+  install workers and the language-server reader the same way. This replaces the 100 ms polling
+  those use today, so an idle editor with a language server running truly sleeps.
+- `about_to_wait` collects the highlighter's result like the others', applies it only if fresh for
+  the buffer's version (the existing rule), and requests a redraw.
+- A wiring test: open a file, let the worker answer, run the idle step with no input — the highlights
+  are applied.
+
 ## Testing
 
 - Geometry: the size-sweeping tests extend to the menu bar, cards and settings page — nothing outside
@@ -132,6 +173,9 @@ The old settings sidebar panel is removed; the activity bar's gear opens the tab
 - Latency: animating costs nothing per keystroke; pixel-scroll bursts are flat in document size.
 - Settings: auto-save writes once after a burst of changes, through `write_back`, and round-trips
   through the Lua reader.
+- Focus: with the tree open and the editor focused, ↓ moves the caret; a click in the tree moves focus
+  there and ↓ moves the selection; `esc` gives it back.
+- Syntax: highlights are applied from the idle step alone, with no input event.
 - Visual: renders of every surface at three sizes and at mid-animation instants (`--at-ms`).
 
 ## Out of scope here
