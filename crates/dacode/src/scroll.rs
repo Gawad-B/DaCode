@@ -33,7 +33,16 @@ impl ScrollInput {
             return 0;
         }
         self.pending_px += px;
-        let rows = (self.pending_px / row_height).trunc();
+        let ratio = self.pending_px / row_height;
+        // Within a hair of a whole row counts as one. Twenty deltas of a twentieth of a row sum in
+        // `f32` to a fraction under one, and truncation would then hold the row back for no reason
+        // a person could see.
+        let nearest = ratio.round();
+        let rows = if (ratio - nearest).abs() < 1e-4 {
+            nearest
+        } else {
+            ratio.trunc()
+        };
         self.pending_px -= rows * row_height;
         rows as isize
     }
@@ -220,7 +229,7 @@ mod tests {
         let display = DisplayMap::default();
 
         let mut input = ScrollInput::default();
-        input.add_pixels(ROW - 0.001, ROW);
+        input.add_pixels(ROW - 0.01, ROW);
         let anchor = land_on_row(&display, &text, ScrollAnchor::at_line(10), &mut input, ROW);
         assert_eq!(anchor.line, 11);
         assert_eq!(input.remainder(), 0.0);

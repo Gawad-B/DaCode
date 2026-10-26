@@ -29,7 +29,7 @@ use dacode_text::{CharOffset, Selection, SelectionSet, Text, Version};
 use dacode_theme::{Mode, Theme, space};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -1793,7 +1793,12 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
 
             // Pinch-to-zoom, where the platform reports it: macOS today. winit 0.30 does not deliver
             // the gesture on Wayland or X11, and ctrl-scroll is the way to resize the text there.
-            WindowEvent::PinchGesture { delta, .. } => {
+            WindowEvent::PinchGesture { delta, phase, .. } => {
+                // A new pinch starts from nothing: a leftover from the last one would make the first
+                // movement of this one a step, possibly the wrong way.
+                if phase == TouchPhase::Started {
+                    self.gestures.pinch = 0.0;
+                }
                 self.pinch(delta);
                 self.request_redraw();
             }
@@ -1815,11 +1820,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                     },
                 ..
             } => {
-                // Collect the file index *before* handling the key: `ctrl-p` must not open onto an
-                // empty list because the walk finished a moment earlier and nobody looked.
-                self.poll_walk();
-
-                if self.handle_key(logical_key) {
+                if self.key_event(logical_key) {
                     // The same refusal `CloseRequested` makes, for the same reason: ctrl-q with
                     // three dirty buffers must not be one keystroke away from leaving them.
                     let unsaved = self.unsaved_count();
@@ -1840,13 +1841,6 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                     self.save_session();
                     event_loop.exit();
                 } else {
-                    if self.state.palette.is_none() && self.state.prompt.is_none() {
-                        self.reveal_cursor();
-                        self.refresh_completion();
-                        self.sync_syntax();
-                        self.sync_lsp();
-                    }
-                    self.persist_recovery(false);
                     self.request_redraw();
                 }
             }
@@ -2074,7 +2068,7 @@ impl App {
     /// The wheel had no dispatch at all: it scrolled the document whatever was in front of it, so
     /// the settings panel, the key list, the command palette, the file tree, the search results and
     /// the problems list all ignored it — while the *file behind them* scrolled instead. Every other
-    /// input already has this ladder; `handle_key` and `click` each ask the same questions in the
+    /// input already has this ladder; `press` and `click` each ask the same questions in the
     /// same order, and this is the third reader of that order rather than a new opinion about it.
     ///
     /// For every panel but the help one, moving the selection *is* moving the view: their windows
@@ -2157,53 +2151,68 @@ impl App {
         // ctrl-scroll resizes the text, as it does in every browser and every other editor.
         // The wheel handler ignored modifiers entirely, so the one gesture people try first
         // when the type is too small did nothing.
+        //
+        // Counted in lines and accumulated: a wheel notch is one line and one step, and a touchpad
+        // sends dozens of fractions of one per flick. A step per event ran the type from smallest to
+        // largest in one gesture.
         if self.modifiers.control_key() {
-            let steps = if pixels {
-                self.gestures.zoom_input.add_pixels(dy, row_height)
-            } else if dy != 0.0 {
-                dy.signum() as isize
-            } else {
-                0
-            };
+            let lines = if pixels { dy / row_height } else { dy };
+            let steps = self.gestures.zoom_input.add_pixels(lines, 1.0);
             self.zoom(steps);
             return;
         }
 
         // Sideways. A trackpad and a tilt wheel send an x delta directly; shift plus a plain wheel
         // is the conventional way to send one from a mouse that cannot. Reading only y, and ignoring
-        // the modifier, is why a horizontal gesture did nothing — and a shifted wheel then scrolled
-        // down as well as across, which is not what anybody holding shift meant.
-        let (sideways, down) = if self.modifiers.shift_key() && dx == 0.0 {
-            (-dy, 0.0)
+        // the modifier, is why a horizontal gesture did nothing. Only where there is somewhere to
+        // go sideways: with wrap on, or over a panel, a shifted wheel still scrolls down, as it
+        // always did, rather than doing nothing at all.
+        let shifted = self.modifiers.shift_key()
+            && dx == 0.0
+            && self.state.display.mode == WrapMode::None
+            && !self.wheel(0);
+        let (sideways, down) = if shifted { (-dy, 0.0) } else { (-dx, -dy) };
+
+        // A notch is a whole number of lines, and glides. Anything finer is a touchpad or a
+        // free-spinning wheel — X11 and Windows report both as fractions of a line — which already
+        // moves smoothly and is followed by the pixel, as a touchpad that reports pixels is.
+        // Rounding each fraction to whole lines was the touchpad bug over again: a tenth of a line
+        // became nothing, and a fifth became a whole row.
+        let notch = !pixels && down.fract() == 0.0 && sideways.fract() == 0.0;
+        let (down_px, sideways_px) = if pixels {
+            (down, sideways)
         } else {
-            (-dx, -dy)
+            (
+                down * 3.0 * row_height,
+                sideways * 6.0 * self.focused_grid().advance(),
+            )
         };
 
         if down != 0.0 {
-            if pixels {
+            if notch {
+                let lines = down as isize * 3;
+                if !self.wheel(lines) {
+                    self.glide_rows(lines);
+                }
+            } else {
                 // A panel under the pointer takes whole rows of its own; the code takes the pixels.
-                let rows = self.gestures.panel_input.add_pixels(down, row_height);
+                let rows = self.gestures.panel_input.add_pixels(down_px, row_height);
                 if !self.wheel(rows) {
                     self.gestures.panel_input.clear();
                     // The fingers are on the glass: whatever a wheel notch started is overtaken.
                     self.cancel_glide();
-                    self.scroll_pixels(down);
+                    self.scroll_pixels(down_px);
                     self.sync_syntax();
-                }
-            } else {
-                let lines = (down * 3.0).round() as isize;
-                if lines != 0 && !self.wheel(lines) {
-                    self.glide_rows(lines);
                 }
             }
         }
 
         if sideways != 0.0 && self.state.display.mode == WrapMode::None {
-            if pixels {
-                self.cancel_glide();
-                self.scroll_columns_px(sideways);
+            if notch {
+                self.glide_columns(sideways as isize * 6);
             } else {
-                self.glide_columns((sideways * 6.0).round() as isize);
+                self.cancel_glide();
+                self.scroll_columns_px(sideways_px);
             }
         }
     }
@@ -2396,9 +2405,17 @@ impl App {
                 moved = true;
             }
             if self.state.chrome.motion.target(key) == Some(value) {
+                // Land on the nearest column, as the rows do: the sum of a few dozen frame-sized
+                // deltas can end a hair short of the last one, and truncation would then drop it.
+                let advance = self.focused_grid().advance();
+                let remainder = self.gestures.column_input.remainder();
                 self.gestures.column_input.clear();
+                if remainder.abs() >= advance / 2.0 {
+                    self.scroll_sideways(remainder.signum() as isize);
+                }
                 self.state.chrome.motion.snap(key, 0.0);
                 self.gestures.glide.columns = None;
+                self.gestures.view = Some(self.view());
             } else {
                 self.gestures.glide.columns = Some(value);
             }
@@ -2489,17 +2506,36 @@ impl App {
         ))
     }
 
-    /// Returns true if the editor should quit.
-    fn handle_key(&mut self, key: WinitKey) -> bool {
-        let Some(key) = self.translate(&key) else {
+    /// One key press from the window system, and what follows it. Returns true if the editor should
+    /// quit.
+    fn key_event(&mut self, logical_key: WinitKey) -> bool {
+        // Collect the file index *before* handling the key: `ctrl-p` must not open onto an
+        // empty list because the walk finished a moment earlier and nobody looked.
+        self.poll_walk();
+
+        // A key that is no key of ours — a bare ctrl, shift or alt — does nothing, so nothing must
+        // follow it either. It used to reach the cursor reveal below, so holding ctrl to zoom or to
+        // ctrl-click a name threw a scrolled view back to the caret, and the click then landed on
+        // whatever had moved under the pointer.
+        let Some(key) = self.translate(&logical_key) else {
             return false;
         };
-        self.press(key)
+        if self.press(key) {
+            return true;
+        }
+        if self.state.palette.is_none() && self.state.prompt.is_none() {
+            self.reveal_cursor();
+            self.refresh_completion();
+            self.sync_syntax();
+            self.sync_lsp();
+        }
+        self.persist_recovery(false);
+        false
     }
 
     /// Routes one key, after the window system's event has become a [`Key`].
     ///
-    /// Split from `handle_key` so a test drives the real routing rather than a copy of it — the
+    /// Split from `key_event` so a test drives the real routing rather than a copy of it — the
     /// order of the checks below *is* the behaviour, and it is where the file tree once took the
     /// arrow keys from the editor.
     fn press(&mut self, key: Key) -> bool {
@@ -2798,10 +2834,14 @@ impl App {
     /// The char range currently on screen, which bounds every syntax request.
     fn visible_range(&self) -> std::ops::Range<dacode_text::CharOffset> {
         let text = self.state.document.text();
+        // One row past what fits whole: while part-scrolled that row is drawn too, sliding in at the
+        // bottom, and without spans it would sit there in plain ink until it became a whole row. Always
+        // the extra row rather than only while part-scrolled, so the range asked for does not change
+        // every time the remainder crosses zero.
         let rows = self
             .state
             .display
-            .rows_from(text, self.state.scroll, self.code_rows());
+            .rows_from(text, self.state.scroll, self.code_rows() + 1);
 
         let start = rows
             .first()
@@ -5331,6 +5371,9 @@ impl App {
         }
         self.state.scroll = pane.scroll;
         self.state.document.set_selections(pane.selections);
+        // The remainder was the last pane's. Left until the next event, a click that switched panes
+        // would measure the pane it landed in — drawn on whole rows — against it, a row low.
+        self.settle_scroll_input();
     }
 
     /// Sends a rename request for the symbol under the cursor.
@@ -9779,6 +9822,110 @@ mod scroll_tests {
         app.press(Key::named(KeyCode::Down));
         app.settle_scroll_input();
         assert_eq!(app.state.sub_row_px(row), 0.0);
+    }
+
+    #[test]
+    fn fractional_line_deltas_add_up_to_scrolling() {
+        // X11's smooth scrolling and Windows' precision touchpads send a touchpad as fractions of a
+        // line. Rounded to whole lines per event, a tenth of a line times three was 0.3 and became
+        // nothing — the touchpad bug again, on every platform but Wayland.
+        let mut app = editor("fraction");
+        let row = app.row_height_px();
+        for _ in 0..40 {
+            app.settle_scroll_input();
+            app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, -0.1));
+        }
+        app.advance_glide(Instant::now() + Duration::from_secs(2));
+        let travelled = app.state.scroll.line as f32 * row + app.state.sub_row_px(row);
+        assert!(
+            (travelled - 12.0 * row).abs() < 1.0,
+            "forty tenths of a line, at three rows a line, is twelve rows; went {travelled} px"
+        );
+    }
+
+    #[test]
+    fn small_ctrl_deltas_add_up_to_one_zoom_step() {
+        // With a step per event, a flick that sends twenty tiny deltas ran the type from smallest
+        // to largest. A line's worth of them is one step, as one notch of a mouse wheel is.
+        let mut app = editor("zoom");
+        let size = app.state.typography.code_size;
+        app.modifiers = ModifiersState::CONTROL;
+        for _ in 0..19 {
+            app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, 0.05));
+        }
+        assert_eq!(
+            app.state.typography.code_size, size,
+            "under a line: no step yet"
+        );
+        app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, 0.05));
+        let once = app.state.typography.code_size;
+        assert!(once > size, "a whole line is a step");
+        let _ = app.run(Action::DecreaseFontSize);
+        assert_eq!(
+            app.state.typography.code_size, size,
+            "exactly one step, not several"
+        );
+    }
+
+    #[test]
+    fn clicking_another_pane_ignores_the_part_scrolled_row() {
+        // The remainder belongs to the pane that was scrolled. Read against the pane just clicked —
+        // drawn on whole rows because it was unfocused — it moved the click a row down whenever the
+        // pointer was in the lower part of a row.
+        let mut app = editor("panes");
+        let _ = app.run(Action::SplitPane { vertical: true });
+        let row = app.row_height_px();
+        swipe(&mut app, row * 0.5);
+        assert!(app.state.sub_row_px(row) > 0.0);
+
+        let other = 1 - app.panes.active();
+        let code = app.layout().pane(other, 2, true, app.scale()).code;
+        app.pointer = (code.x + code.width / 2.0, code.y + row * 0.75);
+        app.settle_scroll_input();
+        app.click(false);
+
+        assert_eq!(app.panes.active(), other);
+        let line = app.state.document.text().char_to_line(app.state.cursor());
+        assert_eq!(
+            line, app.state.scroll.line,
+            "the click lands on the first row of the pane it was made in"
+        );
+    }
+
+    #[test]
+    fn a_bare_modifier_leaves_the_view_where_it_was() {
+        // Ctrl, Shift and Alt arrive as key presses that resolve to nothing, and the key path then
+        // revealed the cursor: holding ctrl to zoom or to ctrl-click a name threw the view back to
+        // wherever the caret was, and the click landed on whatever was now under the pointer.
+        let mut app = editor("modifier");
+        let row = app.row_height_px();
+        swipe(&mut app, row * 40.5);
+        let scroll = app.state.scroll;
+        let offset = app.state.sub_row_px(row);
+
+        for key in [NamedKey::Control, NamedKey::Shift, NamedKey::Alt] {
+            app.settle_scroll_input();
+            assert!(!app.key_event(WinitKey::Named(key)));
+            app.settle_scroll_input();
+        }
+        assert_eq!(app.state.scroll, scroll);
+        assert_eq!(app.state.sub_row_px(row), offset);
+    }
+
+    #[test]
+    fn the_row_sliding_in_at_the_bottom_is_highlighted_too() {
+        // While part-scrolled, one row more is drawn than fits whole. Asking the highlighter for
+        // the whole rows only left that row in plain ink for as long as it was sliding in.
+        let mut app = editor("highlight");
+        let row = app.row_height_px();
+        swipe(&mut app, row * 10.5);
+        let rows = app.code_rows();
+        let last_drawn = app.state.scroll.line + rows;
+        let text = app.state.document.text();
+        assert!(
+            app.visible_range().end >= text.line_range(last_drawn).end,
+            "the highlighted range reaches line {last_drawn}"
+        );
     }
 
     #[test]

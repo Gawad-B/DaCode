@@ -249,9 +249,16 @@ impl TextStack {
                 scale: 1.0,
                 bounds: {
                     let shown = run.clip.map_or(run.rect, |clip| run.rect.intersect(clip));
+                    // Outward rounding is right for a run's own box, but a top cut by a clip must
+                    // round inward, or a part-scrolled row reaches a pixel over the strip above it.
+                    let top = if shown.y > run.rect.y {
+                        shown.y.ceil()
+                    } else {
+                        shown.y.floor()
+                    };
                     TextBounds {
                         left: shown.x.floor() as i32,
-                        top: shown.y.floor() as i32,
+                        top: top as i32,
                         right: shown.right().ceil() as i32,
                         bottom: shown.bottom().ceil() as i32,
                     }

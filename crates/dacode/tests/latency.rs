@@ -369,12 +369,24 @@ fn every_frame_a_panel_adds_is_still_bounded_by_the_viewport() {
     /// A named way of putting the editor into a state that draws one more thing.
     type Panel = (&'static str, fn(&mut EditorState));
 
-    let panels: [Panel; 3] = [
+    let panels: [Panel; 4] = [
         ("the settings panel", |state| {
             state.settings = Some(dacode::settings_ui::Settings::new());
         }),
         ("the problems list", |state| {
             state.show_diagnostics = true;
+        }),
+        ("the top row part-scrolled", |state| {
+            // One more row drawn and everything clipped: still a screenful, whatever the file.
+            let row = state.typography.row_height();
+            state.scroll = dacode::scroll::by_pixels(
+                &state.display,
+                state.document.text(),
+                state.scroll,
+                &mut state.chrome.scroll_input,
+                row * 0.5,
+                row,
+            );
         }),
         ("a search with matches on screen", |state| {
             let text = state.document.text().clone();
