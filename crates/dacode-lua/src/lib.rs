@@ -367,99 +367,16 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
     Ok(())
 }
 
-/// Every name `dacode.map` accepts. Derived by asking [`dacode_input::Action`] rather than kept as a
-/// second list, so the two cannot disagree.
+/// Every name `dacode.map` accepts: [`dacode_input::Action::NAMES`], the table the palette, the
+/// help panel and config already share.
+///
+/// This was a hand-kept list of its own, filtered through `Action::from_name` so a deleted name
+/// could not be advertised. The filter caught deletions and nothing caught additions: the list sat
+/// at 79 names while the vocabulary grew past it, so `dacode.actions` never offered
+/// `focus_explorer`, `focus_editor` or anything else added after it was written.
 pub fn action_names() -> Vec<&'static str> {
-    CANDIDATE_ACTIONS
-        .iter()
-        .copied()
-        .filter(|name| dacode_input::Action::from_name(name).is_some())
-        .collect()
+    dacode_input::Action::NAMES.to_vec()
 }
-
-/// The names this crate advertises. Filtered through `Action::from_name`, so a name deleted from the
-/// vocabulary disappears from `dacode.actions` instead of being advertised and then rejected.
-const CANDIDATE_ACTIONS: [&str; 79] = [
-    "move_left",
-    "move_right",
-    "move_up",
-    "move_down",
-    "move_word_forward",
-    "move_word_backward",
-    "move_word_end",
-    "move_line_start",
-    "move_line_end",
-    "move_first_non_blank",
-    "move_file_start",
-    "move_file_end",
-    "move_matching_bracket",
-    "move_paragraph_forward",
-    "move_paragraph_backward",
-    "normal_mode",
-    "insert_mode",
-    "visual_mode",
-    "replace_mode",
-    "insert_before",
-    "insert_after",
-    "insert_line_start",
-    "insert_line_end",
-    "open_below",
-    "open_above",
-    "newline",
-    "delete_backward",
-    "delete_forward",
-    "paste",
-    "paste_before",
-    "undo",
-    "redo",
-    "repeat_change",
-    "add_caret_above",
-    "add_caret_below",
-    "split_selection_into_lines",
-    "keep_primary_selection",
-    "collapse_selections",
-    "select_line",
-    "select_all",
-    "toggle_soft_wrap",
-    "toggle_theme",
-    "increase_font_size",
-    "decrease_font_size",
-    "save",
-    "quit",
-    "search",
-    "search_backward",
-    "search_next",
-    "search_previous",
-    "command",
-    "search_project",
-    "hover",
-    "goto_definition",
-    "next_diagnostic",
-    "previous_diagnostic",
-    "dismiss_info",
-    "completion",
-    "rename",
-    "format",
-    "split_vertical",
-    "split_horizontal",
-    "close_pane",
-    "next_pane",
-    "previous_pane",
-    "toggle_tree",
-    "code_action",
-    "find_references",
-    "toggle_inlay_hints",
-    "toggle_diagnostics",
-    "toggle_fold",
-    "fold_all",
-    "unfold_all",
-    "jump_back",
-    "jump_forward",
-    "replay_macro",
-    "expand_snippet",
-    "open_folder",
-    "settings",
-];
 
 /// The closest name in `candidates`, if one is close enough to be worth suggesting.
 ///
@@ -797,14 +714,16 @@ mod tests {
     }
 
     #[test]
-    fn every_advertised_action_resolves() {
-        // The advertised list is filtered through `Action::from_name`, so this asserts the filter is
-        // not quietly hiding most of it.
-        assert_eq!(
-            action_names().len(),
-            CANDIDATE_ACTIONS.len(),
-            "an advertised action name no longer resolves"
-        );
+    fn every_advertised_action_resolves_and_none_is_missing() {
+        // The advertised list once lagged the vocabulary by every action added after it was
+        // written; the two focus commands are the ones it was found missing.
+        let names = action_names();
+        for name in &names {
+            assert!(Action::from_name(name).is_some(), "{name} is advertised");
+        }
+        for wanted in ["focus_explorer", "focus_editor"] {
+            assert!(names.contains(&wanted), "{wanted} is not advertised");
+        }
     }
 
     #[test]

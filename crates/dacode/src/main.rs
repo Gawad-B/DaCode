@@ -1257,7 +1257,14 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
-    } else if flag("--settings") {
+    } else if flag("--settings")
+        // Each of these only means something on the settings tab, so asking for one is asking for
+        // the tab. Without this `--settings-page Editor` alone drew the plain editor, which reads
+        // as a capture that passed.
+        || value("--settings-page").is_some()
+        || value("--settings-search").is_some()
+        || value("--row").is_some()
+    {
         use dacode::settings_ui::Category;
         let modal = state.modal;
         let mut page = dacode::settings_ui::Page::new();
@@ -2771,10 +2778,25 @@ impl App {
     /// Routes one key, after the window system's event has become a [`Key`].
     ///
     /// Split from `key_event` so a test drives the real routing rather than a copy of it — the
-    /// order of the checks below *is* the behaviour, and it is where the file tree once took the
-    /// arrow keys from the editor.
+    /// order of the checks in [`App::route_key`] *is* the behaviour, and it is where the file tree
+    /// once took the arrow keys from the editor. Focus is settled on both sides: before, so a view
+    /// that has closed cannot eat this key, and after, so a key that moved focus (`ctrl-shift-e`,
+    /// a search opening its results) closes the completion popup now rather than leaving it drawn
+    /// over a caret that no longer has the keys.
     fn press(&mut self, key: Key) -> bool {
         self.state.settle_focus();
+        let quit = self.route_key(key);
+        self.state.settle_focus();
+        quit
+    }
+
+    /// The router itself, in the order a key is offered: the menu, then the other overlays (the
+    /// palette, a prompt, the help panel), then the wizard, then completion while the text has the
+    /// keys, then whichever surface has focus, and only then the grammar. An overlay always comes
+    /// before anything that is merely focused, because it is drawn on top of it: a key that reached
+    /// a panel under an open card would drive something the user cannot see.
+    fn route_key(&mut self, key: Key) -> bool {
+        use dacode::focus::Focus;
         // The menu owns the keyboard while it is open — it is something you are choosing from, and
         // a key that fell through would type into the file behind it. First of all: completion,
         // a hover box and a focused results panel each took Enter or the arrows ahead of it, so a
@@ -2794,36 +2816,47 @@ impl App {
         if self.state.prompt.is_some() {
             return self.handle_prompt_key(key);
         }
+        // The help panel owns the keyboard while it is open too, for the same reason. It used to be
+        // asked after completion and a focused results panel, so with the panel focused F1 opened
+        // the card and ↓ and Enter went on driving the hits hidden underneath it — and since Enter
+        // in help runs its row, the stolen Enter opened a file instead.
+        if self.state.help.is_some() {
+            return self.handle_help_key(key);
+        }
+        // The wizard owns the whole window while it is up.
+        if self.handle_welcome_key(key) {
+            return false;
+        }
+
         // A hover box is dismissed by the next Escape, before it reaches the grammar and collapses
         // selections — one Escape, one effect.
         if self.state.hover.is_some() && key.code == KeyCode::Escape {
             self.state.hover = None;
             return false;
         }
-        if self.state.completion.is_some() && self.handle_completion_key(key) {
-            return false;
-        }
-        // Only with focus: the panel used to take Enter and the arrows whenever it was open, so a
-        // search left showing turned every newline into "open the selected hit".
-        if self.state.focus == dacode::focus::Focus::Panel && self.handle_results_key(key) {
+        // Completion is the caret's, so it is asked only while the text has the keys. `press`
+        // closes it when focus leaves, but the router does not lean on that: this check is what
+        // keeps ↓ in a focused tree moving the tree.
+        if self.state.focus == Focus::Editor
+            && self.state.completion.is_some()
+            && self.handle_completion_key(key)
+        {
             return false;
         }
 
-        if self.handle_welcome_key(key) {
+        // Only with focus: the panel used to take Enter and the arrows whenever it was open, so a
+        // search left showing turned every newline into "open the selected hit".
+        if self.state.focus == Focus::Panel && self.handle_results_key(key) {
             return false;
-        }
-        // The help panel owns the keyboard while it is open too, for the same reason.
-        if self.state.help.is_some() {
-            return self.handle_help_key(key);
         }
         // The sidebar's views take keys only while they have focus. They used to be offered every
         // key first just by being open, so the arrows moved through files whatever was clicked.
-        if self.state.focus == dacode::focus::Focus::Sidebar {
+        if self.state.focus == Focus::Sidebar {
             // Escape hands the keys back to the text before the view sees it, and it is consumed:
             // one Escape, one effect. The tree used to close itself on it, which threw away the
             // place you had reached just to leave it.
             if key.code == KeyCode::Escape && !key.ctrl && !key.alt {
-                self.state.focus = dacode::focus::Focus::Editor;
+                self.state.focus = Focus::Editor;
                 return false;
             }
             if self.handle_tree_key(key) {
@@ -2832,7 +2865,7 @@ impl App {
         }
         // The settings tab takes the keys the text would, being where the text would be. Keys with
         // ctrl or alt go on to the grammar, so the palette, `ctrl-w` and the rest still work over it.
-        if self.state.focus == dacode::focus::Focus::Editor
+        if self.state.focus == Focus::Editor
             && self.state.settings_showing()
             && self.handle_page_key(key)
         {
@@ -5147,6 +5180,12 @@ impl App {
     /// Carries out a window action.
     fn window_action(&mut self, action: &Action) {
         match action {
+            // File ▸ Save and the palette reach here without the settings tab's ctrl-s intercept,
+            // and would save — and maybe reformat — the file hidden behind the tab.
+            Action::Save if self.state.settings_showing() => {
+                self.state.hover =
+                    Some("settings save themselves a moment after each change".to_string());
+            }
             Action::Save => self.save_active(),
             Action::Share => {
                 let Some(path) = self.state.file_path.clone() else {
@@ -7543,8 +7582,17 @@ impl App {
     /// Handles a click, or a drag when `extend` is set.
     ///
     /// Reads the same geometry the chrome draws from, so a click lands where it looks like it should
-    /// even in a three-way split.
+    /// even in a three-way split. Focus is settled afterwards, as `press` does after a key, so a
+    /// click that gave the tree or the results the keys closes a completion popup the text has
+    /// stopped owning.
     fn click(&mut self, extend: bool) {
+        self.route_click(extend);
+        self.state.settle_focus();
+    }
+
+    /// Where a click goes, in the order [`App::click`] promises: the wizard, the overlays, then
+    /// focus, then the chrome and the surfaces under it.
+    fn route_click(&mut self, extend: bool) {
         if self.chosen_by_overlay {
             if extend || self.click_count > 1 {
                 return;
@@ -9465,6 +9513,233 @@ mod wiring_tests {
         assert!(
             app.state.palette.is_some(),
             "Enter ran Help's second row, the command palette"
+        );
+    }
+
+    /// A completion session for whatever is under the caret, as typing would have opened.
+    fn completing(app: &mut App) {
+        app.state.completion = Some(dacode::completion::Completion::new(
+            app.state.document.text(),
+            app.state.cursor(),
+            app.state.document.version(),
+        ));
+        assert!(app.state.completion.is_some());
+    }
+
+    /// The popup belongs to the caret. Left open while the tree had the keys, it went on taking ↓
+    /// and Enter from the tree that looked focused, and Enter accepted a suggestion into a buffer
+    /// nobody was looking at — the arrows going to something other than what was clicked.
+    #[test]
+    fn with_completion_open_a_focused_tree_still_gets_the_arrows() {
+        use dacode::focus::Focus;
+        let dir = scratch("completion-tree");
+        std::fs::write(dir.join("b.rs"), "x").unwrap();
+        let mut app = editor(&dir, "a.rs", "alpha alphabet\nal");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        indexed(&mut app);
+        app.show_tree();
+        assert_eq!(app.state.focus, Focus::Sidebar);
+        completing(&mut app);
+
+        let before = app.state.document.text().to_string();
+        let row = app.state.tree.as_ref().unwrap().selected_row().cloned();
+        app.press(Key::named(KeyCode::Down));
+        assert_ne!(
+            app.state.tree.as_ref().unwrap().selected_row().cloned(),
+            row,
+            "the tree's selection moved"
+        );
+        assert_eq!(app.state.document.text().to_string(), before);
+        assert!(
+            app.state.completion.is_none(),
+            "and the popup the text stopped owning is gone rather than drawn over the tree"
+        );
+    }
+
+    /// A click is the other way focus leaves the text, and it must close the popup too: expanding
+    /// a folder keeps the keys in the tree, so nothing else would.
+    #[test]
+    fn a_click_that_gives_the_tree_the_keys_closes_completion() {
+        use dacode::focus::Focus;
+        let dir = scratch("completion-tree-click");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("c.rs"), "c").unwrap();
+        let mut app = editor(&dir, "a.rs", "alpha alphabet\nal");
+        indexed(&mut app);
+        app.show_tree();
+        app.state.focus = Focus::Editor;
+        completing(&mut app);
+
+        let sidebar = app.layout().sidebar.expect("the tree is a sidebar view");
+        let panel = dacode::tree::panel(sidebar, app.scale(), app.state.tree.as_ref().unwrap());
+        let (_, rect) = panel
+            .rows
+            .iter()
+            .find(|(row, _)| row.relative == "sub")
+            .expect("the folder has a row");
+        app.pointer = middle(*rect);
+        app.click(false);
+        assert_eq!(app.state.focus, Focus::Sidebar);
+        assert!(app.state.completion.is_none());
+    }
+
+    /// Help is a card on the modal layer, so it owns the keys over anything merely focused. It was
+    /// asked after a focused results panel, so ↓ moved the hits hidden under it and Enter opened
+    /// one with the card still on top — and since Enter in help runs its row, the row never ran.
+    #[test]
+    fn help_over_a_focused_results_panel_takes_the_arrows_and_enter() {
+        use dacode::focus::Focus;
+        let dir = scratch("help-over-results");
+        std::fs::write(dir.join("b.rs"), "bee\nbee\n").unwrap();
+        let mut app = editor(&dir, "a.rs", "one\ntwo\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        let hit = |line_number| dacode_project::SearchHit {
+            path: dir.join("b.rs"),
+            line_number,
+            line: "bee".into(),
+            range: 0..3,
+        };
+        app.state.show_results(dacode::results::Results::from_hits(
+            &dir,
+            "bee",
+            vec![hit(1), hit(2)],
+        ));
+        assert_eq!(app.state.focus, Focus::Panel);
+
+        app.press(Key::named(KeyCode::Function(1)));
+        assert!(app.state.help.is_some(), "F1 opened help over the panel");
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(
+            app.state.results.as_ref().map(|results| results.selected),
+            Some(0),
+            "the hits under the card did not move"
+        );
+
+        // Filtered to one row whose effect is plain to see.
+        for c in "every command, searchable".chars() {
+            app.press(Key::char(c));
+        }
+        app.press(Key::named(KeyCode::Enter));
+        assert!(app.state.help.is_none());
+        assert!(
+            app.state.palette.is_some(),
+            "Enter ran the help row, the command palette"
+        );
+        assert_eq!(
+            app.state.document.text().to_string(),
+            "one\ntwo\n",
+            "and opened no search hit"
+        );
+        assert!(app.state.results.is_some());
+    }
+
+    /// The settings tab answers ctrl-s with a reminder; the menu's and the palette's Save went
+    /// round that and wrote the file hidden behind the tab.
+    #[test]
+    fn save_from_the_menu_over_the_settings_tab_leaves_the_file_behind_it_alone() {
+        let dir = scratch("save-over-settings");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app.press(Key::char('x'));
+        assert!(app.state.document.is_dirty());
+        app.open_settings_tab();
+        assert!(app.state.settings_showing());
+
+        app.run(Action::Save);
+        assert_eq!(std::fs::read_to_string(dir.join("a.rs")).unwrap(), "one\n");
+        assert!(app.state.document.is_dirty(), "nothing was saved");
+    }
+
+    /// Only Enter on a tree row was tested, so the click — the way most people open a file from a
+    /// tree, and the path that hands the keys back to the text — had nothing driving it.
+    #[test]
+    fn clicking_a_tree_row_opens_that_file() {
+        use dacode::focus::Focus;
+        let dir = scratch("tree-click-open");
+        std::fs::write(dir.join("b.rs"), "bee\n").unwrap();
+        let mut app = editor(&dir, "a.rs", "one\n");
+        indexed(&mut app);
+        app.show_tree();
+
+        let sidebar = app.layout().sidebar.expect("the tree is a sidebar view");
+        let panel = dacode::tree::panel(sidebar, app.scale(), app.state.tree.as_ref().unwrap());
+        let (_, rect) = panel
+            .rows
+            .iter()
+            .find(|(row, _)| row.relative == "b.rs")
+            .expect("the file has a row");
+        app.pointer = middle(*rect);
+        app.click(false);
+        assert_eq!(app.state.document.text().to_string(), "bee\n");
+        assert!(
+            app.state
+                .file_path
+                .as_deref()
+                .is_some_and(|path| path.ends_with("b.rs")),
+            "the clicked file is the one in front"
+        );
+        assert_eq!(app.state.focus, Focus::Editor, "and it has the keys");
+    }
+
+    /// `welcome::geometry` and `click_welcome` had no test at all, on the one screen where clicking
+    /// is the answer to the question being asked.
+    #[test]
+    fn clicking_the_wizards_cards_answers_and_moves_on() {
+        use dacode::welcome::{Step, Welcome};
+        let dir = scratch("welcome-click");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.welcome = Some(Welcome::new());
+        let option = |app: &App, index: usize| {
+            let welcome = app.state.welcome.as_ref().expect("still up");
+            middle(
+                dacode::welcome::geometry(welcome, app.window_bounds(), app.scale()).options[index],
+            )
+        };
+
+        app.pointer = option(&app, 1);
+        app.click(false);
+        let welcome = app.state.welcome.as_ref().unwrap();
+        assert_eq!(welcome.step, Step::Theme, "choosing a card advances");
+        assert!(welcome.answers.modal, "the second card is Vim's keys");
+
+        app.pointer = option(&app, 2);
+        app.click(false);
+        let welcome = app.state.welcome.as_ref().unwrap();
+        assert_eq!(welcome.step, Step::Import);
+        assert_eq!(welcome.answers.theme, dacode_theme::Theme::BUILT_IN[2].0);
+    }
+
+    /// A context-menu row has to run its command, through the real right-click and the real click.
+    /// The bar's menus were covered through the same `click_menu`; the context menu's own rows were
+    /// not, and they are what a right-click is for.
+    #[test]
+    fn clicking_a_context_menu_row_runs_its_command() {
+        let dir = scratch("context-menu-click");
+        let mut app = editor(&dir, "a.rs", "one\ntwo\n");
+        let editor_area = app.layout().editor;
+        app.pointer = (editor_area.x + 200.0, editor_area.y + 200.0);
+        app.open_context_menu();
+        let menu = app.state.menu.as_ref().expect("a right-click opens it");
+        assert_eq!(menu.kind, dacode::menu::Kind::Context);
+        let geometry = menu.geometry(app.window_bounds(), app.scale(), &app.state.typography);
+        let wanted = Action::from_name("select_all").unwrap();
+        let index = menu
+            .items
+            .iter()
+            .position(|item| item.action == wanted)
+            .expect("select all is in the context menu");
+
+        app.pointer = middle(geometry.rows[index]);
+        app.click(false);
+        assert!(app.state.menu.is_none());
+        let primary = app.state.document.selections().primary();
+        assert_eq!(
+            (primary.start().0, primary.end().0),
+            (0, app.state.document.text().len_chars().0),
+            "the whole file is selected"
         );
     }
 

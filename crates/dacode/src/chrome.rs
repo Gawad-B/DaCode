@@ -617,6 +617,12 @@ impl EditorState {
     /// Called when a key is routed rather than at every site that closes something: there are a
     /// dozen of those (toggles, the activity bar, replace, open-folder, a hit being opened), and
     /// "remember to reset focus too" is exactly the rule that does not survive a year.
+    ///
+    /// It also closes a completion popup the text no longer has the keys for. The popup belongs to
+    /// the caret, and one left open behind a focused tree went on taking ↓ and Enter from it and
+    /// accepting a suggestion into a buffer nobody was looking at. Closing it here, rather than at
+    /// each site that moves focus (a click, `ctrl-shift-e`, the search results arriving, the
+    /// settings tab coming forward), is the same choice as above for the same reason.
     pub fn settle_focus(&mut self) {
         use crate::focus::Focus;
         let stale = match self.focus {
@@ -626,6 +632,9 @@ impl EditorState {
         };
         if stale {
             self.focus = Focus::Editor;
+        }
+        if self.focus != Focus::Editor || self.settings_showing() {
+            self.completion = None;
         }
     }
 

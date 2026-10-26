@@ -154,7 +154,7 @@ pub const OVERFLOW: &str = "…";
 
 /// The strip across the top of the window that the title bar fills.
 ///
-/// One definition, read by [`Layout::of`] and by `menu::geometry`: the titles are centred on this
+/// One definition, read by [`Layout::of`] and by `Menu::geometry`: the titles are centred on this
 /// height, and a menu that measured its own strip would hang its card under a title that is not
 /// where the bar drew it.
 pub fn title_strip(bounds: Rect, scale: f32) -> Rect {

@@ -65,7 +65,12 @@ impl Default for Answers {
             // Conventional keys are the default *here* even though the editor's own default is modal:
             // someone being asked the question by a wizard is someone who has not chosen Vim.
             modal: false,
-            theme: "dark",
+            // The editor's own default, asked of the type that decides it. This was `"dark"`, so
+            // the first screen a new user ever saw was the old warm-brown palette that nothing
+            // else draws in any more, and answering it with Enter wrote that into their config.
+            theme: Theme::default()
+                .name()
+                .expect("the default theme is a built-in"),
             import: Vec::new(),
         }
     }
@@ -307,8 +312,8 @@ pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
 
 /// The config the answers amount to.
 ///
-/// Written through the settings panel's own block so there is one format for machine-written
-/// configuration, and so opening the settings panel later shows exactly these values.
+/// Written through the settings tab's own block so there is one format for machine-written
+/// configuration, and so opening the settings tab later shows exactly these values.
 pub fn config_from(answers: &Answers, existing: &str) -> String {
     let values = crate::settings_ui::Values {
         modal: answers.modal,
@@ -351,6 +356,27 @@ mod tests {
         // Someone being asked by a wizard is someone who has not chosen Vim, even though modal is the
         // editor's own default for everyone who never sees this screen.
         assert!(!Answers::default().modal);
+    }
+
+    #[test]
+    fn the_wizard_opens_in_the_theme_the_editor_defaults_to() {
+        // The first screen a new user sees is drawn in the highlighted answer, so a default other
+        // than the editor's is a first impression of a palette nothing else uses.
+        let welcome = Welcome::new();
+        assert_eq!(welcome.answers.theme, Theme::default().name().unwrap());
+        assert_eq!(
+            welcome.preview_theme().bg.to_hex(),
+            Theme::default().bg.to_hex()
+        );
+
+        let mut welcome = Welcome::new();
+        welcome.choose();
+        assert_eq!(welcome.step, Step::Theme);
+        assert_eq!(
+            Theme::BUILT_IN[welcome.selected].0,
+            welcome.answers.theme,
+            "the theme step starts on it too"
+        );
     }
 
     #[test]
@@ -462,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn the_answers_become_config_the_settings_panel_agrees_with() {
+    fn the_answers_become_config_the_settings_tab_agrees_with() {
         // One format for machine-written configuration: the wizard writes what the panel writes, so
         // opening the panel afterwards shows exactly these values rather than defaults.
         let answers = Answers {

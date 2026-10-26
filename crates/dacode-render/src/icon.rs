@@ -20,7 +20,6 @@ pub enum Icon {
     Bulb,
     Gear,
     Bell,
-    User,
     Home,
     ChevronLeft,
     ChevronRight,
@@ -80,7 +79,7 @@ fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<Stroke> {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 24] = [
+    pub const ALL: [Icon; 23] = [
         Icon::Explorer,
         Icon::Search,
         Icon::Branch,
@@ -88,7 +87,6 @@ impl Icon {
         Icon::Bulb,
         Icon::Gear,
         Icon::Bell,
-        Icon::User,
         Icon::Home,
         Icon::ChevronLeft,
         Icon::ChevronRight,
@@ -170,7 +168,6 @@ impl Icon {
                 Line(4.0, 17.0, 20.0, 17.0),
                 Arc(12.0, 19.0, 2.0, 0.0, 180.0),
             ],
-            Icon::User => vec![Ring(12.0, 8.0, 4.0), Arc(12.0, 22.0, 7.0, 180.0, 360.0)],
             Icon::Home => {
                 let mut strokes = path(&[(3.0, 11.0), (12.0, 3.0), (21.0, 11.0)]);
                 strokes.extend(path(&[(5.0, 9.5), (5.0, 21.0), (19.0, 21.0), (19.0, 9.5)]));

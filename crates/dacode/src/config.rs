@@ -716,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn every_theme_the_settings_panel_can_write_loads_again() {
+    fn every_theme_the_settings_tab_can_write_loads_again() {
         // The panel writes `theme = "<built-in name>"` into init.lua, so every one of those names has
         // to come back as a theme and not as a problem. It did not: the reader looked names up as
         // files only, and choosing a theme in the panel meant an error box on the next start.

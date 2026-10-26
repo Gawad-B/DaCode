@@ -33,7 +33,7 @@ pub enum Animations {
 impl Animations {
     pub const ALL: [Animations; 3] = [Animations::Full, Animations::Reduced, Animations::Off];
 
-    /// The spelling used in `init.lua` and in the settings panel.
+    /// The spelling used in `init.lua` and on the settings tab.
     pub const fn name(self) -> &'static str {
         match self {
             Animations::Full => "full",
@@ -252,7 +252,7 @@ impl Motion {
         }
     }
 
-    /// What the user asked for, so the settings panel can show the live value rather than a copy.
+    /// What the user asked for, so the settings tab can show the live value rather than a copy.
     pub fn animations(&self) -> Animations {
         self.animations
     }
