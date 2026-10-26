@@ -281,6 +281,226 @@ fn overlay(frame: &mut Frame, fade: f32, draw: impl FnOnce(&mut Frame)) {
     frame.set_zoom(None);
 }
 
+/// The corner radius of every card, at scale 1.
+pub const CARD_RADIUS: f32 = 8.0;
+
+/// The one card every overlay is drawn on: a soft shadow, the panel surface, a hairline outline.
+///
+/// **Every overlay goes through here** — the palette, the menus, completion, the hover box, the
+/// which-key hint, the help panel, the bell's log — so they read as one family rather than as the
+/// separately-invented rectangles they were, each with its own shadow offset and a border on three
+/// sides out of four.
+///
+/// The shadow is two translucent rounded fills offset downward: one close and firmer, one wide and
+/// faint, at a fraction of the theme's `shadow` so it stays a hint in a light theme and does not
+/// turn into a black halo in a dark one. It is drawing only — nothing tests a click against it, and
+/// a click that lands on it is a click outside the card. It goes through [`Frame::fill_rounded`],
+/// not [`Frame::fill_backdrop`]: with the window made translucent the card stays solid, as every
+/// overlay does, and the shadow only darkens what is behind it rather than punching through it.
+///
+/// `alpha` fades all of it together, shadow included. An overlay already fades through the frame's
+/// opacity (see [`overlay`]) and passes 1; this is for a card drawn outside one.
+pub fn card(frame: &mut Frame, theme: &Theme, rect: Rect, scale: f32, alpha: f32) {
+    let alpha = if alpha.is_finite() {
+        alpha.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if alpha <= 0.0 || !rect.is_visible() {
+        return;
+    }
+    let px = |v: f32| v * scale;
+    let radius = px(CARD_RADIUS);
+    let faded = |color: Oklch, by: f32| color.with_alpha(color.alpha * by * alpha);
+
+    frame.fill_rounded(
+        Rect::new(
+            rect.x - px(6.0),
+            rect.y - px(1.0),
+            rect.width + px(12.0),
+            rect.height + px(13.0),
+        ),
+        faded(theme.shadow, 0.22),
+        radius + px(6.0),
+    );
+    frame.fill_rounded(
+        Rect::new(
+            rect.x - px(1.0),
+            rect.y + px(1.0),
+            rect.width + px(2.0),
+            rect.height + px(3.0),
+        ),
+        faded(theme.shadow, 0.35),
+        radius + px(1.0),
+    );
+    frame.fill_rounded(rect, faded(theme.bg_panel, 1.0), radius);
+    frame.outline_rounded(rect, faded(theme.rule, 1.0), radius, border::BORDER * scale);
+}
+
+/// Keys, drawn as small rounded chips ending at `right` and centred in the row `y..y + height`.
+/// Returns the left edge of the first chip, so the caller can fit its text before it; `right`
+/// itself when there are no keys.
+///
+/// `keys` is what [`dacode_input::commands::Command::shown`] gives — desktop notation, or Vim's
+/// with Vim keys on — and one chip is one press (see [`crate::layout::key_presses`]).
+pub fn key_chip(
+    frame: &mut Frame,
+    state: &EditorState,
+    keys: &str,
+    right: f32,
+    y: f32,
+    height: f32,
+    scale: f32,
+) -> f32 {
+    let theme = &state.theme;
+    let advance = crate::layout::measured_advance(&state.typography, Role::Value, scale);
+    let chip_height = (18.0 * scale).min(height);
+    let top = y + (height - chip_height) / 2.0;
+    let mut left = right;
+    for (index, press) in crate::layout::key_presses(keys).iter().rev().enumerate() {
+        if index > 0 {
+            left -= crate::layout::CHIP_GAP * scale;
+        }
+        let width = press.chars().count() as f32 * advance + crate::layout::CHIP_PAD * 2.0 * scale;
+        left -= width;
+        let chip = Rect::new(left, top, width, chip_height);
+        frame.fill_rounded(chip, theme.bg, 4.0 * scale);
+        frame.outline_rounded(chip, theme.rule_soft, 4.0 * scale, border::BORDER * scale);
+        frame.text(run(
+            state,
+            Role::Value,
+            *press,
+            chip,
+            theme.ink_dim,
+            Align::Center,
+            scale,
+        ));
+    }
+    left
+}
+
+/// A key hint along a card's foot: chips, then what they do, starting at `x` in `row`. Returns
+/// where the next one starts, or `None` when this one does not fit before the row's right edge —
+/// and then nothing is drawn, because half a hint is worse than one fewer.
+fn hint(
+    frame: &mut Frame,
+    state: &EditorState,
+    keys: &str,
+    words: &str,
+    x: f32,
+    row: Rect,
+    scale: f32,
+) -> Option<f32> {
+    let limit = row.right();
+    let chips = crate::layout::chips_width(&state.typography, keys, scale);
+    let text = words.chars().count() as f32
+        * crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+    let end = x + chips + 6.0 * scale + text;
+    if end > limit {
+        return None;
+    }
+    key_chip(frame, state, keys, x + chips, row.y, row.height, scale);
+    frame.text(ui(
+        state,
+        words,
+        Rect::new(
+            x + chips + 6.0 * scale,
+            row.y,
+            text + 2.0 * scale,
+            row.height,
+        ),
+        state.theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+    Some(end + 16.0 * scale)
+}
+
+/// A row's highlight inside a card: the selection, or a lighter wash under the pointer.
+///
+/// Both are translucent over the card rather than a surface colour of the theme's: `row_active` is
+/// the line under the caret, and in the light themes it is *lighter* than the panel a card is made
+/// of, so a selection painted in it was all but invisible. The mode colour, faint, reads as "this
+/// one" on every theme, and the ink at a few percent as "the pointer is here".
+fn row_wash(frame: &mut Frame, state: &EditorState, row: Rect, selected: bool, scale: f32) {
+    let theme = &state.theme;
+    if selected {
+        let accent = theme.accent(state.mode);
+        frame.fill_rounded(row, accent.with_alpha(0.16), 5.0 * scale);
+    } else if hovered(state, row) {
+        frame.fill_rounded(row, theme.ink.with_alpha(0.06), 5.0 * scale);
+    }
+}
+
+/// A card's text field: the query, or a placeholder saying what to type, with a caret.
+fn draw_field(
+    frame: &mut Frame,
+    state: &EditorState,
+    field: Rect,
+    query: &str,
+    placeholder: &str,
+    scale: f32,
+) -> Rect {
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    frame.fill_rounded(field, theme.bg, 6.0 * scale);
+    frame.outline_rounded(
+        field,
+        accent.with_alpha(accent.alpha * 0.8),
+        6.0 * scale,
+        border::BORDER * scale,
+    );
+    let icon = Rect::new(field.x + 10.0 * scale, field.y, 14.0 * scale, field.height);
+    frame.icon(Icon::Search, centred(icon, 14.0 * scale), theme.ink_faint);
+    let text = Rect::new(
+        icon.right() + 8.0 * scale,
+        field.y,
+        (field.right() - 10.0 * scale - (icon.right() + 8.0 * scale)).max(0.0),
+        field.height,
+    );
+    let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+    let typed = if query.is_empty() {
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, placeholder, text.width, scale),
+            text,
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+        0
+    } else {
+        // The end of what was typed is the part being worked on, so a query too long for the field
+        // loses its start rather than its end.
+        let shown = elide_start(state, Role::Ui, query, text.width - 4.0 * scale, scale);
+        frame.text(ui(
+            state,
+            shown.clone(),
+            text,
+            theme.ink,
+            Align::Left,
+            scale,
+        ));
+        shown.chars().count()
+    };
+    // The caret says where typing goes — before the placeholder, which is what it replaces.
+    let caret = if typed == 0 {
+        text.x - 3.0 * scale
+    } else {
+        (text.x + typed as f32 * advance).min(text.right())
+    };
+    frame.fill(
+        Rect::new(
+            caret,
+            field.y + (field.height - 18.0 * scale) / 2.0,
+            1.5 * scale,
+            18.0 * scale,
+        ),
+        accent,
+    );
+    text
+}
+
 impl EditorState {
     /// The time this frame is drawn at. Drawing code asks here instead of calling `Instant::now`, so a
     /// frame is a pure function of the state and one instant, and a test can draw any instant it likes.
@@ -941,24 +1161,36 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             clip: None,
         });
 
+        // Two lines, wrapped here so the second can end in an ellipsis when the card is too narrow
+        // for the sentence. The renderer wrapped it before and clipped the third line at the card's
+        // edge, so "pick this if you are unsure" lost the half that says why.
         let mut body = typography.spec(Role::Value);
         body.size_px = px(13.0);
-        frame.text(TextRun {
-            text: (*description).into(),
-            spec: body,
-            color: theme.ink_faint,
-            rect: Rect::new(
-                card.x + px(24.0),
-                card.y + px(46.0),
-                card.width - px(48.0),
-                px(34.0),
-            ),
-            align: Align::Left,
-            center_vertically: false,
-            wrap: true,
-            layer: Layer::default(),
-            clip: None,
-        });
+        let width = card.width - px(48.0);
+        let advance = body.size_px * 0.6 * crate::layout::FACE_ADVANCE;
+        let mut lines = wrap_at(description, width, advance);
+        if lines.len() > 2 {
+            let rest = lines.split_off(1).join(" ");
+            lines.push(elide_to(&rest, width, advance));
+        }
+        for (row, line) in lines.iter().enumerate() {
+            frame.text(TextRun {
+                text: line.clone(),
+                spec: body,
+                color: theme.ink_faint,
+                rect: Rect::new(
+                    card.x + px(24.0),
+                    card.y + px(44.0) + row as f32 * px(18.0),
+                    width,
+                    px(18.0),
+                ),
+                align: Align::Left,
+                center_vertically: true,
+                wrap: false,
+                layer: Layer::default(),
+                clip: None,
+            });
+        }
     }
 }
 
@@ -1000,9 +1232,11 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         let selected = index == welcome.selected
             || crate::layout::contains(card, welcome.pointer.0, welcome.pointer.1);
 
-        // The card is painted in *its own* theme, which is what makes it a preview.
-        frame.fill(card, theme.bg);
-        frame.fill(Rect::new(card.x, card.y, card.width, px(1.0)), theme.rule);
+        // The card is painted in *its own* theme, which is what makes it a preview — on the card
+        // shape every overlay uses, outlined in its own rule.
+        let radius = CARD_RADIUS * scale;
+        frame.fill_rounded(card, theme.bg, radius);
+        frame.outline_rounded(card, theme.rule, radius, border::BORDER * scale);
 
         let line = px(21.0);
         let mut code = typography.spec(Role::Code);
@@ -1026,10 +1260,17 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             });
         }
 
-        // The name goes on the card, in the card's own ink.
+        // The name goes on the card, in the card's own ink — whole, or with an ellipsis on a card
+        // too narrow for it, never cut at the card's edge mid-letter.
+        let name_width = card.width - px(24.0);
+        let name = elide_to(
+            name,
+            name_width,
+            crate::layout::measured_advance(typography, Role::Label, scale),
+        );
         frame.text(welcome_label(
             typography,
-            *name,
+            name,
             Rect::new(
                 card.x + px(12.0),
                 card.bottom() - px(30.0),
@@ -1045,14 +1286,7 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         // card, including the black one.
         if selected {
             let accent = current.accent(Mode::Normal);
-            for edge in [
-                Rect::new(card.x, card.y, card.width, px(2.0)),
-                Rect::new(card.x, card.bottom() - px(2.0), card.width, px(2.0)),
-                Rect::new(card.x, card.y, px(2.0), card.height),
-                Rect::new(card.right() - px(2.0), card.y, px(2.0), card.height),
-            ] {
-                frame.fill(edge, accent);
-            }
+            frame.outline_rounded(card, accent, radius, px(2.0));
         }
     }
 }
@@ -1098,7 +1332,7 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         let selected = index == welcome.selected
             || crate::layout::contains(row, welcome.pointer.0, welcome.pointer.1);
         if selected {
-            frame.fill(row, theme.row_active);
+            frame.fill_rounded(row, theme.row_active, px(5.0));
         }
 
         let mut body = typography.spec(Role::Value);
@@ -1129,20 +1363,21 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
     let row = context.next.unwrap_or(Rect::new(left, top, width, line));
     let selected = welcome.selected >= crate::settings_ui::Importable::ALL.len()
         || crate::layout::contains(row, welcome.pointer.0, welcome.pointer.1);
-    if selected {
-        frame.fill(row, theme.row_active);
-    }
-    frame.rule_top(row, theme.rule, border::BORDER);
-    frame.rule_bottom(row, theme.rule, border::BORDER);
-    frame.rule_left(row, theme.rule, border::BORDER);
+    // A button, on the card shape: lifted when it is the one Enter would press.
+    draw_welcome_card(frame, theme, row, selected, scale);
     let mut body = typography.spec(Role::Value);
     body.size_px = px(14.0);
+    let words = if welcome.answers.import.is_empty() {
+        "start without importing".to_string()
+    } else {
+        format!("import {} and start", welcome.answers.import.len())
+    };
     frame.text(TextRun {
-        text: if welcome.answers.import.is_empty() {
-            "start without importing".into()
-        } else {
-            format!("import {} and start", welcome.answers.import.len())
-        },
+        text: elide_to(
+            &words,
+            row.width - px(32.0),
+            body.size_px * 0.6 * crate::layout::FACE_ADVANCE,
+        ),
         spec: body,
         color: if selected {
             theme.accent(Mode::Normal)
@@ -1158,24 +1393,20 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
     });
 }
 
-/// A card background with a selection border.
-fn draw_welcome_card(frame: &mut Frame, theme: &Theme, card: Rect, selected: bool, scale: f32) {
-    frame.fill(
-        card,
-        if selected {
-            theme.bg_panel
-        } else {
-            theme.bg_alt
-        },
-    );
-    let accent = theme.accent(Mode::Normal);
+/// An option on the wizard: the overlay card's surface, radius and outline, with the accent as its
+/// outline when it is the one chosen.
+///
+/// The card itself, shadow and all, only for the chosen one — the shadow lifts it off the page — so
+/// the rest sit flat in the surface they are on, outlined.
+fn draw_welcome_card(frame: &mut Frame, theme: &Theme, rect: Rect, selected: bool, scale: f32) {
+    let radius = CARD_RADIUS * scale;
     if selected {
-        frame.fill(
-            Rect::new(card.x, card.y, border::ACCENT_BORDER * scale, card.height),
-            accent,
-        );
+        card(frame, theme, rect, scale, 1.0);
+        let accent = theme.accent(Mode::Normal);
+        frame.outline_rounded(rect, accent, radius, border::ACCENT_BORDER * scale);
     } else {
-        frame.rule_top(card, theme.rule_soft, border::BORDER);
+        frame.fill_rounded(rect, theme.bg_alt, radius);
+        frame.outline_rounded(rect, theme.rule_soft, radius, border::BORDER * scale);
     }
 }
 
@@ -1506,13 +1737,7 @@ fn draw_completion(
         Anchor::Bottom
     };
     frame.set_zoom(Some(appear_zoom(popup, travel, anchor)));
-    frame.fill(popup, theme.bg_panel);
-    frame.rule_top(popup, theme.rule, border::BORDER);
-    frame.rule_bottom(popup, theme.rule, border::BORDER);
-    frame.fill(
-        Rect::new(popup.x, popup.y, border::BORDER, popup.height),
-        theme.rule,
-    );
+    card(frame, theme, popup, scale, 1.0);
 
     if completion.pending {
         frame.text(run(
@@ -1543,16 +1768,18 @@ fn draw_completion(
     for (index, item) in visible.iter().enumerate() {
         let item_y = popup.y + index as f32 * row;
         let selected = index == cursor;
-        if selected {
-            frame.fill(
-                Rect::new(popup.x, item_y, popup.width, row),
-                theme.row_active,
-            );
-            frame.fill(
-                Rect::new(popup.x, item_y, border::ACCENT_BORDER * scale, row),
-                accent,
-            );
-        }
+        row_wash(
+            frame,
+            state,
+            Rect::new(
+                popup.x + 3.0 * scale,
+                item_y,
+                popup.width - 6.0 * scale,
+                row,
+            ),
+            selected,
+            scale,
+        );
 
         let text_x = popup.x + space::XS * scale;
         let inner = popup.width - space::XS * 2.0 * scale;
@@ -1713,7 +1940,7 @@ fn draw_info(
 
     // Sized to what is actually drawn, so a short message gets a short box rather than 620px of
     // panel with three words in it.
-    let advance = state.typography.advance(Role::Value) * scale;
+    let advance = crate::layout::measured_advance(&state.typography, Role::Value, scale);
     let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let width = ((longest as f32 * advance) + space::SM * 2.0 * scale).clamp(0.0, widest);
     let height = lines.len() as f32 * line_height + space::MD * scale;
@@ -1739,17 +1966,19 @@ fn draw_info(
         Anchor::Bottom
     };
     frame.set_zoom(Some(appear_zoom(box_rect, travel, anchor)));
-    frame.fill(box_rect, theme.bg_panel);
-    frame.rule_top(box_rect, theme.rule, border::BORDER);
-    frame.rule_bottom(box_rect, theme.rule, border::BORDER);
-    frame.fill(
+    card(frame, theme, box_rect, scale, 1.0);
+    // What kind of box it is — a hover answer in the mode colour, an error or a warning in theirs —
+    // as a short bar inside the card's left edge, clear of its rounded corners.
+    let stripe = 8.0 * scale;
+    frame.fill_rounded(
         Rect::new(
-            box_rect.x,
-            box_rect.y,
+            box_rect.x + 4.0 * scale,
+            box_rect.y + stripe,
             border::ACCENT_BORDER * scale,
-            box_rect.height,
+            (box_rect.height - stripe * 2.0).max(border::ACCENT_BORDER * scale),
         ),
         accent,
+        scale,
     );
 
     for (index, line) in lines.iter().enumerate() {
@@ -1810,22 +2039,32 @@ fn draw_results(
     let row_height = 22.0 * scale;
     let (header, rows_area) = rect.split_top(row_height);
 
-    frame.text(label(
+    // What was searched for, and how much was found: the one heading this panel needs, since a
+    // panel of hits with no query over it does not say what they are hits *for*. In the interface's
+    // own face rather than the uppercase label, which would have shouted the query back in capitals
+    // it was not typed in.
+    let summary = results.summary();
+    let summary_width = summary.chars().count() as f32
+        * crate::layout::measured_advance(&state.typography, Role::Value, scale);
+    let query_room = (header.width - pad * 2.0 - summary_width - space::MD * scale).max(0.0);
+    frame.text(ui(
         state,
-        format!("search: {}", results.query),
-        Rect::new(
-            header.x + pad,
-            header.y,
-            header.width - pad * 2.0,
-            header.height,
+        elide(
+            state,
+            Role::Ui,
+            &format!("search: {}", results.query),
+            query_room,
+            scale,
         ),
+        Rect::new(header.x + pad, header.y, query_room, header.height),
         theme.ink_dim,
         Align::Left,
         scale,
     ));
-    frame.text(label(
+    frame.text(run(
         state,
-        results.summary(),
+        Role::Value,
+        summary,
         Rect::new(
             header.x + pad,
             header.y,
@@ -1838,26 +2077,38 @@ fn draw_results(
     ));
 
     let (visible, cursor) = results.visible();
+    let inner = (rows_area.width - pad * 2.0).max(0.0);
+    let location_width = (320.0 * scale).min(inner * 0.4);
+    let line_x = rows_area.x + pad + location_width + space::MD * scale;
+    let line_room = (rows_area.right() - pad - line_x).max(0.0);
     for (index, hit) in visible.iter().enumerate() {
         let y = rows_area.y + index as f32 * row_height;
         let row = Rect::new(rows_area.x, y, rows_area.width, row_height);
-        let selected = index == cursor;
-
-        if selected {
-            frame.fill(row, theme.row_active);
+        // The panel is capped at half the editor's height, which on a short window is fewer rows
+        // than the list's window holds; the rest would be drawn over the statusline.
+        if row.bottom() > rect.bottom() + 0.5 {
+            break;
         }
+        let selected = index == cursor;
+        row_wash(
+            frame,
+            state,
+            Rect::new(row.x + pad / 2.0, y, (row.width - pad).max(0.0), row_height),
+            selected,
+            scale,
+        );
 
-        // `path:line` first, then the matching line — the order that lets you scan the list.
+        // `path:line` first, then the matching line — the order that lets you scan the list. A
+        // long path loses its front, since its end is the file.
         let location = format!(
             "{}:{}",
             results.relative(hit, &state.project_root),
             hit.line_number
         );
-        let location_width = 320.0 * scale;
         frame.text(run(
             state,
             Role::Value,
-            location,
+            elide_start(state, Role::Value, &location, location_width, scale),
             Rect::new(row.x + pad, y, location_width, row_height),
             if selected { accent } else { theme.ink_dim },
             Align::Left,
@@ -1868,13 +2119,8 @@ fn draw_results(
         frame.text(run(
             state,
             Role::Value,
-            hit.line.trim_start().to_string(),
-            Rect::new(
-                row.x + pad + location_width + space::MD * scale,
-                y,
-                (row.right() - row.x - pad * 2.0 - location_width).max(0.0),
-                row_height,
-            ),
+            elide(state, Role::Value, hit.line.trim_start(), line_room, scale),
+            Rect::new(line_x, y, line_room, row_height),
             if selected { theme.ink } else { theme.ink_faint },
             Align::Left,
             scale,
@@ -1898,11 +2144,14 @@ fn draw_results(
     }
 }
 
-/// The command palette: a scrim over the window and a centered card.
+/// The command palette: a card dropped from the command centre in the title bar.
 ///
-/// The design specifies this precisely — full-bleed scrim, a card with a serif-italic query and a
-/// blinking caret, rows of `score · name · directory`, and a footer of hints. Geometry is derived
-/// from the type scale so it tracks font size.
+/// Laid out by [`Palette::geometry`], which the mouse reads too. No scrim: it hangs from the box
+/// that opened it, the way VSCode's and Zed's do, and the shadow is what separates it from the code.
+/// The query field is the card's only caption; the rows are headed by their group only where the
+/// list is grouped (see [`Palette::lines`]). The footer of hints it once had — enter, arrows, escape
+/// — told nobody anything, and the match score each file row carried was the editor showing its
+/// workings, so both are gone.
 fn draw_palette(
     frame: &mut Frame,
     state: &EditorState,
@@ -1913,227 +2162,43 @@ fn draw_palette(
 ) {
     let theme = &state.theme;
     let accent = theme.accent(state.mode);
+    let anchor = crate::palette::anchor(bounds, scale, &state.typography);
+    let geometry = palette.geometry(bounds, anchor, scale);
 
-    // Scrim: dims the editor without hiding it, so you keep your place.
-    frame.fill(bounds, theme.scrim);
+    frame.set_zoom(Some(appear_zoom(geometry.card, travel, Anchor::Top)));
+    card(frame, theme, geometry.card, scale, 1.0);
 
-    let width = (600.0 * scale).min(bounds.width - space::XXL * 2.0 * scale);
-    let row_height = 26.0 * scale;
-    let (visible, cursor) = palette.visible();
-
-    let header_height = 52.0 * scale;
-    let footer_height = 34.0 * scale;
-
-    // An empty result still occupies a row: the "no matches" line needs somewhere to go. Sizing the
-    // card by `visible.len()` alone collapsed it to header plus footer, and the empty-state line was
-    // then drawn at the footer's own y — two strings on one baseline, which is what a real run
-    // showed for a query that matched nothing.
-    let row_count = visible.len().max(1);
-    let card_height = header_height + footer_height + row_count as f32 * row_height;
-
-    let card = Rect::new(
-        bounds.x + (bounds.width - width) / 2.0,
-        bounds.y + 110.0 * scale,
-        width,
-        card_height,
-    );
-    // It drops from the top, where the command centre that opens it is.
-    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
-
-    // One shadow in the whole design, and this is it. Approximated by a slightly larger dark rect
-    // behind the card, since the renderer draws only rectangles.
-    frame.fill(
-        Rect::new(
-            card.x - 2.0 * scale,
-            card.y + 6.0 * scale,
-            card.width + 4.0 * scale,
-            card.height,
-        ),
-        theme.shadow,
-    );
-    frame.fill(card, theme.bg_panel);
-    frame.rule_top(card, theme.rule, border::BORDER);
-    frame.rule_bottom(card, theme.rule, border::BORDER);
-    frame.rule_left(card, theme.rule, border::BORDER);
-    // The renderer has no right-edge rule helper; the card needs all four sides.
-    frame.fill(
-        Rect::new(
-            card.right() - border::BORDER,
-            card.y,
-            border::BORDER,
-            card.height,
-        ),
-        theme.rule,
-    );
-
-    // Header: the query, set in italic serif, with a caret in the mode color.
-    let (header, rest) = card.split_top(header_height);
-    let pad = space::LG * scale;
-    let query_rect = Rect::new(
-        header.x + pad,
-        header.y,
-        header.width - pad * 2.0,
-        header.height,
-    );
-
-    let query_text = if palette.query.is_empty() {
-        palette.kind.prompt().to_string()
-    } else {
-        palette.query.clone()
-    };
-    let mut query_spec = state.typography.spec(Role::Display);
-    query_spec.size_px = 22.0 * scale;
-    frame.text(TextRun {
-        text: query_text.clone(),
-        spec: query_spec,
-        color: if palette.query.is_empty() {
-            theme.ink_faint
-        } else {
-            theme.ink
-        },
-        rect: query_rect,
-        align: Align::Left,
-        center_vertically: true,
-        wrap: false,
-        layer: Layer::default(),
-        clip: None,
-    });
-
-    // Caret after the query. Its width is an estimate of the serif advance — the palette is not on
-    // the code grid, so exactness is not required here.
-    let caret_x = query_rect.x + query_text.chars().count() as f32 * 10.0 * scale + 4.0 * scale;
-    frame.fill(
-        Rect::new(
-            caret_x.min(query_rect.right() - 2.0 * scale),
-            query_rect.y + (query_rect.height - 20.0 * scale) / 2.0,
-            2.0 * scale,
-            20.0 * scale,
-        ),
-        accent,
-    );
-
-    frame.text(label(
+    let text = draw_field(
+        frame,
         state,
-        format!("{} of {}", palette.rows.len(), palette.total),
-        query_rect,
-        theme.ink_faint,
-        Align::Right,
+        geometry.input,
+        &palette.query,
+        &placeholder(palette.kind),
         scale,
-    ));
-    frame.rule_bottom(header, theme.rule_soft, border::BORDER);
-
-    // Rows.
-    let (rows_area, footer) = rest.split_top(row_count as f32 * row_height);
-    for (index, row) in visible.iter().enumerate() {
-        let y = rows_area.y + index as f32 * row_height;
-        let selected = index == cursor;
-        let row_rect = Rect::new(rows_area.x, y, rows_area.width, row_height);
-
-        if selected {
-            frame.fill(row_rect, theme.row_active);
-        }
-
-        // Score, right-aligned in a narrow column. Not for commands: a match score beside "save this
-        // file" is the editor showing its workings to someone who asked what it can do. And not
-        // when it is zero, which is every list the editor did not rank itself — a column of ten
-        // zeroes reads as a counter that has broken rather than as a column that does not apply.
-        let score_rect = Rect::new(row_rect.x + pad, y, 30.0 * scale, row_height);
-        if palette.kind != PaletteKind::Commands && row.score > 0 {
-            frame.text(run(
-                state,
-                Role::Value,
-                row.score.to_string(),
-                score_rect,
-                if selected {
-                    theme.ink_dim
-                } else {
-                    theme.ink_faint
-                },
-                Align::Right,
-                scale,
-            ));
-        }
-
-        // Name, with matched characters in the mode color. Drawn as per-character runs only where
-        // a highlight falls, so the common case stays one run.
-        let name_x = score_rect.right() + space::MD * scale;
-        // The advance must match the *row's* font, not the code font.
-        let advance = advance_for(state.typography.spec(Role::Value).size_px * scale);
+    );
+    // How much the query has narrowed, once there is something to narrow: "4 of 1284".
+    if !palette.query.is_empty() && palette.total > 0 {
         frame.text(run(
             state,
             Role::Value,
-            row.name.clone(),
-            Rect::new(name_x, y, rows_area.right() - name_x, row_height),
-            if selected { theme.ink } else { theme.ink_dim },
-            Align::Left,
+            format!("{} of {}", palette.rows.len(), palette.total),
+            text,
+            theme.ink_faint,
+            Align::Right,
             scale,
         ));
-        for position in &row.highlights {
-            let Some(c) = row.name.chars().nth(*position as usize) else {
-                continue;
-            };
-            frame.text(run(
-                state,
-                Role::Value,
-                c.to_string(),
-                Rect::new(
-                    name_x + *position as f32 * advance,
-                    y,
-                    advance * 2.0,
-                    row_height,
-                ),
-                accent,
-                Align::Left,
-                scale,
-            ));
-        }
-
-        // Directory, dimmed, after the name — except in the command palette, where the context is
-        // the *key*, and a key column has to be a column. Ragged keys trailing each description
-        // would be unreadable as the table it needs to be, and reading it as a table is how the
-        // palette teaches shortcuts instead of merely running things.
-        if !row.context.is_empty() {
-            let (context_rect, align, color) = if palette.kind == PaletteKind::Commands {
-                (
-                    Rect::new(rows_area.x, y, rows_area.width - pad, row_height),
-                    Align::Right,
-                    if selected { accent } else { theme.ink_faint },
-                )
-            } else {
-                let context_x = name_x + (row.name.chars().count() as f32 + 2.0) * advance;
-                (
-                    Rect::new(
-                        context_x,
-                        y,
-                        (rows_area.right() - context_x - pad).max(0.0),
-                        row_height,
-                    ),
-                    Align::Left,
-                    theme.ink_faint,
-                )
-            };
-            frame.text(run(
-                state,
-                Role::Value,
-                row.context.clone(),
-                context_rect,
-                color,
-                align,
-                scale,
-            ));
-        }
     }
 
-    if visible.is_empty() {
-        frame.text(run(
+    let pad = 10.0 * scale;
+    for (rect, title) in &geometry.headings {
+        frame.text(label(
             state,
-            Role::Value,
-            "no matches",
+            *title,
             Rect::new(
-                rows_area.x + pad,
-                rows_area.y,
-                rows_area.width,
-                row_height.max(1.0),
+                rect.x + pad,
+                rect.y + 4.0 * scale,
+                rect.width - pad * 2.0,
+                rect.height - 4.0 * scale,
             ),
             theme.ink_faint,
             Align::Left,
@@ -2141,22 +2206,116 @@ fn draw_palette(
         ));
     }
 
-    // Footer hints.
-    frame.rule_top(footer, theme.rule_soft, border::BORDER);
-    frame.text(label(
-        state,
-        // `↵` was a tofu box here too — the bundled font has the arrows but not the return symbol.
-        "enter open · ↑↓ move · esc dismiss",
-        Rect::new(
-            footer.x + pad,
-            footer.y,
-            footer.width - pad * 2.0,
-            footer.height,
-        ),
-        theme.ink_faint,
-        Align::Left,
-        scale,
-    ));
+    // The face's real advance, so a highlight lands on its letter all the way along a long name.
+    let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+    for (rect, item) in geometry.rows.iter().zip(&geometry.items) {
+        let Some(row) = palette.rows.get(*item) else {
+            continue;
+        };
+        let selected = *item == palette.selected;
+        row_wash(frame, state, *rect, selected, scale);
+
+        let left = rect.x + pad;
+        let mut right = rect.right() - pad;
+        // A command's key is a column of chips on the right, so the list reads as the table that
+        // teaches the shortcuts.
+        if palette.kind == PaletteKind::Commands && !row.context.is_empty() {
+            right = key_chip(
+                frame,
+                state,
+                &row.context,
+                right,
+                rect.y,
+                rect.height,
+                scale,
+            ) - 12.0 * scale;
+        }
+
+        let name = elide(state, Role::Ui, &row.name, (right - left).max(0.0), scale);
+        let length = name.chars().count();
+        frame.text(ui(
+            state,
+            name.clone(),
+            Rect::new(left, rect.y, (right - left).max(0.0), rect.height),
+            if selected { theme.ink } else { theme.ink_dim },
+            Align::Left,
+            scale,
+        ));
+        // The matched characters in the mode colour, over the name's own glyphs — only those still
+        // on screen, so a highlight never lands on the ellipsis or past it.
+        for position in &row.highlights {
+            let position = *position as usize;
+            if position + 1 >= length && name.ends_with('…') {
+                continue;
+            }
+            let Some(c) = name.chars().nth(position) else {
+                continue;
+            };
+            frame.text(ui(
+                state,
+                c.to_string(),
+                Rect::new(
+                    left + position as f32 * advance,
+                    rect.y,
+                    advance * 2.0,
+                    rect.height,
+                ),
+                accent,
+                Align::Left,
+                scale,
+            ));
+        }
+
+        // A file's directory, a symbol's kind: dimmed after the name, given what room is left. A
+        // directory loses its front first, since its end is the part that tells two apart.
+        if palette.kind != PaletteKind::Commands && !row.context.is_empty() {
+            let x = left + (length as f32 + 2.0) * advance;
+            let room = right - x;
+            if room > advance * 4.0 {
+                let shown = match palette.kind {
+                    PaletteKind::Files | PaletteKind::Buffers => {
+                        elide_start(state, Role::Value, &row.context, room, scale)
+                    }
+                    _ => elide(state, Role::Value, &row.context, room, scale),
+                };
+                frame.text(run(
+                    state,
+                    Role::Value,
+                    shown,
+                    Rect::new(x, rect.y, room, rect.height),
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            }
+        }
+    }
+
+    if geometry.rows.is_empty() {
+        frame.text(ui(
+            state,
+            "no matches",
+            Rect::new(
+                geometry.list.x + pad,
+                geometry.list.y,
+                geometry.list.width - pad * 2.0,
+                geometry.list.height,
+            ),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    }
+}
+
+/// What an empty palette's field says it is for.
+fn placeholder(kind: PaletteKind) -> String {
+    let prompt = kind.prompt();
+    let mut chars = prompt.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// The which-key hint: what can follow the keys typed so far.
@@ -2179,24 +2338,37 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     }
 
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    let row_height = 22.0 * scale;
-    let pad = space::MD * scale;
-
-    // Wide enough for the longest description, so nothing is clipped — the popup is small and the
-    // measurement is over a handful of static strings.
-    let longest = entries
+    let row_height = 24.0 * scale;
+    let pad = space::SM * scale;
+    // The keys in the notation of the grammar in use, like everywhere else they are shown.
+    let shown: Vec<(String, &str)> = entries
         .iter()
-        .map(|(key, what)| key.chars().count() + what.chars().count())
+        .map(|(key, what)| {
+            let key = if state.modal {
+                (*key).to_string()
+            } else {
+                dacode_input::commands::pretty(key)
+            };
+            (key, *what)
+        })
+        .collect();
+
+    // Measured with the same advance the text is drawn at, so nothing is clipped — the popup is
+    // small and the measurement is over a handful of static strings. The key column is only as
+    // wide as the widest key: `v` and `<c-o>` next to a description half a window away read as two
+    // unrelated lists.
+    let key_column = shown
+        .iter()
+        .map(|(key, _)| crate::layout::chips_width(&state.typography, key, scale))
+        .fold(0.0, f32::max);
+    let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+    let longest = shown
+        .iter()
+        .map(|(_, what)| what.chars().count())
         .max()
         .unwrap_or(20) as f32;
-    let keys_width = entries
-        .iter()
-        .map(|(key, _)| key.chars().count())
-        .max()
-        .unwrap_or(4) as f32;
-    let width = (longest * 8.0 * scale + pad * 6.0).min(code.width - pad * 2.0);
-    let height = entries.len() as f32 * row_height + pad * 2.0;
+    let width = (key_column + longest * advance + pad * 3.0).min(code.width - pad * 2.0);
+    let height = shown.len() as f32 * row_height + pad;
 
     // Kept inside the code area: the popup must not fall off the bottom of the window, which is
     // exactly where the cursor is when a file is longer than the screen.
@@ -2206,46 +2378,19 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     } else {
         cursor_y
     };
-    let card = Rect::new(code.x + pad, y, width, height);
+    let rect = Rect::new(code.x + pad, y, width, height);
+    card(frame, theme, rect, scale, 1.0);
 
-    frame.fill(
-        Rect::new(
-            card.x - 2.0 * scale,
-            card.y + 4.0 * scale,
-            card.width + 4.0 * scale,
-            card.height,
-        ),
-        theme.shadow,
-    );
-    frame.fill(card, theme.bg_panel);
-    frame.rule_top(card, theme.rule, border::BORDER);
-    frame.rule_bottom(card, theme.rule, border::BORDER);
-    frame.rule_left(card, theme.rule, border::BORDER);
-
-    for (index, (key, what)) in entries.iter().enumerate() {
-        let y = card.y + pad + index as f32 * row_height;
-        // The key column is only as wide as the longest key: `v` and `<c-o>` next to a description
-        // half a window away read as two unrelated lists.
-        let key_column = (keys_width + 2.0) * 8.0 * scale;
-        frame.text(run(
+    for (index, (key, what)) in shown.iter().enumerate() {
+        let y = rect.y + pad / 2.0 + index as f32 * row_height;
+        let keys_right = rect.x + pad + key_column;
+        // Right-aligned in their column, so the descriptions start on one edge.
+        key_chip(frame, state, key, keys_right, y, row_height, scale);
+        let room = (rect.right() - pad - (keys_right + pad)).max(0.0);
+        frame.text(ui(
             state,
-            Role::Value,
-            *key,
-            Rect::new(card.x + pad, y, key_column, row_height),
-            accent,
-            Align::Left,
-            scale,
-        ));
-        frame.text(run(
-            state,
-            Role::Value,
-            *what,
-            Rect::new(
-                card.x + pad + key_column,
-                y,
-                (card.width - pad * 2.0 - key_column).max(0.0),
-                row_height,
-            ),
+            elide(state, Role::Ui, what, room, scale),
+            Rect::new(keys_right + pad, y, room, row_height),
             theme.ink_dim,
             Align::Left,
             scale,
@@ -2253,7 +2398,15 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     }
 }
 
-/// The help panel: every key that works right now, grouped and filterable.
+/// The help panel: every key that works right now, grouped and filterable, and each one a row that
+/// runs its command when clicked or chosen with Enter.
+///
+/// A dialog, so it keeps the scrim the palette dropped. Laid out by [`crate::help::Help::geometry`],
+/// which the mouse reads too. The section headings stay — "files", "the language server" — because
+/// in a list of seventy keys they are how you find your place. The title the panel had is folded
+/// into the field's placeholder, which still says which grammar these keys are for: that is the
+/// question underneath the question, and a non-modal user needs to know they are not being shown
+/// Vim's keys.
 fn draw_help(
     frame: &mut Frame,
     state: &EditorState,
@@ -2265,145 +2418,114 @@ fn draw_help(
     use crate::help::Line;
 
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
     frame.fill(bounds, theme.scrim);
+    let geometry = help.geometry(bounds, scale);
+    frame.set_zoom(Some(appear_zoom(geometry.card, travel, Anchor::Centre)));
+    card(frame, theme, geometry.card, scale, 1.0);
 
-    let pad = space::LG * scale;
-    let row_height = 24.0 * scale;
-    let width = (720.0 * scale).min(bounds.width - space::XXL * 2.0 * scale);
-    let card = Rect::new(
-        bounds.x + (bounds.width - width) / 2.0,
-        bounds.y + 80.0 * scale,
-        width,
-        (bounds.height - 160.0 * scale).max(row_height * 6.0),
-    );
-    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Centre)));
-
-    frame.fill(card, theme.bg_panel);
-    frame.rule_top(card, theme.rule, border::BORDER);
-    frame.rule_bottom(card, theme.rule, border::BORDER);
-    frame.rule_left(card, theme.rule, border::BORDER);
-
-    let (header, rest) = card.split_top(52.0 * scale);
-    // `split_bottom` returns the *bottom* piece first, unlike `split_top`. Taking them the other way
-    // round drew the whole list into a thirty-pixel strip at the foot of the card and the footer
-    // across the middle of it — which is what the first render of this panel actually looked like.
-    let (footer, rows_area) = rest.split_bottom(30.0 * scale);
-
-    let mut title_spec = state.typography.spec(Role::Display);
-    title_spec.size_px = 22.0 * scale;
-    frame.text(TextRun {
-        // Says which grammar these are, because that is the question underneath the question: a
-        // non-modal user needs to know they are not being shown Vim's keys.
-        text: if help.query.is_empty() {
-            match state.modal {
-                true => "keys — vim grammar".to_string(),
-                false => "keys".to_string(),
-            }
-        } else {
-            help.query.clone()
-        },
-        spec: title_spec,
-        color: if help.query.is_empty() {
-            theme.ink
-        } else {
-            accent
-        },
-        rect: Rect::new(
-            header.x + pad,
-            header.y,
-            header.width - pad * 2.0,
-            header.height,
-        ),
-        align: Align::Left,
-        center_vertically: true,
-        wrap: false,
-        layer: Layer::default(),
-        clip: None,
-    });
-    frame.text(label(
+    draw_field(
+        frame,
         state,
-        "type to filter",
-        Rect::new(
-            header.x + pad,
-            header.y,
-            header.width - pad * 2.0,
-            header.height,
-        ),
-        theme.ink_faint,
-        Align::Right,
+        geometry.input,
+        &help.query,
+        if state.modal {
+            "Filter the keys of the Vim grammar"
+        } else {
+            "Filter the keys"
+        },
         scale,
-    ));
-    frame.rule_bottom(header, theme.rule_soft, border::BORDER);
+    );
 
-    let visible = ((rows_area.height / row_height).floor() as usize).max(1);
+    let pad = 10.0 * scale;
     let lines = help.lines();
-    for (index, line) in lines.iter().skip(help.scroll).take(visible).enumerate() {
-        let y = rows_area.y + index as f32 * row_height;
-        match line {
-            Line::Heading(title) => {
+    for (offset, rect) in geometry.rows.iter().enumerate() {
+        let index = geometry.first + offset;
+        match lines.get(index) {
+            Some(Line::Heading(title)) => {
                 frame.text(label(
                     state,
                     *title,
                     Rect::new(
-                        rows_area.x + pad,
-                        y,
-                        rows_area.width - pad * 2.0,
-                        row_height,
+                        rect.x + pad,
+                        rect.y + 4.0 * scale,
+                        rect.width - pad * 2.0,
+                        rect.height - 4.0 * scale,
                     ),
                     theme.ink_faint,
                     Align::Left,
                     scale,
                 ));
             }
-            Line::Binding { keys, what } => {
-                // Keys in the mode colour on the left, what they do beside them. The key column is
-                // fixed so the list reads as a table rather than as prose.
-                frame.text(run(
+            Some(Line::Binding { name, what, .. }) => {
+                let selected = index == help.selected;
+                row_wash(frame, state, *rect, selected, scale);
+                let keys = dacode_input::commands::by_name(name)
+                    .map(|command| command.shown(state.modal))
+                    .unwrap_or_default();
+                let right = key_chip(
+                    frame,
                     state,
-                    Role::Value,
-                    *keys,
-                    Rect::new(rows_area.x + pad * 2.0, y, 150.0 * scale, row_height),
-                    accent,
-                    Align::Left,
+                    &keys,
+                    rect.right() - pad,
+                    rect.y,
+                    rect.height,
                     scale,
-                ));
-                frame.text(run(
+                ) - 12.0 * scale;
+                let room = (right - rect.x - pad).max(0.0);
+                frame.text(ui(
                     state,
-                    Role::Value,
-                    *what,
-                    Rect::new(
-                        rows_area.x + pad * 2.0 + 160.0 * scale,
-                        y,
-                        (rows_area.width - pad * 4.0 - 160.0 * scale).max(0.0),
-                        row_height,
-                    ),
-                    theme.ink_dim,
+                    elide(state, Role::Ui, what, room, scale),
+                    Rect::new(rect.x + pad, rect.y, room, rect.height),
+                    if selected { theme.ink } else { theme.ink_dim },
                     Align::Left,
                     scale,
                 ));
             }
+            None => {}
         }
     }
+    if geometry.rows.is_empty() || lines.is_empty() {
+        frame.text(ui(
+            state,
+            "no key does that",
+            Rect::new(
+                geometry.input.x + pad,
+                geometry.input.bottom() + 6.0 * scale,
+                geometry.input.width - pad * 2.0,
+                26.0 * scale,
+            ),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    }
 
-    frame.rule_top(footer, theme.rule_soft, border::BORDER);
-    frame.text(label(
-        state,
-        "↑↓ scroll · esc close · ctrl-shift-p every command",
-        Rect::new(
-            footer.x + pad,
-            footer.y,
-            footer.width - pad * 2.0,
-            footer.height,
-        ),
-        theme.ink_faint,
-        Align::Left,
-        scale,
-    ));
+    // The panel's own keys, as chips, then the way to everything that has no key at all. Each
+    // hint is drawn whole or not at all, so a narrow card drops the last rather than cutting it.
+    let footer = geometry.footer;
+    frame.rule_top(footer, theme.rule_soft, border::BORDER * scale);
+    let enter = if state.modal { "<cr>" } else { "Enter" };
+    let escape = if state.modal { "<esc>" } else { "Esc" };
+    let palette = key_hint(state, "command_palette");
+    let strip = Rect::new(footer.x, footer.y, footer.width - pad, footer.height);
+    let mut x = Some(footer.x + pad);
+    for (keys, words) in [
+        ("↑↓", "move"),
+        (enter, "run"),
+        (escape, "close"),
+        (palette.as_str(), "every command"),
+    ] {
+        let Some(at) = x else { break };
+        x = hint(frame, state, keys, words, at, strip, scale);
+    }
 }
 
 /// The open menu's card, under its title in the bar or at the pointer. The bar's titles are not
 /// drawn here — see [`draw_menu_titles`].
+///
+/// The one heading a menu has is the name of a menu opened from behind "…", which does not say
+/// which it is. An entry whose label cannot say what it does has a line under it
+/// ([`crate::menu::note`]); the rest say it in their label.
 fn draw_menu(
     frame: &mut Frame,
     state: &EditorState,
@@ -2417,27 +2539,14 @@ fn draw_menu(
     // Geometry comes from the menu, not from here: the mouse reads the same function, and a second
     // copy of this arithmetic is how clicks start landing a row off.
     let geometry = menu.geometry(bounds, scale, &state.typography);
-    let card = geometry.card;
     let pad = geometry.pad;
-    let label_width = geometry.label_width;
+    let inset = 4.0 * scale;
+    let line = 26.0 * scale;
 
     // The card hangs from its title, or from the pointer that opened it.
-    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
-    frame.fill(
-        Rect::new(
-            card.x - 2.0 * scale,
-            card.y + 4.0 * scale,
-            card.width + 4.0 * scale,
-            card.height,
-        ),
-        theme.shadow,
-    );
-    frame.fill(card, theme.bg_panel);
-    frame.rule_top(card, theme.rule, border::BORDER);
-    frame.rule_bottom(card, theme.rule, border::BORDER);
-    frame.rule_left(card, theme.rule, border::BORDER);
+    frame.set_zoom(Some(appear_zoom(geometry.card, travel, Anchor::Top)));
+    card(frame, theme, geometry.card, scale, 1.0);
 
-    // The name of a menu whose own title is behind "…", which says nothing about which it is.
     if let Some(header) = geometry.header {
         frame.text(label(
             state,
@@ -2454,32 +2563,45 @@ fn draw_menu(
         ));
     }
     for (index, (item, row)) in menu.items.iter().zip(&geometry.rows).enumerate() {
-        if index == menu.selected {
-            frame.fill(*row, theme.row_active);
-        }
-        frame.text(run(
+        let selected = index == menu.selected;
+        let wash = Rect::new(row.x + inset, row.y, row.width - inset * 2.0, row.height);
+        row_wash(frame, state, wash, selected, scale);
+        let label_row = Rect::new(row.x, row.y, row.width, line.min(row.height));
+
+        // The key, as chips on the right: the menu's whole purpose is that you read this and stop
+        // needing the menu.
+        let right = key_chip(
+            frame,
             state,
-            Role::Value,
-            item.label.clone(),
-            Rect::new(row.x + pad, row.y, label_width + pad, row.height),
-            if index == menu.selected {
-                theme.ink
-            } else {
-                theme.ink_dim
-            },
+            &item.keys,
+            row.right() - pad,
+            label_row.y,
+            label_row.height,
+            scale,
+        );
+        let room = (right - 12.0 * scale - (row.x + pad)).max(0.0);
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, &item.label, room, scale),
+            Rect::new(row.x + pad, label_row.y, room, label_row.height),
+            if selected { theme.ink } else { theme.ink_dim },
             Align::Left,
             scale,
         ));
-        // The key, right-aligned in its own column: the menu's whole purpose is that you read this
-        // and stop needing the menu.
-        if !item.keys.is_empty() {
+        if let Some(note) = item.note {
+            let width = row.width - pad * 2.0;
             frame.text(run(
                 state,
                 Role::Value,
-                item.keys.clone(),
-                Rect::new(row.x + pad, row.y, row.width - pad * 2.0, row.height),
+                elide(state, Role::Value, note, width, scale),
+                Rect::new(
+                    row.x + pad,
+                    label_row.bottom() - 4.0 * scale,
+                    width,
+                    crate::menu::NOTE_HEIGHT * scale,
+                ),
                 theme.ink_faint,
-                Align::Right,
+                Align::Left,
                 scale,
             ));
         }
@@ -2528,7 +2650,16 @@ fn label(
 /// with no sign there was more. An ellipsis is the difference between text that is abbreviated and
 /// text that looks broken.
 fn elide(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) -> String {
-    let advance = state.typography.advance(role) * scale;
+    elide_to(
+        text,
+        width,
+        crate::layout::measured_advance(&state.typography, role, scale),
+    )
+}
+
+/// [`elide`] for text set at an advance of its own — the wizard's, which has no `EditorState` and
+/// sets some of its text at sizes off the type scale.
+fn elide_to(text: &str, width: f32, advance: f32) -> String {
     if advance <= 0.0 || width <= 0.0 {
         return text.to_string();
     }
@@ -2559,7 +2690,15 @@ fn elide(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) ->
 /// A word longer than the whole line is broken rather than dropped, because a path or a URL is
 /// exactly the kind of thing an error message contains.
 fn wrap_to(typography: &Typography, role: Role, text: &str, width: f32, scale: f32) -> Vec<String> {
-    let advance = typography.advance(role) * scale;
+    wrap_at(
+        text,
+        width,
+        crate::layout::measured_advance(typography, role, scale),
+    )
+}
+
+/// [`wrap_to`] at an advance of the caller's, for text set off the type scale.
+fn wrap_at(text: &str, width: f32, advance: f32) -> Vec<String> {
     let per_line = if advance > 0.0 && width > 0.0 {
         (width / advance).floor().max(1.0) as usize
     } else {
@@ -2614,7 +2753,7 @@ fn wrap_to(typography: &Typography, role: Role, text: &str, width: f32, scale: f
 /// A path is the case: `…\.cargo\bin\rust-analyzer.exe` still names the program, while eliding it
 /// the usual way gives `C:\Users\Gawa…` — every character of which the reader already knew.
 fn elide_start(state: &EditorState, role: Role, text: &str, width: f32, scale: f32) -> String {
-    let advance = state.typography.advance(role) * scale;
+    let advance = crate::layout::measured_advance(&state.typography, role, scale);
     if advance <= 0.0 || width <= 0.0 {
         return text.to_string();
     }
@@ -2638,7 +2777,7 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     let theme = &state.theme;
     let size = 64.0 * scale;
     let line_height = 28.0 * scale;
-    let block = size + line_height;
+    let block = size + line_height * 2.4;
 
     let top = (code.y + (code.height - block) / 2.0).round();
     let left = (code.x + (code.width - size) / 2.0).round();
@@ -2650,31 +2789,42 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
         theme.brand().with_alpha(0.4),
     );
 
-    frame.text(label(
-        state,
-        "ctrl-p  open a file",
-        Rect::new(code.x, top + size, code.width, line_height),
-        theme.ink_faint,
-        Align::Center,
-        scale,
-    ));
-
     // The one line of teaching in the whole editor, and it goes here because this is the screen
     // someone is looking at when they have no idea what to do next. Not a tips carousel, not a
-    // tour: one key, and it answers everything else.
-    frame.text(label(
-        state,
-        "f1  every key that works",
-        Rect::new(
-            code.x,
-            top + size + line_height * 1.4,
-            code.width,
+    // tour: two keys, as the chips every card draws them as, and the second answers everything else.
+    let open = if state.modal { "<c-p>" } else { "Ctrl+P" };
+    let help = key_hint(state, "help");
+    for (index, (keys, words)) in [
+        (open, "open a file"),
+        (help.as_str(), "every key that works"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let chips = crate::layout::chips_width(&state.typography, keys, scale);
+        let gap = 10.0 * scale;
+        let text = words.chars().count() as f32
+            * crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+        let total = chips + gap + text;
+        // Centred as one unit; on a code area too narrow for it, the words give way, not the keys.
+        let x = (code.x + (code.width - total) / 2.0).max(code.x + space::SM * scale);
+        let row = Rect::new(
+            x,
+            top + size + space::SM * scale + index as f32 * line_height * 1.2,
+            total,
             line_height,
-        ),
-        theme.ink_faint.with_alpha(0.7),
-        Align::Center,
-        scale,
-    ));
+        );
+        key_chip(frame, state, keys, x + chips, row.y, row.height, scale);
+        let room = (code.right() - space::SM * scale - (x + chips + gap)).max(0.0);
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, words, room, scale),
+            Rect::new(x + chips + gap, row.y, room, row.height),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    }
 }
 
 /// The settings panel.
@@ -3124,9 +3274,15 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         let on_cursor_line =
             here == Some(problem.path.as_path()) && problem.line == state.cursor_point().line;
         if on_cursor_line {
-            frame.fill(
-                Rect::new(rect.x, y - 2.0 * scale, rect.width, line * 2.0),
+            frame.fill_rounded(
+                Rect::new(
+                    rect.x + pad / 2.0,
+                    y - 2.0 * scale,
+                    rect.width - pad,
+                    line * 2.0,
+                ),
                 theme.row_active,
+                5.0 * scale,
             );
         }
 
@@ -3145,31 +3301,39 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         // The first line of the message, wrapped across the two rows this entry has. Server messages
         // run to paragraphs; the box that appears when the cursor reaches the diagnostic is where the
         // whole text belongs, and a list is for deciding where to go.
-        let message = problem.message.clone();
-        let mut spec = state.typography.spec(Role::Value);
-        spec.size_px *= scale;
-        frame.text(TextRun {
-            text: message,
-            spec,
-            color: if on_cursor_line {
-                theme.ink
-            } else {
-                theme.ink_dim
-            },
-            rect: Rect::new(
-                rect.x + pad + 40.0 * scale,
-                y,
-                width - 40.0 * scale,
-                line * 2.0,
-            ),
-            align: Align::Left,
-            center_vertically: false,
-            // Wrapped, unlike everything else in the chrome: a clipped message is unreadable exactly
-            // when it matters, and there is a second row of space here already.
-            wrap: true,
-            layer: Layer::default(),
-            clip: None,
-        });
+        //
+        // Wrapped here rather than by the renderer: it wrapped the whole paragraph into a box two
+        // rows tall and clipped the rest, so a long message stopped mid-word at the foot of the
+        // second row with nothing to say it went on. Two lines, and the second ends in an ellipsis
+        // when there was more.
+        let room = (width - 40.0 * scale).max(0.0);
+        let first_line = problem.message.lines().next().unwrap_or_default();
+        let mut lines = wrap_to(&state.typography, Role::Value, first_line, room, scale);
+        if lines.len() > 2 || problem.message.lines().nth(1).is_some() {
+            let rest = lines.split_off(1.min(lines.len())).join(" ");
+            lines.push(elide(state, Role::Value, &format!("{rest} …"), room, scale));
+            lines.truncate(2);
+        }
+        for (offset, text) in lines.iter().enumerate() {
+            frame.text(run(
+                state,
+                Role::Value,
+                text.clone(),
+                Rect::new(
+                    rect.x + pad + 40.0 * scale,
+                    y + offset as f32 * line,
+                    room,
+                    line,
+                ),
+                if on_cursor_line {
+                    theme.ink
+                } else {
+                    theme.ink_dim
+                },
+                Align::Left,
+                scale,
+            ));
+        }
 
         y += line * 2.0;
     }
@@ -3867,8 +4031,7 @@ fn draw_notifications(
         line * (rows as f32 + 1.6),
     );
     frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
-    frame.fill_rounded(card, theme.bg_panel, 8.0 * scale);
-    frame.outline_rounded(card, theme.rule, 8.0 * scale, border::BORDER * scale);
+    self::card(frame, theme, card, scale, 1.0);
     let inner = card.inset(12.0 * scale);
     frame.text(label(
         state,
@@ -5308,6 +5471,61 @@ mod appear_tests {
         let centre = appear(card, 0.5, Anchor::Centre);
         assert!((centre.y + centre.height / 2.0 - (card.y + card.height / 2.0)).abs() < 1e-3);
         assert!(centre.width > top.width && centre.width < card.width);
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+
+    fn drawn(theme: &Theme, alpha: f32) -> Vec<dacode_render::Quad> {
+        let mut frame = Frame::default();
+        card(
+            &mut frame,
+            theme,
+            Rect::new(100.0, 80.0, 400.0, 200.0),
+            1.0,
+            alpha,
+        );
+        frame.quads_on(Layer::Base).cloned().collect()
+    }
+
+    #[test]
+    fn a_fading_card_fades_its_shadow_surface_and_outline_together() {
+        // Faded one part at a time, a closing card leaves its shadow behind for a frame or its
+        // outline floating over nothing — the kind of thing that reads as a rendering glitch.
+        for theme in [Theme::dark(), Theme::light()] {
+            let whole = drawn(&theme, 1.0);
+            let half = drawn(&theme, 0.5);
+            assert_eq!(whole.len(), 4, "two shadows, a surface, an outline");
+            assert_eq!(whole.len(), half.len());
+            for (whole, half) in whole.iter().zip(&half) {
+                assert!((half.color[3] - whole.color[3] * 0.5).abs() < 1e-4);
+                assert_eq!(whole.rect, half.rect);
+            }
+            assert!(drawn(&theme, 0.0).is_empty(), "nothing at all at zero");
+        }
+    }
+
+    #[test]
+    fn the_shadow_is_fainter_than_the_theme_shadow_and_the_surface_is_the_card() {
+        // Subtle in both themes: a fraction of `shadow`, never the full scrim-dark of it.
+        for theme in [Theme::dark(), Theme::light(), Theme::amoled()] {
+            let quads = drawn(&theme, 1.0);
+            let full = theme.shadow.to_linear()[3];
+            for shadow in &quads[..2] {
+                assert!(
+                    shadow.color[3] < full * 0.5,
+                    "a shadow at {}",
+                    shadow.color[3]
+                );
+                assert_eq!(shadow.border, 0.0);
+            }
+            let rect = Rect::new(100.0, 80.0, 400.0, 200.0);
+            assert_eq!(quads[2].rect, rect, "the surface is exactly the card");
+            assert_eq!(quads[3].rect, rect, "and so is its outline");
+            assert!(quads[3].border > 0.0);
+        }
     }
 }
 

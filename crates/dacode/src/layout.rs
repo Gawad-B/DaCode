@@ -749,9 +749,70 @@ pub fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
 }
 
+/// The presses a key string is drawn as, one chip each, split at spaces.
+///
+/// Both notations agree on that much: desktop notation (`Ctrl+K O`, from `commands::pretty`)
+/// separates the presses of a chord with a space, and Vim's table separates alternatives with two
+/// (`:w  <c-s>`) and writes a space key as `<space>`, never as a bare one.
+pub fn key_presses(keys: &str) -> Vec<&str> {
+    keys.split_whitespace().collect()
+}
+
+/// How much wider the bundled face really sets a character than the type scale's estimate.
+///
+/// `Typography::advance` says 0.60 em; Fira Code's advance is 1200 units in an em of 1950, which
+/// is 0.615. Two and a half percent is nothing in one word and three characters in a line of a
+/// hundred and twenty — enough that text measured to fit a box exactly ran past its edge and was
+/// cut mid-word by the renderer's clip, which is the one thing [`crate::chrome`]'s `elide` exists to
+/// prevent. Measurements that decide whether text *fits* go through [`measured_advance`]; the code
+/// grid does not, since moving it is a change to where every glyph of code is drawn.
+pub const FACE_ADVANCE: f32 = 1200.0 / 1950.0 / 0.60;
+
+/// The width one character of `role` really takes, for deciding what fits.
+pub fn measured_advance(
+    typography: &dacode_theme::Typography,
+    role: dacode_theme::Role,
+    scale: f32,
+) -> f32 {
+    typography.advance(role) * scale * FACE_ADVANCE
+}
+
+/// Padding either side of a key chip's text, and the gap between two chips, at scale 1.
+pub const CHIP_PAD: f32 = 5.0;
+pub const CHIP_GAP: f32 = 4.0;
+
+/// How wide `keys` is when drawn as chips. Measured, like every other width here, with the type
+/// scale's advance, so a menu sized by this is the width the chips are drawn at.
+pub fn chips_width(typography: &dacode_theme::Typography, keys: &str, scale: f32) -> f32 {
+    let advance = measured_advance(typography, dacode_theme::Role::Value, scale);
+    let presses = key_presses(keys);
+    let text: f32 = presses
+        .iter()
+        .map(|press| press.chars().count() as f32 * advance + CHIP_PAD * 2.0 * scale)
+        .sum();
+    text + presses.len().saturating_sub(1) as f32 * CHIP_GAP * scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_split_into_presses_by_their_own_notation() {
+        // A chord's presses are a chip each, or "Ctrl+K O" reads as one key with a space in it.
+        assert_eq!(key_presses("Ctrl+K O"), vec!["Ctrl+K", "O"]);
+        assert_eq!(key_presses("Ctrl+Shift+P"), vec!["Ctrl+Shift+P"]);
+        // Vim's alternatives are two spaces apart; a key is never split inside itself.
+        assert_eq!(key_presses(":w  <c-s>"), vec![":w", "<c-s>"]);
+        assert_eq!(key_presses("gD"), vec!["gD"]);
+        assert!(key_presses("").is_empty());
+        let typography = dacode_theme::Typography::default();
+        assert_eq!(chips_width(&typography, "", 1.0), 0.0);
+        assert!(
+            chips_width(&typography, "Ctrl+K O", 1.0) > chips_width(&typography, "Ctrl+KO", 1.0),
+            "two chips take their padding and the gap between them"
+        );
+    }
 
     fn bounds() -> Rect {
         Rect::new(0.0, 0.0, 1600.0, 1000.0)

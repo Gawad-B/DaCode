@@ -158,7 +158,7 @@ platform event any other way.
 
 **Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
 the chrome's bars and buttons, `menu::geometry`, `welcome::geometry`, `settings_ui::panel`,
-`tree::panel`, `layout::CodeArea`. The drawing code reads the same function. A rectangle computed
+`tree::panel`, `layout::CodeArea`, `palette::Palette::geometry`, `help::Help::geometry`. The drawing code reads the same function. A rectangle computed
 twice is a click that lands somewhere other than where it looks.
 
 That rule has now been broken three times and each break looked like a different bug. `draw_code`
@@ -473,9 +473,15 @@ Deliberate, with reasons in `PLAN.md`: no integrated terminal, no git blame, no 
 measured from the shaper, no macOS packaging. Cross-file rename is not undoable and says so.
 
 Smaller ones, from the non-modal work: a drag after a double-click extends by character rather than by
-word; the which-key popup sits at the top left of the code area rather than following the cursor,
-because a popup that moved as you typed would be harder to read than a still one; and the palette and
-help panel take the keyboard only — their rows are not clickable, though the menus' are.
+word; and the which-key popup sits at the top left of the code area rather than following the cursor,
+because a popup that moved as you typed would be harder to read than a still one. The palette's and
+the help panel's rows are clickable now, through `Palette::geometry` and `Help::geometry`, which the
+drawing reads too; a click runs the row through the same function Enter does, so it leaves focus
+where Enter would.
+
+Every overlay is drawn on `chrome::card`, and anything that decides whether text *fits* measures with
+`layout::measured_advance` — the face's real 0.615 em rather than the type scale's 0.60, which let a
+line measured to fit exactly run past its box and be cut mid-word. The code grid still uses 0.60.
 
 Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{` is more than four
 or five hundred lines above it is left where it was typed. It used to walk to the start of the

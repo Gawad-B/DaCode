@@ -12,6 +12,7 @@
 //! leaves the one line you wanted.
 
 use dacode_input::commands::{self, Command, Group};
+use dacode_render::Rect;
 
 /// The panel's state.
 #[derive(Debug, Clone)]
@@ -22,6 +23,25 @@ pub struct Help {
     pub query: String,
     /// First visible row, for scrolling.
     pub scroll: usize,
+    /// The highlighted line — always a binding, when there is one — which Enter runs.
+    pub selected: usize,
+}
+
+/// Where the panel is, as data: drawing and the mouse both read it. See [`Help::geometry`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Geometry {
+    pub card: Rect,
+    /// The filter field across the top.
+    pub input: Rect,
+    /// One rectangle per visible line, headings included, top to bottom: `rows[i]` is line
+    /// `first + i` of [`Help::lines`].
+    pub rows: Vec<Rect>,
+    /// The line the first of `rows` shows. The scroll position, clamped to the list.
+    pub first: usize,
+    /// How many lines the card has room for — what a page is, for scrolling.
+    pub capacity: usize,
+    /// The strip of key hints along the bottom.
+    pub footer: Rect,
 }
 
 /// A line in the panel: either a heading or a binding.
@@ -29,6 +49,8 @@ pub struct Help {
 pub enum Line {
     Heading(&'static str),
     Binding {
+        /// The command it runs, by the name the palette and config know it by.
+        name: &'static str,
         keys: &'static str,
         what: &'static str,
     },
@@ -40,6 +62,8 @@ impl Help {
             modal,
             query: String::new(),
             scroll: 0,
+            // Line 0 is always a heading; its first binding is under it.
+            selected: 1,
         }
     }
 
@@ -65,6 +89,7 @@ impl Help {
             lines.push(Line::Heading(group.title()));
             for command in matching {
                 lines.push(Line::Binding {
+                    name: command.name,
                     keys: command.keys_for(self.modal),
                     what: command.what,
                 });
@@ -84,14 +109,140 @@ impl Help {
         };
     }
 
+    /// Moves the highlight to the next binding `delta` away, skipping headings, and scrolls just
+    /// enough to keep it among the `rows` on screen.
+    pub fn move_selection(&mut self, delta: isize, rows: usize) {
+        let lines = self.lines();
+        let bindings: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| matches!(line, Line::Binding { .. }))
+            .map(|(index, _)| index)
+            .collect();
+        let Some(last) = bindings.len().checked_sub(1) else {
+            return;
+        };
+        let at = bindings
+            .iter()
+            .position(|index| *index >= self.selected)
+            .unwrap_or(last);
+        let to = match delta {
+            d if d < 0 => at.saturating_sub(d.unsigned_abs()),
+            d => (at + d as usize).min(last),
+        };
+        self.selected = bindings[to];
+
+        let rows = rows.max(1);
+        if self.selected < self.scroll {
+            // Its heading comes into view with it, when there is room for both: a binding shown
+            // without the section it belongs to has lost half of what it says.
+            let heading =
+                self.selected > 0 && matches!(lines.get(self.selected - 1), Some(Line::Heading(_)));
+            self.scroll = self.selected - usize::from(heading && rows > 1);
+        } else if self.selected >= self.scroll + rows {
+            self.scroll = self.selected + 1 - rows;
+        }
+    }
+
+    /// The command the highlighted line runs.
+    pub fn selection(&self) -> Option<&'static str> {
+        match self.lines().get(self.selected) {
+            Some(Line::Binding { name, .. }) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// The command on line `index` of [`Help::lines`], if it is a binding.
+    pub fn command_on(&self, index: usize) -> Option<&'static str> {
+        match self.lines().get(index) {
+            Some(Line::Binding { name, .. }) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Where the card and its lines are, inside `bounds`.
+    pub fn geometry(&self, bounds: Rect, scale: f32) -> Geometry {
+        let px = |v: f32| v * scale;
+        let (margin, pad, input_height, gap) = (px(16.0), px(6.0), px(36.0), px(6.0));
+        let (row_height, footer_height) = (px(26.0), px(32.0));
+
+        let width = px(720.0).min(bounds.width - margin * 2.0).max(0.0);
+        // A centred dialog, inset from top and bottom alike, with less inset on a short window.
+        let inset = px(80.0).min(bounds.height * 0.1);
+        let fixed = pad * 2.0 + input_height + gap + footer_height;
+        let height = (bounds.height - inset * 2.0).max(fixed + row_height);
+        let card = Rect::new(
+            bounds.x + (bounds.width - width) / 2.0,
+            bounds.y + inset.min((bounds.height - height).max(0.0) / 2.0),
+            width,
+            height.min(bounds.height),
+        );
+
+        let input = Rect::new(
+            card.x + pad,
+            card.y + pad,
+            card.width - pad * 2.0,
+            input_height,
+        );
+        let footer = Rect::new(
+            card.x + pad,
+            card.bottom() - pad - footer_height,
+            card.width - pad * 2.0,
+            footer_height,
+        );
+        let list_top = input.bottom() + gap;
+        let capacity = (((footer.y - list_top) / row_height).floor() as usize).max(1);
+
+        let total = self.lines().len();
+        let first = self.scroll.min(total.saturating_sub(1));
+        let rows = (0..capacity.min(total - first.min(total)))
+            .map(|index| {
+                Rect::new(
+                    input.x,
+                    list_top + index as f32 * row_height,
+                    input.width,
+                    row_height,
+                )
+            })
+            .collect();
+
+        Geometry {
+            card,
+            input,
+            rows,
+            first,
+            capacity,
+            footer,
+        }
+    }
+
+    /// Which line a point is over, by its index in [`Help::lines`].
+    pub fn line_at(geometry: &Geometry, x: f32, y: f32) -> Option<usize> {
+        geometry
+            .rows
+            .iter()
+            .position(|row| crate::layout::contains(*row, x, y))
+            .map(|at| geometry.first + at)
+    }
+
     pub fn type_char(&mut self, c: char) {
         self.query.push(c);
-        self.scroll = 0;
+        self.refiltered();
     }
 
     pub fn backspace(&mut self) {
         self.query.pop();
+        self.refiltered();
+    }
+
+    /// Back to the top of a list that has just changed, with its first binding highlighted.
+    fn refiltered(&mut self) {
         self.scroll = 0;
+        self.selected = self
+            .lines()
+            .iter()
+            .position(|line| matches!(line, Line::Binding { .. }))
+            .unwrap_or(0);
     }
 }
 
@@ -119,6 +270,7 @@ mod tests {
         let modal = Help::new(true).lines();
 
         assert!(flat.contains(&Line::Binding {
+            name: "toggle_comment",
             keys: "<c-/>",
             what: "comment or uncomment these lines"
         }));
@@ -192,5 +344,86 @@ mod tests {
         assert_eq!(help.scroll, total.saturating_sub(10));
         help.scroll_by(-1000, 10);
         assert_eq!(help.scroll, 0);
+    }
+
+    #[test]
+    fn the_panel_and_its_rows_stay_inside_the_window_at_every_size() {
+        let inside = |outer: Rect, inner: Rect| {
+            inner.x >= outer.x - 0.01
+                && inner.y >= outer.y - 0.01
+                && inner.right() <= outer.right() + 0.01
+                && inner.bottom() <= outer.bottom() + 0.01
+        };
+        for scale in [1.0, 2.0] {
+            for (width, height) in [
+                (640.0, 480.0),
+                (800.0, 600.0),
+                (1280.0, 720.0),
+                (1600.0, 1000.0),
+                (2560.0, 1440.0),
+            ] {
+                let bounds = Rect::new(0.0, 0.0, width * scale, height * scale);
+                let mut help = Help::new(true);
+                help.scroll = 7;
+                let geometry = help.geometry(bounds, scale);
+                let at = format!("{width}x{height} at {scale}x");
+                assert!(inside(bounds, geometry.card), "card at {at}");
+                assert!(inside(geometry.card, geometry.input), "input at {at}");
+                assert!(inside(geometry.card, geometry.footer), "footer at {at}");
+                assert!(!geometry.rows.is_empty(), "no rows at {at}");
+                assert!(geometry.rows.len() <= geometry.capacity);
+                for row in &geometry.rows {
+                    assert!(inside(geometry.card, *row), "{row:?} at {at}");
+                    assert!(row.y >= geometry.input.bottom() && row.bottom() <= geometry.footer.y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_visible_lines_have_rectangles() {
+        let mut help = Help::new(false);
+        let total = help.lines().len();
+        help.scroll = 5;
+        let geometry = help.geometry(Rect::new(0.0, 0.0, 1600.0, 1000.0), 1.0);
+        assert_eq!(geometry.first, 5);
+        assert_eq!(geometry.rows.len(), geometry.capacity.min(total - 5));
+        assert!(
+            geometry.capacity < total,
+            "the list is longer than a page here"
+        );
+    }
+
+    #[test]
+    fn the_highlight_skips_headings_and_stays_in_view() {
+        let mut help = Help::new(false);
+        assert!(
+            help.selection().is_some(),
+            "something is highlighted from the start"
+        );
+        for _ in 0..40 {
+            help.move_selection(1, 10);
+            assert!(help.selection().is_some(), "landed on a heading");
+            assert!(
+                help.selected >= help.scroll && help.selected < help.scroll + 10,
+                "{} is off the page starting at {}",
+                help.selected,
+                help.scroll
+            );
+        }
+        let low = help.selected;
+        help.move_selection(-3, 10);
+        assert!(help.selected < low);
+        assert!(help.selected >= help.scroll);
+    }
+
+    #[test]
+    fn filtering_highlights_the_first_answer() {
+        // Type, press Enter: the shortest way from "what was that key" to having pressed it.
+        let mut help = Help::new(false);
+        for c in "every command".chars() {
+            help.type_char(c);
+        }
+        assert_eq!(help.selection(), Some("command_palette"));
     }
 }

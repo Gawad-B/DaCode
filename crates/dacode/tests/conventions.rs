@@ -70,7 +70,7 @@ fn nothing_modal_reaches_a_non_modal_reader() {
 
     // The help panel filters on having a key, which reaches the same place by another route.
     for line in dacode::help::Help::new(false).lines() {
-        if let dacode::help::Line::Binding { keys, what } = line {
+        if let dacode::help::Line::Binding { keys, what, .. } = line {
             assert!(!keys.is_empty(), "`{what}` is offered with no key to press");
         }
     }

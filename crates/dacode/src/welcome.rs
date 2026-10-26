@@ -295,7 +295,9 @@ pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
         Rect::new(
             left,
             top + px(40.0) + px(34.0) * crate::settings_ui::Importable::ALL.len() as f32 + px(14.0),
-            px(200.0),
+            // Wide enough for its longest label, "start without importing", in the face's real
+            // advance; it was 200 and cut that to "start without impor".
+            px(260.0).min(content_width),
             px(34.0),
         )
     });

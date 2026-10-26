@@ -1784,6 +1784,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 let was_over_toolbar = self.over_toolbar();
+                let before = self.state.pointer;
                 self.pointer = (position.x as f32, position.y as f32);
                 self.state.pointer = self.pointer;
                 if let Some(welcome) = &mut self.state.welcome {
@@ -1801,6 +1802,18 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                 if self.state.menu.is_some() {
                     // The bar's own washes — the search box, the bell — follow the pointer too.
                     if self.move_over_menu() || was_over_toolbar || self.over_toolbar() {
+                        self.request_redraw();
+                    }
+                    return;
+                }
+
+                // The palette and the help panel light the row under the pointer, and a drag must
+                // not reach the text behind them. Redrawn only when that row changes.
+                if self.state.palette.is_some() || self.state.help.is_some() {
+                    let previous = std::mem::replace(&mut self.state.pointer, before);
+                    let was = self.overlay_row_at();
+                    self.state.pointer = previous;
+                    if was != self.overlay_row_at() || was_over_toolbar || self.over_toolbar() {
                         self.request_redraw();
                     }
                     return;
@@ -1827,7 +1840,10 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                         // `click(true)`, which skips the menu branch, lands in the pane behind it
                         // and replaces the selection — visibly undoing whatever the row had just
                         // done, a moment after it did it.
-                        self.dragging = self.state.menu.is_none() && self.state.welcome.is_none();
+                        self.dragging = self.state.menu.is_none()
+                            && self.state.welcome.is_none()
+                            && self.state.palette.is_none()
+                            && self.state.help.is_none();
                         self.click_count = self.count_click();
                         self.click(false);
                         self.keep_offset_under_pointer();
@@ -2157,8 +2173,8 @@ impl App {
             return true;
         }
         if self.state.help.is_some() {
-            // Read before the panel is borrowed: `code_rows` needs the renderer and the document.
-            let rows = self.code_rows();
+            // Read before the panel is borrowed: the page is the panel's own, from its geometry.
+            let rows = self.help_geometry().map_or(1, |geometry| geometry.capacity);
             if let Some(help) = &mut self.state.help {
                 help.scroll_by(lines, rows);
             }
@@ -2763,14 +2779,24 @@ impl App {
     /// Keys for the help panel. Typing filters it, which is the only way a list this long answers a
     /// question rather than presenting one.
     fn handle_help_key(&mut self, key: Key) -> bool {
-        let rows = self.code_rows();
+        // A page is what the panel has room for, which is its own height and not the code area's.
+        let rows = self.help_geometry().map_or(1, |geometry| geometry.capacity);
         match key.code {
             KeyCode::Escape | KeyCode::Function(1) => self.state.close_help(),
+            // Runs the highlighted key's command, as the palette runs its row: closed first, so a
+            // command that opens something of its own does not find the panel on top of it.
+            KeyCode::Enter => {
+                let chosen = self.state.help.as_ref().and_then(|help| help.selection());
+                self.state.close_help();
+                if let Some(name) = chosen {
+                    self.activate(Target::Command(name));
+                }
+            }
             code => {
                 if let Some(help) = &mut self.state.help {
                     match code {
-                        KeyCode::Up => help.scroll_by(-1, rows),
-                        KeyCode::Down => help.scroll_by(1, rows),
+                        KeyCode::Up => help.move_selection(-1, rows),
+                        KeyCode::Down => help.move_selection(1, rows),
                         KeyCode::PageUp => help.scroll_by(-(rows as isize), rows),
                         KeyCode::PageDown => help.scroll_by(rows as isize, rows),
                         KeyCode::Backspace => help.backspace(),
@@ -7052,6 +7078,18 @@ impl App {
             self.click_menu(x, y, scale);
             return;
         }
+        // The palette and the help panel are next, for the same reason, and before focus is
+        // decided: choosing a row runs it exactly as Enter would, and Enter leaves the keys where
+        // they were before the overlay opened. A drag starting on one reaches nothing behind it.
+        if self.state.palette.is_some() && (extend || self.click_palette(x, y)) {
+            return;
+        }
+        if self.state.help.is_some() {
+            if !extend {
+                self.click_help(x, y);
+            }
+            return;
+        }
 
         // A press decides where the keys go, before anything below handles it. The chrome's own
         // bars say `None`, so a toolbar button does not move focus; the buttons that open a view
@@ -7453,6 +7491,77 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The palette or help row under the state's pointer — what the drawing lights.
+    fn overlay_row_at(&self) -> Option<usize> {
+        let (x, y) = self.state.pointer;
+        if let Some(geometry) = self.palette_geometry() {
+            return Palette::row_at(&geometry, x, y);
+        }
+        dacode::help::Help::line_at(&self.help_geometry()?, x, y)
+    }
+
+    /// Where the open palette is: the same function and the same anchor the drawing reads.
+    fn palette_geometry(&self) -> Option<dacode::palette::Geometry> {
+        let (bounds, scale) = (self.window_bounds(), self.scale());
+        let anchor = dacode::palette::anchor(bounds, scale, &self.state.typography);
+        Some(self.state.palette.as_ref()?.geometry(bounds, anchor, scale))
+    }
+
+    /// Where the open help panel is, as the drawing places it.
+    fn help_geometry(&self) -> Option<dacode::help::Geometry> {
+        Some(
+            self.state
+                .help
+                .as_ref()?
+                .geometry(self.window_bounds(), self.scale()),
+        )
+    }
+
+    /// A click while the palette is open. Returns whether the click is used up; one outside the
+    /// card closes it and goes on to whatever is under the pointer.
+    fn click_palette(&mut self, x: f32, y: f32) -> bool {
+        let Some(geometry) = self.palette_geometry() else {
+            return false;
+        };
+        if let Some(index) = Palette::row_at(&geometry, x, y) {
+            if let Some(palette) = &mut self.state.palette {
+                palette.selected = index;
+            }
+            // Exactly what Enter does, through the same function — so a click cannot differ from
+            // the key in anything but how it was asked for.
+            self.handle_palette_key(Key::named(KeyCode::Enter));
+            return true;
+        }
+        // The query field, a heading, the padding: part of the card, and nothing to do.
+        if dacode::layout::contains(geometry.card, x, y) {
+            return true;
+        }
+        self.state.close_palette();
+        false
+    }
+
+    /// A click while the help panel is open. It is a dialog over a scrim, so every click is its
+    /// own: one outside the card only closes it.
+    fn click_help(&mut self, x: f32, y: f32) {
+        let Some(geometry) = self.help_geometry() else {
+            return;
+        };
+        if let Some(line) = dacode::help::Help::line_at(&geometry, x, y) {
+            let Some(help) = &mut self.state.help else {
+                return;
+            };
+            // A heading is a row too, and runs nothing.
+            if help.command_on(line).is_some() {
+                help.selected = line;
+                self.handle_help_key(Key::named(KeyCode::Enter));
+            }
+            return;
+        }
+        if !dacode::layout::contains(geometry.card, x, y) {
+            self.state.close_help();
         }
     }
 
@@ -8765,6 +8874,164 @@ mod wiring_tests {
         assert!(
             app.state.palette.is_some(),
             "Enter ran Help's second row, the command palette"
+        );
+    }
+
+    fn middle(rect: Rect) -> (f32, f32) {
+        (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+    }
+
+    /// The gap `CLAUDE.md` listed: the palette's rows could only be reached by the keyboard. A
+    /// click on row `n` must run row `n` — not its neighbour, and not the one that is selected.
+    #[test]
+    fn clicking_a_palette_row_runs_that_item() {
+        let dir = scratch("palette-click");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        for name in ["b.rs", "c.rs", "d.rs"] {
+            std::fs::write(dir.join(name), "x\n").unwrap();
+            app.activate(Target::File(dir.join(name)));
+        }
+        app.open_palette(PaletteKind::Buffers);
+        let geometry = app.palette_geometry().expect("open");
+        let palette = app.state.palette.as_ref().unwrap();
+        assert!(geometry.rows.len() >= 3);
+        let n = 2;
+        assert_ne!(
+            geometry.items[n], palette.selected,
+            "not just Enter on the selection"
+        );
+        let Target::Buffer(wanted) = palette.rows[geometry.items[n]].target.clone() else {
+            panic!("a buffer palette lists buffers");
+        };
+
+        app.pointer = middle(geometry.rows[n]);
+        app.click(false);
+        assert!(
+            app.state.palette.is_none(),
+            "choosing closes it, as Enter does"
+        );
+        assert_eq!(app.state.active_buffer, wanted);
+    }
+
+    #[test]
+    fn clicking_a_help_row_runs_its_command() {
+        let dir = scratch("help-click");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.help = Some(dacode::help::Help::new(app.state.modal));
+        for c in "every command".chars() {
+            app.press(Key::char(c));
+        }
+        let geometry = app.help_geometry().expect("open");
+        let help = app.state.help.as_ref().unwrap();
+        let row = (0..geometry.rows.len())
+            .find(|at| help.command_on(geometry.first + at) == Some("command_palette"))
+            .expect("the filter left the palette's row");
+
+        app.pointer = middle(geometry.rows[row]);
+        app.click(false);
+        assert!(app.state.help.is_none());
+        assert_eq!(
+            app.state.palette.as_ref().map(|palette| palette.kind),
+            Some(PaletteKind::Commands),
+            "the row ran the command palette"
+        );
+    }
+
+    /// Enter on the help panel runs the highlighted key's command — what makes the panel a way to
+    /// do something rather than a page to read.
+    #[test]
+    fn enter_on_the_help_panel_runs_the_highlighted_command() {
+        let dir = scratch("help-enter");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.help = Some(dacode::help::Help::new(app.state.modal));
+        for c in "every command".chars() {
+            app.press(Key::char(c));
+        }
+        app.press(Key::named(KeyCode::Enter));
+        assert!(app.state.help.is_none());
+        assert_eq!(
+            app.state.palette.as_ref().map(|palette| palette.kind),
+            Some(PaletteKind::Commands)
+        );
+    }
+
+    /// A click outside the card closes the palette — including just under it, where its shadow is:
+    /// the shadow is drawing, not a target. A click on the query field leaves it open.
+    #[test]
+    fn the_palette_closes_on_a_click_away_and_not_on_its_input() {
+        let dir = scratch("palette-away");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.open_palette(PaletteKind::Commands);
+        let geometry = app.palette_geometry().unwrap();
+        let before = app.state.document.text().to_string();
+
+        app.pointer = middle(geometry.input);
+        app.click(false);
+        assert!(app.state.palette.is_some(), "the input is part of the card");
+
+        app.pointer = (middle(geometry.card).0, geometry.card.bottom() + 3.0);
+        app.click(false);
+        assert!(app.state.palette.is_none(), "the shadow takes no clicks");
+        assert_eq!(app.state.document.text().to_string(), before);
+    }
+
+    #[test]
+    fn the_help_panel_closes_on_a_click_outside_its_card() {
+        let dir = scratch("help-away");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.help = Some(dacode::help::Help::new(app.state.modal));
+        let geometry = app.help_geometry().unwrap();
+        app.pointer = middle(geometry.input);
+        app.click(false);
+        assert!(app.state.help.is_some());
+        app.pointer = (geometry.card.x / 2.0, middle(geometry.card).1);
+        app.click(false);
+        assert!(app.state.help.is_none());
+    }
+
+    /// Choosing with the mouse leaves the keys where Enter would: with the tree focused, a row
+    /// clicked over the code area must not hand the keys to the editor under the card.
+    #[test]
+    fn a_row_chosen_by_mouse_leaves_focus_where_it_was() {
+        let dir = scratch("palette-focus");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.tree = Some(dacode::tree::FileTree::new(dir.clone(), &[]));
+        app.state.focus = dacode::focus::Focus::Sidebar;
+        app.open_palette(PaletteKind::Commands);
+        let geometry = app.palette_geometry().unwrap();
+        let row = geometry
+            .items
+            .iter()
+            .position(|item| {
+                app.state.palette.as_ref().unwrap().rows[*item].target
+                    == Target::Command("toggle_soft_wrap")
+            })
+            .unwrap_or(0);
+        app.pointer = middle(geometry.rows[row]);
+        app.click(false);
+        assert!(app.state.palette.is_none());
+        assert_eq!(app.state.focus, dacode::focus::Focus::Sidebar);
+    }
+
+    /// The wheel over the help panel moves it a line at a time and stops at its own last page —
+    /// the panel's, measured by its geometry, not the code area's.
+    #[test]
+    fn the_wheel_scrolls_the_help_panel_to_its_last_page() {
+        let dir = scratch("help-wheel");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.help = Some(dacode::help::Help::new(app.state.modal));
+        app.wheel(1000);
+        let geometry = app.help_geometry().unwrap();
+        let total = app.state.help.as_ref().unwrap().lines().len();
+        assert_eq!(
+            geometry.first + geometry.rows.len(),
+            total,
+            "the last line is on screen"
+        );
+        assert_eq!(
+            geometry.rows.len(),
+            geometry.capacity,
+            "and the page is full"
         );
     }
 

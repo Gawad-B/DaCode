@@ -9,6 +9,7 @@
 //! overlays.
 
 use dacode_project::{FileIndex, Match};
+use dacode_render::Rect;
 
 /// What the palette is searching.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -70,6 +71,10 @@ pub struct Row {
     pub highlights: Vec<u32>,
     /// What choosing this row opens.
     pub target: Target,
+    /// The group this row is listed under, when the list is shown in groups. A heading is drawn
+    /// above the first row of each, and only where it says something the rows do not — see
+    /// [`Palette::lines`].
+    pub heading: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +92,43 @@ pub enum Target {
 /// How many rows the palette shows. The design's card is a fixed height, and a palette that scrolls
 /// for pages stops being a way to *choose* something.
 pub const VISIBLE_ROWS: usize = 9;
+
+/// How many lines the card holds at most, headings included. A few more than [`VISIBLE_ROWS`] so a
+/// grouped list still shows about as many choices as an ungrouped one.
+pub const LINES: usize = 12;
+
+/// A line of the palette's list: a group's heading, or a row by its index in [`Palette::rows`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Line {
+    Heading(&'static str),
+    Item(usize),
+}
+
+/// Where the palette is, as data: drawing and the mouse both read this, so a click lands on the row
+/// that is drawn under it. Only the lines on screen have rectangles.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Geometry {
+    /// The card. The shadow drawn around it is outside this and takes no clicks.
+    pub card: Rect,
+    /// The query field across the top.
+    pub input: Rect,
+    /// One rectangle per visible row, top to bottom.
+    pub rows: Vec<Rect>,
+    /// Which of [`Palette::rows`] each of `rows` is.
+    pub items: Vec<usize>,
+    /// The visible group headings, and where each goes.
+    pub headings: Vec<(Rect, &'static str)>,
+    /// The list's area under the input: where "no matches" goes when there are no rows.
+    pub list: Rect,
+}
+
+/// The rectangle the palette hangs from: the title bar's command centre, when it has room for one.
+///
+/// One function, read by drawing and by the mouse, so the two cannot hang the card from different
+/// places.
+pub fn anchor(bounds: Rect, scale: f32, typography: &dacode_theme::Typography) -> Option<Rect> {
+    crate::layout::title_bar(crate::layout::title_strip(bounds, scale), scale, typography).search
+}
 
 #[derive(Debug)]
 pub struct Palette {
@@ -140,6 +182,7 @@ impl Palette {
                 score: 0,
                 highlights: highlight_substring(title, &query),
                 target: Target::CodeAction(index),
+                heading: None,
             })
             .collect();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
@@ -177,6 +220,7 @@ impl Palette {
                     .map(|at| at + (symbol.depth.min(3) * 2) as u32)
                     .collect(),
                 target: Target::Symbol(index),
+                heading: None,
             })
             .collect();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
@@ -199,6 +243,7 @@ impl Palette {
                 score: 0,
                 highlights: highlight_substring(name, &query),
                 target: Target::Buffer(index),
+                heading: None,
             })
             .take(VISIBLE_ROWS * 4)
             .collect();
@@ -232,14 +277,27 @@ impl Palette {
                         score,
                         highlights: highlight_substring(command.what, &query),
                         target: Target::Command(command.name),
+                        // Grouped only while nothing is typed: the list is then the whole table,
+                        // browsed, and "files", "editing", "the language server" say where you are
+                        // in it. Once a query ranks it, neighbours come from different groups and
+                        // a heading over each would be noise.
+                        heading: query.is_empty().then(|| command.group.title()),
                     },
                 ))
             })
             .collect();
 
-        // Stable within a score, so an empty query shows the table in its own order — which is
-        // grouped by what the commands are for, and is therefore browsable.
-        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        // Stable within a score, so an empty query shows the table in its own order — gathered by
+        // group, so each group's heading is drawn once rather than every time the table's order
+        // wanders back into it.
+        if query.is_empty() {
+            scored.sort_by_key(|(_, row)| match row.target {
+                Target::Command(name) => dacode_input::commands::by_name(name).map(|c| c.group),
+                _ => None,
+            });
+        } else {
+            scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        }
         self.rows = scored.into_iter().map(|(_, row)| row).collect();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
     }
@@ -274,6 +332,127 @@ impl Palette {
     }
 }
 
+impl Palette {
+    /// The list as it is drawn: each row, with its group's heading above the first row of a group.
+    pub fn lines(&self) -> Vec<Line> {
+        let mut lines = Vec::with_capacity(self.rows.len() + 8);
+        let mut last = None;
+        for (index, row) in self.rows.iter().enumerate() {
+            if let Some(heading) = row.heading.filter(|heading| last != Some(*heading)) {
+                lines.push(Line::Heading(heading));
+                last = Some(heading);
+            }
+            lines.push(Line::Item(index));
+        }
+        lines
+    }
+
+    /// Which of the lines are on screen, given room for `capacity` of them: a window that holds the
+    /// selection. Like [`Palette::visible`] it keeps no scroll position of its own, so the list moves
+    /// only when the selection would leave it.
+    pub fn window(&self, lines: &[Line], capacity: usize) -> std::ops::Range<usize> {
+        let capacity = capacity.max(1);
+        if lines.len() <= capacity {
+            return 0..lines.len();
+        }
+        let at = lines
+            .iter()
+            .position(|line| *line == Line::Item(self.selected))
+            .unwrap_or(0);
+        let start = at.saturating_sub(capacity - 1).min(lines.len() - capacity);
+        start..start + capacity
+    }
+
+    /// Where the card, its input and its visible rows are. See [`Geometry`].
+    ///
+    /// Hangs `6 * scale` below `anchor` — the command centre — and centred on it, as VSCode's and
+    /// Zed's palettes drop from theirs; with no command centre on the bar it is centred on the
+    /// window, just under the title bar. Kept inside `bounds` either way, and it gives up lines
+    /// rather than running off the bottom of a short window.
+    pub fn geometry(&self, bounds: Rect, anchor: Option<Rect>, scale: f32) -> Geometry {
+        let px = |v: f32| v * scale;
+        let (margin, pad, input_height, gap) = (px(16.0), px(6.0), px(36.0), px(6.0));
+        let (row_height, heading_height) = (px(28.0), px(24.0));
+        let height_of = |line: &Line| match line {
+            Line::Heading(_) => heading_height,
+            Line::Item(_) => row_height,
+        };
+
+        let width = px(600.0).min(bounds.width - margin * 2.0).max(0.0);
+        let (centre, top) = match anchor {
+            Some(anchor) => (anchor.x + anchor.width / 2.0, anchor.bottom() + px(6.0)),
+            None => (
+                bounds.x + bounds.width / 2.0,
+                crate::layout::title_strip(bounds, scale).bottom() + px(6.0),
+            ),
+        };
+        let x = (centre - width / 2.0)
+            .min(bounds.right() - margin - width)
+            .max(bounds.x + margin);
+
+        // As many lines as fit above the window's foot, and never fewer than one: a palette with no
+        // room for a single row is not one anybody could use, and a window that short has worse
+        // problems than the palette's.
+        let room = bounds.bottom() - px(8.0) - top - pad * 2.0 - input_height - gap;
+        let lines = self.lines();
+        let mut capacity = LINES;
+        let window = loop {
+            let window = self.window(&lines, capacity);
+            let height: f32 = lines[window.clone()].iter().map(height_of).sum();
+            if height <= room || capacity == 1 {
+                break window;
+            }
+            capacity -= 1;
+        };
+        let list_height = match lines[window.clone()].iter().map(height_of).sum::<f32>() {
+            // An empty list still has a row: "no matches" needs somewhere to go.
+            0.0 => row_height,
+            height => height,
+        };
+
+        let card = Rect::new(x, top, width, pad + input_height + gap + list_height + pad);
+        let input = Rect::new(
+            card.x + pad,
+            card.y + pad,
+            card.width - pad * 2.0,
+            input_height,
+        );
+        let list = Rect::new(input.x, input.bottom() + gap, input.width, list_height);
+
+        let (mut rows, mut items, mut headings) = (Vec::new(), Vec::new(), Vec::new());
+        let mut y = list.y;
+        for line in &lines[window] {
+            let rect = Rect::new(list.x, y, list.width, height_of(line));
+            match *line {
+                Line::Heading(title) => headings.push((rect, title)),
+                Line::Item(index) => {
+                    rows.push(rect);
+                    items.push(index);
+                }
+            }
+            y = rect.bottom();
+        }
+
+        Geometry {
+            card,
+            input,
+            rows,
+            items,
+            headings,
+            list,
+        }
+    }
+
+    /// Which row a point is over, by its index in [`Palette::rows`].
+    pub fn row_at(geometry: &Geometry, x: f32, y: f32) -> Option<usize> {
+        geometry
+            .rows
+            .iter()
+            .position(|row| crate::layout::contains(*row, x, y))
+            .and_then(|at| geometry.items.get(at).copied())
+    }
+}
+
 fn row_from_match(matched: Match) -> Row {
     // Match positions are against the whole relative path; the design highlights within the name,
     // so they are rebased and out-of-range ones dropped.
@@ -291,6 +470,7 @@ fn row_from_match(matched: Match) -> Row {
         score: matched.score,
         highlights,
         target: Target::File(matched.file.absolute),
+        heading: None,
     }
 }
 
@@ -572,5 +752,163 @@ mod tests {
         outline.query.push_str("rescmd");
         outline.refresh_symbols(&symbols, true);
         assert!(outline.rows.is_empty());
+    }
+
+    /// The sizes every geometry test sweeps: the narrowest window the title bar is laid out for,
+    /// up to a large monitor, at a short and a tall height each.
+    const SIZES: [(f32, f32); 8] = [
+        (640.0, 480.0),
+        (800.0, 600.0),
+        (1024.0, 768.0),
+        (1280.0, 720.0),
+        (1600.0, 1000.0),
+        (1920.0, 1080.0),
+        (2560.0, 1440.0),
+        (2560.0, 600.0),
+    ];
+
+    fn many_files(count: usize) -> Palette {
+        let paths: Vec<String> = (0..count).map(|i| format!("src/f{i:02}.rs")).collect();
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let mut palette = Palette::new(PaletteKind::Files);
+        palette.refresh_files(&mut index(&refs));
+        palette
+    }
+
+    fn inside(outer: Rect, inner: Rect) -> bool {
+        inner.x >= outer.x - 0.01
+            && inner.y >= outer.y - 0.01
+            && inner.right() <= outer.right() + 0.01
+            && inner.bottom() <= outer.bottom() + 0.01
+    }
+
+    #[test]
+    fn the_palette_hangs_from_the_command_centre() {
+        // Opened from the search box in the title bar, it drops from that box — the place the eye
+        // already is — rather than appearing somewhere else on the window.
+        let bounds = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        let anchor = Rect::new(560.0, 10.0, 420.0, 28.0);
+        let geometry = many_files(5).geometry(bounds, Some(anchor), 1.0);
+
+        assert_eq!(geometry.card.y, anchor.bottom() + 6.0);
+        let centre = |rect: Rect| rect.x + rect.width / 2.0;
+        assert!((centre(geometry.card) - centre(anchor)).abs() < 0.5);
+    }
+
+    #[test]
+    fn without_a_command_centre_the_palette_centres_on_the_window() {
+        // At a narrow width the bar has no room for the search box, and a card hung from nothing
+        // would sit at the left edge.
+        let bounds = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let geometry = many_files(5).geometry(bounds, None, 1.0);
+        let centre = geometry.card.x + geometry.card.width / 2.0;
+        assert!((centre - 320.0).abs() < 0.5, "centred at {centre}");
+        assert!(
+            geometry.card.y >= crate::layout::title_strip(bounds, 1.0).bottom(),
+            "under the title bar, not over it"
+        );
+    }
+
+    #[test]
+    fn every_row_stays_inside_the_card_at_every_size() {
+        let typography = dacode_theme::Typography::default();
+        for scale in [1.0, 2.0] {
+            for (width, height) in SIZES {
+                let bounds = Rect::new(0.0, 0.0, width * scale, height * scale);
+                let anchor = anchor(bounds, scale, &typography);
+                for palette in [many_files(40), many_files(2), many_files(0), {
+                    let mut commands = Palette::new(PaletteKind::Commands);
+                    commands.refresh_commands(false);
+                    commands
+                }] {
+                    let geometry = palette.geometry(bounds, anchor, scale);
+                    let at = format!("{width}x{height} at {scale}x");
+                    assert!(inside(bounds, geometry.card), "card off the window at {at}");
+                    assert!(inside(geometry.card, geometry.input), "input at {at}");
+                    assert!(inside(geometry.card, geometry.list), "list at {at}");
+                    assert_eq!(geometry.rows.len(), geometry.items.len());
+                    if !palette.rows.is_empty() {
+                        assert!(!geometry.rows.is_empty(), "no rows at all at {at}");
+                    }
+                    let mut boxes: Vec<Rect> = geometry.rows.clone();
+                    boxes.extend(geometry.headings.iter().map(|(rect, _)| *rect));
+                    for rect in &boxes {
+                        assert!(inside(geometry.list, *rect), "{rect:?} outside at {at}");
+                        assert!(rect.y >= geometry.input.bottom(), "under the input at {at}");
+                    }
+                    boxes.sort_by(|a, b| a.y.total_cmp(&b.y));
+                    for pair in boxes.windows(2) {
+                        assert!(pair[0].bottom() <= pair[1].y + 0.01, "overlap at {at}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_rows_on_screen_have_rectangles_and_the_selection_is_one_of_them() {
+        let mut palette = many_files(40);
+        let bounds = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        palette.move_selection(25);
+        let geometry = palette.geometry(bounds, None, 1.0);
+        assert!(geometry.rows.len() <= LINES);
+        assert!(
+            geometry.items.contains(&palette.selected),
+            "the selected row is on screen"
+        );
+        // Contiguous: a window, not a scatter.
+        for pair in geometry.items.windows(2) {
+            assert_eq!(pair[1], pair[0] + 1);
+        }
+    }
+
+    #[test]
+    fn a_short_window_shows_fewer_rows_rather_than_running_off_it() {
+        let palette = many_files(40);
+        let tall = palette.geometry(Rect::new(0.0, 0.0, 1600.0, 1000.0), None, 1.0);
+        let short = palette.geometry(Rect::new(0.0, 0.0, 1600.0, 300.0), None, 1.0);
+        assert!(short.rows.len() < tall.rows.len());
+        assert!(short.card.bottom() <= 300.0);
+    }
+
+    #[test]
+    fn the_command_list_is_grouped_until_something_is_typed() {
+        // Browsing, the headings say where in the table you are; searching, rows from different
+        // groups are neighbours by score, and a heading over every other row would say nothing.
+        let mut palette = Palette::new(PaletteKind::Commands);
+        palette.refresh_commands(false);
+        let headings: Vec<&str> = palette
+            .lines()
+            .into_iter()
+            .filter_map(|line| match line {
+                Line::Heading(title) => Some(title),
+                Line::Item(_) => None,
+            })
+            .collect();
+        assert!(headings.contains(&"files"), "{headings:?}");
+        let mut unique = headings.clone();
+        unique.dedup();
+        assert_eq!(unique, headings, "each group is headed once");
+
+        palette.query.push_str("comment");
+        palette.refresh_commands(false);
+        assert!(
+            palette
+                .lines()
+                .iter()
+                .all(|line| matches!(line, Line::Item(_)))
+        );
+    }
+
+    #[test]
+    fn a_file_list_has_no_headings() {
+        // One kind of thing, in one ranking: a heading would be a caption saying "files" over a
+        // list everyone can see is files.
+        assert!(
+            many_files(5)
+                .lines()
+                .iter()
+                .all(|line| matches!(line, Line::Item(_)))
+        );
     }
 }

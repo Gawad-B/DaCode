@@ -55,6 +55,25 @@ pub struct Item {
     /// For a row of the overflow's list: the menu choosing it opens, in place of running
     /// `action`.
     pub opens: Option<usize>,
+    /// A line under the label, for the few entries whose label cannot say what they do. See
+    /// [`note`].
+    pub note: Option<&'static str>,
+}
+
+/// The line under a menu entry, where its label does not say enough.
+///
+/// VSCode's rule, kept short on purpose: an explanation under *every* row is a menu twice as tall
+/// that nobody reads, so only the entries a careful reader would still get wrong have one. "Copy
+/// link to line" does not say where the link goes; "copy the run command" does not say why it is
+/// not simply "run"; "what can be done about this?" does not say who answers.
+pub fn note(name: &str) -> Option<&'static str> {
+    match name {
+        "share" => Some("a link to this line on the repository's host"),
+        "run" => Some("no terminal yet, so it goes on the clipboard"),
+        "code_action" => Some("fixes and refactorings from the language server"),
+        "open_folder" => Some("the folder becomes the project the tree shows"),
+        _ => None,
+    }
 }
 
 impl Item {
@@ -66,9 +85,13 @@ impl Item {
             // does not have — and cannot show the wrong key for it either.
             action: command.action().unwrap_or(Action::DismissInfo),
             opens: None,
+            note: note(command.name),
         }
     }
 }
+
+/// The height of a note's line under its label, at scale 1.
+pub const NOTE_HEIGHT: f32 = 16.0;
 
 /// The titles along the bar, left to right — VSCode's, because a menu bar is the one place in an
 /// interface where being where people expect matters more than being clever. They are always on
@@ -301,14 +324,45 @@ impl Menu {
         scale: f32,
         typography: &dacode_theme::Typography,
     ) -> Geometry {
-        let row_height = 24.0 * scale;
+        let row_height = 26.0 * scale;
+        let note_height = NOTE_HEIGHT * scale;
         let pad = space::MD * scale;
 
         // Text is measured at the same nominal advance the chrome draws menu text with. Exact
         // shaping would need the font; this is a menu, and being a few pixels wide is invisible.
         let label_width = self.widest(|item| item.label.chars().count()) * 8.0 * scale;
-        let keys_width = self.widest(|item| item.keys.chars().count()) * 8.0 * scale;
-        let width = (label_width + keys_width + pad * 6.0).min(bounds.width - pad * 2.0);
+        // The keys are chips, measured by the function that sizes them for drawing. In desktop
+        // notation, which splits a string into at least as many chips as Vim's does, so the column
+        // is never narrower than what is drawn in it.
+        let keys_width = self
+            .items
+            .iter()
+            .map(|item| crate::layout::chips_width(typography, &item.keys, scale))
+            .fold(0.0, f32::max);
+        let note_width = self
+            .items
+            .iter()
+            .filter_map(|item| item.note)
+            .map(|note| {
+                note.chars().count() as f32
+                    * crate::layout::measured_advance(typography, dacode_theme::Role::Value, scale)
+            })
+            .fold(0.0, f32::max);
+        let width = (label_width + keys_width + pad * 6.0)
+            .max(note_width + pad * 3.0)
+            .min(bounds.width - pad * 2.0);
+        let heights: Vec<f32> = self
+            .items
+            .iter()
+            .map(|item| {
+                row_height
+                    + if item.note.is_some() {
+                        note_height
+                    } else {
+                        0.0
+                    }
+            })
+            .collect();
 
         let (mut titles, mut overflow, mut header) = (Vec::new(), None, false);
         if self.kind == Kind::Bar {
@@ -323,7 +377,8 @@ impl Menu {
             header = !self.listing && self.open >= titles.len();
         }
         let header_height = if header { row_height } else { 0.0 };
-        let height = self.items.len() as f32 * row_height + header_height + pad * 2.0;
+        let pad_y = space::XS * scale;
+        let height = heights.iter().sum::<f32>() + header_height + pad_y * 2.0;
 
         let (x, y) = match self.kind {
             // Under its title in the title bar — read from the title bar's own geometry, which is
@@ -349,15 +404,14 @@ impl Menu {
         };
 
         let card = Rect::new(x, y, width, height);
-        let header = header.then(|| Rect::new(card.x, card.y + pad, card.width, row_height));
-        let rows = (0..self.items.len())
-            .map(|index| {
-                Rect::new(
-                    card.x,
-                    card.y + pad + header_height + index as f32 * row_height,
-                    card.width,
-                    row_height,
-                )
+        let header = header.then(|| Rect::new(card.x, card.y + pad_y, card.width, row_height));
+        let mut y = card.y + pad_y + header_height;
+        let rows = heights
+            .iter()
+            .map(|height| {
+                let row = Rect::new(card.x, y, card.width, *height);
+                y += height;
+                row
             })
             .collect();
 
@@ -456,6 +510,7 @@ impl Menu {
                 keys: String::new(),
                 action: Action::DismissInfo,
                 opens: Some(first + offset),
+                note: None,
             })
             .collect();
     }
@@ -838,5 +893,40 @@ mod tests {
                 .any(|item| item.action == Action::GotoDefinition),
             "a right-click has to offer the thing people right-click for"
         );
+    }
+
+    #[test]
+    fn a_note_sits_under_its_entry_and_only_under_the_ones_that_need_it() {
+        // "Copy link to line" does not say where the link points; most entries say all there is.
+        let menu = Menu::bar(false);
+        let share = menu
+            .items
+            .iter()
+            .position(|item| item.action == Action::Share)
+            .expect("File has share");
+        assert!(menu.items[share].note.is_some());
+        let noted = menu.items.iter().filter(|item| item.note.is_some()).count();
+        assert!(
+            noted * 3 <= menu.items.len(),
+            "a note on most rows is a menu nobody reads"
+        );
+
+        let bounds = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        let geometry = menu.geometry(bounds, 1.0, &typography());
+        let plain = (0..menu.items.len())
+            .find(|index| menu.items[*index].note.is_none())
+            .unwrap();
+        assert!(
+            geometry.rows[share].height > geometry.rows[plain].height,
+            "the note has a line of its own, inside the row the click lands on"
+        );
+        for pair in geometry.rows.windows(2) {
+            assert_eq!(pair[0].bottom(), pair[1].y, "rows are stacked without gaps");
+        }
+        // The card is wide enough for the note, so it is not cut off.
+        let note = menu.items[share].note.unwrap();
+        let advance =
+            crate::layout::measured_advance(&typography(), dacode_theme::Role::Value, 1.0);
+        assert!(geometry.card.width >= note.chars().count() as f32 * advance);
     }
 }
