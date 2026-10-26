@@ -209,7 +209,7 @@ layer as the text underneath it, so the text won.
 
 The whole appearance renders offscreen. `dacode --screenshot out.png` builds one frame, writes a PNG
 and exits, with flags to put the editor into any state worth looking at — a theme, a mode, a split,
-the file tree, the settings panel at a chosen row, the first-run wizard at a chosen step, folded
+the file tree, the settings tab at a chosen page or row, the first-run wizard at a chosen step, folded
 blocks, the git gutter, any of the palettes, the completion popup, a diagnostic, the menu bar, a
 right-click, a half-typed chord. [The CLI reference](../reference/cli.md) lists them all.
 

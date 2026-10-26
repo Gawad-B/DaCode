@@ -6,8 +6,8 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 
 ## What this is
 
-A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~50,000 lines,
-744 tests, clippy clean.
+A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~68,000 lines,
+994 tests, clippy clean.
 
 ## Commands
 
@@ -36,8 +36,14 @@ cargo check --workspace --target x86_64-pc-windows-msvc   # not all of them; see
   the ~40 visible rows took frame build from 1.13 ms to 84 µs.
 - Keystroke cost is flat with document size: ~7 µs at 1k lines and at 100k.
 
-If you add a background producer, give it a `Version` and a `poll()` that never blocks, and wire it
-into `about_to_wait` beside the others.
+If you add a background producer, give it a `Version`, a `poll()` that never blocks, and a `Waker`
+(`dacode::wake`) that it calls from its own thread when it has an answer, and wire its `poll()` into
+`App::collect_background` beside the others. The event loop sleeps when nothing moves and nothing is
+polled on a timer: a producer without a waker has its result read on the next keypress, which is how
+syntax colours once came to appear only after a click. Work with a deadline instead of a thread, like
+autosave and the settings write, adds that deadline to the loop's `WaitUntil`. The crates below the
+binary cannot name `dacode::wake::Waker`, so `dacode-syntax`, `dacode-project` and `dacode-lsp` keep
+private copies of the alias, which must stay identical to it.
 
 **`crates/dacode/tests/latency.rs` is the rule as a test that fails the build.** It asserts *flatness*,
 not milliseconds: a hundredfold larger document may cost at most 3x more, which is machine-
@@ -388,12 +394,19 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --settings-search Q --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
---help-panel --menu --menu-title TITLE --context-menu --commands --which-key PREFIX --symbols QUERY
---block LINE:COLUMN`.
+--transparency PERCENT --help-panel --menu --menu-title TITLE --context-menu --commands
+--which-key PREFIX --symbols QUERY --block LINE:COLUMN`.
 
 `--row N` selects a row of the settings tab, which is the only way to see a section below the fold —
 the page scrolls to its selection. `--settings-page NAME` opens it at a page of the tree, and
 `--settings-search Q` types a search into it.
+
+`--at-ms N` draws the moment N ms into whatever is animating, and `--scroll-px N` scrolls on by N
+pixels, part-way into a row. Both exist because the things they photograph are not states but
+instants: a card half-arrived, a top row half-scrolled out. A capture without `--at-ms` is drawn ten
+seconds in, past where any spring settles, so it is always the finished screen. `--menu-title Help`
+opens the menu bar at a title, or `...` at the overflow's list, which is the only way to look at it
+without a window narrow enough to need it.
 
 **Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
 and a whole family of defects lives below that: the settings rows collided with the footer under
@@ -452,13 +465,18 @@ anything platform-shaped:
 | Where something is | `crates/dacode/src/layout.rs` |
 | A config option | `dacode-lua/src/lib.rs`, `dacode/src/config.rs`, `dacode/src/settings_ui.rs` (all three) |
 | What the title, activity and tab bars offer | `crates/dacode/src/layout.rs` — `title_bar`, `ACTIVITIES`, `TAB_BAR_COMMANDS`, read by drawing and by the mouse |
+| The menu bar's titles and what hangs under them | `layout::title_bar` for where the titles are, `crates/dacode/src/menu.rs` for what is in them; `menu::geometry` reads the first rather than measuring titles itself |
+| Something that moves | `crates/dacode/src/motion.rs` for the springs; `EditorState::sync_motion` in `chrome.rs` is where every target is set, and drawing only reads |
+| Scrolling | `crates/dacode/src/scroll.rs` — `ScrollInput` and `by_pixels`; the remainder lives on `state.chrome`, and `layout::CodeGrid::with_sub_row` is the only place it enters pixel arithmetic |
+| Which surface has the keys | `crates/dacode/src/focus.rs` — `Focus` and `focus_for`; a click sets it, and the key router asks it rather than which panel is open |
+| Waking the event loop | `crates/dacode/src/wake.rs` — `Waker`, `Wake` and `coalescing`; `App::collect_background` is the one idle step, and `services_busy` is what still needs a timer |
+| The settings tab | `crates/dacode/src/settings_ui.rs` — `Page` is the model (categories, search, scroll, selection), `Page::geometry_at` its rectangles; `App::save_settings_if_due` and `settings_ui::write_touched` are the auto-save |
 | An icon | `crates/dacode-render/src/icon.rs` — geometry on a 24-unit grid, drawn by `shape.wgsl` |
 | The logo | `crates/dacode-render/assets/mark*.png` — coverage masks; `examples/icons.rs` builds every icon from them |
 | What a right-click offers | `crates/dacode/src/menu.rs` — `CONTEXT`, names from the command table |
 | A theme | `crates/dacode-theme/src/theme.rs` |
 | LSP behaviour | `crates/dacode-lsp/src/client.rs`, applied in `crates/dacode/src/edits.rs` |
 | Which language server runs | `crates/dacode-lsp/src/lib.rs` — `LANGUAGES`, plus `dacode.server` in config |
-| Where the settings rows are | `crates/dacode/src/settings_ui.rs` — `Page::geometry_at`, read by drawing and by the mouse |
 | Where the tree's rows are | `crates/dacode/src/tree.rs` — `panel`, same rule |
 | Whether a file may be opened | `crates/dacode/src/open.rs` — every refusal is a sentence for the screen |
 | Whether a path is inside the project | `crates/dacode-project/src/lib.rs` — `within`, lexical and testable |
@@ -467,7 +485,7 @@ anything platform-shaped:
 | How a file is written | `crates/dacode/src/save.rs` — `write`, and `App::write_active` for buffers |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
-panel. If you add it to fewer, it will silently not work somewhere.
+settings page. If you add it to fewer, it will silently not work somewhere.
 
 ## Known gaps
 
@@ -489,6 +507,36 @@ tabs, the tree, the statusline and the settings rows elide a little sooner than 
 key chips, the menu's columns and the palette's and completion's match highlights. Not yet: the
 title bar's own measurements, which pad the type scale by hand (1.1x, 1.15x), and the code grid,
 which stays at 0.60 on purpose — moving it moves every glyph of code and every click into it.
+
+From the motion and scrolling work, each one stated rather than hidden:
+
+- **Overlay clicks use the settled rectangles.** A card scales in from 0.96 over about 300 ms, and
+  hit-testing follows logical state rather than the scaled picture, so for that moment a click near
+  the edge of a card is measured against where the card will be. The alternative, hit-testing the
+  animated rectangle, would make a click mid-flight miss a row the pointer is plainly on.
+- **Switching `animations` to Reduced does not re-base springs already in flight.** `set_animations`
+  takes no instant to evaluate them at, so a spring that was running when the setting changed
+  finishes as it was, overshoot included. Switching to Off snaps everything, so this affects only the
+  one direction.
+- **The wheel glide is not re-based after an edge clamp.** A glide that runs into the top or bottom of
+  the file keeps aiming at the target it was given, which the view cannot reach, until it settles.
+- **Only the focused pane has a sub-row offset.** `draw_panes` gives the others `0.0`, so they sit on
+  whole rows, and `restore_pane` settles the remainder as focus moves. A split therefore never shows
+  two panes part-way into a row, and a touchpad stream in one pane never shifts another.
+- **Pinch-to-zoom works only where winit delivers `PinchGesture`**, which is macOS. On Wayland and
+  Windows, ctrl-scroll is the way, and the keymaps guide says so.
+- **Search on the settings page filters and highlights, and the Keys page cannot rebind.** A row for a
+  command shows its shortcut and nothing more; the page links to `init.lua`, which is where a binding
+  is written.
+- **Restoring `init.lua`'s recovery copy after a quit brings back the old settings block.** A setting
+  held for an `init.lua` with unsaved edits is written to the file on disk at quit, while those edits go
+  to the recovery file, so restoring that copy puts the block from before the change back over it.
+- **LSP and format edits do not set `last_edit`**, so they never trigger autosave. This predates the
+  overhaul; the autosave deadline is simply measured from the last keystroke.
+- **With the results panel open and focus in the editor, Esc does not close the results.** Esc goes
+  to the surface that has the keys, and the panel is not it; spec section 5 chose this over the old
+  behaviour, in which an open panel took every key. Click the panel, which gives it focus, and Esc
+  closes it and hands the keys back.
 
 Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{` is more than four
 or five hundred lines above it is left where it was typed. It used to walk to the start of the

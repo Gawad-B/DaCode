@@ -89,7 +89,7 @@ click the cards or use the arrow keys; every card shows the key that picks it.
 **How do you want to type?** This is the one that matters. *Conventional* gives you the editor you
 already know: typing inserts, <kbd>ctrl</kbd>+<kbd>C</kbd> copies, and there are no modes. *Vim*
 gives you the modal grammar. Neither is a subset of the other, and you can change your mind later
-from the settings panel — nothing about this decision is permanent.
+from the settings tab — nothing about this decision is permanent.
 
 **Which theme?** Five cards, each rendering the same code in its own theme, rather than five names.
 
@@ -146,16 +146,17 @@ the same table the editor uses to dispatch.
 **<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>P</kbd>** searches every command by name, with its shortcut
 beside it. Use it twice for the same thing and you will have learned the shortcut without trying.
 
-**<kbd>ctrl</kbd>+<kbd>,</kbd>** opens settings. Every option, its current value, and — the part a
-configuration file cannot tell you — which of the default, your `init.lua` or an import last set it.
-Click a row to change it.
+**<kbd>ctrl</kbd>+<kbd>,</kbd>** opens settings, as a tab beside your files. Every option is there with
+a sentence on what it does where the name does not say, a search box across all of them, and a dot
+beside any you have changed, with a ⟲ to put it back. Click a control to change it; there is nothing
+to save, because the change is written to `init.lua` a moment later.
 
 ![The command palette](images/commands.png)
 
 The title bar holds a menu bar — File, Edit, Selection, View, Go, Run, Terminal, Help — that you
 can click at any time or open with <kbd>F10</kbd>; once one menu is open, moving along the bar opens
 the others. A link to the line you are on is File ▸ Copy link to line. There is also a toolbar under
-it and a right-click menu. Every one of them prints the shortcut for what it does, so using the
+the tabs and a right-click menu. Every one of them prints the shortcut for what it does, so using the
 mouse teaches you the keyboard.
 
 ## Where to go next
@@ -164,7 +165,7 @@ mouse teaches you the keyboard.
   [language servers](guides/language-servers.md).
 - **Changing how it types** — [choosing how you type](guides/keymaps.md).
 - **Changing how it looks** — [themes](guides/themes.md).
-- **Configuration in a file** rather than the panel — [configuration](guides/configuration.md).
+- **Configuration in a file** rather than the settings tab — [configuration](guides/configuration.md).
 - **Every key** — [CHEATSHEET.md](../CHEATSHEET.md).
 
 ## If something goes wrong

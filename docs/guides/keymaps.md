@@ -10,11 +10,11 @@ flipping it.
 
 ## Switching
 
-The first row of the settings panel is the switch. Press <kbd>ctrl</kbd>+<kbd>,</kbd> — or the
-*settings* button in the toolbar — and change the top row with <kbd>h</kbd>/<kbd>l</kbd>, the arrow
-keys, <kbd>enter</kbd>, or a click. It applies immediately. Nothing is written to disk until you
-press <kbd>w</kbd> (or <kbd>ctrl</kbd>+<kbd>s</kbd>), which appends the panel's values to a marked
-block at the end of `init.lua` and leaves your own lines alone.
+The first row of the settings tab's **Editor** page is the switch, called *Vim keys* (or *Modal
+editing*, once it is off). Press <kbd>ctrl</kbd>+<kbd>,</kbd> — or click the gear — pick **Editor**,
+and change the row with <kbd>←</kbd>/<kbd>→</kbd>, <kbd>enter</kbd>, or a click. It applies
+immediately and is written to a marked block at the end of `init.lua` a moment later, leaving your own
+lines alone. There is nothing to save.
 
 The same thing from config:
 
@@ -213,8 +213,8 @@ the mouse teaches the keyboard and then gets out of the way.
 
 - [CHEATSHEET.md](../../CHEATSHEET.md) — every key in both keymaps, checked against the real grammar
   on every build
-- [Configuration](configuration.md) — where `init.lua` lives, and what happens when it and the panel
-  disagree
+- [Configuration](configuration.md) — where `init.lua` lives, and what happens when it and the
+  settings tab disagree
 - [Settings reference](../reference/settings.md) — `vim_keys`, `leader`, `line_numbers` and the rest
 - [Language servers](language-servers.md) — what <kbd>F2</kbd>, <kbd>F12</kbd> and
   <kbd>ctrl</kbd>+<kbd>space</kbd> need in order to do anything

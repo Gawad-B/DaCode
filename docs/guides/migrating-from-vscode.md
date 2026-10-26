@@ -43,8 +43,8 @@ you did not select it, **not present** because the source has none of it, or **u
 reason**. Silence about the last of those would look like a bug in DaCode instead of a deliberate
 boundary. `dacode import` exits non-zero if anything you selected failed.
 
-The same four common items are a checklist in the settings panel (<kbd>ctrl</kbd>+<kbd>,</kbd>) —
-tick with <kbd>l</kbd> or a click, then *import now* — and the first-run wizard's third question is
+The same four common items are a checklist on the **Import** page of the settings tab
+(<kbd>ctrl</kbd>+<kbd>,</kbd>) — tick with <kbd>→</kbd> or a click, then *import now* — and the first-run wizard's third question is
 that checklist, with nothing ticked by default. So this never needs a terminal.
 
 **One caveat about where it writes.** `dacode import`'s default output directory is `$HOME/.config/dacode`,
@@ -158,7 +158,7 @@ on disk behind an unfocused buffer is noticed when you switch to it rather than 
 
 ## The keys you already know
 
-Set `vim_keys = false` — the first row of the settings panel, or the first question the first-run
+Set `vim_keys = false` — the first row of the settings tab's **Editor** page, or the first question the first-run
 wizard asks — and the conventional keymap is the one you have muscle memory for:
 <kbd>ctrl</kbd>+<kbd>d</kbd> selects the next occurrence, <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>l</kbd>
 every occurrence, <kbd>alt</kbd>+<kbd>↑</kbd> moves a line,

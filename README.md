@@ -83,17 +83,18 @@ anything over from VSCode — writes the answers to your config, and never appea
 
 The title bar carries a menu bar — File, Edit, Selection, View, Go, Run, Terminal, Help — that is
 always there to click, and <kbd>F10</kbd> opens it from the keyboard. There are buttons along the
-top, a right-click menu with the clipboard and language-server verbs, and a settings panel you
-change by clicking. Every one of them prints the shortcut for what it does, so the mouse teaches the
+top, a right-click menu with the clipboard and language-server verbs, and a settings tab you
+change by clicking, with a search box, an explanation under each setting that needs one, and saving
+that happens by itself. Every one of them prints the shortcut for what it does, so the mouse teaches the
 keyboard and then gets out of the way.
 
 |  |  |
 |---|---|
 | <kbd>F1</kbd> | every key that works *right now*, in the grammar you actually chose |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>P</kbd> | every command, searchable, with its key beside it |
-| <kbd>ctrl</kbd>+<kbd>,</kbd> | settings, including which of default, `init.lua` or import last set each one |
+| <kbd>ctrl</kbd>+<kbd>,</kbd> | settings, as a tab: searchable, explained, and written to `init.lua` for you |
 
-<img src="docs/images/commands.png" alt="The command palette" width="49%"> <img src="docs/images/settings.png" alt="The settings panel" width="49%">
+<img src="docs/images/commands.png" alt="The command palette" width="49%"> <img src="docs/images/settings.png" alt="The settings tab" width="49%">
 
 **With Vim keys off you get a real conventional editor, not a modal one with the modes hidden.**
 <kbd>ctrl</kbd>+<kbd>D</kbd> selects the next occurrence, <kbd>alt</kbd>+<kbd>↑</kbd> moves a line,

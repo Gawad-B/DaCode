@@ -2,7 +2,7 @@
 
 Every option DaCode reads, where it is read, and what it does. Derived from
 `crates/dacode-lua/src/lib.rs` (the Lua reader), `crates/dacode/src/config.rs` (the settings struct and
-its defaults) and `crates/dacode/src/settings_ui.rs` (the panel). Where the three disagree, this file
+its defaults) and `crates/dacode/src/settings_ui.rs` (the settings tab). Where the three disagree, this file
 says so rather than picking one.
 
 Config lives in `init.lua` in the config directory — `~/.config/dacode/` on Unix, `%APPDATA%\dacode\` on
@@ -17,9 +17,22 @@ Four layers, each overriding the one before:
 3. `config.toml` — the hand-written TOML, for anything the importer's format can carry
 4. `init.lua` — the real config, and therefore the last word
 
-The settings panel (`ctrl-,`) writes into a marked block appended to the end of `init.lua`. Because
-Lua applies in order, the panel's block is authoritative over your own `dacode.set` calls above it;
-deleting a line from that block hands the setting back to your own code.
+The settings tab (`ctrl-,`) writes into a marked block appended to the end of `init.lua`. Because
+Lua applies in order, the block is authoritative over your own `dacode.set` calls above it; deleting
+a line from that block, or resetting the setting on the page, hands the setting back to your own code
+and to DaCode's default.
+
+**The block holds only what you changed on the page.** A setting is written when you change it
+there, and not because it happens to have a value: zooming with `ctrl-+`, switching the theme with a
+key, or importing from VSCode changes the live editor without putting anything in your file. Lines
+already in the block keep their text. A reset takes the setting's line out rather than writing
+today's default, so a later import or a change to the default still reaches you.
+
+**A hand edit wins.** If you change a setting in `init.lua` while the page's own change to the same
+setting is still waiting to be written, the file's value stands and the page's is dropped. The
+most recent intent is the one kept, and the file is the one you can read. A change to a *different*
+setting is still written. See [the configuration guide](../guides/configuration.md) for how saving
+works.
 
 A missing file at any layer is not an error, and a broken one is not fatal. Everything an `init.lua`
 managed to set before it failed still applies, and the failure is shown in a box at startup rather
@@ -41,7 +54,7 @@ than logged.
 | `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |
 | `transparency` | number, 0–90 | `0` | How much of the desktop shows through the window, in percent. Backgrounds go see-through; text, highlights and popups stay solid. Needs a compositor, and turning it on from `0` takes effect at the next start. |
-| `animations` | `"full"` \| `"reduced"` \| `"off"` | `"full"` | How much the interface moves. `full` is springs with a little overshoot on panels and popups; `reduced` is the same travel without any overshoot; `off` makes everything jump. Switching to `off` finishes whatever is in flight at once. Typing, the cursor and selections never animate whatever this says. |
+| `animations` | `"full"` \| `"reduced"` \| `"off"` | `"full"` | How much the interface moves. See below. |
 | `leader` | string | `"<space>"` | What `<leader>` expands to in `dacode.map`. |
 
 Anything not named in a `dacode.set` call is left alone, and unset is not the same as false: reading a
@@ -53,6 +66,18 @@ Bad *values* for `appearance`, `line_numbers` and `animations` are reported by n
 
 ### Notes on the ones that are not obvious
 
+**`animations` has three settings, and `reduced` is not a slower `full`.** `full` is springs with a
+little overshoot — about 300 ms for a panel or a popup — and everything that opens fades in and grows
+from 0.96 of its size, the sidebar slides, the active tab and the activity marker glide, the bell
+swings, and a wheel notch or a page key glides to where it is going. `reduced` keeps every fade and
+takes away everything that travels or overshoots: nothing slides, scales, lifts or wobbles, and
+a glide arrives without passing its mark. For someone who finds motion uncomfortable, that is the
+setting that keeps the information a fade carries. `off` makes every change jump, and switching to it
+finishes whatever was in flight at once. Switching *to* `reduced` does not re-base springs already
+running, which finish as they were. Typing, the cursor, selections and scrolling that follows the
+cursor never animate, whatever this says. Any other spelling is reported by name rather than read as
+`full`, and so is `animations = false`, which is the obvious way to write "off" and is not one.
+
 **`line_numbers` has no fixed default.** It follows the grammar: `relative` with `vim_keys` on,
 `absolute` with it off. Relative numbering exists so `12j` can be read off the screen, and with the
 grammar off there is no count to type — a column of numbers that are not the line's number is then
@@ -62,8 +87,9 @@ is reported as a problem and the default applies.
 
 **`font_size` is clamped twice, at the same limits.** `dacode.set` stores whatever number it is given;
 `Typography::with_code_size` then clamps it to 11.0–18.0. Values outside that range are silently
-brought inside it, so `font_size = 40` renders at 18. The settings panel takes its bounds from
-`Typography` rather than repeating them, so clicking the row up to 18 wraps back round to 11.
+brought inside it, so `font_size = 40` renders at 18. The settings tab takes its bounds from
+`Typography` rather than repeating them, so clicking the stepper up to 18 and past it wraps back round
+to 11.
 
 **`tab_width` is clamped twice, at the same limits.** `dacode.set` clamps to 1–16 and `config::apply_lua`
 clamps again. Never zero, which would divide by it.
@@ -83,9 +109,9 @@ only in the `else` branch of "was a theme named?". Setting both means `appearanc
 without being asked is not a decision to make on their behalf, and it is the kind of default that
 loses trust the first time it fires.
 
-**A theme loaded from a file cannot be changed by the panel.** The panel cycles the five built-ins by
-name; a file's colours have no name it could write, so it shows `from a file` and writes nothing for
-that row — otherwise changing the font size would throw away an imported theme.
+**A theme loaded from a file cannot be changed by the page.** The page cycles the five built-ins by
+name; a file's colours have no name it could write, so the row shows `from a file` and writes nothing
+for it — otherwise changing the font size would throw away an imported theme.
 
 ## `dacode.theme` — individual colours
 
@@ -195,8 +221,9 @@ imported theme has to work without anyone having hand-authored a Lua file.
 | `theme.name` | string | `theme` |
 | `theme.appearance` | `"light"` | flips to the light built-in, unless `theme.name` already resolved |
 
-Six keys, against twelve in Lua. `vim_keys`, `line_numbers`, `sticky_scroll`, `inlay_hints`,
-`autosave` and `leader` have no TOML spelling and can only be set from `init.lua` or the panel.
+Six keys, against fourteen in Lua. `vim_keys`, `line_numbers`, `sticky_scroll`, `inlay_hints`,
+`autosave`, `transparency`, `animations` and `leader` have no TOML spelling and can only be set from
+`init.lua` or the settings tab.
 
 A leading byte-order mark is stripped from both formats. Notepad and PowerShell's `Set-Content` both
 write one, and without stripping it Lua refuses the whole file over an invisible byte while the TOML
@@ -204,21 +231,23 @@ parser silently loses everything above its second heading.
 
 ## Where the three disagree
 
-Adding an option is meant to touch the Lua reader, the settings struct and the panel. These do not:
+Adding an option is meant to touch the Lua reader, the settings struct and the settings page. These
+do not:
 
-| Option | Lua reader | Settings struct | Panel |
+| Option | Lua reader | Settings struct | Settings page |
 |---|---|---|---|
 | `appearance` | yes | yes | **no row** |
 | `leader` | yes | yes (into the keymap) | **no row** |
 
-Both are arguably deliberate — the panel has no key capturer, and `appearance` is subsumed by the
-theme row it would sit next to — but neither says so, and an option with no row is one the panel's
-"where did this value come from" column can never answer for.
+Both are arguably deliberate — the page has no key capturer, and `appearance` is subsumed by the
+theme row it would sit next to — but neither says so. The Keys page lists every command and its
+shortcut and can search them, but it cannot rebind one; it has a row that opens `init.lua`, which is
+where `leader` and `dacode.map` live.
 
-The panel's font-size bounds used to be a third disagreement, and they are worth recording because of
+The page's font-size bounds used to be a third disagreement, and they are worth recording because of
 how long it lasted. `settings_ui` clamped to 8.0–32.0 and wrapped a click at 32, while the value is
 applied through `Typography::with_code_size`, which clamps to 11.0–18.0, and read back from the live
-editor. The panel could therefore never reach 32, the wrap never fired, and a mouse-only user who
+editor. The page could therefore never reach 32, the wrap never fired, and a mouse-only user who
 clicked the font size up to 18 had no way to lower it again. Three unit tests asserted the 8–32
 bounds and passed throughout, because they drove a bare `Values` struct rather than the path the
 editor uses. Both bounds now come from `Typography` itself, and the test that replaced them asserts

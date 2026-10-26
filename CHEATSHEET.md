@@ -13,8 +13,9 @@ one stops resolving. That check found `ctrl-p` falling through to `p` and pastin
 
 **You do not have to touch the keyboard at all.** Along the top right there are buttons — *open,
 files, find, save, settings, commands, keys* — and every one of them does what the shortcut does.
-**Right-click** anywhere in the text for cut, copy, paste, go-to-definition and the rest. **F10**
-opens a menu bar. The settings panel changes with a click.
+**Right-click** anywhere in the text for cut, copy, paste, go-to-definition and the rest. The
+**menus** are in the title bar, and **F10** opens them from the keyboard. The settings tab changes
+with a click.
 
 When you want the keys: press **F1** for the ones that work right now, in the grammar you are
 actually using, filterable by typing. **ctrl-shift-P** is every command, searchable, each with its
@@ -25,7 +26,7 @@ Nothing below this line is worth memorising until you want it to be.
 
 ## With Vim keys off
 
-Set `vim_keys = false` (settings panel, first row). There are no modes: typing inserts, and these are
+Set `vim_keys = false` (settings tab, Editor page, first row). There are no modes: typing inserts, and these are
 the keys — the ones you already know, because muscle memory is not something an editor gets to have
 opinions about.
 
@@ -63,8 +64,7 @@ opinions about.
 | ctrl-click | go to the definition |
 | right-click | cut, copy, paste, definition, rename, format — with their keys |
 
-**Never want to press ctrl-s?** Turn on **autosave** in the settings panel (or the toolbar's
-*settings* button): the file is written a moment after you stop typing. It waits for a pause rather
+**Never want to press ctrl-s?** Turn on **autosave** in the settings tab (the gear in the icon column): the file is written a moment after you stop typing. It waits for a pause rather
 than running on a timer, so what lands on disk is always something you stopped at.
 
 `ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …`, `ctrl-,`, `F1`, `F10` and `ctrl-shift-p` are
@@ -254,16 +254,18 @@ what `dacode import --snippets` writes.
 
 | Key | Does |
 |---|---|
-| `ctrl-,` · `ctrl-k s` | settings panel |
-| `j` `k` · `↑` `↓` | move between settings |
-| `h` `l` · `←` `→` · `enter` | change the selected setting — applies immediately |
-| `w` · `ctrl-s` | write the panel's values into `init.lua` |
-| `l` on an import row | tick what to bring over from VSCode; `import now` runs it |
-| `enter` on the last row | load a colour scheme file — `.json`, `.tmTheme`, `.yaml`, `.toml` |
-| `esc` | close |
+| `ctrl-,` · `ctrl-k s` | settings tab — or the gear; `ctrl-w` closes it |
+| `↑` `↓` · `pgup` `pgdn` · `home` `end` | move between settings |
+| `←` `→` · `space` · `enter` | change the selected setting — applies at once and saves itself 600 ms later |
+| `delete` | put the selected setting back to its default |
+| any other letter · `backspace` | type into the search box — it searches every page — and take a letter back |
+| `esc` | clear the search; then leave the tab for the file under it |
+| `→` on an import row | tick what to bring over from VSCode; *import now* runs it |
+| `enter` on *load a theme file…* | load a colour scheme file — `.json`, `.tmTheme`, `.yaml`, `.toml` |
 
-The panel's third column says where each value came from: `default`, `init.lua`, or `imported`. `w`
-writes into a marked block at the end of `init.lua`; your own lines are never rewritten.
+A dot in the margin marks a setting that differs from its default, and the ⟲ beside it resets it. What
+you change is written into a marked block at the end of `init.lua`; your own lines are never
+rewritten, and a setting you did not touch is never written.
 
 ## Appearance
 
@@ -324,7 +326,7 @@ in it is a path — resolved against the project root — rather than a name to 
 `~/` is your home directory. A language DaCode already knows (`rust`, `typescript`, `python`, `cpp`,
 `go`, `lua`, `dart`) fills in the extensions for you; any other language has to list them, because a
 server that can never match a file would otherwise be a line of config that silently does nothing.
-The settings panel's last section says what was found and where.
+The settings tab's **Languages** page says what was found and where.
 
 In insert mode only modified and named keys can be bound: a letter binding would have to hold the
 letter back to see what came next, and typing would stutter.

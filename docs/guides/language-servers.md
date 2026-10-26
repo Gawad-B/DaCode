@@ -198,8 +198,7 @@ replaced, so the cursor stays where you left it.
 | `pyright-langserver found but would not start` | it is there and the spawn failed; this one is DaCode's fault, not your `PATH`'s |
 | `scratch buffer` | the buffer has no path, so there is no language to serve |
 
-**Open the settings panel.** <kbd>ctrl</kbd>+<kbd>,</kbd>, then scroll to the language-server
-section. It lists every language DaCode knows, with the full path of the server it found or the line
+**Open the settings tab.** <kbd>ctrl</kbd>+<kbd>,</kbd>, then choose the **Languages** page. It lists every language DaCode knows, with the full path of the server it found or the line
 that would install one — and a row for each server `init.lua` named, first, so a mistyped path shows
 up instead of hiding behind a working fallback. These rows are a report, not a control: they do not
 cycle, and pressing one puts the whole line in the info box, which is how a path too long for a
@@ -207,7 +206,7 @@ narrow sidebar becomes readable. There is a formatter section below it doing the
 formatters.
 
 The section is always below the fold, so scroll. Headless: `dacode --screenshot out.png --settings
---row N` scrolls the panel to a row.
+--row N` scrolls the page to a row; add `--settings-page languages` to open it there.
 
 **Turn on tracing.** `DACODE_LSP_TRACE=1 dacode file.py` logs every message to and from the server, plus
 why a reply was dropped. A reply computed against a document version you have since typed past is

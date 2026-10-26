@@ -11,13 +11,13 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Changed
 
-- A new interface, shaped like VSCode and Zed: a title bar with the logo, a search box that opens
-  the command palette, and Share, notifications and menu buttons; an icon column down the left that
-  switches the sidebar between the explorer, search, source control, run and debug, problems and
-  settings; the explorer on the left with file icons and a New button; tabs with icons, dots for
-  unsaved files and close buttons, between back/forward and split/run buttons; and a status bar that
-  counts errors, warnings and notes with their icons. Every button shows its name and shortcut when
-  the pointer rests on it.
+- A new interface, shaped like VSCode and Zed: a title bar with the logo, a menu bar, a search box
+  that opens the command palette and the notifications bell; an icon column down the left that
+  switches the sidebar between the explorer, search, source control, run and debug, and problems,
+  with settings opening as a tab beside your files; the explorer on the left with file icons and a
+  New button; tabs with icons, dots for unsaved files and close buttons, between back/forward and
+  split/run buttons; and a status bar that counts errors, warnings and notes with their icons. Every
+  button shows its name and shortcut when the pointer rests on it.
 - A new logo: the letter ض with its fatha and an amber block, in the title bar beside a wordmark
   with "Da" in amber, on the welcome and empty screens, and as the application icon on every
   platform. Below 64 pixels the two blocks become one, as the logo sheet specifies, and on a light
@@ -29,6 +29,53 @@ release, where one exists, lives in `packaging/notes/`.
 - With Vim keys off, shortcuts are written the usual way — `Ctrl+Shift+P` rather than `<c-s-p>` — in
   the menus, the palette, tooltips and messages.
 
+- **A menu bar in the title bar**: File, Edit, Selection, View, Go, Run, Terminal and Help sit after
+  the wordmark all the time, where before they existed only while a menu was open. Click a title to
+  open its menu; once one is open, moving across the bar opens its neighbours. <kbd>F10</kbd> and
+  the arrow keys still reach every menu. A narrow window drops titles from the end behind a "…",
+  which lists the hidden ones, and below about 880 pixels the wordmark goes first; a window that is
+  widened never loses a title it had.
+- **The account icon and the Share button are gone.** The first did nothing and the second spent the
+  brand colour on something rarely done. Share is now **File → Copy link to line**, and is still a
+  command in the palette. Under Terminal, `run` is now labelled "copy the run command", since that
+  is all it does until there is a terminal.
+- **The interface moves, expressively.** Popups, menus, the palette and the help panel fade in and
+  grow from 0.96 towards full size about the thing that opened them, and fade out again; the
+  sidebar slides out from the activity bar; the active tab's background and the activity marker glide
+  to where you went; a new tab grows in; the bell swings when a message arrives; and the wizard's
+  steps and the settings pages cross-fade. Everything is a spring with a little overshoot, about 300
+  ms for panels. Typing, the cursor, selections and scrolling that follows the cursor never animate,
+  because an editor that animates keystrokes feels slow.
+- **Every overlay is one card**: the palette, the menus and the context menu, completion, the hover
+  and diagnostic box, which-key, the help panel and the bell's log share a rounded panel with a soft
+  shadow and a 1 px outline, and keys are drawn as small chips. The palette now drops from the
+  search box in the title bar, with its commands grouped under headings until you start typing.
+  **Rows in the palette and the help panel can be clicked**, and in the help panel Enter runs the
+  highlighted key's command.
+- **Settings are a tab, not a sidebar panel.** The gear, <kbd>ctrl</kbd>+<kbd>,</kbd> and the
+  palette's "settings" open it beside your files, and <kbd>ctrl</kbd>+<kbd>W</kbd> closes it. A
+  category tree — Appearance, Editor, Files, Keys, Languages, Import — runs down the left, folding
+  into one button when the page is narrow, and the settings are on the right, each with its name,
+  a sentence or two underneath where the name does not say everything, and its control. A dot in the
+  margin marks a setting that differs from its default, with a ⟲ beside it to put it back. A search
+  box at the top filters every page at once and lights the letters that matched; the Keys page lists
+  every command with its shortcut. The captions that said `INIT.LUA` or `IMPORTED` are gone.
+- **Settings save themselves.** There is no save button and <kbd>ctrl</kbd>+<kbd>S</kbd> no longer
+  applies to the page: a change takes effect at once and is written to `init.lua` 600 ms after the
+  last one, and again when you quit. A failed write says so on the status line and in the bell. The
+  tab writes only the settings you changed on it, into its marked block, so zooming with
+  <kbd>ctrl</kbd>+<kbd>+</kbd>, toggling the theme with a key, or importing from VSCode are not
+  quietly pinned into your file the first time you touch anything. Resetting a setting removes its
+  line rather than writing today's default, so a later import or a change to DaCode's default still
+  reaches you. If you edit the setting in `init.lua` yourself while the page's change is still
+  waiting, your edit wins. If `init.lua` is open with unsaved edits, the write waits until you save
+  or close it, and says so.
+- **Keys go where you clicked.** With the file tree open, the arrow keys used to move through files
+  whatever you had just clicked, so ↑ and ↓ could not move the caret. Focus is now one of the text,
+  the sidebar and the results panel, a click sets it, and the keys follow it. Opening a file from the
+  tree hands the keys back to the text, as VSCode does. The tree's selected row is bright with a ring
+  while it has the keys and dims when it does not.
+
 - vex is now **DaCode**. The command is `dacode`, the configuration lives in
   `~/.config/dacode/init.lua` (`%APPDATA%\dacode` on Windows), and the Lua table is `dacode`. Nothing
   needs doing by hand: on first start DaCode copies the vex configuration and state directories —
@@ -39,17 +86,52 @@ release, where one exists, lives in `packaging/notes/`.
 ### Added
 
 - `transparency` — how much of the desktop shows through the window, from `0` to `90` percent, in
-  `init.lua` or the settings panel. Backgrounds go see-through; text, highlights and popups stay
+  `init.lua` or the settings tab. Backgrounds go see-through; text, highlights and popups stay
   solid so the editor stays readable. It needs a compositor, and says so when there is none.
-- Share copies a permanent link to the cursor's line — on GitHub, GitLab, Bitbucket, Codeberg and
-  the like, pinned to the checked-out commit — or `path:line` when the project has no remote.
+- **File → Copy link to line** copies a permanent link to the cursor's line — on GitHub, GitLab,
+  Bitbucket, Codeberg and the like, pinned to the checked-out commit — or `path:line` when the
+  project has no remote.
 - The bell keeps the editor's recent messages, so one that vanished at the next keystroke can still
   be read.
 - Run copies the command a project of its kind is run with (`cargo run`, `npm run dev`,
   `flutter run`…). There is no terminal to run it in yet, and it says so.
+- `animations` — `"full"`, `"reduced"` or `"off"`, in `init.lua` or the Appearance page. `reduced`
+  keeps every fade and removes everything that travels or overshoots: the slides, the scale, the
+  lift and the bell's wobble. `off` makes every change jump. Switching to `off` finishes whatever is
+  in flight at once, and a misspelling such as `"none"` is reported rather than read as `"full"`.
+- <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>E</kbd> moves the keys to the file tree, opening it if it is
+  closed, and <kbd>ctrl</kbd>+<kbd>1</kbd> moves them back to the text. <kbd>Esc</kbd> in the tree
+  also hands them back. Both are in the command palette and the F1 key list.
+- Pinch zooms the code where the window system delivers a pinch gesture, which is macOS today, and
+  <kbd>ctrl</kbd>+scroll zooms everywhere else, including Wayland, one font-size step per line
+  scrolled.
+- `--at-ms`, `--scroll-px`, `--menu-title`, `--settings-page` and `--settings-search` for the
+  screenshot renderer: any moment of a transition, a view part-way into a row, the menu bar open at
+  a title, and the settings tab at a page or with a search typed.
 
 ### Fixed
 
+- A touchpad scrolls. A touchpad reports scrolling as a stream of deltas a few pixels each, and each
+  one was divided by forty and truncated to nothing, so the code did not move at all. Scrolling now
+  follows the pixel: whole rows move the view and the part of a row left over is drawn as the top
+  line slid partly out of sight, so the text follows your fingers one to one. A
+  notch of a mouse wheel glides three rows instead of jumping them. Ctrl-scroll no longer runs the
+  font from the smallest size to the largest in one flick, and holding ctrl to zoom no longer throws
+  a scrolled view back to the cursor.
+- Syntax colours arrive without a keypress. The highlighter's answer sat unread until some unrelated
+  key or click woke the editor, so after opening a file, scrolling or editing, the colours were a
+  step behind. Every background worker — the highlighter, git, the formatter, the installer and the
+  language-server reader — now wakes the editor when it has an answer.
+- An idle editor really sleeps. While a language server was running the loop woke every 100 ms to
+  ask whether anything had happened, which is a core never quite asleep and, on a laptop, a battery
+  never quite untouched. Nothing is polled on a timer now: what has a deadline, such as an autosave,
+  sleeps until it, and the rest wakes the loop itself. The loop also stops asking for frames while
+  the window is minimised.
+- Keys no longer go to a panel that is merely open: with the file tree showing, ↓ moved through
+  files instead of lines, and an open search took Enter and the arrows whatever you had clicked.
+- Choosing "command palette" from a menu no longer prints the closing menu through the palette's
+  card, and a menu opened by a click no longer lets the completion popup behind it take Down and
+  Enter into your text.
 - Saving can no longer destroy the file. Every save used to truncate the file and then write it, so
   a crash, a power cut or a full disk in between left it empty — and the crash-recovery copy had
   already been deleted. Files are now written to a temporary beside them, flushed to the disk, and

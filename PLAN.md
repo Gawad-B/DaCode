@@ -532,7 +532,9 @@ inlay hints.
 > default is modal: someone being asked by a wizard is someone who has not chosen Vim. Skipping writes
 > nothing, so the wizard returns next launch rather than disappearing because of one stray `esc`.
 
-> **M8: a settings panel.** Config is a Lua file, and a panel that *replaced* it would have to write
+> **M8: a settings panel.** *(Replaced by the settings tab; §6b says how and why. What follows is the
+> reasoning that survived it: the file stays the source of truth, and the block is appended.)* Config
+> is a Lua file, and a panel that *replaced* it would have to write
 > the user's program for them. So the panel does something a file cannot: its third column says which
 > of default, `init.lua` or imported-from-VSCode last set each value. When a setting is not what you
 > expect, that is the only useful question, and showing you one of three files does not answer it.
@@ -731,6 +733,114 @@ A caution learned here: `criterion`'s `iter_batched` includes *dropping* the inp
 measurement. Dropping a `Highlighter` frees a syntax tree and a compiled query, which made a 1.9 µs
 operation appear to cost 5.6 ms. Benchmarks that construct expensive state per iteration must use a
 long-lived object and a reversible operation instead.
+
+## 6b. The visual overhaul
+
+A title bar with a menu bar, a motion system, one card style for every overlay, a settings tab, and
+two repairs to how the editor finds out that something happened. The spec is
+`docs/superpowers/specs/2026-10-25-visual-overhaul-design.md`; this is what was decided and what was
+turned down, because each of these was the second idea and the first one is the one you will have
+again. It departs from §6 in one place on purpose: cards have an 8 px radius where §6 says square
+corners, since a card that floats over text reads as an object only when its corners say so.
+
+**One motion engine, with springs evaluated analytically.** Every animated value is a spring held in
+`motion::Motion`, keyed by a small `Key` enum, and `get(key, now)` is a pure function of the instant
+asked: it evaluates the closed form from the moment of the last retarget, so a frame that was dropped
+catches up exactly and a test or a screenshot can render any instant (`--at-ms`) without waiting for
+it. Retargeting keeps the velocity, so pressing a toggle twice reverses smoothly. Rejected: timestamps
+in each widget, which cannot carry velocity, spread timing across every view and make an interruption
+a special case; a retained scene graph with transitions, which rewrites the renderer's model for one
+feature; and stepping each spring once per frame, which is inexact when frames drop and cannot be
+tested at an arbitrary time. Targets are set in one place, `EditorState::sync_motion`, which derives
+each from state and is called after every batch of events and before every frame; a repeated target
+is a no-op, so no site that opens or closes a view has to remember to start its transition. Settling
+is judged by travel rather than by the target's size, because a 60 px wheel notch at a scroll offset
+of a hundred thousand pixels must still animate. `animations` is `full`, `reduced` or `off`, and
+`reduced` removes movement and overshoot and keeps every fade. Typing, the cursor and selections never animate.
+
+**Wakers instead of a 100 ms poll.** The loop sleeps when nothing moves. Background workers get a
+`Waker` that sends a winit user event from their own thread when they have an answer, coalesced so a
+language server printing a stderr line a hundred times a second sends one event until the loop has
+collected, and `App::collect_background` is the single idle step that `about_to_wait` and `user_event`
+both run; two lists of workers is how a result comes to arrive on a keypress. Before this the
+highlighter's answer was read only on input events, so colours arrived on the next keypress, and a
+running language server kept the loop polling every 100 ms. Rejected: polling on a timer for longer,
+which spends wake-ups to hide a missing signal. The file walk and a streaming search are the two
+producers still polled, and `services_busy` says so. Work that has a deadline rather than a thread,
+autosave and the settings write, adds its deadline to the loop's `WaitUntil`, because an idle editor
+must still save what you typed, and the file watcher and the folder picker take wakers of their own.
+
+**Explicit focus.** `EditorState::focus` is `Editor`, `Sidebar` or `Panel`; a click sets it, opening
+a view hands it the keys, and the router asks it. The rule it replaced was that an open panel took the
+keys first, so with the file tree merely showing, ↓ walked through files instead of lines whatever you
+had just clicked. Chrome that is not a place to type, the bars and the status line, leaves focus where
+it was, since pressing a toolbar button is not a decision to type somewhere else. A focus may only
+name a surface that is still there, and `settle_focus` enforces that once at the top of key routing.
+Rejected: resetting focus at each of the dozen places that close something, which is a rule that does
+not survive a year, and keeping Escape closing the tree, which would have made one key do two things
+depending on whether the tree was merely open or actually focused. Escape now hands the keys back and
+leaves the tree standing, and ctrl-shift-e and ctrl-1 are the keys across, since ctrl-e with the tree
+open closes it. Opening a file from the tree returns the keys to the text.
+
+**Pixel scrolling with a sub-row offset.** A touchpad's deltas are a few pixels each and were divided
+by forty and truncated per event, so nothing scrolled. `scroll::ScrollInput` now keeps what has not
+made a whole row: whole rows move the `ScrollAnchor`, which stays the source of truth for the top line
+and goes through the display map's fold-aware step, and the remainder is drawn as the top row slid
+partly out of view. The offset enters pixel arithmetic only through `CodeGrid::with_sub_row`, as the
+horizontal one does, so a click lands on the row it looks as if it is on. The row is cut by a clip on
+the `Frame` rather than by shrinking its text run's box, which would have moved the text with it, off
+its line number. Rejected: a sub-column offset for sideways scrolling, which would complicate slicing
+text to the visible columns for no visible gain, so a sideways glide lands on the nearest column.
+Only the focused pane has the offset, and a part-scrolled remainder is dropped by anything else that
+moves the view, so scrolling that follows the cursor is never offset or animated. A wheel notch is a
+glide, three rows on a spring that cannot overshoot, because text must not bounce past where you
+scrolled; a touchpad delta overtakes a glide in flight.
+
+**The menu bar's fixed priority order.** The titles and the search box compete for a narrow bar, and
+room is handed out along one list: File, Edit, Selection, the search box, View through Help, then the
+wordmark, with an element shown only if everything before it is. A prefix of a fixed list can only
+lengthen as the window widens, so a title never leaves the bar because the window grew. Rejected: the
+first rule, which gave the search box and the wordmark their room by threshold and so took three
+titles away from a window that had just been widened, at about 390 pixels, and the wordmark's
+threshold at 560 evicted one more. A test now sweeps every pixel from 360 to 2560 at two scales and
+three code sizes with no exemption, and fails against that rule. Hidden titles go behind a "…" that
+lists them, so every menu is reachable by mouse at any width. The wordmark does nothing, so it goes
+first.
+
+**One `card()` helper for every overlay.** The palette, the menus, completion, the hover and
+diagnostic box, which-key, the help panel and the bell's log are drawn by `chrome::card`: a shadow
+made of two offset translucent rounded fills, the panel surface, an 8 px radius and a 1 px outline in
+`rule`, all faded together. Keys are drawn as chips from `Command::shown`. Opacity and scale are
+applied by the `Frame` itself, through `set_opacity` and `set_zoom`, rather than by multiplying each
+colour by hand, which is how one forgotten border would have stayed on screen at full strength while
+its card faded. Rejected: `row_active` for a selected row, which is lighter than the panel in the
+light themes and made the selection all but invisible, so a faint wash of the mode colour is used; a
+visible "or" between alternative key chips, which costs width in every row to say what the gap already
+says once a chord is one chip; and fading a closing card in place without more, since every overlay
+shares one layer where all quads go down before any glyph, so a menu fading out behind the palette it
+opened printed its rows through it. Everything leaving is forgotten when any modal opens. Hit-testing
+follows logical state, so a click mid-scale-in uses the settled rectangles; that is a stated gap, not
+an oversight.
+
+**The settings tab is not a buffer, and auto-save writes only what was touched.** The tab is an
+`Option<Page>` and a flag on `EditorState`, listed after the files at an index the buffer list never
+hands out, so nothing in `buffer_key`, `stored_index` or the panes knows it exists and opening or
+closing it renumbers nothing. Rejected: a fake buffer, which makes every buffer path ask whether it
+holds a file, and a strip of category tiles above the rows for a narrow page, which left the rows no
+room in a real editor area, so the tree folds into one button instead. A change applies at once and is written 600 ms after the last one, and on quit; there is
+no save button, and ctrl-s says so rather than saving the hidden file. The write is the hard part. The
+tab records what it wrote and the watcher skips a reload when the file still holds exactly that, so its
+own write is not mistaken for an outside edit (content rather than a flag, since a user's own save of
+an open `init.lua` must still apply). It writes only the fields changed on the page, merged into the
+marked block, because writing every live value pinned a ctrl-+ zoom, a theme toggled by a key and an
+import the first time anything was touched; a reset removes the line rather than writing today's
+default, so a later change to a default still reaches the user. A reload applies the changes still
+waiting first, then lets a field the file moved win, so the most recent intent is the one kept.
+Rejected on the way: moving the write ahead of the watcher in the idle step, which closes only the
+save case, and an unconditional re-apply of pending changes, which overrode a newer hand edit. New
+lines go at the top of the block, because Lua allows a table's last field without a comma and a line
+appended after it made the file fail to load. With an `init.lua` open and unsaved, the write is held
+and the status line says so, since writing under it would lose the edits.
 
 ## 7. Open questions to settle before M2
 

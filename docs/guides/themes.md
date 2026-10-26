@@ -14,10 +14,10 @@ wins when they disagree.
 | `rose-pine-moon` | |
 | `amoled` | true black, for an OLED panel |
 
-Cycle them in the settings panel: <kbd>ctrl</kbd>+<kbd>,</kbd>, then the *theme* row, changed with
-<kbd>h</kbd>/<kbd>l</kbd>, the arrows, <kbd>enter</kbd> or a click. Each change applies live, so you
-are choosing by looking rather than by name. Press <kbd>w</kbd> to write the panel's values into
-`init.lua`.
+Cycle them in the settings tab: <kbd>ctrl</kbd>+<kbd>,</kbd>, then the *theme* row on the
+**Appearance** page, changed with <kbd>←</kbd>/<kbd>→</kbd>, <kbd>enter</kbd> or a click. Each change
+applies live, so you are choosing by looking rather than by name, and it is written to `init.lua` a
+moment after the last one.
 
 With Vim keys on, `gt` toggles between light and dark. Either way it is in the command palette
 (<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd>) as *switch between light and dark*.
@@ -84,14 +84,14 @@ dacode.set { theme = "gruvbox" }
 `--palette` needs no checklist — a colour scheme is one thing rather than a set to choose between.
 It always writes to the default config directory, ignoring `--out`.
 
-From inside the editor, the **last row of the settings panel** is *load a theme file…*. Press
+From inside the editor, the **last row of the settings tab's Import page** is *load a theme file…*. Press
 <kbd>enter</kbd> on it or click it, and a prompt opens pre-filled with your home directory, since a
 downloaded theme is usually in Downloads (`~/` works there too). It reads the same four formats,
 applies the result at once, and saves it under `themes/` as DaCode's own TOML — so neither importing a
 theme nor choosing one ever needs a terminal.
 
 It also tells you how many colours it recognised and what slug it saved under, and that is worth
-reading, because **the panel cannot make that theme stick.** Loading a file changes the running
+reading, because **the settings tab cannot make that theme stick.** Loading a file changes the running
 editor; putting `theme = "<slug>"` in `init.lua` is what survives a restart. The message names the
 exact line to write.
 
@@ -121,8 +121,8 @@ One thing is corrected rather than copied. If the imported text colour and backg
 close in lightness, the text is re-lightened and the correction is reported — a theme that leaves
 text illegible against its own background is worse than no import at all.
 
-**A theme loaded from a file cannot be changed by the panel.** The panel cycles the five built-ins by
-name, and a file's colours have no name it could write, so that row shows `from a file` and writes
+**A theme loaded from a file cannot be changed by the settings tab.** The tab cycles the five built-ins
+by name, and a file's colours have no name it could write, so that row shows `from a file` and writes
 nothing. Otherwise changing the font size would quietly throw away an imported theme.
 
 ## Changing individual colours
@@ -157,7 +157,7 @@ than making one thing bigger inside a layout built for something else.
 dacode.set { font_size = 15 }
 ```
 
-Or the `font_size` row in the settings panel. With Vim keys on, `=` and `-` change it directly; in
+Or the font size on the settings tab's **Appearance** page. With Vim keys on, `=` and `-` change it directly; in
 either keymap it is in the command palette as *bigger text* / *smaller text*.
 
 Two honest notes about the range:
@@ -165,9 +165,9 @@ Two honest notes about the range:
 **The effective range is 11 to 18.** Anything outside it is silently brought inside, so
 `font_size = 40` renders at 18.
 
-**The panel's own bounds are 8 to 32 and do not match.** So the panel can never actually reach 32,
-and a mouse-only user who raises the size to 18 has no way to lower it again from that row. Use
-`init.lua` or the palette until that is fixed; it is recorded in the
+The settings tab takes the same bounds from the typography rather than keeping its own, so the stepper
+runs 11 to 18 and wraps; it used to disagree, and a mouse-only user who raised the size to 18 could not
+lower it again. The history is in the
 [settings reference](../reference/settings.md#where-the-three-disagree).
 
 The line height is a fixed multiple of the code size — a generous 1.9. Comments used to be set in
@@ -195,7 +195,7 @@ rendering flag is in the [command line reference](../reference/cli.md#headless-r
 
 ## See also
 
-- [Configuration](configuration.md) — the panel, `init.lua`, and which of them wins
+- [Configuration](configuration.md) — the settings tab, `init.lua`, and which of them wins
 - [Settings reference](../reference/settings.md) — `theme`, `appearance`, `font_size`, `dacode.theme`
 - [Command line reference](../reference/cli.md#dacode-import) — every `dacode import` flag
 - [Migrating from VSCode](migrating-from-vscode.md) — themes as part of a whole setup

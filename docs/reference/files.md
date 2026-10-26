@@ -64,11 +64,14 @@ than no session at all.
 Load order for settings is `imported-settings.toml`, then `config.toml`, then `init.lua`, each
 overriding the one before. [`settings.md`](settings.md) has the full option list.
 
-The settings panel (`ctrl-,`) writes back into `init.lua` rather than a file of its own. It appends
-a block under a marker line reading `-- dacode: written by the settings panel (ctrl-,)`, replacing that
-block in place on later writes; everything else in the file is preserved verbatim. Because Lua runs
-in order and the block is last, it wins over your own `dacode.set` calls above it — deleting a line
-from the block hands that setting back to your code.
+The settings tab (`ctrl-,`) writes back into `init.lua` rather than a file of its own, 600 ms after a
+change. It appends a block under a marker line reading `-- dacode: written by the settings panel
+(ctrl-,)` — the marker keeps the name the sidebar panel gave it, because renaming it would stop a
+block written by an older version being found — replacing that block in place on later writes;
+everything else in the file is preserved verbatim. Only the settings changed on the tab are in it.
+Because Lua runs in order and the block is last, it wins over your own `dacode.set` calls above it —
+deleting a line from the block, or resetting the setting on the tab, hands that setting back to your
+code.
 
 `dacode import`'s **default output directory is not the config directory the editor reads**.
 `import_cli::default_config_dir` is `$HOME/.config/dacode`, hard-coded: it ignores `DACODE_CONFIG_DIR` and
