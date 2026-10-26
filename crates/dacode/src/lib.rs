@@ -10,6 +10,7 @@ pub mod completion;
 pub mod config;
 pub mod edits;
 pub mod execute;
+pub mod focus;
 pub mod format;
 pub mod git;
 pub mod help;

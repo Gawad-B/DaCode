@@ -269,6 +269,7 @@ pub fn execute(
             // rather than one silently winning.
             if state.show_diagnostics {
                 state.tree = None;
+                state.focus = crate::focus::Focus::Editor;
             }
         }
         Action::ShowSourceControl | Action::ShowRunAndDebug => {
@@ -349,6 +350,16 @@ pub fn execute(
         | Action::ToggleTree => {
             return Outcome::Window(action.clone());
         }
+
+        // Focus is plain state, so the executor can set it — except for opening a tree that is not
+        // there, which needs the file index only the caller holds.
+        Action::FocusExplorer => {
+            if state.tree.is_none() {
+                return Outcome::Window(action.clone());
+            }
+            state.focus = crate::focus::Focus::Sidebar;
+        }
+        Action::FocusEditor => state.focus = crate::focus::Focus::Editor,
 
         Action::MoveLine { down } => move_lines(state, *down),
         Action::DuplicateLine { down } => duplicate_lines(state, *down),

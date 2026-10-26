@@ -100,6 +100,7 @@ fn state(lines: usize) -> EditorState {
         recording: None,
         diff: dacode::git::Diff::default(),
         show_diagnostics: false,
+        focus: Default::default(),
         problems: Default::default(),
         inlay_hints: Vec::new(),
         show_inlay_hints: false,

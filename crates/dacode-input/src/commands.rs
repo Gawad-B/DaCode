@@ -586,6 +586,20 @@ pub const COMMANDS: &[Command] = &[
         "<c-e>",
     ),
     command(
+        "focus_explorer",
+        "move the keys to the file tree",
+        View,
+        "<c-s-e>",
+        "<c-s-e>",
+    ),
+    command(
+        "focus_editor",
+        "move the keys back to the text",
+        View,
+        "<c-1>",
+        "<c-1>",
+    ),
+    command(
         "toggle_theme",
         "switch between light and dark",
         View,

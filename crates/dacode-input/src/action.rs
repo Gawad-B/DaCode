@@ -262,6 +262,13 @@ pub enum Action {
     },
     /// `ctrl-e` — show or hide the file tree.
     ToggleTree,
+    /// `ctrl-shift-e` — send the keys to the file tree, opening it first when it is closed.
+    ///
+    /// `ToggleTree` cannot be this: pressed with the tree already open it closes it, and the thing
+    /// wanted is to *get back to it* after typing in the editor.
+    FocusExplorer,
+    /// `ctrl-1` — send the keys back to the text, leaving whatever is open where it is.
+    FocusEditor,
 
     /// Create a file beside the one selected in the tree, or beside the open file.
     ///
@@ -471,6 +478,8 @@ impl Action {
         "next_pane",
         "previous_pane",
         "toggle_tree",
+        "focus_explorer",
+        "focus_editor",
         "new_file",
         "rename_file",
         "delete_file",
@@ -628,6 +637,8 @@ impl Action {
             "next_pane" => Action::FocusPane { forward: true },
             "previous_pane" => Action::FocusPane { forward: false },
             "toggle_tree" => Action::ToggleTree,
+            "focus_explorer" => Action::FocusExplorer,
+            "focus_editor" => Action::FocusEditor,
             "new_file" => Action::NewFile,
             "rename_file" => Action::RenameFile,
             "delete_file" => Action::DeleteFile,

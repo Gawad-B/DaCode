@@ -294,6 +294,9 @@ impl Grammar {
                     register: None,
                 }),
                 KeyCode::Char('p') if key.shift => Some(Action::ToggleCommandPalette),
+                // Before the plain `ctrl-e` in `feed_editor_chords`, which is the tree's toggle.
+                KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
+                KeyCode::Char('1') => Some(Action::FocusEditor),
                 KeyCode::Char(' ') => Some(Action::RequestCompletion),
                 KeyCode::Backspace => Some(Action::DeleteWord { forward: false }),
                 KeyCode::Delete => Some(Action::DeleteWord { forward: true }),
@@ -421,7 +424,9 @@ impl Grammar {
                 KeyCode::Char('r') => Some(Action::Redo),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
+                KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
+                KeyCode::Char('1') => Some(Action::FocusEditor),
                 // In both grammars. Vim's own answer is `:s/a/b/g`, which is a fine thing to know
                 // and a poor thing to be the only way — and the prompt it opens is the same one, so
                 // there is no second implementation to keep in step.

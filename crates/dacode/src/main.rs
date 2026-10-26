@@ -290,6 +290,7 @@ fn new_state(
         recording: None,
         diff: dacode::git::Diff::default(),
         show_diagnostics: false,
+        focus: Default::default(),
         problems: Default::default(),
         inlay_hints: Vec::new(),
         show_inlay_hints: settings.inlay_hints,
@@ -2073,7 +2074,15 @@ impl App {
         let Some(key) = self.translate(&key) else {
             return false;
         };
+        self.press(key)
+    }
 
+    /// Routes one key, after the window system's event has become a [`Key`].
+    ///
+    /// Split from `handle_key` so a test drives the real routing rather than a copy of it — the
+    /// order of the checks below *is* the behaviour, and it is where the file tree once took the
+    /// arrow keys from the editor.
+    fn press(&mut self, key: Key) -> bool {
         // While the palette is open it owns the keyboard: typing `i` into a file query must search
         // for `i`, not enter insert mode. The design says mode keys are swallowed, and they are.
         if self.state.palette.is_some() {
@@ -2108,11 +2117,22 @@ impl App {
         if self.state.help.is_some() {
             return self.handle_help_key(key);
         }
-        if self.handle_settings_key(key) {
-            return false;
-        }
-        if self.handle_tree_key(key) {
-            return false;
+        // The sidebar's views take keys only while they have focus. They used to be offered every
+        // key first just by being open, so the arrows moved through files whatever was clicked.
+        if self.state.focus == dacode::focus::Focus::Sidebar {
+            // Escape hands the keys back to the text before the view sees it, and it is consumed:
+            // one Escape, one effect. The tree used to close itself on it, which threw away the
+            // place you had reached just to leave it.
+            if key.code == KeyCode::Escape && !key.ctrl && !key.alt {
+                self.state.focus = dacode::focus::Focus::Editor;
+                return false;
+            }
+            if self.handle_settings_key(key) {
+                return false;
+            }
+            if self.handle_tree_key(key) {
+                return false;
+            }
         }
 
         // Opening a palette is a Ctrl binding, so it works from any mode. Shift matters here:
@@ -4488,6 +4508,7 @@ impl App {
             Action::ToggleSettings => {
                 if self.state.settings.is_some() {
                     self.state.settings = None;
+                    self.state.focus = dacode::focus::Focus::Editor;
                 } else {
                     let mut settings = dacode::settings_ui::Settings::new();
                     settings.servers = self.detect_servers();
@@ -4495,6 +4516,7 @@ impl App {
                     self.state.settings = Some(settings);
                     self.state.tree = None;
                     self.state.show_diagnostics = false;
+                    self.state.focus = dacode::focus::Focus::Sidebar;
                 }
             }
             Action::Jump { forward } => {
@@ -4549,6 +4571,7 @@ impl App {
             Action::ToggleTree => {
                 if self.state.tree.is_some() {
                     self.state.tree = None;
+                    self.state.focus = dacode::focus::Focus::Editor;
                 } else {
                     let mut tree = dacode::tree::FileTree::new(
                         self.index.root().to_path_buf(),
@@ -4564,8 +4587,12 @@ impl App {
                     }
                     self.state.tree = Some(tree);
                     self.state.show_diagnostics = false;
+                    self.state.focus = dacode::focus::Focus::Sidebar;
                 }
             }
+            // Only reached with the tree closed (the executor handles the rest): open it, which
+            // gives it the keys, rather than leaving a keystroke that appears to do nothing.
+            Action::FocusExplorer => self.show_tree(),
             Action::FocusPane { forward } if self.panes.is_split() => {
                 self.save_pane();
                 self.panes.cycle(*forward);
@@ -5236,7 +5263,6 @@ impl App {
             },
             // `w` writes; nothing is written without asking, because config is a file the user owns.
             KeyCode::Char('w') => self.write_settings(),
-            KeyCode::Escape => self.state.settings = None,
             _ => return false,
         }
         true
@@ -5514,7 +5540,6 @@ impl App {
                     self.activate(Target::File(path));
                 }
             }
-            KeyCode::Escape => self.state.tree = None,
             _ => return false,
         }
         true
@@ -6466,6 +6491,15 @@ impl App {
             return;
         }
 
+        // A press decides where the keys go, before anything below handles it. The chrome's own
+        // bars say `None`, so a toolbar button does not move focus; the buttons that open a view
+        // set it themselves.
+        if !extend {
+            if let Some(focus) = dacode::focus::focus_for(&layout, x, y) {
+                self.state.focus = focus;
+            }
+        }
+
         // The chrome's buttons, before anything else: they are the mouse's way to the commands that
         // otherwise need a shortcut, and the whole reason someone who chose the conventional editor
         // can use this without being told anything.
@@ -7315,6 +7349,7 @@ impl App {
         }
         self.state.tree = Some(tree);
         self.state.show_diagnostics = false;
+        self.state.focus = dacode::focus::Focus::Sidebar;
     }
 
     /// Switches the project to another folder: re-indexes, and shows the tree.
@@ -7792,6 +7827,100 @@ mod wiring_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         false
+    }
+
+    /// With the tree open and the editor focused, ↓ moves the caret — it used to move the tree.
+    #[test]
+    fn arrows_follow_focus_not_whichever_panel_is_open() {
+        let dir = scratch("focus");
+        let mut app = editor(&dir, "a.rs", "one\ntwo\nthree\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app.show_tree();
+        app.state.focus = dacode::focus::Focus::Editor;
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(app.state.cursor_point().line, 1, "the caret moved");
+
+        app.state.focus = dacode::focus::Focus::Sidebar;
+        let before = app.state.cursor_point();
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(app.state.cursor_point(), before, "the tree took it");
+    }
+
+    /// Escape in the tree gives the keys back and leaves the tree standing: it is a view you were
+    /// reading, and closing it threw away the place you had reached just to type.
+    #[test]
+    fn escape_in_the_tree_returns_the_keys_to_the_text() {
+        use dacode::focus::Focus;
+        let dir = scratch("focus-escape");
+        let mut app = editor(&dir, "a.rs", "one\ntwo\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app.show_tree();
+        assert_eq!(
+            app.state.focus,
+            Focus::Sidebar,
+            "opening a view gives it the keys"
+        );
+
+        app.press(Key::named(KeyCode::Escape));
+        assert_eq!(app.state.focus, Focus::Editor);
+        assert!(
+            app.state.tree.is_some(),
+            "the tree is still there to look at"
+        );
+    }
+
+    /// The two focus commands are the keyboard's way across, and the second must not close the tree
+    /// the way `ctrl-e` does — that is the whole reason it is a separate action.
+    #[test]
+    fn the_focus_keys_cross_between_the_tree_and_the_text() {
+        use dacode::focus::Focus;
+        let dir = scratch("focus-keys");
+        let mut app = editor(&dir, "a.rs", "one\ntwo\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        assert!(app.state.tree.is_none());
+
+        // Closed tree: asking for it opens it, and gives it the keys.
+        app.press(Key::ctrl('e').with_shift());
+        assert!(app.state.tree.is_some());
+        assert_eq!(app.state.focus, Focus::Sidebar);
+
+        app.press(Key::ctrl('1'));
+        assert_eq!(app.state.focus, Focus::Editor);
+        assert!(
+            app.state.tree.is_some(),
+            "focusing the text does not close the tree"
+        );
+
+        // Open tree: asking again returns to it rather than toggling it shut.
+        app.press(Key::ctrl('e').with_shift());
+        assert!(app.state.tree.is_some());
+        assert_eq!(app.state.focus, Focus::Sidebar);
+    }
+
+    /// Clicking is what moves focus: the tree's rectangle and the text's are the same ones the
+    /// drawing reads, so a click where it looks like the text is the text.
+    #[test]
+    fn clicking_the_text_takes_the_keys_back_from_the_tree() {
+        use dacode::focus::Focus;
+        let dir = scratch("focus-click");
+        let mut app = editor(&dir, "a.rs", "one\ntwo\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app.show_tree();
+        assert_eq!(app.state.focus, Focus::Sidebar);
+
+        let layout = app.layout();
+        app.pointer = (layout.editor.x + 200.0, layout.editor.y + 60.0);
+        app.click(false);
+        assert_eq!(app.state.focus, Focus::Editor);
+
+        let sidebar = layout.sidebar.expect("the tree is open");
+        app.pointer = (sidebar.x + 20.0, sidebar.y + 60.0);
+        app.click(false);
+        assert_eq!(app.state.focus, Focus::Sidebar);
     }
 
     /// An editor as the real one is built: with a waker, which is what makes the loop sleep.

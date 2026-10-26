@@ -172,7 +172,8 @@ which is the thing returning to the origin exists to prevent.
 | `ctrl-k o` · `ctrl-k ctrl-o` | open a folder — the desktop's folder chooser |
 | `ctrl-p` | file palette (fuzzy) |
 | `ctrl-b` | buffer palette |
-| `ctrl-e` | file tree — `j`/`k` move, `enter` opens, `esc` closes |
+| `ctrl-e` | file tree — click it or press `ctrl-shift-e` to give it the keys: `j`/`k` move, `enter` opens, `esc` hands the keys back to the text |
+| `ctrl-shift-e` · `ctrl-1` | keys to the file tree (opening it if closed) · keys back to the text |
 
 **Right-click a row in the tree** for new file, rename and delete. They also live in the command
 palette, and act on the tree's selection — or on the open file when the tree is closed. Deleting

@@ -123,6 +123,8 @@ pub struct EditorState {
     /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
     /// a path in.
     pub tree: Option<crate::tree::FileTree>,
+    /// Where the keys go. A view being open does not make it the target — clicking it does.
+    pub focus: crate::focus::Focus,
     /// Write the file a moment after typing stops, rather than waiting to be asked.
     ///
     /// Off by default, because writing someone's file without being told to is not a default an
@@ -219,6 +221,9 @@ impl EditorState {
         self.show_diagnostics = false;
         self.settings = None;
         self.chrome.activity = None;
+        // Nothing is left to hold the keys, and a focus that outlived its view would swallow the
+        // next view's first key before anyone had chosen it.
+        self.focus = crate::focus::Focus::Editor;
     }
 
     /// Mutates the document and moves everything outside it that names a position in it.
@@ -2753,7 +2758,22 @@ fn draw_explorer(
             box_.height - 2.0 * scale,
         );
         if selected {
-            frame.fill_rounded(highlight, theme.row_active, 5.0 * scale);
+            // The selection says whose it is. Lit and outlined, the arrow keys are the tree's; a
+            // quiet fill means they are the text's and the tree is only being looked at — which is
+            // the difference that used to be invisible, and why ↓ seemed to move the wrong thing.
+            let focused = state.focus == crate::focus::Focus::Sidebar;
+            frame.fill_rounded(
+                highlight,
+                if focused {
+                    theme.row_active
+                } else {
+                    theme.rule_soft
+                },
+                5.0 * scale,
+            );
+            if focused {
+                frame.outline_rounded(highlight, theme.primary, 5.0 * scale, 1.0 * scale);
+            }
         } else if hovered(state, *box_) {
             frame.fill_rounded(highlight, theme.rule_soft, 5.0 * scale);
         }
