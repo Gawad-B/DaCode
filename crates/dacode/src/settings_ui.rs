@@ -780,7 +780,7 @@ const ANIMATIONS: [&str; crate::motion::Animations::ALL.len()] = {
 };
 
 impl Field {
-    /// The row's name, in bold on the page.
+    /// The row's name, as the page shows it.
     ///
     /// With the modal grammar off the switch stops calling itself Vim: someone who chose the
     /// conventional editor is shown what the switch does rather than a name from an editor they did

@@ -23,6 +23,7 @@ pub use frame::{
 };
 pub use headless::Headless;
 pub use icon::Icon;
+pub use text::fira_code_draws;
 pub use timer::FrameTimer;
 
 use anyhow::{Context, Result};

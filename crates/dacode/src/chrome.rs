@@ -3161,7 +3161,6 @@ fn draw_page_heading(
     };
     let mut spec = state.typography.spec(Role::Prose);
     spec.size_px *= scale;
-    spec.weight = 600;
     let advance = crate::layout::measured_advance(&state.typography, Role::Prose, scale);
     frame.text(TextRun {
         text: elide_to(&text, row.label.width, advance),
@@ -3228,7 +3227,6 @@ fn draw_page_row(
     let name = |frame: &mut Frame, text: &str, color: Oklch| {
         let mut spec = state.typography.spec(Role::Ui);
         spec.size_px *= scale;
-        spec.weight = 600;
         let shown = elide(state, Role::Ui, text, row.label.width, scale);
         mark(frame, &shown, row.label, Role::Ui);
         frame.text(TextRun {

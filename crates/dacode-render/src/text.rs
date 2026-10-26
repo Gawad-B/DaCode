@@ -25,8 +25,32 @@ use std::hash::{Hash, Hasher};
 /// headings and the wordmark and a sans for labels beside the code face. The contrast was the
 /// design's idea; one familiar face everywhere is what people asked for, and it is also what makes
 /// every width the chrome estimates exact, because a monospaced face has one advance.
+///
+/// Only the Regular weight is bundled, so every run is shaped at a weight that face has — see
+/// [`shaped_weight`]. Asking for one it lacks does not get a bolder Fira Code: it gets a different
+/// family.
 mod bundled {
     pub const FIRA_CODE: &[u8] = include_bytes!("../fonts/FiraCode-Regular.ttf");
+}
+
+/// Whether the bundled face has a glyph for `ch`.
+///
+/// A character it lacks is drawn from whatever installed font has one, so a chrome string holding
+/// one is a word with a letter in another typeface. The tests that guard the interface's own strings
+/// ask this; the user's file is allowed to fall back, since a CJK comment or an emoji in a string
+/// literal is better drawn in some face than not drawn at all.
+pub fn fira_code_draws(ch: char) -> bool {
+    static FACE: std::sync::OnceLock<glyphon::Font> = std::sync::OnceLock::new();
+    FACE.get_or_init(|| {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(bundled::FIRA_CODE.to_vec());
+        let id = db.faces().next().expect("the bundled face parses").id;
+        glyphon::Font::new(&db, id, fontdb::Weight::NORMAL).expect("the bundled face loads")
+    })
+    .as_swash()
+    .charmap()
+    .map(ch)
+        != 0
 }
 
 /// Frames a shaped buffer may go unused before it is dropped. Generous: re-shaping a line the
@@ -101,13 +125,28 @@ pub struct TextStack {
     buffers: HashMap<u64, Cached>,
     /// The face in use, resolved once against what is installed.
     face: FamilyChoice,
+    /// The weights the bundled faces come in; every run is shaped at one of them.
+    weights: Vec<u16>,
     frame: u64,
+    /// The bundled faces' ids, and the substitutions already reported, when `DACODE_FONT_TRACE` is
+    /// set. A glyph drawn from any other face is a place the interface stopped being Fira Code.
+    trace: Option<Trace>,
+}
+
+struct Trace {
+    bundled: Vec<fontdb::ID>,
+    seen: std::collections::HashSet<(String, u16, Style, char)>,
 }
 
 impl TextStack {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let mut font_system = load_fonts();
+        let (mut font_system, bundled) = load_fonts();
         let face = resolve(&mut font_system);
+        let weights = bundled_weights(font_system.db(), &bundled);
+        let trace = std::env::var_os("DACODE_FONT_TRACE").map(|_| Trace {
+            bundled,
+            seen: Default::default(),
+        });
 
         let cache = Cache::new(device);
         let viewport = Viewport::new(device, &cache);
@@ -130,7 +169,9 @@ impl TextStack {
             renderers,
             buffers: HashMap::new(),
             face,
+            weights,
             frame: 0,
+            trace,
         }
     }
 
@@ -183,20 +224,12 @@ impl TextStack {
                 buffer.set_size(None, None);
             }
 
-            let attrs = Attrs::new()
-                .family(self.face.as_ct())
-                .weight(CtWeight(run.spec.weight))
-                .style(match run.spec.style {
-                    Style::Roman => CtStyle::Normal,
-                    Style::Italic => CtStyle::Italic,
-                })
-                // cosmic-text adds this to a *normalized* advance, so the unit is em — not px.
-                // Scaling it by the font size collapses tight tracking into overlapping glyphs
-                // and blows loose tracking apart by an order of magnitude.
-                .letter_spacing(run.spec.tracking_em);
-
+            let attrs = attrs(self.face.as_ct(), &run.spec, &self.weights);
             buffer.set_text(&run.text, &attrs, Shaping::Advanced, None);
             buffer.shape_until_scroll(&mut self.font_system, false);
+            if let Some(trace) = &mut self.trace {
+                trace.record(&self.font_system, &buffer, run);
+            }
 
             let width = buffer
                 .layout_runs()
@@ -301,18 +334,96 @@ impl TextStack {
     }
 }
 
-/// Builds the font system: bundled faces first, then the system's.
+/// What a run is shaped with.
+///
+/// The weight is the nearest the bundled faces have, never the one asked for. cosmic-text takes the
+/// requested family only from a face of *exactly* the requested weight (or a variable face whose
+/// axis covers it); otherwise it moves on to its platform fallback list, and `Noto Sans` at 600 is
+/// what came back. So every settings heading, every row name, every uppercase label and the wordmark
+/// were set in a sans on any machine with fonts installed, and in Fira Code in every screenshot,
+/// because `DACODE_NO_SYSTEM_FONTS` left nothing to fall back to. Snapping the weight here keeps the
+/// family whatever a caller asks for; [`dacode_theme::Typography`] asks only for weights that exist,
+/// so nothing is snapped in practice and the type scale tells the truth about what is drawn.
+///
+/// Italic needs no such help: style is not part of that exact-match test, so an italic request
+/// keeps Fira Code and cosmic-text slants it (its synthetic `FAKE_ITALIC`), the face having none.
+fn attrs<'a>(family: CtFamily<'a>, spec: &dacode_theme::FontSpec, weights: &[u16]) -> Attrs<'a> {
+    Attrs::new()
+        .family(family)
+        .weight(CtWeight(shaped_weight(spec.weight, weights)))
+        .style(match spec.style {
+            Style::Roman => CtStyle::Normal,
+            Style::Italic => CtStyle::Italic,
+        })
+        // cosmic-text adds this to a *normalized* advance, so the unit is em — not px.
+        // Scaling it by the font size collapses tight tracking into overlapping glyphs
+        // and blows loose tracking apart by an order of magnitude.
+        .letter_spacing(spec.tracking_em)
+}
+
+/// The bundled weight nearest `requested`, the lighter on a tie.
+fn shaped_weight(requested: u16, weights: &[u16]) -> u16 {
+    weights
+        .iter()
+        .copied()
+        .min_by_key(|weight| (weight.abs_diff(requested), *weight))
+        .unwrap_or(requested)
+}
+
+/// The weights the bundled faces come in.
+fn bundled_weights(db: &fontdb::Database, bundled: &[fontdb::ID]) -> Vec<u16> {
+    let mut weights: Vec<u16> = bundled
+        .iter()
+        .filter_map(|id| db.face(*id))
+        .map(|face| face.weight.0)
+        .collect();
+    weights.sort_unstable();
+    weights.dedup();
+    weights
+}
+
+impl Trace {
+    /// Reports, once each, every character a run drew from a face that is not bundled.
+    fn record(&mut self, font_system: &FontSystem, buffer: &Buffer, run: &TextRun) {
+        for line in buffer.layout_runs() {
+            for glyph in line.glyphs {
+                if self.bundled.contains(&glyph.font_id) {
+                    continue;
+                }
+                let family = font_system
+                    .db()
+                    .face(glyph.font_id)
+                    .and_then(|face| face.families.first().map(|(name, _)| name.clone()))
+                    .unwrap_or_else(|| "?".to_string());
+                let text = &line.text[glyph.start..glyph.end];
+                for ch in text.chars() {
+                    let key = (family.clone(), run.spec.weight, run.spec.style, ch);
+                    if self.seen.insert(key) {
+                        eprintln!(
+                            "dacode: substituted {family:?} for {ch:?} (U+{:04X}) at weight {} {:?} in {:?}",
+                            ch as u32, run.spec.weight, run.spec.style, run.text
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Builds the font system: bundled faces first, then the system's. Returns the bundled faces' ids
+/// beside it, since nothing in the database itself says which faces were embedded.
 ///
 /// Order matters for startup. The bundled faces parse from memory in well under a millisecond, so the
 /// editor can draw its own design immediately. The system scan follows because it is the only source
 /// of fallback coverage — CJK, emoji, anything the bundled families do not contain — and a missing
 /// glyph should degrade to a substitute rather than to a blank box.
-fn load_fonts() -> FontSystem {
+fn load_fonts() -> (FontSystem, Vec<fontdb::ID>) {
     let started = std::time::Instant::now();
 
     let mut db = fontdb::Database::new();
     db.load_font_data(bundled::FIRA_CODE.to_vec());
     let bundled_count = db.len();
+    let bundled: Vec<fontdb::ID> = db.faces().map(|face| face.id).collect();
     let bundled_time = started.elapsed();
 
     // The system scan costs ~150ms and buys fallback coverage — CJK, emoji, scripts Fira Code does
@@ -346,7 +457,7 @@ fn load_fonts() -> FontSystem {
         .and_then(|lang| lang.split('.').next().map(str::to_string))
         .unwrap_or_else(|| "en-US".to_string());
 
-    FontSystem::new_with_locale_and_db(locale, db)
+    (FontSystem::new_with_locale_and_db(locale, db), bundled)
 }
 
 /// Picks the first installed face from the preference list, falling back to the generic monospace.
@@ -381,4 +492,168 @@ fn run_key(run: &TextRun) -> u64 {
         run.rect.width.to_bits().hash(&mut hasher);
     }
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dacode_theme::{Role, Typography};
+    use glyphon::cosmic_text::{Fallback, PlatformFallback};
+
+    fn bundled_only() -> (fontdb::Database, Vec<fontdb::ID>) {
+        let mut db = fontdb::Database::new();
+        db.load_font_data(bundled::FIRA_CODE.to_vec());
+        let ids = db.faces().map(|face| face.id).collect();
+        (db, ids)
+    }
+
+    /// The bundled face, plus a stand-in for every family cosmic-text falls back to on this
+    /// platform, at every weight and in both styles.
+    ///
+    /// The stand-ins are what made the defect invisible in tests and screenshots: with only the
+    /// bundled face loaded there is nothing to fall back *to*, so a weight Fira Code lacks still came
+    /// out in Fira Code. A real machine has `Noto Sans` at 600 (or `Segoe UI`, or whatever the
+    /// platform's list names), and cosmic-text takes it. These carry Fira Code's own outlines under
+    /// another name, so they cover every character the bundled face does and nothing but the family
+    /// can tell them apart.
+    fn with_decoys() -> (FontSystem, Vec<fontdb::ID>) {
+        let (mut db, bundled) = bundled_only();
+        let data: std::sync::Arc<dyn AsRef<[u8]> + Send + Sync> =
+            std::sync::Arc::new(bundled::FIRA_CODE.to_vec());
+        for family in PlatformFallback.common_fallback() {
+            for weight in (100..=900).step_by(100) {
+                for style in [fontdb::Style::Normal, fontdb::Style::Italic] {
+                    db.push_face_info(fontdb::FaceInfo {
+                        id: fontdb::ID::dummy(),
+                        source: fontdb::Source::Binary(data.clone()),
+                        index: 0,
+                        families: vec![(
+                            family.to_string(),
+                            fontdb::Language::English_UnitedStates,
+                        )],
+                        post_script_name: format!("Decoy-{weight}-{style:?}"),
+                        style,
+                        weight: fontdb::Weight(weight),
+                        stretch: fontdb::Stretch::Normal,
+                        monospaced: false,
+                    });
+                }
+            }
+        }
+        db.set_serif_family("Fira Code");
+        db.set_monospace_family("Fira Code");
+        db.set_sans_serif_family("Fira Code");
+        (
+            FontSystem::new_with_locale_and_db("en-US".into(), db),
+            bundled,
+        )
+    }
+
+    /// Shapes `text` with `attrs` and returns the face of every glyph.
+    fn faces_used(font_system: &mut FontSystem, text: &str, attrs: &Attrs) -> Vec<fontdb::ID> {
+        let mut buffer = Buffer::new(font_system, Metrics::new(14.0, 20.0));
+        buffer.set_size(None, None);
+        buffer.set_text(text, attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(font_system, false);
+        buffer
+            .layout_runs()
+            .flat_map(|line| line.glyphs.iter().map(|glyph| glyph.font_id))
+            .collect()
+    }
+
+    const SAMPLE: &str = "Settings › Colours and type  ↑↓ MOVE · ENTER CHOOSE";
+
+    #[test]
+    fn every_role_asks_for_a_weight_and_style_the_bundled_face_has() {
+        // A role at a weight the bundled face lacks is drawn either in another family (with fonts
+        // installed) or at a weight it does not have (without) — the type scale saying one thing
+        // and the screen another. Labels were 500 and the wordmark 600, and both were the first.
+        let (db, bundled) = bundled_only();
+        let weights = bundled_weights(&db, &bundled);
+        assert!(!weights.is_empty(), "the bundled face has a weight");
+        for role in Role::ALL {
+            // Exhaustive, so a new role cannot be added without being seen here and put in `ALL`.
+            match role {
+                Role::Display
+                | Role::Prose
+                | Role::Code
+                | Role::Comment
+                | Role::LineNumber
+                | Role::Value
+                | Role::Label
+                | Role::Ui
+                | Role::Brand => {}
+            }
+            let spec = Typography::default().spec(role);
+            assert!(
+                weights.contains(&spec.weight),
+                "{role:?} asks for weight {} but Fira Code is bundled at {weights:?}",
+                spec.weight
+            );
+            // The face has no italic. One would still be drawn in Fira Code, slanted (see the test
+            // below), but no role is meant to be, and one that became so should be a decision.
+            assert_eq!(spec.style, Style::Roman, "{role:?} is italic");
+        }
+    }
+
+    #[test]
+    fn the_decoys_would_take_a_weight_the_bundled_face_lacks() {
+        // Proves the next test can fail: asked for 600 directly, with the stand-ins installed,
+        // cosmic-text leaves Fira Code — which is the defect, reproduced without a GPU or a system
+        // font. If this ever stops holding, the guard below is checking nothing.
+        let (mut font_system, bundled) = with_decoys();
+        let raw = Attrs::new()
+            .family(CtFamily::Name("Fira Code"))
+            .weight(CtWeight(600));
+        let faces = faces_used(&mut font_system, SAMPLE, &raw);
+        assert!(
+            faces.iter().any(|id| !bundled.contains(id)),
+            "a 600 request stayed in Fira Code even with fallbacks installed"
+        );
+    }
+
+    #[test]
+    fn every_weight_and_style_is_shaped_in_the_bundled_face() {
+        // The shaping path, not the type scale: whatever weight a caller writes into a spec — the
+        // settings page once set 600 by hand on its headings and row names — and either style,
+        // every glyph comes from Fira Code while a family that has that exact weight is installed.
+        let (mut font_system, bundled) = with_decoys();
+        let weights = bundled_weights(font_system.db(), &bundled);
+        let base = Typography::default().spec(Role::Ui);
+        for weight in (100..=900).step_by(50) {
+            for style in [Style::Roman, Style::Italic] {
+                let spec = dacode_theme::FontSpec {
+                    weight,
+                    style,
+                    ..base
+                };
+                let attrs = attrs(CtFamily::Name("Fira Code"), &spec, &weights);
+                let faces = faces_used(&mut font_system, SAMPLE, &attrs);
+                assert!(!faces.is_empty());
+                assert!(
+                    faces.iter().all(|id| bundled.contains(id)),
+                    "weight {weight} {style:?} left Fira Code"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_weight_snaps_to_the_nearest_bundled_one() {
+        assert_eq!(shaped_weight(600, &[400]), 400);
+        assert_eq!(shaped_weight(600, &[300, 400, 500, 700]), 500);
+        // A tie goes to the lighter: a heading a little light reads better than one too heavy.
+        assert_eq!(shaped_weight(600, &[500, 700]), 500);
+        assert_eq!(shaped_weight(400, &[300, 400, 500]), 400);
+    }
+
+    #[test]
+    fn coverage_is_read_from_the_bundled_face() {
+        // The coverage guard over the interface's strings is only as good as this answer.
+        assert!(fira_code_draws('a'));
+        assert!(fira_code_draws('›'));
+        assert!(fira_code_draws('→'));
+        assert!(!fira_code_draws('漢'));
+        assert!(!fira_code_draws('😀'));
+    }
 }

@@ -1,6 +1,6 @@
 //! Type roles and metrics.
 //!
-//! One face — Fira Code — at a handful of sizes and weights. Roles are named by intent so a widget
+//! One face — Fira Code — at a handful of sizes and one weight. Roles are named by intent so a widget
 //! asks for `Role::Label` rather than picking a size, and so the type scale can move as one.
 
 /// The one face the editor draws everything in, then what to fall back to if it is missing.
@@ -47,10 +47,27 @@ pub enum Role {
     Brand,
 }
 
+impl Role {
+    pub const ALL: [Role; 9] = [
+        Role::Display,
+        Role::Prose,
+        Role::Code,
+        Role::Comment,
+        Role::LineNumber,
+        Role::Value,
+        Role::Label,
+        Role::Ui,
+        Role::Brand,
+    ];
+}
+
 /// A resolved font request.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct FontSpec {
     pub style: Style,
+    /// Every role is 400, the one weight bundled. Labels were 500 and the wordmark 600, and with
+    /// fonts installed both came back in a different family: cosmic-text keeps the requested family
+    /// only at a weight it has. Hierarchy is carried by size, case, tracking and colour instead.
     pub weight: u16,
     pub size_px: f32,
     pub line_height: f32,
@@ -173,7 +190,7 @@ impl Typography {
             },
             Role::Label => FontSpec {
                 style: Style::Roman,
-                weight: 500,
+                weight: 400,
                 size_px: (code * 0.74).round(),
                 line_height: 1.2,
                 tracking_em: 0.2,
@@ -189,7 +206,7 @@ impl Typography {
             },
             Role::Brand => FontSpec {
                 style: Style::Roman,
-                weight: 600,
+                weight: 400,
                 size_px: (code * 1.15).round(),
                 line_height: 1.2,
                 // None: the wordmark is two runs placed by the advance, and tracking the shaper does
