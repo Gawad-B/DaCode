@@ -304,6 +304,17 @@ reason: a server named in `init.lua` is not static, and pretending otherwise cos
 allocation does. A configured entry goes **ahead** of the built-ins rather than replacing them, so
 naming a venv does not also throw away the fallback.
 
+**One face, one weight — and a screenshot cannot see a substitution.** cosmic-text keeps a requested
+family only from a face of *exactly* the requested weight. Fira Code is bundled at 400 alone, so a 500
+or 600 request quietly drew the labels, the settings headings and the wordmark in Noto Sans on any
+machine with fonts installed — while every capture drew Fira Code, because `DACODE_NO_SYSTEM_FONTS`
+left nothing to fall back to. Every role is 400 now and `text::attrs` snaps any weight to a bundled
+one; hierarchy comes from size, case, tracking and colour. `DACODE_FONT_TRACE=1` *without*
+`DACODE_NO_SYSTEM_FONTS` prints every glyph drawn from another face — run it after touching type. The
+guards are the decoy-font tests in `text.rs` and `crates/dacode/tests/typeface.rs`, which checks every
+string the chrome draws against the bundled face's character map. A user's own file may still fall
+back for CJK or emoji, and should.
+
 **Paint layers.** The renderer draws all quads then all glyphs *per layer*, so an overlay on a higher
 layer occludes text below it. Within one layer it cannot. Panels go on `Layer::Panel`, the palette on
 `Layer::Modal`. Forgetting this is how the completion popup shipped transparent.
@@ -408,6 +419,9 @@ seconds in, past where any spring settles, so it is always the finished screen. 
 opens the menu bar at a title, or `...` at the overflow's list, which is the only way to look at it
 without a window narrow enough to need it.
 
+`DACODE_NO_SYSTEM_FONTS` hides font fallback by construction, so for anything about type, also
+capture once *without* it and compare.
+
 **Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
 and a whole family of defects lives below that: the settings rows collided with the footer under
 ~900px of height, the toolbar was laid out at a negative x under ~450px of width, and neither was
@@ -471,6 +485,7 @@ anything platform-shaped:
 | Which surface has the keys | `crates/dacode/src/focus.rs` — `Focus` and `focus_for`; a click sets it, and the key router asks it rather than which panel is open |
 | Waking the event loop | `crates/dacode/src/wake.rs` — `Waker`, `Wake` and `coalescing`; `App::collect_background` is the one idle step, and `services_busy` is what still needs a timer |
 | The settings tab | `crates/dacode/src/settings_ui.rs` — `Page` is the model (categories, search, scroll, selection), `Page::geometry_at` its rectangles; `App::save_settings_if_due` and `settings_ui::write_touched` are the auto-save |
+| Which face a run is drawn in | `crates/dacode-render/src/text.rs` — `attrs`, `shaped_weight`, `fira_code_draws` |
 | An icon | `crates/dacode-render/src/icon.rs` — geometry on a 24-unit grid, drawn by `shape.wgsl` |
 | The logo | `crates/dacode-render/assets/mark*.png` — coverage masks; `examples/icons.rs` builds every icon from them |
 | What a right-click offers | `crates/dacode/src/menu.rs` — `CONTEXT`, names from the command table |

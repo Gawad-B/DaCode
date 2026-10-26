@@ -31,8 +31,8 @@ pub enum Role {
     Prose,
     /// Buffer text.
     Code,
-    /// Comments inside code: italic serif, slightly larger than the code around it so the
-    /// optical size matches despite the different family.
+    /// Comments inside code: the code face, upright and at the code's size, so a commented-out line
+    /// stays on the same grid as the line it comments out. The theme's colour is what marks it.
     Comment,
     /// Gutter line numbers — serif figures.
     LineNumber,
