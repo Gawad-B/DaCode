@@ -472,66 +472,104 @@ const MARKER: &str =
 /// The start of the marker vex wrote, before the editor was called DaCode.
 const LEGACY_MARKER: &str = "-- vex: written by the settings panel";
 
-/// Rewrites `init.lua` so the settings block reflects `values`.
-///
-/// Everything the user wrote is preserved verbatim; only the block under [`MARKER`] is replaced, and
-/// it is appended if absent. `init.lua` applies in order, so the panel's block being last is what
-/// makes it authoritative — and moving a setting out of it back into your own code is as simple as
-/// deleting the line, because your line runs first only until the block runs after it.
+/// Rewrites `init.lua` so the settings block holds every one of `values`. What the first-run wizard
+/// writes, where every answer is a choice the user has just made. The settings tab writes only what
+/// was changed on it — see [`write_touched`].
 pub fn write_back(existing: &str, values: &Values) -> String {
-    // A theme loaded from a file has no name the panel could write, and writing "dark" for it would
-    // throw that theme away the next time anyone changed the font size — a setting the user did not
-    // touch, silently replacing one they did. Nothing written means nothing changed.
-    let theme = match values.theme {
-        Some(name) => format!("  theme = \"{name}\",\n"),
-        None => String::new(),
+    write_touched(existing, values, &Field::ALL)
+}
+
+/// One field's line in the block, or `None` for a theme loaded from a file: it has no name the
+/// block could write, and writing a built-in in its place would throw that theme away.
+fn block_line(field: Field, values: &Values) -> Option<String> {
+    let value = match field {
+        Field::VimKeys => values.modal.to_string(),
+        Field::FontSize => format!("{:.1}", values.font_size),
+        Field::TabWidth => values.tab_width.to_string(),
+        Field::SoftWrap => values.soft_wrap.to_string(),
+        Field::FormatOnSave => values.format_on_save.to_string(),
+        Field::Theme => format!("\"{}\"", values.theme?),
+        Field::LineNumbers => format!("\"{}\"", values.line_numbers.name()),
+        Field::StickyScroll => values.sticky_scroll.to_string(),
+        Field::InlayHints => values.inlay_hints.to_string(),
+        Field::Autosave => values.autosave.to_string(),
+        Field::Transparency => values.transparency.to_string(),
+        Field::Animations => format!("\"{}\"", values.animations.name()),
     };
+    Some(format!("  {} = {value},", field.name()))
+}
 
-    let block = format!(
-        "{MARKER}\ndacode.set {{\n  \
-         vim_keys = {},\n  \
-         font_size = {:.1},\n  \
-         tab_width = {},\n  \
-         soft_wrap = {},\n  \
-         format_on_save = {},\n\
-         {theme}  \
-         line_numbers = \"{}\",\n  \
-         sticky_scroll = {},\n  \
-         inlay_hints = {},\n  \
-         autosave = {},\n  \
-         transparency = {},\n  \
-         animations = \"{}\",\n}}\n",
-        values.modal,
-        values.font_size,
-        values.tab_width,
-        values.soft_wrap,
-        values.format_on_save,
-        values.line_numbers.name(),
-        values.sticky_scroll,
-        values.inlay_hints,
-        values.autosave,
-        values.transparency,
-        values.animations.name(),
-    );
-
+/// Rewrites `init.lua` so the settings block carries `touched` at their values in `values`, and
+/// everything else the block already said, unchanged.
+///
+/// **Only what was changed is written.** Writing every live value pinned whatever the session
+/// happened to hold — a ctrl-+ zoom for a screen share, a theme toggled by a key, values imported
+/// from VSCode — the first time any setting was touched, and since `init.lua` runs last it then
+/// overrode a later import too. A line already in the block keeps its text, so an edit made there
+/// by hand survives; lines that are not `name = value,` are kept as they are.
+///
+/// Everything outside the block is preserved verbatim; the block is appended if absent.
+/// `init.lua` applies in order, so the block being last is what makes it authoritative.
+pub fn write_touched(existing: &str, values: &Values, touched: &[Field]) -> String {
     // The block's marker as vex wrote it, too: an init.lua carried over from before the rename has
     // that one, and looking only for the new marker appended a second block on the first save —
     // two `set` calls, the older one silently overridden by the newer.
-    match existing
+    let found = existing
         .find(MARKER)
         .or_else(|| existing.find(LEGACY_MARKER))
-    {
-        // Replace the old block. Anything the user added *after* it is kept, which matters because
-        // people do add lines below whatever a tool wrote.
-        Some(at) => {
-            let before = &existing[..at];
+        .map(|at| {
             let rest = &existing[at..];
             let end = rest
                 .find("\n}\n")
                 .map(|i| at + i + 3)
                 .unwrap_or(existing.len());
-            format!("{before}{block}{}", &existing[end..])
+            // The lines between `set {` and the closing brace.
+            let block = &existing[at..end];
+            let body = block
+                .find("set {\n")
+                .map(|open| &block[open + "set {\n".len()..])
+                .map(|body| body.strip_suffix("}\n").unwrap_or(body))
+                .unwrap_or("");
+            (
+                at,
+                end,
+                body.lines().map(str::to_string).collect::<Vec<_>>(),
+            )
+        });
+
+    let mut lines = found
+        .as_ref()
+        .map(|(_, _, lines)| lines.clone())
+        .unwrap_or_default();
+    let key_of = |line: &str| {
+        line.trim()
+            .split_once('=')
+            .map(|(key, _)| key.trim().to_string())
+    };
+    for field in touched {
+        let Some(line) = block_line(*field, values) else {
+            continue;
+        };
+        match lines
+            .iter()
+            .position(|existing| key_of(existing).as_deref() == Some(field.name()))
+        {
+            Some(at) => lines[at] = line,
+            None => lines.push(line),
         }
+    }
+
+    let mut block = format!("{MARKER}\ndacode.set {{\n");
+    for line in &lines {
+        block.push_str(line);
+        block.push('\n');
+    }
+    block.push_str("}\n");
+
+    match found {
+        // Anything the user added *after* the block is kept, which matters because people do add
+        // lines below whatever a tool wrote.
+        Some((at, end, _)) => format!("{}{block}{}", &existing[..at], &existing[end..]),
         None => {
             let mut out = existing.to_string();
             if !out.is_empty() && !out.ends_with('\n') {
@@ -618,14 +656,12 @@ pub struct Section {
     pub fields: &'static [Field],
 }
 
+// One section for the theme and the type, not one each: a heading "Theme" over a single row also
+// called "Theme" was the kind of sub-header that says nothing, which is what was asked to go.
 const APPEARANCE: &[Section] = &[
     Section {
-        title: "Theme",
-        fields: &[Field::Theme],
-    },
-    Section {
-        title: "Text",
-        fields: &[Field::FontSize],
+        title: "Colours and type",
+        fields: &[Field::Theme, Field::FontSize],
     },
     Section {
         title: "Window",
@@ -1000,6 +1036,10 @@ pub enum Part {
     Control,
     /// The ⟲.
     Reset,
+    /// A stepper's − half: one step down.
+    Decrease,
+    /// A stepper's + half: one step up.
+    Increase,
 }
 
 /// The settings tab's state: the open page, the search, the selection and the scroll.
@@ -1092,6 +1132,10 @@ pub struct PageRow {
     /// The theme row's colour chip, inside `control` at its left: the theme shown rather than only
     /// named. The control is measured with room for it, so the name beside it is not cut shorter.
     pub swatch: Option<Rect>,
+    /// A stepper's − and + buttons, at the two ends of `control`; its value sits between them.
+    /// Boxes of their own because they go in opposite directions: a click on either was a click on
+    /// "the control", which only knew one way, so − raised the font size.
+    pub stepper: Option<(Rect, Rect)>,
 }
 
 impl PageRow {
@@ -1136,6 +1180,10 @@ impl PageGeometry {
             .find(|row| contains(row.clip, x, y) && !row.entry.is_heading())?;
         let part = if row.reset.is_some_and(|reset| contains(reset, x, y)) {
             Part::Reset
+        } else if row.stepper.is_some_and(|(down, _)| contains(down, x, y)) {
+            Part::Decrease
+        } else if row.stepper.is_some_and(|(_, up)| contains(up, x, y)) {
+            Part::Increase
         } else if !matches!(row.entry, Entry::Command(_))
             && row.control.is_some_and(|control| contains(control, x, y))
         {
@@ -1149,6 +1197,32 @@ impl PageGeometry {
 
 fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
+}
+
+/// Where `needle` occurs in `text`, ignoring case, as ranges of *characters* — what the drawing
+/// needs to place a wash under each, at a character's advance. The same case-folded `contains` the
+/// search filters with, so what is lit is what made the row match. An empty needle matches nothing.
+pub fn match_ranges(text: &str, needle: &str) -> Vec<std::ops::Range<usize>> {
+    let needle: Vec<char> = needle.trim().chars().flat_map(char::to_lowercase).collect();
+    let haystack: Vec<char> = text.chars().collect();
+    let folded: Vec<char> = haystack
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let mut ranges = Vec::new();
+    if needle.is_empty() || needle.len() > folded.len() {
+        return ranges;
+    }
+    let mut at = 0;
+    while at + needle.len() <= folded.len() {
+        if folded[at..at + needle.len()] == needle[..] {
+            ranges.push(at..at + needle.len());
+            at += needle.len();
+        } else {
+            at += 1;
+        }
+    }
+    ranges
 }
 
 /// What the folded tree's button says during a search. Measured with the page titles when the button
@@ -1976,6 +2050,7 @@ impl Layout<'_> {
             control: None,
             reset: None,
             swatch: None,
+            stepper: None,
         };
 
         let text =
@@ -2025,6 +2100,13 @@ impl Layout<'_> {
                     reserve,
                 );
                 row.control = Some(control);
+                row.stepper = (field.control() == Control::Stepper).then(|| {
+                    let side = control.height.min(control.width / 3.0);
+                    (
+                        Rect::new(control.x, control.y, side, control.height),
+                        Rect::new(control.right() - side, control.y, side, control.height),
+                    )
+                });
                 row.swatch = (field == Field::Theme).then(|| {
                     let side = metrics.swatch().min(control.height).min(control.width);
                     Rect::new(
@@ -3370,6 +3452,60 @@ mod tab_tests {
             assert_eq!(first.heading(), Some("Wrapping"));
             assert!(first.label.height > 0.0, "and it is drawn at {scale}");
         }
+    }
+
+    #[test]
+    fn a_steppers_two_buttons_are_its_own_and_hit_as_their_direction() {
+        // Drawn as − value +, and the mouse must see the same three parts: one box for the whole
+        // control made − a step up.
+        let modal = true;
+        let mut page = Page::new();
+        page.set_category(Category::Appearance, modal);
+        let values = Values::defaults(modal);
+        let typography = Typography::default();
+        for scale in [1.0, 2.0] {
+            let rect = editor(1600.0 * scale, 1000.0 * scale, scale);
+            let geometry = page.geometry(rect, scale, &values, modal, &typography);
+            for row in &geometry.rows {
+                let stepper = row.field().map(|field| field.control()) == Some(Control::Stepper);
+                assert_eq!(row.stepper.is_some(), stepper, "{:?}", row.entry);
+                let Some((down, up)) = row.stepper else {
+                    continue;
+                };
+                let control = row.control.unwrap();
+                for half in [down, up] {
+                    assert!(half.x >= control.x && half.right() <= control.right() + 0.01);
+                }
+                assert!(down.right() <= up.x, "the halves do not overlap");
+                let middle = |rect: Rect| (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+                let (x, y) = middle(down);
+                assert_eq!(geometry.hit(x, y), Some((row.index, Part::Decrease)));
+                let (x, y) = middle(up);
+                assert_eq!(geometry.hit(x, y), Some((row.index, Part::Increase)));
+                let (x, y) = middle(control);
+                assert_eq!(
+                    geometry.hit(x, y),
+                    Some((row.index, Part::Control)),
+                    "the value"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_search_marks_every_place_it_matched_ignoring_case() {
+        assert_eq!(match_ranges("Soft wrap", "WRAP"), vec![5..9]);
+        assert_eq!(
+            match_ranges("wrap long lines, or wrap", "wrap"),
+            vec![0..4, 20..24]
+        );
+        assert_eq!(
+            match_ranges("Soft wrap", "  "),
+            Vec::<std::ops::Range<usize>>::new()
+        );
+        assert!(match_ranges("Theme", "font").is_empty());
+        // Characters, not bytes: the drawing places a wash at a character's advance.
+        assert_eq!(match_ranges("Editor › Wrapping", "wrap"), vec![9..13]);
     }
 
     #[test]

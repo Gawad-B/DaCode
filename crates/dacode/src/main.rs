@@ -579,11 +579,19 @@ fn how_to_run(command: &str, modal: bool) -> String {
 /// Whether an action changes the text of the document. The settings tab refuses these while it is
 /// the tab on screen: the document is behind it, out of sight, and an edit nobody can see is an edit
 /// nobody can check.
+///
+/// With them, the requests that read the hidden caret and answer over the page: completion, hover,
+/// definition, references, and a select-all nobody would see.
 fn edits_text(action: &Action) -> bool {
     action.is_change()
         || matches!(
             action,
-            Action::Undo
+            Action::RequestCompletion
+                | Action::Hover
+                | Action::GotoDefinition
+                | Action::FindReferences
+                | Action::SelectAll
+                | Action::Undo
                 | Action::Redo
                 | Action::Rename
                 | Action::Format
@@ -1589,6 +1597,16 @@ struct App {
     /// There is no save button and no `ctrl-s` for settings: a change applies at once, and is
     /// written [`SETTINGS_SAVE_AFTER`] after the last one, by the idle step.
     settings_changed_at: Option<std::time::Instant>,
+    /// The settings changed on the page since the last write: the only ones a write sets. Every
+    /// other value the session holds — a ctrl-+ zoom, a theme toggled by a key, what an import
+    /// brought in — is left as the file has it.
+    settings_touched: Vec<dacode::settings_ui::Field>,
+    /// The text the settings tab last wrote to `init.lua`, so the watcher can tell that write from
+    /// someone else's.
+    page_wrote: Option<String>,
+    /// A settings write is waiting for an open `init.lua` buffer with unsaved edits to be saved or
+    /// closed: writing under it would lose one side or the other.
+    settings_blocked: bool,
     /// Where `init.lua` lives. A field rather than a call to `config::config_dir` at each use, so a
     /// test hands the editor a directory of its own instead of writing the user's real config — the
     /// same reason `config::load_from` takes one.
@@ -1701,7 +1719,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
 
         // The config is watched like any other file, so editing `init.lua` in DaCode shows the result
         // on save rather than on the next launch.
-        let config_file = dacode::config::config_dir().join("init.lua");
+        let config_file = self.config_dir.join("init.lua");
         if config_file.exists() {
             if let Some(watcher) = &mut self.watcher {
                 let _ = watcher.watch(&config_file);
@@ -2091,6 +2109,9 @@ impl App {
             chosen_by_overlay: false,
             last_edit: None,
             settings_changed_at: None,
+            settings_touched: Vec::new(),
+            page_wrote: None,
+            settings_blocked: false,
             config_dir: dacode::config::config_dir(),
             wakes: 0,
             was_animating: false,
@@ -2355,6 +2376,20 @@ impl App {
                 sideways * 6.0 * self.focused_grid().advance(),
             )
         };
+
+        // Over the settings tab the page takes the pixels as they come, fingers or notch, and the
+        // sideways part goes nowhere — there is no text on screen to move sideways.
+        let layout = self.layout();
+        if self.state.settings_showing()
+            && dacode::layout::contains(layout.editor, self.pointer.0, self.pointer.1)
+        {
+            let (scale, modal, typography) =
+                (self.scale(), self.state.modal, self.state.typography);
+            if let Some(page) = &mut self.state.settings_page {
+                page.scroll_by(down_px, layout.editor, scale, modal, &typography);
+            }
+            return;
+        }
 
         if down != 0.0 {
             if notch {
@@ -2908,6 +2943,14 @@ impl App {
         // On the tree, a different menu: a right-click is about what is under the pointer, and
         // there it is a file rather than a symbol.
         let layout = self.layout();
+        // Over the settings tab there is no text to act on: the code menu's rows would run against
+        // the document hidden behind it, and the click that places the caret would have changed
+        // the setting under the pointer — and written it. A right-click there does nothing.
+        if self.state.settings_showing()
+            && dacode::layout::contains(layout.editor, self.pointer.0, self.pointer.1)
+        {
+            return;
+        }
         if let Some(sidebar) = layout
             .sidebar
             .filter(|sidebar| dacode::layout::contains(*sidebar, self.pointer.0, self.pointer.1))
@@ -5842,7 +5885,7 @@ impl App {
             self.state.theme = theme;
         }
 
-        let directory = dacode::config::config_dir();
+        let directory = self.config_dir.clone();
         let path = directory.join("init.lua");
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let written = dacode::welcome::config_from(&answers, &existing);
@@ -5897,6 +5940,13 @@ impl App {
         if key.ctrl && !key.shift && !key.alt && key.code == KeyCode::Char('f') {
             return true;
         }
+        // The old panel taught ctrl-s as "write settings". Here it would save — and maybe
+        // reformat — the file hidden behind the tab, so it answers the habit instead.
+        if key.ctrl && !key.shift && !key.alt && key.code == KeyCode::Char('s') {
+            self.state.hover =
+                Some("settings save themselves a moment after each change".to_string());
+            return true;
+        }
         if key.ctrl || key.alt {
             return false;
         }
@@ -5918,7 +5968,7 @@ impl App {
                 match entry {
                     Some(Entry::Field(field)) => self.adjust_setting(field, delta),
                     Some(Entry::Line(Line::Import(item))) => self.tick_import(item),
-                    Some(entry) if delta > 0 => self.choose_page_entry(entry),
+                    // An arrow changes a value; it does not start an import that writes files.
                     _ => {}
                 }
             }
@@ -6169,6 +6219,9 @@ impl App {
     /// the modal switch the selection is put back on one that exists.
     fn settings_changed(&mut self, field: dacode::settings_ui::Field, now: std::time::Instant) {
         self.settings_changed_at = Some(now);
+        if !self.settings_touched.contains(&field) {
+            self.settings_touched.push(field);
+        }
         let glow = dacode::motion::Key::Glow(dacode::settings_ui::glow_index(field));
         let motion = &mut self.state.chrome.motion;
         motion.snap(glow, 1.0);
@@ -6184,14 +6237,25 @@ impl App {
     /// bell, and not tried again until something changes.
     ///
     /// Called by the idle step with the clock, and by the tests with chosen instants.
+    ///
+    /// A write held back by an open, unsaved `init.lua` is due again as soon as that buffer is saved
+    /// or closed — both are input, so the idle step that follows them is where it happens.
     fn save_settings_if_due(&mut self, now: std::time::Instant) -> bool {
-        match self.settings_changed_at {
-            Some(changed) if now >= changed + SETTINGS_SAVE_AFTER => {
-                self.flush_settings();
-                true
-            }
-            _ => false,
+        let due = match self.settings_changed_at {
+            Some(changed) => now >= changed + SETTINGS_SAVE_AFTER,
+            None => self.settings_blocked && !self.config_buffer_dirty(),
+        };
+        if due {
+            self.flush_settings();
         }
+        due
+    }
+
+    /// Whether `init.lua` is open in a buffer with unsaved edits.
+    fn config_buffer_dirty(&self) -> bool {
+        self.buffers_showing(&self.config_dir.join("init.lua"))
+            .into_iter()
+            .any(|index| self.buffer_is_dirty(index))
     }
 
     /// When the settings write will be due, if a change is waiting for it. Like autosave's quiet
@@ -6203,10 +6267,61 @@ impl App {
         (due > now).then_some(due)
     }
 
+    /// Puts what the settings tab just wrote into every buffer showing `init.lua` — all of them
+    /// clean, or the write would not have happened — and records the file's new stamp, so the next
+    /// save of that buffer neither refuses ("changed on disk") nor writes the old block back.
+    fn reload_config_buffers(&mut self, path: &std::path::Path, contents: &str) {
+        let showing = self.buffers_showing(path);
+        for index in &showing {
+            match stored_index(*index, self.state.active_buffer) {
+                None => {
+                    let cursor = self.state.cursor();
+                    let previous = self.state.document.version();
+                    // As the watcher reloads a file changed on disk, versions kept increasing.
+                    self.state.document = Document::from_str(contents);
+                    self.state.document.resume_from(previous);
+                    let clamped = cursor.min(self.state.document.text().len_chars());
+                    self.state.document.set_primary_caret(clamped);
+                    self.after_buffer_change();
+                }
+                Some(stored) => {
+                    if let Some(buffer) = self.buffers.get_mut(stored) {
+                        let previous = buffer.document.version();
+                        buffer.document = Document::from_str(contents);
+                        buffer.document.resume_from(previous);
+                    }
+                }
+            }
+        }
+        if !showing.is_empty() {
+            self.remember_disk(&path.to_string_lossy());
+            self.refresh_buffer_tabs();
+        }
+    }
+
     /// Writes whatever settings change is waiting, now.
+    ///
+    /// Not under an open `init.lua` with unsaved edits: writing the file would be overwritten by
+    /// that buffer's next save, or would make it refuse to save. The write waits, says so, and is
+    /// made once the buffer is saved or closed.
     fn flush_settings(&mut self) {
-        if self.settings_changed_at.take().is_some() {
-            if let Err(message) = self.write_settings() {
+        let pending =
+            self.settings_changed_at.take().is_some() | std::mem::take(&mut self.settings_blocked);
+        if !pending {
+            return;
+        }
+        if self.config_buffer_dirty() {
+            self.settings_blocked = true;
+            self.state.hover = Some(
+                "init.lua has unsaved edits; settings not written — they will be once it is saved \
+                 or closed"
+                    .to_string(),
+            );
+            return;
+        }
+        match self.write_settings() {
+            Ok(()) => self.settings_touched.clear(),
+            Err(message) => {
                 eprintln!("dacode: {message}");
                 self.state.hover = Some(message);
             }
@@ -6298,7 +6413,7 @@ impl App {
             .collect();
         let slug = slug.trim_matches('-').to_string();
 
-        let directory = dacode::config::config_dir().join("themes");
+        let directory = self.config_dir.join("themes");
         let path = directory.join(format!("{slug}.toml"));
         if std::fs::create_dir_all(&directory).is_ok()
             && std::fs::write(&path, dacode::import_cli::render_theme(&slug, &theme)).is_ok()
@@ -6362,7 +6477,11 @@ impl App {
                 ));
             }
         };
-        let updated = dacode::settings_ui::write_back(&existing, &self.state.setting_values());
+        let updated = dacode::settings_ui::write_touched(
+            &existing,
+            &self.state.setting_values(),
+            &self.settings_touched,
+        );
 
         std::fs::create_dir_all(&directory).map_err(|error| {
             format!(
@@ -6377,6 +6496,8 @@ impl App {
         match dacode::save::write(&path, updated.as_bytes()) {
             Ok(()) => {
                 self.self_written.insert(dacode_project::canonical(&path));
+                self.page_wrote = Some(updated.clone());
+                self.reload_config_buffers(&path, &updated);
                 Ok(())
             }
             Err(error) => {
@@ -8131,6 +8252,8 @@ impl App {
         };
         match (part, entry) {
             (Part::Reset, Entry::Field(field)) => self.reset_setting(field),
+            (Part::Decrease, Entry::Field(field)) => self.adjust_setting(field, -1),
+            (Part::Increase, Entry::Field(field)) => self.adjust_setting(field, 1),
             (Part::Control, Entry::Field(field)) => self.cycle_setting(field),
             // A setting's row away from its control only selects it, so a click to read its
             // explanation does not change it.
@@ -8319,16 +8442,33 @@ impl App {
         if changed.is_empty() {
             return false;
         }
+        self.handle_changed_paths(changed)
+    }
 
+    /// What the watcher reported, acted on. Split from the poll so a test can hand it a path.
+    fn handle_changed_paths(&mut self, changed: Vec<std::path::PathBuf>) -> bool {
         let mut redraw = false;
-        let config_file = dacode::config::config_dir().join("init.lua");
+        let config_file = self.config_dir.join("init.lua");
 
         for path in changed {
-            // Config first: it is not a buffer, and reloading it is not reloading text.
+            // Config first: reloading it is not reloading text.
             if dacode_project::canonical(&path) == dacode_project::canonical(&config_file) {
+                // The settings tab's own write comes back here too. The live editor already *is*
+                // that file, so reloading it would only re-walk PATH for the report, reset the
+                // keymap and say "config reloaded" after every change — and revert a setting
+                // changed since, before its own write. Recognised by content rather than by
+                // `self_written`, which a user's save of an `init.lua` buffer also marks, and that
+                // save must still apply.
+                let ours = self.page_wrote.is_some()
+                    && std::fs::read_to_string(&path).ok() == self.page_wrote;
+                if ours {
+                    self.self_written.remove(&path);
+                    continue;
+                }
                 self.reload_config();
                 redraw = true;
-                continue;
+                // On to the buffer below: an outside edit of an `init.lua` that is also open
+                // reloads that buffer or warns about it, as it would for any other file.
             }
 
             // A save this editor just made comes back as an event; ignoring it once is the whole
@@ -9751,7 +9891,7 @@ mod wiring_tests {
         app
     }
 
-    /// Down to Appearance › Text › Font size, then three steps up, by the keys.
+    /// Down to Appearance › Colours and type › Font size, then three steps up, by the keys.
     fn three_font_size_steps(app: &mut App) -> Vec<std::time::Instant> {
         app.press(Key::named(KeyCode::Down));
         assert_eq!(
@@ -10001,6 +10141,295 @@ mod wiring_tests {
             caret,
             "the text behind the tab did not move"
         );
+    }
+
+    /// The page's row for `field`, as the mouse would find it.
+    fn page_row(app: &App, field: dacode::settings_ui::Field) -> dacode::settings_ui::PageRow {
+        app.settings_page_geometry()
+            .expect("the page is showing")
+            .rows
+            .into_iter()
+            .find(|row| row.field() == Some(field))
+            .unwrap_or_else(|| panic!("{field:?} is on screen"))
+    }
+
+    /// Selects `field` on the open page and steps it up once by the keys, as a user would.
+    fn step_on_page(app: &mut App, field: dacode::settings_ui::Field) {
+        let modal = app.state.modal;
+        let page = app.state.settings_page.as_mut().expect("the tab is open");
+        let category = dacode::settings_ui::Category::ALL
+            .into_iter()
+            .find(|category| {
+                dacode::settings_ui::sections(*category)
+                    .iter()
+                    .any(|section| section.fields.contains(&field))
+            })
+            .unwrap();
+        page.set_category(category, modal);
+        let index = page
+            .entries(modal)
+            .iter()
+            .position(|entry| *entry == dacode::settings_ui::Entry::Field(field))
+            .unwrap();
+        page.select(index, modal);
+        app.press(Key::named(KeyCode::Right));
+    }
+
+    #[test]
+    fn a_click_on_a_steppers_minus_lowers_it_and_on_its_plus_raises_it() {
+        // The stepper draws two buttons that go opposite ways. They were one control to the
+        // mouse, which only cycled upwards, so − raised the font size.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-stepper");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let size = app.state.typography.code_size;
+        let (down, up) = page_row(&app, Field::FontSize)
+            .stepper
+            .expect("a stepper has two buttons");
+
+        app.pointer = middle(down);
+        app.click(false);
+        assert_eq!(app.state.typography.code_size, size - 1.0, "− lowers it");
+
+        app.pointer = middle(up);
+        app.click(false);
+        app.click(false);
+        assert_eq!(app.state.typography.code_size, size + 1.0, "+ raises it");
+    }
+
+    #[test]
+    fn a_right_click_on_the_settings_page_changes_nothing_and_opens_no_menu() {
+        // A right-click is the first thing a mouse user tries. It placed the caret by clicking,
+        // which flipped the switch under the pointer and wrote it, then opened the code menu
+        // over a document nobody could see.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-right-click");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Editor);
+        let before = app.state.display.mode;
+        app.pointer = middle(page_row(&app, Field::SoftWrap).control.unwrap());
+        app.state.pointer = app.pointer;
+
+        app.open_context_menu();
+
+        assert_eq!(app.state.display.mode, before, "the switch did not flip");
+        assert!(
+            app.settings_changed_at.is_none(),
+            "and nothing waits to be written"
+        );
+        assert!(app.state.menu.is_none(), "and no code menu covers the page");
+    }
+
+    #[test]
+    fn the_settings_tabs_own_write_does_not_come_back_as_a_config_reload() {
+        // Every auto-save came back through the watcher as an outside edit: a reload that walked
+        // PATH for the report, reset the keymap and said "config reloaded" after every change.
+        let dir = scratch("settings-own-write");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let sentinel = vec![dacode::settings_ui::ServerRow {
+            language: "Sentinel".into(),
+            program: "untouched".into(),
+            status: "a reload would replace this".into(),
+            found: false,
+            configured: false,
+        }];
+        let modal = app.state.modal;
+        app.state
+            .settings_page
+            .as_mut()
+            .unwrap()
+            .set_reports(sentinel.clone(), Vec::new(), modal);
+
+        let last = *three_font_size_steps(&mut app).last().unwrap();
+        assert!(app.save_settings_if_due(last + SETTINGS_SAVE_AFTER));
+        let init = app.config_dir.join("init.lua");
+        app.state.hover = None;
+        app.handle_changed_paths(vec![init.clone()]);
+        app.record_notice();
+
+        assert_eq!(app.state.hover, None, "no reload notice");
+        assert!(
+            app.state.chrome.notifications.is_empty(),
+            "nothing in the bell: {:?}",
+            app.state.chrome.notifications
+        );
+        assert_eq!(
+            app.state.settings_page.as_ref().unwrap().servers(),
+            &sentinel[..],
+            "and PATH was not walked again"
+        );
+
+        // Someone else's edit to the same file is still a reload.
+        std::fs::write(&init, "dacode.set { tab_width = 3 }\n").unwrap();
+        app.handle_changed_paths(vec![init]);
+        assert_eq!(app.state.hover.as_deref(), Some("config reloaded"));
+        assert_eq!(app.state.display.tab_width, 3);
+    }
+
+    #[test]
+    fn a_session_zoom_is_not_written_when_another_setting_changes() {
+        // ctrl-+ for a screen share is for this session. The first write from the page used to pin
+        // every live value — the zoom, a toggled theme, what an import brought in — so whether a
+        // zoom stuck depended on whether anything else had been touched.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-zoom");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Editor);
+        let _ = app.run(Action::IncreaseFontSize);
+        let _ = app.run(Action::ToggleTheme);
+        step_on_page(&mut app, Field::LineNumbers);
+
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+        let written = std::fs::read_to_string(app.config_dir.join("init.lua")).unwrap();
+        let config = dacode_lua::eval(&written, "init.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(
+            config.font_size, None,
+            "the zoom is not written:\n{written}"
+        );
+        assert_eq!(config.theme_name, None, "nor the toggled theme");
+        assert_eq!(
+            config.line_numbers.as_deref(),
+            Some(app.state.line_numbers.name()),
+            "the setting changed on the page is"
+        );
+    }
+
+    #[test]
+    fn a_setting_already_in_the_block_keeps_its_value_when_another_is_written() {
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-keep-block");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Editor);
+        let mut configured = app.state.setting_values();
+        configured.font_size = 15.0;
+        let init = app.config_dir.join("init.lua");
+        std::fs::create_dir_all(&app.config_dir).unwrap();
+        std::fs::write(
+            &init,
+            dacode::settings_ui::write_back("-- mine\n", &configured),
+        )
+        .unwrap();
+
+        let _ = app.run(Action::IncreaseFontSize);
+        step_on_page(&mut app, Field::LineNumbers);
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+
+        let written = std::fs::read_to_string(&init).unwrap();
+        let config = dacode_lua::eval(&written, "init.lua");
+        assert_eq!(
+            config.font_size,
+            Some(15.0),
+            "kept, not the zoom:\n{written}"
+        );
+        assert_eq!(
+            config.line_numbers.as_deref(),
+            Some(app.state.line_numbers.name())
+        );
+        assert!(
+            written.starts_with("-- mine\n"),
+            "the user's own lines are kept"
+        );
+        assert_eq!(written.matches("dacode.set").count(), 1);
+    }
+
+    /// An editor with `init.lua` open as a buffer, then the settings tab open over it.
+    fn with_init_lua_open(dir: &std::path::Path, contents: &str) -> (App, std::path::PathBuf) {
+        let mut app = editor(dir, "a.rs", "fn main() {}\n");
+        app.headless_size = (WINDOW.width as u32, WINDOW.height as u32);
+        let init = app.config_dir.join("init.lua");
+        std::fs::create_dir_all(&app.config_dir).unwrap();
+        std::fs::write(&init, contents).unwrap();
+        app.activate(Target::File(init.clone()));
+        assert!(app.is_active_file(&dacode_project::canonical(&init)));
+        (app, init)
+    }
+
+    #[test]
+    fn an_open_clean_init_lua_follows_what_the_settings_tab_writes() {
+        // The Keys page's link opens init.lua beside a tab that rewrites it. A clean buffer that
+        // kept the old text would, on its next save, write the old block back over the new one.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-init-clean");
+        let (mut app, init) = with_init_lua_open(&dir, "-- mine\n");
+        let _ = app.run(Action::ToggleSettings);
+        app.state.focus = dacode::focus::Focus::Editor;
+        step_on_page(&mut app, Field::LineNumbers);
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+
+        let on_disk = std::fs::read_to_string(&init).unwrap();
+        assert!(on_disk.contains("line_numbers"));
+        assert_eq!(
+            app.state.document.text().to_string(),
+            on_disk,
+            "the buffer shows what was written"
+        );
+        assert!(!app.state.document.is_dirty());
+
+        // Back on the file, an edit and a save keep the block.
+        app.switch_to(app.state.active_buffer);
+        app.state.mutate(|document| document.insert("-- more\n"));
+        app.run(Action::Save);
+        let saved = std::fs::read_to_string(&init).unwrap();
+        assert!(saved.contains("-- more"), "{saved}");
+        assert!(
+            saved.contains("line_numbers"),
+            "the block survived the save:\n{saved}"
+        );
+    }
+
+    #[test]
+    fn an_open_init_lua_with_unsaved_edits_holds_the_write_until_it_is_saved() {
+        // Writing under a dirty buffer loses one side: its next save overwrites the block, or the
+        // block overwrites it. So the write waits, says so, and happens once the buffer is saved.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-init-dirty");
+        let (mut app, init) = with_init_lua_open(&dir, "-- mine\n");
+        app.state.mutate(|document| document.insert("-- edit\n"));
+        assert!(app.state.document.is_dirty());
+
+        let _ = app.run(Action::ToggleSettings);
+        app.state.focus = dacode::focus::Focus::Editor;
+        step_on_page(&mut app, Field::LineNumbers);
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+        assert_eq!(
+            std::fs::read_to_string(&init).unwrap(),
+            "-- mine\n",
+            "not written"
+        );
+        let said = app.state.hover.clone().unwrap_or_default();
+        assert!(said.contains("unsaved edits"), "{said}");
+        app.record_notice();
+        assert!(
+            app.state
+                .chrome
+                .notifications
+                .iter()
+                .any(|message| message.contains("unsaved edits"))
+        );
+        assert!(
+            !app.save_settings_if_due(changed + std::time::Duration::from_secs(10)),
+            "and not retried while the buffer is still dirty"
+        );
+
+        app.switch_to(app.state.active_buffer);
+        app.run(Action::Save);
+        assert!(
+            app.save_settings_if_due(std::time::Instant::now()),
+            "saving it lets the write through"
+        );
+        let on_disk = std::fs::read_to_string(&init).unwrap();
+        assert!(
+            on_disk.contains("-- edit"),
+            "the user's edit is kept:\n{on_disk}"
+        );
+        assert!(
+            on_disk.contains("line_numbers"),
+            "and the setting is written:\n{on_disk}"
+        );
+        assert_eq!(app.state.document.text().to_string(), on_disk);
+        assert!(!app.state.document.is_dirty());
     }
 
     #[test]

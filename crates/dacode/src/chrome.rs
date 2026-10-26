@@ -2975,8 +2975,9 @@ fn draw_settings_page(
         scale,
     );
 
-    // A new page fades in over the one it replaced; a search does not, since it changes with every
-    // key and a list that faded on each one would never be still enough to read.
+    // A new page fades in — the old one is gone at once, so a fade-in rather than a cross-fade; a
+    // search does not fade, since it changes with every key and a list that faded on each one would
+    // never be still enough to read.
     let fade = motion.fade(Key::SettingsCategory, 1.0, now).clamp(0.0, 1.0);
     frame.set_clip(Some(geometry.list));
     frame.set_opacity(fade);
@@ -3205,12 +3206,31 @@ fn draw_page_row(
     }
 
     // The name, set heavier than the text under it.
+    // What a search matched, lit under the characters that matched it: the list says which rows
+    // matched, and this says why — "wrap" in "Soft wrap" and in its sentence.
+    let query = page.query();
+    let mark = |frame: &mut Frame, shown: &str, area: Rect, role: Role| {
+        let advance = crate::layout::measured_advance(&state.typography, role, scale);
+        for range in crate::settings_ui::match_ranges(shown, query) {
+            let x = area.x + range.start as f32 * advance;
+            let width = (range.len() as f32 * advance).min(area.right() - x);
+            if width > 0.0 {
+                frame.fill_rounded(
+                    Rect::new(x, area.y + area.height * 0.12, width, area.height * 0.76),
+                    accent.with_alpha(0.30),
+                    3.0 * scale,
+                );
+            }
+        }
+    };
     let name = |frame: &mut Frame, text: &str, color: Oklch| {
         let mut spec = state.typography.spec(Role::Ui);
         spec.size_px *= scale;
         spec.weight = 600;
+        let shown = elide(state, Role::Ui, text, row.label.width, scale);
+        mark(frame, &shown, row.label, Role::Ui);
         frame.text(TextRun {
-            text: elide(state, Role::Ui, text, row.label.width, scale),
+            text: shown,
             spec,
             color,
             rect: row.label,
@@ -3230,16 +3250,18 @@ fn draw_page_row(
         let lines = wrap_at(text, area.width, advance);
         let line_height = area.height / lines.len().max(1) as f32;
         for (at, line) in lines.iter().enumerate() {
+            let rect = Rect::new(
+                area.x,
+                area.y + at as f32 * line_height,
+                area.width,
+                line_height,
+            );
+            mark(frame, line, rect, Role::Value);
             frame.text(run(
                 state,
                 Role::Value,
                 line.clone(),
-                Rect::new(
-                    area.x,
-                    area.y + at as f32 * line_height,
-                    area.width,
-                    line_height,
-                ),
+                rect,
                 color,
                 Align::Left,
                 scale,
@@ -3255,7 +3277,7 @@ fn draw_page_row(
                 explain(frame, text, theme.ink_dim);
             }
             if let Some(control) = row.control {
-                draw_control(frame, state, field, values, control, row.swatch, scale);
+                draw_control(frame, state, field, values, row, control, scale);
             }
             if let Some(reset) = row.reset {
                 // The ● says "changed" in the margin, where the eye scanning the names meets it; the
@@ -3312,8 +3334,9 @@ fn draw_page_row(
                         frame.fill_rounded(tick, accent, 4.0 * scale);
                         frame.fill_rounded(tick.inset(side * 0.3), theme.bg, 2.0 * scale);
                     } else {
-                        frame.fill_rounded(tick, theme.bg, 4.0 * scale);
-                        frame.outline_rounded(tick, theme.rule, 4.0 * scale, 1.5 * scale);
+                        // Outline only: filled, an empty box on the selected row's wash read as
+                        // a ticked one.
+                        frame.outline_rounded(tick, theme.ink_faint, 4.0 * scale, 1.5 * scale);
                     }
                 }
             }
@@ -3345,7 +3368,11 @@ fn draw_page_row(
                     crate::layout::measured_advance(&state.typography, Role::Value, scale)
                         * (found.chars().count() as f32 + 1.0);
                 let (status, label) = row.label.split_right(found_width.min(row.label.width));
-                let mark = if report.configured { " (init.lua)" } else { "" };
+                let mark = if report.configured {
+                    " · configured"
+                } else {
+                    ""
+                };
                 frame.text(ui(
                     state,
                     elide(
@@ -3402,11 +3429,12 @@ fn draw_control(
     state: &EditorState,
     field: crate::settings_ui::Field,
     values: &crate::settings_ui::Values,
+    row: &crate::settings_ui::PageRow,
     control: Rect,
-    swatch: Option<Rect>,
     scale: f32,
 ) {
     use crate::settings_ui::Control;
+    let swatch = row.swatch;
 
     let theme = &state.theme;
     let accent = theme.accent(state.mode);
@@ -3440,9 +3468,10 @@ fn draw_control(
             );
         }
         Control::Stepper => {
-            let side = control.height.min(control.width / 3.0);
-            let down = Rect::new(control.x, control.y, side, control.height);
-            let up = Rect::new(control.right() - side, control.y, side, control.height);
+            // The two buttons are the geometry's, the same boxes a click is tested against.
+            let Some((down, up)) = row.stepper else {
+                return;
+            };
             let middle = Rect::new(
                 down.right(),
                 control.y,
@@ -3451,6 +3480,9 @@ fn draw_control(
             );
             for (button, glyph) in [(down, "-"), (up, "+")] {
                 frame.fill_rounded(button, theme.bg_alt, 5.0 * scale);
+                if hovered(state, button) {
+                    frame.fill_rounded(button, theme.ink.with_alpha(0.08), 5.0 * scale);
+                }
                 frame.outline_rounded(button, theme.rule, 5.0 * scale, border::BORDER * scale);
                 frame.text(run(
                     state,
