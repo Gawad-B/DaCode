@@ -1601,6 +1601,9 @@ struct App {
     /// other value the session holds — a ctrl-+ zoom, a theme toggled by a key, what an import
     /// brought in — is left as the file has it.
     settings_touched: Vec<dacode::settings_ui::Field>,
+    /// The settings put back to their default on the page since the last write: their lines are
+    /// taken out of the block.
+    settings_reset: Vec<dacode::settings_ui::Field>,
     /// The text the settings tab last wrote to `init.lua`, so the watcher can tell that write from
     /// someone else's.
     page_wrote: Option<String>,
@@ -2110,6 +2113,7 @@ impl App {
             last_edit: None,
             settings_changed_at: None,
             settings_touched: Vec::new(),
+            settings_reset: Vec::new(),
             page_wrote: None,
             settings_blocked: false,
             config_dir: dacode::config::config_dir(),
@@ -2379,8 +2383,15 @@ impl App {
 
         // Over the settings tab the page takes the pixels as they come, fingers or notch, and the
         // sideways part goes nowhere — there is no text on screen to move sideways.
+        // After the modal surfaces, which own the wheel wherever the pointer is — the order `wheel`
+        // keeps — so a palette or the help panel over the page scrolls, and the page behind it does not.
         let layout = self.layout();
-        if self.state.settings_showing()
+        let modal_open = self.state.palette.is_some()
+            || self.state.help.is_some()
+            || self.state.menu.is_some()
+            || self.state.welcome.is_some();
+        if !modal_open
+            && self.state.settings_showing()
             && dacode::layout::contains(layout.editor, self.pointer.0, self.pointer.1)
         {
             let (scale, modal, typography) =
@@ -6108,9 +6119,18 @@ impl App {
     }
 
     /// Puts a setting back to its default: the ⟲, or delete on its row.
+    ///
+    /// The field's line is taken out of the block rather than rewritten at the default, so the file
+    /// stays as short as what the user chose, and a later change to DaCode's default — or a value
+    /// imported from VSCode — reaches them. With a line of their own above the block setting the
+    /// field, that line is what then applies; the page shows the default until the file is next read.
     fn reset_setting(&mut self, field: dacode::settings_ui::Field) {
         if field.resettable() && !field.is_default(&self.state.setting_values()) {
             self.change_setting(field, |values| values.reset(field));
+            self.settings_touched.retain(|touched| *touched != field);
+            if !self.settings_reset.contains(&field) {
+                self.settings_reset.push(field);
+            }
         }
     }
 
@@ -6156,11 +6176,20 @@ impl App {
         field: dacode::settings_ui::Field,
         change: impl FnOnce(&mut dacode::settings_ui::Values),
     ) {
-        use dacode::settings_ui::Field;
-
         let mut values = self.state.setting_values();
         change(&mut values);
+        self.apply_setting(field, &values);
+        self.settings_changed(field, std::time::Instant::now());
+    }
 
+    /// Puts one field of `values` into the live editor: what a change on the page does, and what a
+    /// reload does again for the changes still waiting to be written.
+    fn apply_setting(
+        &mut self,
+        field: dacode::settings_ui::Field,
+        values: &dacode::settings_ui::Values,
+    ) {
+        use dacode::settings_ui::Field;
         match field {
             Field::VimKeys => {
                 self.state.modal = values.modal;
@@ -6209,7 +6238,6 @@ impl App {
             Field::Transparency => self.set_transparency(values.transparency),
             Field::Animations => self.state.chrome.motion.set_animations(values.animations),
         }
-        self.settings_changed(field, std::time::Instant::now());
     }
 
     /// A setting has changed: it is written after the pause, and its row glows.
@@ -6219,6 +6247,7 @@ impl App {
     /// the modal switch the selection is put back on one that exists.
     fn settings_changed(&mut self, field: dacode::settings_ui::Field, now: std::time::Instant) {
         self.settings_changed_at = Some(now);
+        self.settings_reset.retain(|reset| *reset != field);
         if !self.settings_touched.contains(&field) {
             self.settings_touched.push(field);
         }
@@ -6320,7 +6349,10 @@ impl App {
             return;
         }
         match self.write_settings() {
-            Ok(()) => self.settings_touched.clear(),
+            Ok(()) => {
+                self.settings_touched.clear();
+                self.settings_reset.clear();
+            }
             Err(message) => {
                 eprintln!("dacode: {message}");
                 self.state.hover = Some(message);
@@ -6330,9 +6362,23 @@ impl App {
 
     /// What leaving the editor writes, by either door — the window's close button or quit: the
     /// recovery copy of unsaved work, and a settings change still waiting out its pause.
+    ///
+    /// A write held for an open init.lua with unsaved edits is made here regardless: those edits are
+    /// left in the recovery file, not saved, so the file on disk is the one the page was waiting to
+    /// write into, and quitting without it would lose the change the status line promised to keep.
     fn write_before_leaving(&mut self) {
         self.persist_recovery(true);
-        self.flush_settings();
+        if self.settings_blocked || self.settings_changed_at.is_some() {
+            self.settings_changed_at = None;
+            self.settings_blocked = false;
+            match self.write_settings() {
+                Ok(()) => {
+                    self.settings_touched.clear();
+                    self.settings_reset.clear();
+                }
+                Err(message) => eprintln!("dacode: {message}"),
+            }
+        }
     }
 
     /// Changes how see-through the window is.
@@ -6481,6 +6527,7 @@ impl App {
             &existing,
             &self.state.setting_values(),
             &self.settings_touched,
+            &self.settings_reset,
         );
 
         std::fs::create_dir_all(&directory).map_err(|error| {
@@ -8308,7 +8355,28 @@ impl App {
     /// Theme, metrics and key bindings are replaced; nothing about the *documents* is touched. A
     /// reload that reset scroll positions or dropped undo history would make editing your own config
     /// a hostile experience — which is exactly when this feature is used.
+    ///
+    /// **A change made on the settings page and not yet written wins over the file.** The file is
+    /// what the change is about to be written into, so reading it back first must not undo it —
+    /// and that is the normal order when a held write is released: saving the open init.lua is
+    /// reported by the watcher in the same idle step, ahead of the write. Without this the reload
+    /// put the old value back and the write then pinned it. The pending fields are taken from the
+    /// live editor before loading and applied again after.
     fn reload_config(&mut self) {
+        let pending: Vec<dacode::settings_ui::Field> = self
+            .settings_touched
+            .iter()
+            .chain(&self.settings_reset)
+            .copied()
+            .collect();
+        let kept = self.state.setting_values();
+        self.reload_config_from_file();
+        for field in pending {
+            self.apply_setting(field, &kept);
+        }
+    }
+
+    fn reload_config_from_file(&mut self) {
         let settings = dacode::config::load_from(&self.config_dir);
 
         self.state.theme = settings.theme;
@@ -10430,6 +10498,160 @@ mod wiring_tests {
         );
         assert_eq!(app.state.document.text().to_string(), on_disk);
         assert!(!app.state.document.is_dirty());
+    }
+
+    #[test]
+    fn a_held_write_keeps_its_change_when_the_save_that_releases_it_is_reported_first() {
+        // Saving the open init.lua releases the held write, and the watcher reports that save in
+        // the same idle step, ahead of the write. Its reload put the file's old font size back,
+        // and the write then pinned the old size where the user had chosen another.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-release-race");
+        let (mut app, init) = with_init_lua_open(&dir, "-- mine\n");
+        app.state.mutate(|document| document.insert("-- edit\n"));
+        let _ = app.run(Action::ToggleSettings);
+        app.state.focus = dacode::focus::Focus::Editor;
+        let chosen = app.state.typography.code_size + 1.0;
+        step_on_page(&mut app, Field::FontSize);
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+        assert!(app.settings_blocked, "held for the unsaved buffer");
+
+        app.switch_to(app.state.active_buffer);
+        app.run(Action::Save);
+        app.handle_changed_paths(vec![init.clone()]);
+        assert_eq!(
+            app.state.typography.code_size, chosen,
+            "the reload kept the change"
+        );
+        assert!(app.save_settings_if_due(std::time::Instant::now()));
+
+        let written = std::fs::read_to_string(&init).unwrap();
+        let config = dacode_lua::eval(&written, "init.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(
+            config.font_size,
+            Some(chosen),
+            "the held change is written:\n{written}"
+        );
+        assert!(written.contains("-- edit"));
+    }
+
+    #[test]
+    fn an_outside_edit_inside_the_pause_does_not_undo_a_change_waiting_to_be_written() {
+        // Another program — or the import — rewriting init.lua within the 600 ms before a write is
+        // read back by the watcher. What it says applies; what the page changed and has not yet
+        // written stays, and is then written on top.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-outside-edit");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let chosen = app.state.typography.code_size + 1.0;
+        step_on_page(&mut app, Field::FontSize);
+        let changed = app.settings_changed_at.unwrap();
+
+        let init = app.config_dir.join("init.lua");
+        std::fs::create_dir_all(&app.config_dir).unwrap();
+        std::fs::write(&init, "dacode.set { tab_width = 3 }\n").unwrap();
+        app.handle_changed_paths(vec![init.clone()]);
+        assert_eq!(app.state.display.tab_width, 3, "the outside edit applies");
+        assert_eq!(
+            app.state.typography.code_size, chosen,
+            "and the change waiting stays"
+        );
+
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+        let config = dacode_lua::eval(&std::fs::read_to_string(&init).unwrap(), "init.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(config.font_size, Some(chosen));
+        assert_eq!(config.tab_width, Some(3));
+    }
+
+    #[test]
+    fn a_reset_takes_the_setting_out_of_the_block() {
+        // Rewritten at the default it would pin today's default over a later import, or over a
+        // change to DaCode's own default. Taken out, the file says only what the user chose.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-reset-removes");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut configured = app.state.setting_values();
+        configured.font_size = 15.0;
+        let init = app.config_dir.join("init.lua");
+        std::fs::create_dir_all(&app.config_dir).unwrap();
+        std::fs::write(&init, dacode::settings_ui::write_back("", &configured)).unwrap();
+        app.reload_config();
+        assert_eq!(app.state.typography.code_size, 15.0);
+
+        let row = page_row(&app, Field::FontSize);
+        app.pointer = middle(row.reset.expect("a changed size offers a reset"));
+        app.click(false);
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+
+        let written = std::fs::read_to_string(&init).unwrap();
+        let config = dacode_lua::eval(&written, "init.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert!(
+            !written.contains("font_size"),
+            "the line is gone:\n{written}"
+        );
+        assert_eq!(
+            config.tab_width,
+            Some(configured.tab_width),
+            "the rest is kept"
+        );
+    }
+
+    #[test]
+    fn quitting_writes_a_change_held_for_an_unsaved_init_lua() {
+        // The buffer's edits go to the recovery file, not to disk; the change the status line said
+        // would be written must not go with nothing.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-quit-held");
+        let (mut app, init) = with_init_lua_open(&dir, "-- mine\n");
+        app.state.mutate(|document| document.insert("-- edit\n"));
+        let _ = app.run(Action::ToggleSettings);
+        app.state.focus = dacode::focus::Focus::Editor;
+        step_on_page(&mut app, Field::LineNumbers);
+        let changed = app.settings_changed_at.unwrap();
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+        assert_eq!(std::fs::read_to_string(&init).unwrap(), "-- mine\n", "held");
+
+        app.write_before_leaving();
+        let written = std::fs::read_to_string(&init).unwrap();
+        assert!(
+            written.contains("line_numbers"),
+            "written on the way out:\n{written}"
+        );
+    }
+
+    #[test]
+    fn the_wheel_over_the_settings_tab_scrolls_an_open_palette_and_not_the_page() {
+        // The palette, help and the menus own the wheel wherever the pointer is. Over the settings
+        // tab the page took it first, and scrolled behind the palette it was covered by.
+        let dir = scratch("settings-wheel-modal");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Keys);
+        app.open_palette(PaletteKind::Commands);
+        let layout = app.layout();
+        app.pointer = middle(layout.editor);
+        let before = app.state.palette.as_ref().unwrap().selected;
+
+        app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+
+        assert_eq!(
+            app.state.settings_page.as_ref().unwrap().scroll(),
+            0.0,
+            "the page did not move"
+        );
+        assert_ne!(
+            app.state.palette.as_ref().unwrap().selected,
+            before,
+            "the palette did"
+        );
+
+        // And with nothing over it, the page takes the wheel.
+        app.state.palette = None;
+        app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        assert!(app.state.settings_page.as_ref().unwrap().scroll() > 0.0);
     }
 
     #[test]

@@ -476,7 +476,7 @@ const LEGACY_MARKER: &str = "-- vex: written by the settings panel";
 /// writes, where every answer is a choice the user has just made. The settings tab writes only what
 /// was changed on it — see [`write_touched`].
 pub fn write_back(existing: &str, values: &Values) -> String {
-    write_touched(existing, values, &Field::ALL)
+    write_touched(existing, values, &Field::ALL, &[])
 }
 
 /// One field's line in the block, or `None` for a theme loaded from a file: it has no name the
@@ -500,7 +500,8 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
 }
 
 /// Rewrites `init.lua` so the settings block carries `touched` at their values in `values`, and
-/// everything else the block already said, unchanged.
+/// everything else the block already said, unchanged — except `removed`, whose lines are taken out:
+/// a setting put back to its default is no longer set, rather than set to today's default.
 ///
 /// **Only what was changed is written.** Writing every live value pinned whatever the session
 /// happened to hold — a ctrl-+ zoom for a screen share, a theme toggled by a key, values imported
@@ -510,7 +511,12 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
 ///
 /// Everything outside the block is preserved verbatim; the block is appended if absent.
 /// `init.lua` applies in order, so the block being last is what makes it authoritative.
-pub fn write_touched(existing: &str, values: &Values, touched: &[Field]) -> String {
+pub fn write_touched(
+    existing: &str,
+    values: &Values,
+    touched: &[Field],
+    removed: &[Field],
+) -> String {
     // The block's marker as vex wrote it, too: an init.lua carried over from before the rename has
     // that one, and looking only for the new marker appended a second block on the first save —
     // two `set` calls, the older one silently overridden by the newer.
@@ -546,6 +552,13 @@ pub fn write_touched(existing: &str, values: &Values, touched: &[Field]) -> Stri
             .split_once('=')
             .map(|(key, _)| key.trim().to_string())
     };
+    lines.retain(|line| {
+        key_of(line).is_none_or(|key| !removed.iter().any(|field| field.name() == key))
+    });
+    // A new line goes in at the top of the body, not after its last line: every line written here
+    // ends in its own comma, while a hand-edited last line need not — Lua allows a table's last
+    // field without one — and appending after `tab_width = 4` broke the whole file.
+    let mut inserted = 0;
     for field in touched {
         let Some(line) = block_line(*field, values) else {
             continue;
@@ -555,7 +568,10 @@ pub fn write_touched(existing: &str, values: &Values, touched: &[Field]) -> Stri
             .position(|existing| key_of(existing).as_deref() == Some(field.name()))
         {
             Some(at) => lines[at] = line,
-            None => lines.push(line),
+            None => {
+                lines.insert(inserted, line);
+                inserted += 1;
+            }
         }
     }
 
@@ -3490,6 +3506,24 @@ mod tab_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_line_added_to_a_hand_edited_block_leaves_init_lua_valid() {
+        // Lua lets a table's last field go without a comma, and someone editing the block by hand
+        // leaves it off. A new line appended after it made the whole file fail to load.
+        let mut values = Values::defaults(true);
+        values.font_size = 15.0;
+        let edited = format!("{MARKER}\ndacode.set {{\n  tab_width = 4\n}}\n");
+        let written = write_touched(&edited, &values, &[Field::FontSize], &[]);
+        let config = dacode_lua::eval(&written, "init.lua");
+        assert!(
+            config.problems.is_empty(),
+            "{:?}\n{written}",
+            config.problems
+        );
+        assert_eq!(config.font_size, Some(15.0));
+        assert_eq!(config.tab_width, Some(4), "the hand-edited line is kept");
     }
 
     #[test]
