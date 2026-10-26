@@ -38,6 +38,8 @@ pub enum Icon {
     /// A filled dot: unsaved changes on a tab.
     Dot,
     Terminal,
+    /// An open circle with its arrow turning back: put a setting back to its default.
+    Reset,
 }
 
 /// A primitive in grid units, before it is placed and scaled.
@@ -78,7 +80,7 @@ fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<Stroke> {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 23] = [
+    pub const ALL: [Icon; 24] = [
         Icon::Explorer,
         Icon::Search,
         Icon::Branch,
@@ -102,6 +104,7 @@ impl Icon {
         Icon::Info,
         Icon::Dot,
         Icon::Terminal,
+        Icon::Reset,
     ];
 
     pub fn strokes(self) -> Vec<Stroke> {
@@ -231,6 +234,13 @@ impl Icon {
             Icon::Terminal => {
                 let mut strokes = path(&[(5.0, 8.0), (10.0, 12.0), (5.0, 16.0)]);
                 strokes.push(Line(12.0, 17.0, 19.0, 17.0));
+                strokes
+            }
+            // Three quarters of a circle from the top, clockwise round to the left, and the arrow at
+            // the top end pointing back the way it came: the turn is anticlockwise, as "undo" is.
+            Icon::Reset => {
+                let mut strokes = vec![Arc(12.0, 12.0, 8.0, 270.0, 540.0)];
+                strokes.extend(path(&[(15.0, 1.5), (11.5, 4.0), (15.0, 6.5)]));
                 strokes
             }
         }

@@ -337,7 +337,7 @@ pub enum Action {
     ExpandSnippet,
     /// `ctrl-k ctrl-o` — open a folder as the project.
     OpenFolder,
-    /// `ctrl-,` — the settings panel.
+    /// `ctrl-,` — the settings tab: opens it, or shows it when it is already open.
     ToggleSettings,
 
     // ---- the conventional editor's own vocabulary ---------------------------------------

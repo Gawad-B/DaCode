@@ -116,10 +116,20 @@ pub struct EditorState {
     pub show_inlay_hints: bool,
     /// First-run setup, when it is showing. It owns the whole window while it does.
     pub welcome: Option<crate::welcome::Welcome>,
-    /// The settings panel, when open. Shares the sidebar with the tree and the diagnostics list.
-    pub settings: Option<crate::settings_ui::Settings>,
-    /// Where each setting's value came from, for the panel's third column.
-    pub setting_sources: std::collections::HashMap<String, crate::settings_ui::Source>,
+    /// The settings tab, while it is open: its page, search, selection and scroll.
+    ///
+    /// **A tab that is not a buffer.** It is not in the buffer list and has no index there, so
+    /// nothing that counts buffers — `buffer_key`, `stored_index`, the panes — knows it exists, and
+    /// opening or closing it cannot renumber a file. The tab strip draws it after the files (see
+    /// [`EditorState::settings_tab`]); whether it is the tab on screen is `settings_active`.
+    pub settings_page: Option<crate::settings_ui::Page>,
+    /// Whether the settings tab is the one the editor area shows. Only meaningful while
+    /// `settings_page` is open; [`EditorState::settings_showing`] asks both.
+    ///
+    /// It takes the keys as the text would — focus stays [`crate::focus::Focus::Editor`] — because it
+    /// occupies the place the text does: a click on it is a click in the editor area, `ctrl-w` closes
+    /// it as it would a file, and the sidebar and the panel keep their own focus beside it.
+    pub settings_active: bool,
     /// The file tree, when open. It takes the sidebar over rather than adding a third column: the
     /// window is finite, and a tree squeezed beside the structure panel would be too narrow to read
     /// a path in.
@@ -280,6 +290,9 @@ fn overlay(frame: &mut Frame, fade: f32, draw: impl FnOnce(&mut Frame)) {
     frame.set_opacity(1.0);
     frame.set_zoom(None);
 }
+
+/// What the settings tab is called in the tab strip.
+pub const SETTINGS_TAB: &str = "Settings";
 
 /// The corner radius of every card, at scale 1.
 pub const CARD_RADIUS: f32 = 8.0;
@@ -516,17 +529,87 @@ impl EditorState {
 
     /// Whether any view is open in the sidebar.
     pub fn sidebar_open(&self) -> bool {
-        self.tree.is_some()
-            || self.show_diagnostics
-            || self.settings.is_some()
-            || self.chrome.activity.is_some()
+        self.tree.is_some() || self.show_diagnostics || self.chrome.activity.is_some()
     }
 
-    /// Whether the sidebar is showing a view that takes keys of its own. Only the tree and the
-    /// settings panel do; the problems list and the activity placeholders are looked at, so
-    /// giving them the keyboard would only make it disappear.
+    /// Whether the sidebar is showing a view that takes keys of its own. Only the tree does; the
+    /// problems list and the activity placeholders are looked at, so giving them the keyboard would
+    /// only make it disappear.
     pub fn sidebar_takes_keys(&self) -> bool {
-        self.tree.is_some() || self.settings.is_some()
+        self.tree.is_some()
+    }
+
+    /// Whether the editor area is showing the settings page rather than code.
+    pub fn settings_showing(&self) -> bool {
+        self.settings_active && self.settings_page.is_some()
+    }
+
+    /// The settings tab's place in the tab strip, while it is open: after every file, one past the
+    /// last buffer's number. A number the buffer list never hands out, so a tab carrying it cannot
+    /// be mistaken for a file by anything that switches to or closes one.
+    pub fn settings_tab(&self) -> Option<usize> {
+        self.settings_page
+            .as_ref()
+            .map(|_| self.buffer_count.max(1))
+    }
+
+    /// The tab the strip shows as active: the settings tab while it is showing, the live buffer
+    /// otherwise.
+    pub fn active_tab(&self) -> usize {
+        match self.settings_tab() {
+            Some(tab) if self.settings_active => tab,
+            _ => self.active_buffer,
+        }
+    }
+
+    /// What each tab is called, in strip order: every open buffer, then "Settings" while the
+    /// settings tab is open. The one list both the drawing and the mouse lay the strip out from.
+    ///
+    /// The buffers' own list can be shorter than the count in the single-pane drawing path, and a
+    /// missing name is filled from the path.
+    pub fn tab_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = (0..self.buffer_count.max(1))
+            .map(|index| {
+                self.buffer_tabs
+                    .get(index)
+                    .map(|(name, _)| name.clone())
+                    .or_else(|| self.path.last().cloned())
+                    .unwrap_or_else(|| "untitled".to_string())
+            })
+            .collect();
+        if self.settings_page.is_some() {
+            names.push(SETTINGS_TAB.to_string());
+        }
+        names
+    }
+
+    /// Puts the settings page's scroll where its target is, with no glide: for a new page or a new
+    /// search, whose rows are not the ones the scroll was travelling through.
+    pub fn snap_settings_scroll(&mut self) {
+        if let Some(page) = &self.settings_page {
+            self.chrome
+                .motion
+                .snap(crate::motion::Key::SettingsScroll, page.scroll());
+        }
+    }
+
+    /// The values the settings page shows and edits, read from the live editor rather than from a
+    /// copy — by the drawing and by the code that changes them, so the two cannot disagree.
+    pub fn setting_values(&self) -> crate::settings_ui::Values {
+        crate::settings_ui::Values {
+            font_size: self.typography.code_size,
+            tab_width: self.display.tab_width,
+            soft_wrap: self.display.mode == WrapMode::Word,
+            format_on_save: self.format_on_save,
+            modal: self.modal,
+            theme: self.theme.name(),
+            line_numbers: self.line_numbers,
+            sticky_scroll: self.sticky_scroll,
+            inlay_hints: self.show_inlay_hints,
+            autosave: self.autosave,
+            transparency: (self.chrome.transparency * 100.0).round() as u8,
+            animations: self.chrome.motion.animations(),
+        }
     }
 
     /// Drops a focus whose surface is gone, so a stale one can never eat a key.
@@ -559,8 +642,6 @@ impl EditorState {
             Some(Activity::Explorer)
         } else if self.show_diagnostics {
             Some(Activity::Problems)
-        } else if self.settings.is_some() {
-            Some(Activity::Settings)
         } else if self.chrome.activity.is_some() {
             self.chrome.activity
         } else if self.results.is_some() {
@@ -574,7 +655,6 @@ impl EditorState {
     pub fn close_sidebar(&mut self) {
         self.tree = None;
         self.show_diagnostics = false;
-        self.settings = None;
         self.chrome.activity = None;
         // Nothing is left to hold the keys, and a focus that outlived its view would swallow the
         // next view's first key before anyone had chosen it.
@@ -712,8 +792,9 @@ impl EditorState {
                 .iter()
                 .position(|item| item.activity == active)
         });
-        let tabs = self.buffer_count.max(1);
-        let active_tab = self.active_buffer as f32;
+        let tabs = self.buffer_count.max(1) + usize::from(self.settings_page.is_some());
+        let active_tab = self.active_tab() as f32;
+        let settings_scroll = self.settings_page.as_ref().map(|page| page.scroll());
         let step = self
             .welcome
             .as_ref()
@@ -765,6 +846,15 @@ impl EditorState {
         }
         chrome.marker_shown = marker.is_some();
         glide(motion, Key::TabIndicator, active_tab, false);
+        // The page's scroll follows its target. A new page or search snaps it where they change
+        // (`snap_settings_scroll`), so this only ever carries the wheel and the arrow keys.
+        if let Some(scroll) = settings_scroll {
+            if still || motion.target(Key::SettingsScroll).is_none() {
+                motion.snap(Key::SettingsScroll, scroll);
+            } else {
+                motion.to(Key::SettingsScroll, scroll, Spring::SCROLL, now);
+            }
+        }
         if chrome.tabs_seen.is_some_and(|seen| tabs > seen) {
             motion.snap(Key::TabGrow, 0.0);
             motion.to(Key::TabGrow, 1.0, Spring::POPUP, now);
@@ -1541,6 +1631,16 @@ pub fn draw_panes(
     let count = panes.len().max(1);
     let vertical = layout == PaneLayout::Vertical;
     let mut focused_code = regions.editor;
+    // The settings tab takes the whole editor area, splits and all: it is the tab on screen, and a
+    // page of settings beside half a file would be neither.
+    let settings = state
+        .settings_page
+        .as_ref()
+        .filter(|_| state.settings_active);
+    if let Some(page) = settings {
+        draw_settings_page(frame, state, page, regions.editor, scale);
+    }
+    let panes = if settings.is_some() { &[][..] } else { panes };
     for (index, pane) in panes.iter().enumerate() {
         let rects = regions.pane(index, count, vertical, scale);
 
@@ -2842,253 +2942,430 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     }
 }
 
-/// The settings panel.
-fn draw_settings(
+/// The settings tab, drawn in the editor area in place of code.
+///
+/// **Every rectangle comes from [`crate::settings_ui::Page::geometry_at`]**, at the same scroll
+/// offset the mouse reads (the spring's value at the frame's instant), so what is drawn under the
+/// pointer is what a click there changes. Nothing here measures a row: the list is clipped to the
+/// geometry's `list`, and a row partly scrolled out is drawn whole and cut by the clip.
+fn draw_settings_page(
     frame: &mut Frame,
     state: &EditorState,
-    settings: &crate::settings_ui::Settings,
+    page: &crate::settings_ui::Page,
     rect: Rect,
     scale: f32,
 ) {
-    use crate::settings_ui::Source;
+    use crate::settings_ui::Entry;
 
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-    let pad = space::LG * scale;
-    let line = 20.0 * scale;
-    let width = rect.width - pad * 2.0;
-    let title = Rect::new(rect.x + pad, rect.y + pad, width, line);
+    let now = state.now();
+    let motion = &state.chrome.motion;
+    let values = state.setting_values();
+    let offset = motion.movement(Key::SettingsScroll, page.scroll(), now);
+    let geometry = page.geometry_at(offset, rect, scale, &values, state.modal, &state.typography);
 
-    frame.text(run(
+    draw_settings_tree(frame, state, page, &geometry, rect, scale);
+    draw_field(
+        frame,
         state,
-        Role::Prose,
-        "Settings",
-        title,
-        theme.ink,
-        Align::Left,
+        geometry.search,
+        page.query(),
+        "Search settings",
+        0.0,
         scale,
-    ));
+    );
 
-    let values = crate::settings_ui::Values {
-        modal: state.modal,
-        font_size: state.typography.code_size,
-        tab_width: state.display.tab_width,
-        soft_wrap: state.display.mode == WrapMode::Word,
-        format_on_save: state.format_on_save,
-        theme: state.theme.name(),
-        line_numbers: state.line_numbers,
-        transparency: (state.chrome.transparency * 100.0).round() as u8,
-        animations: state.chrome.motion.animations(),
-        sticky_scroll: state.sticky_scroll,
-        inlay_hints: state.show_inlay_hints,
-        autosave: state.autosave,
-    };
+    // A new page fades in over the one it replaced; a search does not, since it changes with every
+    // key and a list that faded on each one would never be still enough to read.
+    let fade = motion.fade(Key::SettingsCategory, 1.0, now).clamp(0.0, 1.0);
+    frame.set_clip(Some(geometry.list));
+    frame.set_opacity(fade);
+    let selected = page.selected();
+    for row in &geometry.rows {
+        match row.entry {
+            Entry::Heading { .. } => draw_page_heading(frame, state, row, scale),
+            _ => {
+                draw_page_row(
+                    frame,
+                    state,
+                    page,
+                    row,
+                    row.index == selected,
+                    &values,
+                    scale,
+                );
+            }
+        }
+    }
+    frame.set_opacity(1.0);
+    frame.set_clip(None);
 
-    // Every rectangle comes from `settings_ui::panel`, which the mouse reads too. The panel had two
-    // copies of this walk, and the moment the list started scrolling they disagreed: a click
-    // selected whichever row used to be under the pointer.
-    let panel = crate::settings_ui::panel(rect, scale, settings);
-
-    for heading in &panel.headings {
-        frame.text(label(
+    if let Some(empty) = geometry.empty {
+        let says = if page.query().trim().is_empty() {
+            "Nothing found on this machine yet.".to_string()
+        } else {
+            format!("No setting matches \"{}\".", page.query().trim())
+        };
+        frame.text(ui(
             state,
-            heading.label,
-            heading.rect,
-            theme.ink_dim,
+            elide(state, Role::Ui, &says, empty.width, scale),
+            empty,
+            theme.ink_faint,
             Align::Left,
             scale,
         ));
     }
 
-    for placement in &panel.rows {
-        use crate::settings_ui::Line;
-
-        let (index, entry, y, block) = (
-            placement.index,
-            &placement.line,
-            placement.rect.y,
-            placement.rect.height,
+    // A thumb at the list's right edge when it scrolls: a list that runs past the bottom with no sign
+    // of it reads as a page that is missing settings.
+    if geometry.max_scroll > 0.0 && geometry.list.height > 0.0 {
+        let list = geometry.list;
+        let total = list.height + geometry.max_scroll;
+        let height = (list.height * list.height / total)
+            .max(24.0 * scale)
+            .min(list.height);
+        let y = list.y + (list.height - height) * (geometry.scroll / geometry.max_scroll);
+        let width = 3.0 * scale;
+        frame.fill_rounded(
+            Rect::new(list.right() - width, y, width, height),
+            theme.ink.with_alpha(0.18),
+            width / 2.0,
         );
-        let selected = index == settings.selected;
+    }
+}
 
-        if selected {
-            frame.fill(
-                Rect::new(rect.x, y - 3.0 * scale, rect.width, block),
-                theme.row_active,
-            );
-            frame.fill(
+/// The category tree: a column of pages beside the list, or — folded — one button that names the
+/// page and moves to the next.
+fn draw_settings_tree(
+    frame: &mut Frame,
+    state: &EditorState,
+    page: &crate::settings_ui::Page,
+    geometry: &crate::settings_ui::PageGeometry,
+    rect: Rect,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let searching = !page.query().trim().is_empty();
+    let inset = space::SM * scale;
+
+    if geometry.folded {
+        let Some((_, button)) = geometry.tree.first().copied() else {
+            return;
+        };
+        frame.fill_rounded(button, theme.bg_panel, 6.0 * scale);
+        if hovered(state, button) {
+            frame.fill_rounded(button, theme.ink.with_alpha(0.06), 6.0 * scale);
+        }
+        frame.outline_rounded(button, theme.rule, 6.0 * scale, border::BORDER * scale);
+        let chevron = Rect::new(
+            button.right() - button.height,
+            button.y,
+            button.height.min(button.width),
+            button.height,
+        );
+        frame.icon(
+            Icon::ChevronRight,
+            centred(chevron, 12.0 * scale),
+            theme.ink_dim,
+        );
+        let text = Rect::new(
+            button.x + inset,
+            button.y,
+            (chevron.x - button.x - inset).max(0.0),
+            button.height,
+        );
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, page.folded_label(), text.width, scale),
+            text,
+            theme.ink,
+            Align::Left,
+            scale,
+        ));
+        return;
+    }
+
+    // The column is a surface of its own, as JetBrains draws it, so the list reads as the page and
+    // the tree as the way between pages.
+    if let Some((_, last)) = geometry.tree.last() {
+        // The tiles are inset by the same margin on both sides of the column.
+        let margin = last.x - rect.x;
+        let column = Rect::new(rect.x, rect.y, last.right() + margin - rect.x, rect.height);
+        frame.fill(column, theme.bg_panel.with_alpha(0.55));
+        frame.fill(
+            Rect::new(
+                column.right() - border::BORDER * scale,
+                column.y,
+                border::BORDER * scale,
+                column.height,
+            ),
+            theme.rule_soft,
+        );
+    }
+    for (category, tile) in &geometry.tree {
+        // During a search the list is every page's; the tree marks none of them as open, and dims
+        // the ones with nothing to show.
+        let open = !searching && *category == page.category();
+        let empty = searching && !page.has_matches(*category, state.modal);
+        if open {
+            frame.fill_rounded(*tile, accent.with_alpha(0.16), 5.0 * scale);
+            frame.fill_rounded(
                 Rect::new(
-                    rect.x,
-                    y - 3.0 * scale,
-                    border::ACCENT_BORDER * scale,
-                    block,
+                    tile.x,
+                    tile.y + tile.height * 0.25,
+                    2.0 * scale,
+                    tile.height * 0.5,
                 ),
                 accent,
+                1.0 * scale,
+            );
+        } else if hovered(state, *tile) {
+            frame.fill_rounded(*tile, theme.ink.with_alpha(0.06), 5.0 * scale);
+        }
+        let text = Rect::new(
+            tile.x + inset,
+            tile.y,
+            (tile.width - inset * 2.0).max(0.0),
+            tile.height,
+        );
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, category.title(), text.width, scale),
+            text,
+            if open {
+                theme.ink
+            } else if empty {
+                theme.ink_faint
+            } else {
+                theme.ink_dim
+            },
+            Align::Left,
+            scale,
+        ));
+    }
+}
+
+/// A section heading in the list: "Wrapping", or "Editor › Wrapping" in a search.
+fn draw_page_heading(
+    frame: &mut Frame,
+    state: &EditorState,
+    row: &crate::settings_ui::PageRow,
+    scale: f32,
+) {
+    let Some(text) = row.heading_text() else {
+        return;
+    };
+    let mut spec = state.typography.spec(Role::Prose);
+    spec.size_px *= scale;
+    spec.weight = 600;
+    let advance = crate::layout::measured_advance(&state.typography, Role::Prose, scale);
+    frame.text(TextRun {
+        text: elide_to(&text, row.label.width, advance),
+        spec,
+        color: state.theme.ink,
+        rect: row.label,
+        align: Align::Left,
+        center_vertically: true,
+        wrap: false,
+        layer: Layer::default(),
+        clip: None,
+    });
+}
+
+/// A row of the list that is not a heading: a setting, a command, an import or a report.
+fn draw_page_row(
+    frame: &mut Frame,
+    state: &EditorState,
+    page: &crate::settings_ui::Page,
+    row: &crate::settings_ui::PageRow,
+    selected: bool,
+    values: &crate::settings_ui::Values,
+    scale: f32,
+) {
+    use crate::settings_ui::{Entry, Line};
+
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    row_wash(frame, state, row.rect, selected, scale);
+    // A change glows and fades, so the row that moved is the one the eye finds — most of all when
+    // it was changed by a key from the other end of the page.
+    if let Some(field) = row.field() {
+        let glow = state.chrome.motion.get(
+            Key::Glow(crate::settings_ui::glow_index(field)),
+            state.now(),
+        );
+        if glow > 0.0 {
+            frame.fill_rounded(
+                row.rect,
+                accent.with_alpha(0.22 * glow.min(1.0)),
+                5.0 * scale,
             );
         }
+    }
 
-        match entry {
-            Line::Option(field) => {
-                // The value is the thing you came to read, so it keeps its width and the name gives
-                // way: in a narrow panel a truncated name is still recognisable, a truncated value
-                // is useless.
-                let value = values.get(*field);
-                let value_width = ((value.chars().count() as f32 + 1.0)
-                    * state.typography.advance(Role::Value)
-                    * scale)
-                    .min(width);
+    // The name, set heavier than the text under it.
+    let name = |frame: &mut Frame, text: &str, color: Oklch| {
+        let mut spec = state.typography.spec(Role::Ui);
+        spec.size_px *= scale;
+        spec.weight = 600;
+        frame.text(TextRun {
+            text: elide(state, Role::Ui, text, row.label.width, scale),
+            spec,
+            color,
+            rect: row.label,
+            align: Align::Left,
+            center_vertically: true,
+            wrap: false,
+            layer: Layer::default(),
+            clip: None,
+        });
+    };
+    // Wrapped exactly as the geometry counted it, line by line, each line a row of its own.
+    let explain = |frame: &mut Frame, text: &str, color: Oklch| {
+        let Some(area) = row.explanation else {
+            return;
+        };
+        let advance = crate::layout::measured_advance(&state.typography, Role::Value, scale);
+        let lines = wrap_at(text, area.width, advance);
+        let line_height = area.height / lines.len().max(1) as f32;
+        for (at, line) in lines.iter().enumerate() {
+            frame.text(run(
+                state,
+                Role::Value,
+                line.clone(),
+                Rect::new(
+                    area.x,
+                    area.y + at as f32 * line_height,
+                    area.width,
+                    line_height,
+                ),
+                color,
+                Align::Left,
+                scale,
+            ));
+        }
+    };
 
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    elide(
-                        state,
-                        Role::Value,
-                        field.title(state.modal),
-                        (width - value_width).min(width * 0.62),
-                        scale,
-                    ),
-                    Rect::new(rect.x + pad, y, width * 0.62, line),
-                    if selected { theme.ink } else { theme.ink_dim },
-                    Align::Left,
-                    scale,
-                ));
-
-                // The value in the mode accent when selected: it is what `h`/`l` changes.
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    value,
-                    Rect::new(rect.x + pad, y, width, line),
-                    if selected { accent } else { theme.ink },
-                    Align::Right,
-                    scale,
-                ));
-
-                // Where it came from, or what it does. The source is the more useful of the two once
-                // you are looking for why a setting is not what you expected.
-                let source = state
-                    .setting_sources
-                    .get(field.name())
-                    .copied()
-                    .unwrap_or(Source::Default);
-                frame.text(label(
-                    state,
-                    elide(
-                        state,
-                        Role::Label,
-                        if selected {
-                            field.help(state.modal)
-                        } else {
-                            source.label()
-                        },
-                        width,
-                        scale,
-                    ),
-                    Rect::new(rect.x + pad, y + line * 0.85, width, line),
-                    theme.ink_faint,
-                    Align::Left,
-                    scale,
-                ));
+    match row.entry {
+        Entry::Heading { .. } => {}
+        Entry::Field(field) => {
+            name(frame, field.label(state.modal), theme.ink);
+            if let Some(text) = field.explanation(state.modal) {
+                explain(frame, text, theme.ink_dim);
             }
+            if let Some(control) = row.control {
+                draw_control(frame, state, field, values, control, row.swatch, scale);
+            }
+            if let Some(reset) = row.reset {
+                // The ● says "changed" in the margin, where the eye scanning the names meets it; the
+                // ⟲ beside the control is what puts it back.
+                let inset = row.label.x - row.rect.x;
+                frame.disc(
+                    [
+                        row.rect.x + inset / 2.0,
+                        row.label.y + row.label.height / 2.0,
+                    ],
+                    3.0 * scale,
+                    accent,
+                );
+                let over = hovered(state, reset);
+                if over {
+                    frame.fill_rounded(reset, theme.ink.with_alpha(0.08), 5.0 * scale);
+                }
+                frame.icon(
+                    Icon::Reset,
+                    centred(reset, 14.0 * scale),
+                    if over { theme.ink } else { theme.ink_dim },
+                );
+            }
+        }
+        Entry::Command(command) => {
+            name(frame, command.what, theme.ink_dim);
+            if let Some(keys) = row.control {
+                let shown = fit_keys(state, &command.shown(state.modal), keys.width, scale);
+                key_chip(
+                    frame,
+                    state,
+                    &shown,
+                    keys.right(),
+                    keys.y,
+                    keys.height,
+                    scale,
+                );
+            }
+        }
+        Entry::Link(link) => name(frame, link.label(), accent),
+        Entry::Line(line) => match line {
             Line::Import(item) => {
-                // `[x]` rather than a check mark: the bundled fonts have none, and a missing glyph
-                // renders as a tofu box — which is how the file tree's chevrons first shipped.
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    elide(
-                        state,
-                        Role::Value,
-                        &format!(
-                            "[{}] {}",
-                            if settings.is_ticked(*item) { "x" } else { " " },
-                            item.name()
-                        ),
-                        width,
-                        scale,
-                    ),
-                    Rect::new(rect.x + pad, y, width, line),
-                    if settings.is_ticked(*item) {
-                        theme.ink
+                name(frame, line.label().unwrap_or_default(), theme.ink);
+                if let Some(control) = row.control {
+                    let ticked = page.is_ticked(item);
+                    let side = (control.height * 0.62).round();
+                    let tick = Rect::new(
+                        control.right() - side,
+                        control.y + (control.height - side) / 2.0,
+                        side,
+                        side,
+                    );
+                    if ticked {
+                        frame.fill_rounded(tick, accent, 4.0 * scale);
+                        frame.fill_rounded(tick.inset(side * 0.3), theme.bg, 2.0 * scale);
                     } else {
-                        theme.ink_dim
-                    },
-                    Align::Left,
-                    scale,
-                ));
+                        frame.fill_rounded(tick, theme.bg, 4.0 * scale);
+                        frame.outline_rounded(tick, theme.rule, 4.0 * scale, 1.5 * scale);
+                    }
+                }
             }
-            Line::LoadTheme => {
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    "load a theme file…",
-                    Rect::new(rect.x + pad, y, width, line),
-                    if selected { accent } else { theme.ink_dim },
-                    Align::Left,
-                    scale,
-                ));
-            }
-            Line::RunImport => {
-                let available = crate::import_cli::vscode_is_present();
-                frame.text(run(
-                    state,
-                    Role::Value,
-                    elide(
-                        state,
-                        Role::Value,
-                        if available {
-                            "import now"
-                        } else {
-                            "no vscode installation found"
-                        },
-                        width,
-                        scale,
-                    ),
-                    Rect::new(rect.x + pad, y, width, line),
-                    match (available, selected) {
-                        (false, _) => theme.ink_faint,
-                        (true, true) => accent,
-                        (true, false) => theme.ink_dim,
-                    },
-                    Align::Left,
-                    scale,
-                ));
+            Line::RunImport | Line::LoadTheme => {
+                let available = line != Line::RunImport || crate::import_cli::vscode_is_present();
+                name(
+                    frame,
+                    line.label().unwrap_or_default(),
+                    if available { accent } else { theme.ink_faint },
+                );
+                let text = if available {
+                    line.explanation().unwrap_or_default()
+                } else {
+                    "No VSCode installation was found on this machine, so there is nothing to import."
+                };
+                explain(frame, text, theme.ink_dim);
             }
             Line::Server(at) | Line::Formatter(at) => {
-                let list = match entry {
-                    Line::Formatter(_) => &settings.formatters,
-                    _ => &settings.servers,
+                let list = if matches!(line, Line::Formatter(_)) {
+                    page.formatters()
+                } else {
+                    page.servers()
                 };
-                let Some(server) = list.get(*at) else {
-                    continue;
+                let Some(report) = list.get(at) else {
+                    return;
                 };
-
-                // The language on the left, what it resolved to on the right — the same shape as an
-                // option row, because it is answering the same question: what is this set to, and
-                // who set it.
-                let mark = if server.configured { " (init.lua)" } else { "" };
-                frame.text(run(
+                let found = if report.found { "found" } else { "missing" };
+                let found_width =
+                    crate::layout::measured_advance(&state.typography, Role::Value, scale)
+                        * (found.chars().count() as f32 + 1.0);
+                let (status, label) = row.label.split_right(found_width.min(row.label.width));
+                let mark = if report.configured { " (init.lua)" } else { "" };
+                frame.text(ui(
                     state,
-                    Role::Value,
                     elide(
                         state,
-                        Role::Value,
-                        &format!("{}{mark}", server.language),
-                        width * 0.7,
+                        Role::Ui,
+                        &format!("{} · {}{mark}", report.language, report.program),
+                        label.width,
                         scale,
                     ),
-                    Rect::new(rect.x + pad, y, width, line),
-                    if selected { theme.ink } else { theme.ink_dim },
+                    label,
+                    theme.ink,
                     Align::Left,
                     scale,
                 ));
                 frame.text(run(
                     state,
                     Role::Value,
-                    if server.found { "found" } else { "missing" },
-                    Rect::new(rect.x + pad, y, width, line),
-                    if server.found {
+                    found,
+                    status,
+                    if report.found {
                         theme.fresh()
                     } else {
                         theme.ink_faint
@@ -3096,98 +3373,184 @@ fn draw_settings(
                     Align::Right,
                     scale,
                 ));
-
-                // The programs DaCode looked for, and — on the selected row — what it found. Two lines
-                // in one, the same trade the option rows make: both at once is a hundred characters
-                // in a 292-pixel panel, and the version that fits is the one nobody can read.
-                //
-                // A found path elides from the front, because its end is the part that identifies
-                // it; an install line elides from the back, because its start is.
-                let caption = if selected {
-                    if server.found {
-                        elide_start(state, Role::Label, &server.status, width, scale)
+                // A path loses its front, where the part that names the program is its end; an
+                // install line loses its end, since its start is the command.
+                if let Some(area) = row.explanation {
+                    let shown = if report.found {
+                        elide_start(state, Role::Value, &report.status, area.width, scale)
                     } else {
-                        elide(state, Role::Label, &server.status, width, scale)
-                    }
-                } else {
-                    elide(state, Role::Label, &server.program, width, scale)
-                };
-                frame.text(label(
+                        elide(state, Role::Value, &report.status, area.width, scale)
+                    };
+                    frame.text(run(
+                        state,
+                        Role::Value,
+                        shown,
+                        area,
+                        theme.ink_dim,
+                        Align::Left,
+                        scale,
+                    ));
+                }
+            }
+        },
+    }
+}
+
+/// A setting's control: a switch, a stepper or a choice, drawn in `control`.
+fn draw_control(
+    frame: &mut Frame,
+    state: &EditorState,
+    field: crate::settings_ui::Field,
+    values: &crate::settings_ui::Values,
+    control: Rect,
+    swatch: Option<Rect>,
+    scale: f32,
+) {
+    use crate::settings_ui::Control;
+
+    let theme = &state.theme;
+    let accent = theme.accent(state.mode);
+    let value = values.get(field);
+    match field.control() {
+        Control::Switch => {
+            let on = value == "on";
+            let height = control.height.min(22.0 * scale);
+            let pill = Rect::new(
+                control.right() - (height * 1.8).min(control.width),
+                control.y + (control.height - height) / 2.0,
+                (height * 1.8).min(control.width),
+                height,
+            );
+            if on {
+                frame.fill_rounded(pill, accent, height / 2.0);
+            } else {
+                frame.fill_rounded(pill, theme.bg_alt, height / 2.0);
+                frame.outline_rounded(pill, theme.rule, height / 2.0, border::BORDER * scale);
+            }
+            let knob = height * 0.36;
+            let x = if on {
+                pill.right() - height / 2.0
+            } else {
+                pill.x + height / 2.0
+            };
+            frame.disc(
+                [x, pill.y + height / 2.0],
+                knob,
+                if on { theme.bg } else { theme.ink_faint },
+            );
+        }
+        Control::Stepper => {
+            let side = control.height.min(control.width / 3.0);
+            let down = Rect::new(control.x, control.y, side, control.height);
+            let up = Rect::new(control.right() - side, control.y, side, control.height);
+            let middle = Rect::new(
+                down.right(),
+                control.y,
+                (up.x - down.right()).max(0.0),
+                control.height,
+            );
+            for (button, glyph) in [(down, "-"), (up, "+")] {
+                frame.fill_rounded(button, theme.bg_alt, 5.0 * scale);
+                frame.outline_rounded(button, theme.rule, 5.0 * scale, border::BORDER * scale);
+                frame.text(run(
                     state,
-                    caption,
-                    Rect::new(rect.x + pad, y + line * 0.85, width, line),
-                    theme.ink_faint,
-                    Align::Left,
+                    Role::Ui,
+                    glyph,
+                    button,
+                    theme.ink_dim,
+                    Align::Center,
                     scale,
                 ));
             }
-        }
-    }
-
-    // What the last import said, if one ran. Under the last visible row, if there is room.
-    if let Some(report) = &settings.import_report {
-        let after = panel
-            .rows
-            .last()
-            .map(|row| row.rect.bottom() + line * 0.4)
-            .unwrap_or(panel.footer.y);
-        if after + line <= panel.footer.y - line * 0.6 {
-            frame.text(label(
+            frame.text(run(
                 state,
-                elide(state, Role::Label, report, width, scale),
-                Rect::new(rect.x + pad, after, width, line),
-                theme.fresh(),
+                Role::Value,
+                elide(state, Role::Value, &value, middle.width, scale),
+                middle,
+                theme.ink,
+                Align::Center,
+                scale,
+            ));
+        }
+        Control::Choice(_) => {
+            frame.fill_rounded(control, theme.bg_alt, 5.0 * scale);
+            frame.outline_rounded(control, theme.rule, 5.0 * scale, border::BORDER * scale);
+            if hovered(state, control) {
+                frame.fill_rounded(control, theme.ink.with_alpha(0.05), 5.0 * scale);
+            }
+            let chevron = Rect::new(
+                control.right() - control.height.min(control.width),
+                control.y,
+                control.height.min(control.width),
+                control.height,
+            );
+            frame.icon(
+                Icon::ChevronRight,
+                centred(chevron, 12.0 * scale),
+                theme.ink_dim,
+            );
+            let mut left = control.x + space::SM * scale;
+            if let Some(swatch) = swatch {
+                draw_swatch(frame, theme, values.theme, swatch, scale);
+                left = swatch.right() + space::XS * scale;
+            }
+            let text = Rect::new(left, control.y, (chevron.x - left).max(0.0), control.height);
+            frame.text(ui(
+                state,
+                elide(state, Role::Ui, &value, text.width, scale),
+                text,
+                theme.ink,
                 Align::Left,
                 scale,
             ));
         }
     }
+}
 
-    // The scroll cue rides on the title, which has the whole width of the panel spare, rather than
-    // competing with the footer, which does not. Without a cue at all a list that scrolls looks
-    // like a list that is missing settings — the complaint this panel already answered once.
-    //
-    // `↓` rather than a solid triangle: the tree's chevrons shipped as tofu boxes once, and the
-    // arrows are glyphs this font is known to have.
-    if panel.scrolls {
-        frame.text(label(
-            state,
-            "more ↓",
-            title,
-            theme.ink_faint,
-            Align::Right,
-            scale,
-        ));
+/// A theme's colours, small: its background with two of its syntax colours and its accent on it.
+fn draw_swatch(frame: &mut Frame, current: &Theme, name: Option<&str>, rect: Rect, scale: f32) {
+    let theme = name.and_then(Theme::by_name).unwrap_or(*current);
+    let radius = 4.0 * scale;
+    frame.fill_rounded(rect, theme.bg, radius);
+    let dot = rect.width * 0.16;
+    let y = rect.y + rect.height / 2.0;
+    for (at, color) in [
+        theme.syntax.keyword,
+        theme.syntax.string,
+        theme.accent(Mode::Normal),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        frame.disc(
+            [rect.x + rect.width * (0.25 + 0.25 * at as f32), y],
+            dot,
+            color,
+        );
     }
+    frame.outline_rounded(rect, current.rule, radius, border::BORDER * scale);
+}
 
-    // The footer says how to change and how to keep. Nothing is written without being asked: this is
-    // a file the user owns.
-    //
-    // Short, because the panel is 292px wide and the old hint was half again too long for it — so
-    // it was hard-clipped to `CLICK TO CHANGE · H L ADJUST · W WI`, which is how the defect was
-    // first reported. `h l` and `w` are also Vim's letters, and this panel is reached from a toolbar
-    // button by people who turned Vim off; the keys underneath take arrows and ctrl-s either way.
-    let hint = match (settings.dirty, state.modal) {
-        (true, true) => "w writes init.lua",
-        (true, false) => "ctrl-s writes init.lua",
-        (false, true) => "click or h l · w saves",
-        (false, false) => "click or ←→ · ctrl-s saves",
-    };
-
-    frame.text(label(
-        state,
-        // Says click first: the panel is reachable from the toolbar by people who have not been
-        // told any keys, and a footer that only names keys is a footer that excludes them.
-        elide(state, Role::Label, hint, width, scale),
-        panel.footer,
-        if settings.dirty {
-            theme.stale()
-        } else {
-            theme.ink_faint
-        },
-        Align::Left,
-        scale,
-    ));
+/// A command's keys cut to the alternatives that fit `width`, the first always kept: one key you
+/// can read beats two squeezed past the name beside them.
+fn fit_keys(state: &EditorState, keys: &str, width: f32, scale: f32) -> String {
+    let presses = crate::layout::key_presses(keys);
+    let mut kept: Vec<&str> = Vec::new();
+    for press in presses {
+        let candidate = kept
+            .iter()
+            .copied()
+            .chain([press])
+            .collect::<Vec<_>>()
+            .join("  ");
+        if !kept.is_empty()
+            && crate::layout::chips_width(&state.typography, &candidate, scale) > width
+        {
+            break;
+        }
+        kept.push(press);
+    }
+    kept.join("  ")
 }
 
 /// Every problem in the **project**, as a list.
@@ -3968,12 +4331,12 @@ fn draw_tooltip(
     if crate::layout::contains(bell, x, y) {
         found = Some(("Notifications", "notifications", bell));
     }
-    let names = tab_names(state);
+    let names = state.tab_names();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let tabs = crate::layout::tab_bar(
         regions.tabs,
         &names,
-        state.active_buffer,
+        state.active_tab(),
         &state.typography,
         scale,
     );
@@ -4080,36 +4443,16 @@ fn draw_notifications(
     }
 }
 
-/// One name per open buffer, for the tab bar. The live buffer's list can be shorter than the
-/// buffer count in the single-pane drawing path, and a missing name is filled from the path.
-fn tab_names(state: &EditorState) -> Vec<String> {
-    (0..state.buffer_count.max(1))
-        .map(|index| {
-            state
-                .buffer_tabs
-                .get(index)
-                .map(|(name, _)| name.clone())
-                .or_else(|| state.path.last().cloned())
-                .unwrap_or_else(|| "untitled".to_string())
-        })
-        .collect()
-}
-
 /// The row above the code: navigation, the open files, and the pane controls.
 fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
     frame.fill_backdrop(rect, theme.bg_alt);
     frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
 
-    let names = tab_names(state);
+    let names = state.tab_names();
     let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
-    let bar = crate::layout::tab_bar(
-        rect,
-        &borrowed,
-        state.active_buffer,
-        &state.typography,
-        scale,
-    );
+    let active_tab = state.active_tab();
+    let bar = crate::layout::tab_bar(rect, &borrowed, active_tab, &state.typography, scale);
 
     icon_button(frame, state, bar.home, Icon::Home, theme.ink_dim, scale);
     icon_button(
@@ -4135,7 +4478,7 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     // the tabs between. Placed from the tabs' own rectangles, so it always ends exactly on one.
     let now = state.now();
     let motion = &state.chrome.motion;
-    let at = motion.movement(Key::TabIndicator, state.active_buffer as f32, now);
+    let at = motion.movement(Key::TabIndicator, active_tab as f32, now);
     let rect_of = |index: usize| {
         bar.tabs
             .iter()
@@ -4154,7 +4497,7 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
             ))
         }
         // One end is scrolled out of the strip: there is no path to draw, so it is simply there.
-        _ => rect_of(state.active_buffer),
+        _ => rect_of(active_tab),
     };
     if let Some(glide) = glide {
         frame.fill_rounded(glide, theme.bg, 6.0 * scale);
@@ -4167,14 +4510,18 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     );
 
     // One tab per open file, from the same function the mouse hit-tests.
+    let settings_tab = state.settings_tab();
     for tab in &bar.tabs {
         let name = &names[tab.index];
-        let dirty = state
-            .buffer_tabs
-            .get(tab.index)
-            .map(|(_, dirty)| *dirty)
-            .unwrap_or(tab.index == state.active_buffer && state.document.is_dirty());
-        let active = tab.index == state.active_buffer;
+        let settings = settings_tab == Some(tab.index);
+        // The settings tab is never dirty: what it changes is written on its own.
+        let dirty = !settings
+            && state
+                .buffer_tabs
+                .get(tab.index)
+                .map(|(_, dirty)| *dirty)
+                .unwrap_or(tab.index == state.active_buffer && state.document.is_dirty());
+        let active = tab.index == active_tab;
         let over = hovered(state, tab.rect);
 
         let growing = active && grow.0 < 1.0;
@@ -4185,7 +4532,11 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         if !active && over {
             frame.fill_rounded(tab.rect, theme.rule_soft, 6.0 * scale);
         }
-        frame.icon(Icon::File, tab.icon, file_color(theme, name));
+        if settings {
+            frame.icon(Icon::Gear, tab.icon, theme.ink_dim);
+        } else {
+            frame.icon(Icon::File, tab.icon, file_color(theme, name));
+        }
         frame.text(ui(
             state,
             elide(state, Role::Ui, name, tab.label.width, scale),
@@ -4892,8 +5243,6 @@ fn draw_sidebar_view(
         draw_explorer(frame, state, tree, rect, scale);
     } else if state.show_diagnostics {
         draw_diagnostics_list(frame, state, rect, scale);
-    } else if let Some(settings) = &state.settings {
-        draw_settings(frame, state, settings, rect, scale);
     } else {
         match state.chrome.activity {
             Some(crate::layout::Activity::SourceControl) => draw_placeholder(

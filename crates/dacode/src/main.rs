@@ -40,6 +40,13 @@ const SCROLL_MARGIN: usize = 3;
 /// How long typing must pause before autosave writes. Read by the write and by the loop's sleep.
 const AUTOSAVE_QUIET: std::time::Duration = std::time::Duration::from_millis(900);
 
+/// How long after the last change on the settings page `init.lua` is written.
+///
+/// Long enough that clicking a font size up five times writes once rather than five times, short
+/// enough that quitting straight after a change has nothing left to lose — and quitting writes what
+/// is pending anyway. Read by the write and by the loop's sleep, like [`AUTOSAVE_QUIET`].
+const SETTINGS_SAVE_AFTER: std::time::Duration = std::time::Duration::from_millis(600);
+
 /// Columns of context kept beside the cursor when the view scrolls sideways.
 ///
 /// Eight, where the vertical margin is three: a row of context is a whole line, a column is one
@@ -295,8 +302,8 @@ fn new_state(
         inlay_hints: Vec::new(),
         show_inlay_hints: settings.inlay_hints,
         welcome: None,
-        settings: None,
-        setting_sources: settings.sources.clone(),
+        settings_page: None,
+        settings_active: false,
         tree: None,
         autosave: settings.autosave,
         line_numbers: settings.line_numbers,
@@ -355,7 +362,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 22] = [
+const VALUE_FLAGS: [&str; 24] = [
     "--which-key",
     "--menu-title",
     "--screenshot",
@@ -373,6 +380,8 @@ const VALUE_FLAGS: [&str; 22] = [
     "--size",
     "--at-column",
     "--row",
+    "--settings-page",
+    "--settings-search",
     "--symbols",
     "--block",
     "--transparency",
@@ -389,7 +398,7 @@ const VALUE_FLAGS: [&str; 22] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 41] = [
+const FLAGS: [(&str, &str, &str); 43] = [
     // Opening.
     (
         "--no-session",
@@ -434,7 +443,17 @@ const FLAGS: [(&str, &str, &str); 41] = [
     ("--no-wrap", "", "soft wrap off"),
     ("--split", "N[h]", "N panes, `h` for stacked"),
     ("--tree", "", "the file tree"),
-    ("--settings", "", "the settings panel"),
+    ("--settings", "", "the settings tab"),
+    (
+        "--settings-page",
+        "NAME",
+        "open the settings tab at a page: appearance, editor, keys …",
+    ),
+    (
+        "--settings-search",
+        "QUERY",
+        "type a search into the settings tab",
+    ),
     ("--row", "N", "select a settings row, scrolling to it"),
     ("--welcome", "STEP", "the first-run wizard at one step"),
     ("--folded", "", "with a block folded"),
@@ -555,6 +574,25 @@ fn how_to_run(command: &str, modal: bool) -> String {
         }
         keys => keys,
     }
+}
+
+/// Whether an action changes the text of the document. The settings tab refuses these while it is
+/// the tab on screen: the document is behind it, out of sight, and an edit nobody can see is an edit
+/// nobody can check.
+fn edits_text(action: &Action) -> bool {
+    action.is_change()
+        || matches!(
+            action,
+            Action::Undo
+                | Action::Redo
+                | Action::Rename
+                | Action::Format
+                | Action::RevertHunk
+                | Action::ExpandSnippet
+                | Action::ReplayMacro { .. }
+                | Action::CodeAction
+                | Action::StartReplace
+        )
 }
 
 /// The first non-flag argument: the file to open.
@@ -1198,27 +1236,42 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--settings") {
-        let mut settings = dacode::settings_ui::Settings::new();
-        // The real detection, against this machine — the section is a report, and a screenshot of a
-        // report with invented contents would verify nothing about whether it can say the true
-        // thing. `--at` scrolls to it, since it sits below the fold at every size.
+        use dacode::settings_ui::Category;
+        let modal = state.modal;
+        let mut page = dacode::settings_ui::Page::new();
+        // The real detection, against this machine — the Languages page is a report, and a
+        // screenshot of a report with invented contents would verify nothing about whether it can
+        // say the true thing.
         let root = find_root(&std::path::PathBuf::from("."));
         let home = dacode::paths::home();
         let loaded = dacode::config::load();
-        settings.servers = dacode::settings_ui::detect(&root, Some(&home), &loaded.servers);
-        settings.formatters =
-            dacode::settings_ui::detect_formatters(&root, Some(&home), &loaded.formatters);
-        settings.selected = value("--row")
-            .and_then(|at| at.parse::<usize>().ok())
-            .map(|at| at.min(settings.lines().len() - 1))
-            .unwrap_or(0);
-        state.settings = Some(settings);
-        state
-            .setting_sources
-            .insert("tab_width".into(), dacode::settings_ui::Source::Config);
-        state
-            .setting_sources
-            .insert("soft_wrap".into(), dacode::settings_ui::Source::Imported);
+        page.set_reports(
+            dacode::settings_ui::detect(&root, Some(&home), &loaded.servers),
+            dacode::settings_ui::detect_formatters(&root, Some(&home), &loaded.formatters),
+            modal,
+        );
+        // `--settings-page` opens a page by its name in the tree, since `--row` only moves within one.
+        if let Some(name) = value("--settings-page") {
+            if let Some(category) = Category::ALL
+                .into_iter()
+                .find(|category| category.title().eq_ignore_ascii_case(&name))
+            {
+                page.set_category(category, modal);
+            }
+        }
+        if let Some(query) = value("--settings-search") {
+            page.set_query(query, modal);
+        }
+        // `--row N` selects entry N and scrolls to it, as ↓ would: the only way to see a row below
+        // the fold, which on the Keys and Languages pages is most of them.
+        let editor = dacode::layout::Layout::of(bounds, 1.0, None, 0.0).editor;
+        if let Some(row) = value("--row").and_then(|at| at.parse::<usize>().ok()) {
+            page.select(row, modal);
+            page.reveal(editor, 1.0, modal, &state.typography);
+        }
+        state.settings_page = Some(page);
+        state.settings_active = true;
+        state.snap_settings_scroll();
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
@@ -1531,6 +1584,15 @@ struct App {
     /// When the document was last changed, so autosave can wait for a pause in typing rather than
     /// writing a half-typed word to disk every few seconds.
     last_edit: Option<std::time::Instant>,
+    /// When a setting was last changed and not yet written to `init.lua`. `None` once it is.
+    ///
+    /// There is no save button and no `ctrl-s` for settings: a change applies at once, and is
+    /// written [`SETTINGS_SAVE_AFTER`] after the last one, by the idle step.
+    settings_changed_at: Option<std::time::Instant>,
+    /// Where `init.lua` lives. A field rather than a call to `config::config_dir` at each use, so a
+    /// test hands the editor a directory of its own instead of writing the user's real config — the
+    /// same reason `config::load_from` takes one.
+    config_dir: std::path::PathBuf,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
     /// Whether the last idle step found something moving, so the step after the motion ends can ask for
@@ -1721,6 +1783,8 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         // Redraws are paced to vsync by winit, so the loop turns once per frame only while something
         // moves; the control flow below stays `Wait`, and it is not a timer.
         let now = std::time::Instant::now();
+        // Before the bell reads the status line below, so a write that failed is in it this pass.
+        changed |= self.save_settings_if_due(now);
         self.settle_scroll_input();
         // Before asking whether anything moves: whatever this batch of events opened or closed has to
         // have started moving for the answer to include it.
@@ -1766,7 +1830,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                     self.request_redraw();
                     return;
                 }
-                self.persist_recovery(true);
+                self.write_before_leaving();
                 self.save_session();
                 event_loop.exit();
             }
@@ -1920,7 +1984,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                     }
                     // Quitting is the last chance to save unsaved work, and to remember where we
                     // were.
-                    self.persist_recovery(true);
+                    self.write_before_leaving();
                     self.save_session();
                     event_loop.exit();
                 } else {
@@ -2026,6 +2090,8 @@ impl App {
             click_count: 1,
             chosen_by_overlay: false,
             last_edit: None,
+            settings_changed_at: None,
+            config_dir: dacode::config::config_dir(),
             wakes: 0,
             was_animating: false,
             last_frame: None,
@@ -2196,6 +2262,18 @@ impl App {
         let layout = self.layout();
         let (x, y) = self.pointer;
 
+        // The settings tab scrolls under the pointer as the text it stands in for does: by pixels,
+        // clamped by the page, and the spring draws the glide.
+        if self.state.settings_showing() && dacode::layout::contains(layout.editor, x, y) {
+            let pixels = lines as f32 * self.row_height_px();
+            let (scale, modal, typography) =
+                (self.scale(), self.state.modal, self.state.typography);
+            if let Some(page) = &mut self.state.settings_page {
+                page.scroll_by(pixels, layout.editor, scale, modal, &typography);
+            }
+            return true;
+        }
+
         if let (Some(results), Some(area)) = (&mut self.state.results, layout.results) {
             if dacode::layout::contains(area, x, y) {
                 results.move_selection(lines);
@@ -2216,10 +2294,6 @@ impl App {
             if self.state.show_diagnostics {
                 // The problems list draws from `problems` directly and has no selection to move, so
                 // the wheel is swallowed rather than falling through to scroll the file behind it.
-                return true;
-            }
-            if let Some(settings) = &mut self.state.settings {
-                settings.move_selection(lines);
                 return true;
             }
         }
@@ -2685,12 +2759,17 @@ impl App {
                 self.state.focus = dacode::focus::Focus::Editor;
                 return false;
             }
-            if self.handle_settings_key(key) {
-                return false;
-            }
             if self.handle_tree_key(key) {
                 return false;
             }
+        }
+        // The settings tab takes the keys the text would, being where the text would be. Keys with
+        // ctrl or alt go on to the grammar, so the palette, `ctrl-w` and the rest still work over it.
+        if self.state.focus == dacode::focus::Focus::Editor
+            && self.state.settings_showing()
+            && self.handle_page_key(key)
+        {
+            return false;
         }
 
         // Opening a palette is a Ctrl binding, so it works from any mode. Shift matters here:
@@ -2885,6 +2964,19 @@ impl App {
         } else {
             action
         };
+
+        // The settings tab stands where the text was, and the text is still there behind it. A
+        // `ctrl-z` or `ctrl-v` that reached it would change a file nobody can see, so nothing that
+        // edits text runs while the tab is showing — and `ctrl-w` closes the tab, as it would a file.
+        if self.state.settings_showing() {
+            if action == Action::CloseBuffer {
+                self.close_settings_tab();
+                return false;
+            }
+            if edits_text(&action) {
+                return false;
+            }
+        }
 
         if action.is_change() {
             self.last_change = Some(action.clone());
@@ -3374,9 +3466,9 @@ impl App {
         true
     }
 
-    /// What the settings panel reports about language servers.
+    /// What the settings tab's Languages page reports about language servers.
     ///
-    /// Gathered when the panel opens rather than while drawing: it walks `PATH` once per program,
+    /// Gathered when the tab opens rather than while drawing: it walks `PATH` once per program,
     /// which is bounded but not free.
     fn detect_servers(&self) -> Vec<dacode::settings_ui::ServerRow> {
         let home = dacode::paths::home();
@@ -4115,10 +4207,14 @@ impl App {
         let tick = self
             .services_busy()
             .then(|| now + std::time::Duration::from_millis(100));
-        match [tick, self.autosave_due_at(now)]
-            .into_iter()
-            .flatten()
-            .min()
+        match [
+            tick,
+            self.autosave_due_at(now),
+            self.settings_save_due_at(now),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
         {
             Some(at) => ControlFlow::WaitUntil(at),
             None => ControlFlow::Wait,
@@ -5088,20 +5184,7 @@ impl App {
                     self.state.prompt = Some(prompt);
                 }
             }
-            Action::ToggleSettings => {
-                if self.state.settings.is_some() {
-                    self.state.settings = None;
-                    self.state.focus = dacode::focus::Focus::Editor;
-                } else {
-                    let mut settings = dacode::settings_ui::Settings::new();
-                    settings.servers = self.detect_servers();
-                    settings.formatters = self.detect_formatters();
-                    self.state.settings = Some(settings);
-                    self.state.tree = None;
-                    self.state.show_diagnostics = false;
-                    self.state.focus = dacode::focus::Focus::Sidebar;
-                }
-            }
+            Action::ToggleSettings => self.open_settings_tab(),
             Action::Jump { forward } => {
                 let here = self.here();
                 let target = if *forward {
@@ -5796,86 +5879,219 @@ impl App {
                 Err(error) => self.state.hover = Some(format!("import failed: {error}")),
             }
         }
-
-        self.state
-            .setting_sources
-            .insert("vim_keys".into(), dacode::settings_ui::Source::Config);
-        self.state
-            .setting_sources
-            .insert("theme".into(), dacode::settings_ui::Source::Config);
     }
 
-    /// Keys for the settings panel. Returns true if the key was consumed.
-    fn handle_settings_key(&mut self, key: Key) -> bool {
-        let Some(settings) = &mut self.state.settings else {
-            return false;
-        };
-
-        // ctrl-s writes, as it does everywhere else in the editor. The panel only had `w`, which is
-        // Vim's letter for it and is the wrong thing to teach someone who turned Vim off — and who
-        // is looking at a panel they reached from a toolbar button.
-        if key.ctrl && !key.alt && key.code == KeyCode::Char('s') {
-            self.write_settings();
+    /// Keys for the settings tab, while it is the tab on screen and has the keys. Returns true if
+    /// the key was used; a key with ctrl or alt, or a function key, never is, so the palette, the
+    /// menus, `ctrl-w` and F1 work over the page as they do over the text.
+    ///
+    /// ↑ ↓ choose a row (page up and down, home and end by more), ← → change it, space and enter do
+    /// what a click on it does, and delete puts a changed setting back to its default. Every other
+    /// printable key is typed into the search box and backspace takes one back; escape clears the
+    /// search, then leaves the tab for the file under it. While a search is being typed, space is
+    /// part of it — "line numbers" needs one — and ← → and enter still change the selected row.
+    fn handle_page_key(&mut self, key: Key) -> bool {
+        use dacode::settings_ui::{Entry, Line};
+        // `ctrl-f` finds — and on this page typing already goes to the search box, so it is taken
+        // here rather than opening a find prompt over the file behind the tab.
+        if key.ctrl && !key.shift && !key.alt && key.code == KeyCode::Char('f') {
             return true;
         }
         if key.ctrl || key.alt {
             return false;
         }
-
-        let line = settings.line();
+        let modal = self.state.modal;
+        let Some(page) = &self.state.settings_page else {
+            return false;
+        };
+        let entry = page.selected_entry(modal);
+        let query = page.query().to_string();
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => settings.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => settings.move_selection(-1),
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
-                match line {
-                    dacode::settings_ui::Line::Option(field) => {
-                        settings.dirty = true;
-                        self.adjust_setting(field, 1);
-                    }
-                    dacode::settings_ui::Line::Import(item) => settings.tick(item),
-                    dacode::settings_ui::Line::RunImport => self.run_import(),
-                    dacode::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
-                    dacode::settings_ui::Line::Server(_)
-                    | dacode::settings_ui::Line::Formatter(_) => self.activate_setting(line),
+            KeyCode::Up => self.move_page_selection(-1),
+            KeyCode::Down => self.move_page_selection(1),
+            KeyCode::PageUp => self.move_page_selection(-8),
+            KeyCode::PageDown => self.move_page_selection(8),
+            KeyCode::Home => self.move_page_selection(isize::MIN / 2),
+            KeyCode::End => self.move_page_selection(isize::MAX / 2),
+            KeyCode::Left | KeyCode::Right => {
+                let delta = if key.code == KeyCode::Left { -1 } else { 1 };
+                match entry {
+                    Some(Entry::Field(field)) => self.adjust_setting(field, delta),
+                    Some(Entry::Line(Line::Import(item))) => self.tick_import(item),
+                    Some(entry) if delta > 0 => self.choose_page_entry(entry),
+                    _ => {}
                 }
             }
-            KeyCode::Char('h') | KeyCode::Left => match line {
-                dacode::settings_ui::Line::Option(field) => {
-                    settings.dirty = true;
-                    self.adjust_setting(field, -1);
+            KeyCode::Char(' ') if query.is_empty() => {
+                if let Some(entry) = entry {
+                    self.choose_page_entry(entry);
                 }
-                dacode::settings_ui::Line::Import(item) => settings.tick(item),
-                dacode::settings_ui::Line::RunImport
-                | dacode::settings_ui::Line::LoadTheme
-                | dacode::settings_ui::Line::Server(_)
-                | dacode::settings_ui::Line::Formatter(_) => {}
-            },
-            // `w` writes; nothing is written without asking, because config is a file the user owns.
-            KeyCode::Char('w') => self.write_settings(),
+            }
+            KeyCode::Enter => {
+                if let Some(entry) = entry {
+                    self.choose_page_entry(entry);
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(Entry::Field(field)) = entry {
+                    self.reset_setting(field);
+                }
+            }
+            KeyCode::Backspace => {
+                let mut shorter = query;
+                if shorter.pop().is_some() {
+                    self.set_settings_query(shorter);
+                }
+            }
+            KeyCode::Escape if !query.is_empty() => self.set_settings_query(String::new()),
+            // Back to the file, which is still where it was; the tab stays open beside it.
+            KeyCode::Escape => self.state.settings_active = false,
+            KeyCode::Char(typed) => {
+                let mut longer = query;
+                longer.push(typed);
+                self.set_settings_query(longer);
+            }
             _ => return false,
         }
         true
     }
 
-    /// The panel's current values, read from the live editor rather than from a copy.
-    fn setting_values(&self) -> dacode::settings_ui::Values {
-        dacode::settings_ui::Values {
-            font_size: self.state.typography.code_size,
-            tab_width: self.state.display.tab_width,
-            soft_wrap: self.state.display.mode == WrapMode::Word,
-            format_on_save: self.state.format_on_save,
-            modal: self.state.modal,
-            theme: self.state.theme.name(),
-            line_numbers: self.state.line_numbers,
-            sticky_scroll: self.state.sticky_scroll,
-            inlay_hints: self.state.show_inlay_hints,
-            autosave: self.state.autosave,
-            transparency: (self.state.chrome.transparency * 100.0).round() as u8,
-            animations: self.state.chrome.motion.animations(),
+    /// Moves the page's selection and scrolls to keep it whole on screen.
+    fn move_page_selection(&mut self, delta: isize) {
+        let (rect, scale, modal) = (self.layout().editor, self.scale(), self.state.modal);
+        let typography = self.state.typography;
+        if let Some(page) = &mut self.state.settings_page {
+            page.move_selection(delta, modal);
+            page.reveal(rect, scale, modal, &typography);
         }
     }
 
-    /// Applies a change immediately. A settings panel whose effect you cannot see is a form.
+    /// A new search: the list starts again from its top, at once rather than gliding there.
+    fn set_settings_query(&mut self, query: String) {
+        let modal = self.state.modal;
+        if let Some(page) = &mut self.state.settings_page {
+            page.set_query(query, modal);
+        }
+        self.state.snap_settings_scroll();
+    }
+
+    /// Opens a page of the tab from the tree. Choosing a page ends a search, whose list was every
+    /// page's; the new page fades in over the old one rather than replacing it between two frames.
+    fn open_settings_category(&mut self, category: dacode::settings_ui::Category) {
+        let modal = self.state.modal;
+        if let Some(page) = &mut self.state.settings_page {
+            page.set_query(String::new(), modal);
+            page.set_category(category, modal);
+        }
+        self.state.snap_settings_scroll();
+        let now = std::time::Instant::now();
+        let motion = &mut self.state.chrome.motion;
+        motion.snap(dacode::motion::Key::SettingsCategory, 0.0);
+        motion.to(
+            dacode::motion::Key::SettingsCategory,
+            1.0,
+            dacode::motion::Spring {
+                damping_ratio: 1.0,
+                ..dacode::motion::Spring::PANEL
+            },
+            now,
+        );
+    }
+
+    /// What choosing a row does, by enter, space or a click on it: the same thing each way.
+    fn choose_page_entry(&mut self, entry: dacode::settings_ui::Entry) {
+        use dacode::settings_ui::{Entry, Line, Link};
+        match entry {
+            Entry::Heading { .. } | Entry::Command(_) => {}
+            Entry::Field(field) => self.cycle_setting(field),
+            Entry::Line(Line::Import(item)) => self.tick_import(item),
+            Entry::Line(Line::RunImport) => self.run_import(),
+            Entry::Line(Line::LoadTheme) => self.prompt_for_theme_file(),
+            // A report, not a control — so choosing it does the one useful thing a row cannot:
+            // shows the whole line, which for a language server is a path that rarely fits.
+            Entry::Line(line @ (Line::Server(at) | Line::Formatter(at))) => {
+                let report = self.state.settings_page.as_ref().and_then(|page| {
+                    if matches!(line, Line::Formatter(_)) {
+                        page.formatters().get(at)
+                    } else {
+                        page.servers().get(at)
+                    }
+                });
+                if let Some(report) = report {
+                    self.state.hover = Some(format!(
+                        "{} — {} · {}",
+                        report.language, report.program, report.status
+                    ));
+                }
+            }
+            Entry::Link(Link::RebindKeys) => self.open_init_lua(),
+        }
+    }
+
+    fn tick_import(&mut self, item: dacode::settings_ui::Importable) {
+        if let Some(page) = &mut self.state.settings_page {
+            page.tick(item);
+        }
+    }
+
+    /// Opens `init.lua` as a file — what the Keys page's link does. Whatever the page is still
+    /// waiting to write goes in first, so the file opened is the one the page describes; and a
+    /// config directory with no `init.lua` gets an empty one, since opening a file that is not there
+    /// is refused.
+    fn open_init_lua(&mut self) {
+        self.flush_settings();
+        let path = self.config_dir.join("init.lua");
+        if !path.exists() {
+            let made = std::fs::create_dir_all(&self.config_dir)
+                .and_then(|()| dacode::save::write(&path, b""));
+            if let Err(error) = made {
+                self.state.hover = Some(format!("could not create {}: {error}", path.display()));
+                return;
+            }
+        }
+        self.activate(Target::File(path));
+        self.state.hover = Some(
+            dacode::settings_ui::Link::RebindKeys
+                .explanation()
+                .to_string(),
+        );
+    }
+
+    /// Puts a setting back to its default: the ⟲, or delete on its row.
+    fn reset_setting(&mut self, field: dacode::settings_ui::Field) {
+        if field.resettable() && !field.is_default(&self.state.setting_values()) {
+            self.change_setting(field, |values| values.reset(field));
+        }
+    }
+
+    /// Opens the settings tab — the gear, `ctrl-,` and the palette's "settings" — or shows it when
+    /// it is already open. The language-server report is gathered here, once, because finding a
+    /// program walks `PATH` and must never happen while drawing.
+    fn open_settings_tab(&mut self) {
+        if self.state.settings_page.is_none() {
+            let mut page = dacode::settings_ui::Page::new();
+            page.set_reports(
+                self.detect_servers(),
+                self.detect_formatters(),
+                self.state.modal,
+            );
+            self.state.settings_page = Some(page);
+            self.state.snap_settings_scroll();
+        }
+        self.state.settings_active = true;
+        // What would otherwise take its keys belongs to the text it is covering.
+        self.state.completion = None;
+        self.state.focus = dacode::focus::Focus::Editor;
+    }
+
+    /// Closes the settings tab: its close button, or `ctrl-w` while it is the tab on screen. A change
+    /// still waiting to be written is not thrown away with it — the idle step writes it as before.
+    fn close_settings_tab(&mut self) {
+        self.state.settings_page = None;
+        self.state.settings_active = false;
+    }
+
+    /// Applies a change immediately. A settings page whose effect you cannot see is a form.
     fn adjust_setting(&mut self, field: dacode::settings_ui::Field, delta: i32) {
         self.change_setting(field, |values| values.adjust(field, delta));
     }
@@ -5892,7 +6108,7 @@ impl App {
     ) {
         use dacode::settings_ui::Field;
 
-        let mut values = self.setting_values();
+        let mut values = self.state.setting_values();
         change(&mut values);
 
         match field {
@@ -5943,6 +6159,65 @@ impl App {
             Field::Transparency => self.set_transparency(values.transparency),
             Field::Animations => self.state.chrome.motion.set_animations(values.animations),
         }
+        self.settings_changed(field, std::time::Instant::now());
+    }
+
+    /// A setting has changed: it is written after the pause, and its row glows.
+    ///
+    /// The glow is kicked here rather than synced, because a change is an event and not a state —
+    /// the same as the bell's wobble. The grammar decides which rows the Keys page has, so after
+    /// the modal switch the selection is put back on one that exists.
+    fn settings_changed(&mut self, field: dacode::settings_ui::Field, now: std::time::Instant) {
+        self.settings_changed_at = Some(now);
+        let glow = dacode::motion::Key::Glow(dacode::settings_ui::glow_index(field));
+        let motion = &mut self.state.chrome.motion;
+        motion.snap(glow, 1.0);
+        motion.to(glow, 0.0, dacode::motion::Spring::GLOW, now);
+        let modal = self.state.modal;
+        if let Some(page) = &mut self.state.settings_page {
+            page.select(page.selected(), modal);
+        }
+    }
+
+    /// Writes the settings to `init.lua` once the last change has waited [`SETTINGS_SAVE_AFTER`].
+    /// Returns whether it wrote — or tried to: a failure is said on the status line, and so in the
+    /// bell, and not tried again until something changes.
+    ///
+    /// Called by the idle step with the clock, and by the tests with chosen instants.
+    fn save_settings_if_due(&mut self, now: std::time::Instant) -> bool {
+        match self.settings_changed_at {
+            Some(changed) if now >= changed + SETTINGS_SAVE_AFTER => {
+                self.flush_settings();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// When the settings write will be due, if a change is waiting for it. Like autosave's quiet
+    /// period it is a time and not an event — nothing wakes the loop at the end of it — so the loop's
+    /// sleep has to end there. `None` once the moment is reached, when the idle step acts on it: a
+    /// deadline in the past would spin the loop.
+    fn settings_save_due_at(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        let due = self.settings_changed_at? + SETTINGS_SAVE_AFTER;
+        (due > now).then_some(due)
+    }
+
+    /// Writes whatever settings change is waiting, now.
+    fn flush_settings(&mut self) {
+        if self.settings_changed_at.take().is_some() {
+            if let Err(message) = self.write_settings() {
+                eprintln!("dacode: {message}");
+                self.state.hover = Some(message);
+            }
+        }
+    }
+
+    /// What leaving the editor writes, by either door — the window's close button or quit: the
+    /// recovery copy of unsaved work, and a settings change still waiting out its pause.
+    fn write_before_leaving(&mut self) {
+        self.persist_recovery(true);
+        self.flush_settings();
     }
 
     /// Changes how see-through the window is.
@@ -6042,71 +6317,74 @@ impl App {
 
     /// Runs the ticked import, then reloads configuration so the result is visible at once.
     fn run_import(&mut self) {
-        let Some(settings) = &self.state.settings else {
+        let Some(page) = &self.state.settings_page else {
             return;
         };
-        let checklist = settings.checklist();
+        let checklist = page.checklist();
         if checklist.is_empty() {
             self.state.hover =
                 Some("tick what to import first — nothing is imported unless you ask".into());
             return;
         }
 
-        let directory = dacode::config::config_dir();
+        let directory = self.config_dir.clone();
+        // The report goes where every other message goes — the status line, and from there the
+        // bell — rather than into the list, where it would be one more row to scroll past.
         match dacode::import_cli::import_from_installed_vscode(checklist, &directory) {
             Ok(report) => {
                 let rendered = report.render();
                 eprintln!("{rendered}");
 
                 // The imported files are only config; reloading is what makes them take effect, and
-                // doing it here means the panel's own values update too.
+                // doing it here means the page's own values update too.
                 self.reload_config();
-
-                let summary = rendered
-                    .lines()
-                    .find(|line| line.contains("imported") || line.contains("nothing"))
-                    .unwrap_or("import finished")
-                    .trim()
-                    .to_string();
-                if let Some(settings) = &mut self.state.settings {
-                    settings.import_report = Some(summary.clone());
-                }
                 self.state.hover = Some(rendered);
             }
-            Err(error) => {
-                let message = format!("import failed: {error}");
-                if let Some(settings) = &mut self.state.settings {
-                    settings.import_report = Some(message.clone());
-                }
-                self.state.hover = Some(message);
-            }
+            Err(error) => self.state.hover = Some(format!("import failed: {error}")),
         }
     }
 
-    /// Writes the panel's values into `init.lua`.
-    fn write_settings(&mut self) {
-        let directory = dacode::config::config_dir();
+    /// Writes the page's values into the marked block of `init.lua`, through `save::write`.
+    ///
+    /// The file is read first and everything outside the block kept. A file that exists and cannot be
+    /// read is left alone: writing the block alone over it would replace the user's whole config
+    /// with twelve lines, and an automatic save must never be the thing that does that.
+    fn write_settings(&mut self) -> Result<(), String> {
+        let directory = self.config_dir.clone();
         let path = directory.join("init.lua");
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        let updated = dacode::settings_ui::write_back(&existing, &self.setting_values());
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(existing) => existing,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                return Err(format!(
+                    "settings not saved: could not read {}: {error}",
+                    path.display()
+                ));
+            }
+        };
+        let updated = dacode::settings_ui::write_back(&existing, &self.state.setting_values());
 
-        if let Err(error) = std::fs::create_dir_all(&directory) {
-            self.state.hover = Some(format!("could not create {}: {error}", directory.display()));
-            return;
-        }
+        std::fs::create_dir_all(&directory).map_err(|error| {
+            format!(
+                "settings not saved: could not create {}: {error}",
+                directory.display()
+            )
+        })?;
 
         // The editor's own write, so the watcher does not treat it as an outside edit and reload.
-        self.self_written.insert(dacode_project::canonical(&path));
+        let key = dacode_project::canonical(&path);
+        self.self_written.insert(key.clone());
         match dacode::save::write(&path, updated.as_bytes()) {
             Ok(()) => {
                 self.self_written.insert(dacode_project::canonical(&path));
-                if let Some(settings) = &mut self.state.settings {
-                    settings.dirty = false;
-                }
-                self.state.hover = Some(format!("written to {}", path.display()));
+                Ok(())
             }
             Err(error) => {
-                self.state.hover = Some(format!("could not write {}: {error}", path.display()))
+                self.self_written.remove(&key);
+                Err(format!(
+                    "settings not saved: could not write {}: {error}",
+                    path.display()
+                ))
             }
         }
     }
@@ -6602,6 +6880,7 @@ impl App {
 
     /// Makes a new document the active one, keeping the previous buffer.
     fn open_document(&mut self, document: Document, path: Vec<String>, file_path: Option<String>) {
+        self.state.settings_active = false;
         let previous = Buffer {
             document: std::mem::replace(&mut self.state.document, document),
             path: std::mem::replace(&mut self.state.path, path),
@@ -6846,6 +7125,9 @@ impl App {
     /// them does — was now showing a different file than the one it was opened on. It happened to
     /// be right for adjacent switches, which is most of them, and wrong for the rest.
     fn switch_to(&mut self, index: usize) {
+        // Choosing a file is choosing to see it, the live one included: its tab, clicked while the
+        // settings tab is showing, brings it back.
+        self.state.settings_active = false;
         let was = self.state.active_buffer;
         if index == was || index > self.buffers.len() {
             return;
@@ -7150,6 +7432,15 @@ impl App {
             }
         }
 
+        // The settings tab covers the panes: a press there is the page's, and a drag from it
+        // reaches nothing behind.
+        if self.state.settings_showing() && dacode::layout::contains(layout.editor, x, y) {
+            if !extend {
+                self.click_settings_page(x, y);
+            }
+            return;
+        }
+
         let count = self.panes.len();
         let vertical = self.panes.layout == chrome::PaneLayout::Vertical;
         let Some(index) = layout.pane_at(x, y, count, vertical, scale) else {
@@ -7356,6 +7647,7 @@ impl App {
         let (x, y) = self.pointer;
         let layout = self.layout();
         dacode::layout::contains(layout.tabs, x, y)
+            || (self.state.settings_showing() && dacode::layout::contains(layout.editor, x, y))
             || dacode::layout::contains(layout.title, x, y)
             || dacode::layout::contains(layout.activity, x, y)
             || layout
@@ -7364,22 +7656,14 @@ impl App {
     }
 
     /// The tab bar, laid out for the buffers that are open now.
+    /// The settings tab is in it, after the files, from the same list the drawing reads.
     fn tab_bar(&self, strip: Rect, scale: f32) -> dacode::layout::TabBar {
-        let names: Vec<String> = (0..self.state.buffer_count.max(1))
-            .map(|index| {
-                self.state
-                    .buffer_tabs
-                    .get(index)
-                    .map(|(name, _)| name.clone())
-                    .or_else(|| self.state.path.last().cloned())
-                    .unwrap_or_default()
-            })
-            .collect();
+        let names = self.state.tab_names();
         let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
         dacode::layout::tab_bar(
             strip,
             &borrowed,
-            self.state.active_buffer,
+            self.state.active_tab(),
             &self.state.typography,
             scale,
         )
@@ -7440,9 +7724,27 @@ impl App {
             let bar = self.tab_bar(layout.tabs, scale);
             // The close button is inside the tab, so it is tested first — otherwise closing a file
             // would switch to it instead, which is the more annoying of the two wrong answers.
+            let settings = self.state.settings_tab();
             for tab in &bar.tabs {
+                // The settings tab is not a buffer: its number is one the buffer list never hands
+                // out, and it closes and shows itself without touching that list.
+                if Some(tab.index) == settings {
+                    if at(tab.close) {
+                        self.close_settings_tab();
+                        return true;
+                    }
+                    if at(tab.rect) {
+                        self.open_settings_tab();
+                        return true;
+                    }
+                    continue;
+                }
                 if at(tab.close) {
+                    // Closing a file's tab is not choosing it: with the settings tab showing, the
+                    // file switched to in the background must not take its place on screen.
+                    let showing = self.state.settings_active;
                     self.request_close_buffer(tab.index);
+                    self.state.settings_active = showing && self.state.settings_page.is_some();
                     return true;
                 }
                 if at(tab.rect) {
@@ -7472,6 +7774,13 @@ impl App {
     /// panel, so on their own two could be "open" at once with one hidden behind the other — and
     /// closing the visible one would then reveal a panel the user had left minutes ago.
     fn choose_activity(&mut self, item: dacode::layout::ActivityItem) {
+        // The gear opens a tab rather than a view of the sidebar, so it leaves the sidebar alone.
+        if item.activity == dacode::layout::Activity::Settings {
+            if let Some(action) = Action::from_name(item.command) {
+                let _ = self.run(action);
+            }
+            return;
+        }
         if self.state.active_activity() == Some(item.activity) {
             self.state.close_sidebar();
             if item.activity == dacode::layout::Activity::Search {
@@ -7682,7 +7991,7 @@ impl App {
         count
     }
 
-    /// A click in the sidebar: the tree, the settings panel, or nothing.
+    /// A click in the sidebar: the tree, the problems list, or nothing.
     fn click_sidebar(&mut self, sidebar: Rect, y: f32, scale: f32) {
         // The row heights each panel draws with. Kept beside the drawing code's own constants; a
         // mismatch here shows up as clicking one row and selecting its neighbour.
@@ -7753,68 +8062,81 @@ impl App {
                 }
                 cursor += line * 2.0;
             }
-            return;
-        }
-
-        if let Some(settings) = &self.state.settings {
-            // The same rectangles the drawing code uses, from the same function. This walked the
-            // list itself once, which was survivable until the panel started scrolling and the two
-            // walks stopped agreeing — a click then selected the row that used to be there.
-            let panel = dacode::settings_ui::panel(sidebar, scale, settings);
-            let Some(hit) = panel
-                .rows
-                .iter()
-                .find(|row| y >= row.rect.y && y < row.rect.bottom())
-            else {
-                return;
-            };
-            let (index, entry) = (hit.index, hit.line);
-
-            if let Some(settings) = &mut self.state.settings {
-                settings.selected = index;
-            }
-            // Selecting is not enough. A click that highlighted a row and then waited to be told
-            // `l` is a panel a mouse user cannot operate at all — which is what this was. A click
-            // *is* the change: switches flip, choices advance, and the action rows run.
-            self.activate_setting(entry);
         }
     }
 
-    /// What a click on a settings row does. The same paths `l` and `enter` take.
-    fn activate_setting(&mut self, line: dacode::settings_ui::Line) {
-        match line {
-            dacode::settings_ui::Line::Option(field) => {
-                if let Some(settings) = &mut self.state.settings {
-                    settings.dirty = true;
-                }
-                // Forward, and the numeric fields wrap at their limit, so a mouse can walk a font
-                // size all the way round rather than sticking at 32 with no way back.
-                self.cycle_setting(field);
-            }
-            dacode::settings_ui::Line::Import(item) => {
-                if let Some(settings) = &mut self.state.settings {
-                    settings.tick(item);
-                }
-            }
-            dacode::settings_ui::Line::RunImport => self.run_import(),
-            dacode::settings_ui::Line::LoadTheme => self.prompt_for_theme_file(),
-            // A report, not a control — so pressing it does the one useful thing a 292-pixel row
-            // cannot: shows the whole line, which for a language server is a path that never fits.
-            dacode::settings_ui::Line::Server(at) | dacode::settings_ui::Line::Formatter(at) => {
-                let formatter = matches!(line, dacode::settings_ui::Line::Formatter(_));
-                if let Some(row) = self.state.settings.as_ref().and_then(|settings| {
-                    if formatter {
-                        settings.formatters.get(at)
-                    } else {
-                        settings.servers.get(at)
-                    }
-                }) {
-                    self.state.hover = Some(format!(
-                        "{} — {} · {}",
-                        row.language, row.program, row.status
-                    ));
-                }
-            }
+    /// Where everything on the settings tab is, as the last frame drew it: the editor area, laid out
+    /// at the scroll the spring had reached by then. The one geometry the mouse reads, and the one
+    /// `draw_settings_page` draws from.
+    fn settings_page_geometry(&self) -> Option<dacode::settings_ui::PageGeometry> {
+        let page = self
+            .state
+            .settings_page
+            .as_ref()
+            .filter(|_| self.state.settings_active)?;
+        let now = self.last_frame.unwrap_or_else(std::time::Instant::now);
+        let offset = self.state.chrome.motion.movement(
+            dacode::motion::Key::SettingsScroll,
+            page.scroll(),
+            now,
+        );
+        Some(page.geometry_at(
+            offset,
+            self.layout().editor,
+            self.scale(),
+            &self.state.setting_values(),
+            self.state.modal,
+            &self.state.typography,
+        ))
+    }
+
+    /// A click on the settings tab. The tree opens a page; a control changes its setting exactly as
+    /// → or space would, a number at its limit wrapping (a click has no other direction to go in);
+    /// the ⟲ resets; a row is selected, and an import item, an action or the link is chosen.
+    fn click_settings_page(&mut self, x: f32, y: f32) {
+        use dacode::settings_ui::{Entry, Line, Part};
+        let Some(geometry) = self.settings_page_geometry() else {
+            return;
+        };
+        let modal = self.state.modal;
+        let Some(page) = &self.state.settings_page else {
+            return;
+        };
+        let searching = !page.query().trim().is_empty();
+        let open = page.category();
+        if let Some((category, _)) = geometry
+            .tree
+            .iter()
+            .find(|(_, rect)| dacode::layout::contains(*rect, x, y))
+        {
+            // Folded, the one button names the page and moves to the next — or, over a search's
+            // results from every page, ends the search and shows the page that was open.
+            let to = match (geometry.folded, searching) {
+                (true, true) => open,
+                (true, false) => category.next(),
+                (false, _) => *category,
+            };
+            self.open_settings_category(to);
+            return;
+        }
+        let Some((index, part)) = geometry.hit(x, y) else {
+            return;
+        };
+        let Some(page) = &mut self.state.settings_page else {
+            return;
+        };
+        page.select(index, modal);
+        let Some(entry) = page.selected_entry(modal) else {
+            return;
+        };
+        match (part, entry) {
+            (Part::Reset, Entry::Field(field)) => self.reset_setting(field),
+            (Part::Control, Entry::Field(field)) => self.cycle_setting(field),
+            // A setting's row away from its control only selects it, so a click to read its
+            // explanation does not change it.
+            (_, Entry::Field(_) | Entry::Command(_) | Entry::Heading { .. }) => {}
+            (_, Entry::Line(Line::Import(item))) => self.tick_import(item),
+            (_, entry) => self.choose_page_entry(entry),
         }
     }
 
@@ -7864,7 +8186,7 @@ impl App {
     /// reload that reset scroll positions or dropped undo history would make editing your own config
     /// a hostile experience — which is exactly when this feature is used.
     fn reload_config(&mut self) {
-        let settings = dacode::config::load();
+        let settings = dacode::config::load_from(&self.config_dir);
 
         self.state.theme = settings.theme;
         self.state.typography = settings.typography;
@@ -7885,21 +8207,20 @@ impl App {
         self.state.show_inlay_hints = settings.inlay_hints;
         self.set_transparency(settings.transparency);
         self.state.chrome.motion.set_animations(settings.animations);
-        self.state.setting_sources = settings.sources.clone();
         self.grammar.set_keymap(settings.keymap);
 
         // Servers already running are left alone — a reload is not a reason to throw away minutes
         // of rust-analyzer's indexing. The new table takes effect the next time one is started,
-        // and the panel's report is refreshed so it does not describe the file as it used to be.
+        // and the settings tab's report is refreshed so it does not describe the file as it was.
         self.configured_servers = settings.servers;
         self.configured_formatters = settings.formatters;
         self.missing_servers.clear();
-        if self.state.settings.is_some() {
+        if self.state.settings_page.is_some() {
             let servers = self.detect_servers();
             let formatters = self.detect_formatters();
-            if let Some(panel) = &mut self.state.settings {
-                panel.servers = servers;
-                panel.formatters = formatters;
+            let modal = self.state.modal;
+            if let Some(page) = &mut self.state.settings_page {
+                page.set_reports(servers, formatters, modal);
             }
         }
 
@@ -8578,13 +8899,16 @@ mod wiring_tests {
             None,
             dir.to_path_buf(),
         );
-        App::new(
+        let mut app = App::new(
             dir.to_path_buf(),
             state,
             Grammar::new(),
             &dacode::config::Settings::default(),
             None,
-        )
+        );
+        // Never the user's own config: a test that changed a setting would otherwise write it.
+        app.config_dir = dir.join("config");
+        app
     }
 
     /// Runs the editor's idle work until `done`, or gives up. Never spins forever: a wiring defect
@@ -9410,6 +9734,367 @@ mod wiring_tests {
         let mut frame = Frame::default();
         chrome::draw(&mut frame, &app.state, WINDOW, 1.0);
         frame
+    }
+
+    // ---- the settings tab ---------------------------------------------------------------------
+
+    /// An editor with the settings tab open on `category`, and the window the chrome tests draw.
+    fn with_settings(dir: &std::path::Path, category: dacode::settings_ui::Category) -> App {
+        let mut app = editor(dir, "a.rs", "fn main() {}\n");
+        app.headless_size = (WINDOW.width as u32, WINDOW.height as u32);
+        let _ = app.run(Action::ToggleSettings);
+        let modal = app.state.modal;
+        if let Some(page) = &mut app.state.settings_page {
+            page.set_category(category, modal);
+        }
+        app.state.focus = dacode::focus::Focus::Editor;
+        app
+    }
+
+    /// Down to Appearance › Text › Font size, then three steps up, by the keys.
+    fn three_font_size_steps(app: &mut App) -> Vec<std::time::Instant> {
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(
+            app.state
+                .settings_page
+                .as_ref()
+                .and_then(|page| page.selected_entry(app.state.modal)),
+            Some(dacode::settings_ui::Entry::Field(
+                dacode::settings_ui::Field::FontSize
+            )),
+            "↓ from the theme is the font size"
+        );
+        (0..3)
+            .map(|_| {
+                app.press(Key::named(KeyCode::Right));
+                app.settings_changed_at
+                    .expect("a change is waiting to be written")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn three_quick_changes_write_init_lua_once_after_the_last() {
+        // There is no save button and no ctrl-s: a change applies at once and is written after a
+        // pause. Three steps of the font size are one write of the final value — not three, and not
+        // until the pause has run from the *last* of them, so clicking on is never interrupted by a
+        // write of a value about to be replaced.
+        let dir = scratch("settings-autosave");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let init = app.config_dir.join("init.lua");
+        let size = app.state.typography.code_size;
+
+        let changes = three_font_size_steps(&mut app);
+        let (first, last) = (changes[0], changes[2]);
+        assert!(last > first, "each change moves the deadline");
+        assert_eq!(
+            app.state.typography.code_size,
+            size + 3.0,
+            "applied at once"
+        );
+
+        assert!(
+            !app.save_settings_if_due(first + SETTINGS_SAVE_AFTER),
+            "the pause runs from the last change, not the first"
+        );
+        assert!(!app.save_settings_if_due(
+            last + SETTINGS_SAVE_AFTER - std::time::Duration::from_millis(1)
+        ));
+        assert!(!init.exists(), "nothing written before the pause is over");
+
+        assert!(app.save_settings_if_due(last + SETTINGS_SAVE_AFTER));
+        let written = std::fs::read_to_string(&init).expect("written once the pause is over");
+        assert!(
+            !app.save_settings_if_due(last + std::time::Duration::from_secs(10)),
+            "and once: nothing is left waiting"
+        );
+
+        // Through `write_back`'s block, and a program the real config reader reads back the same.
+        let config = dacode_lua::eval(&written, "init.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(config.font_size, Some(size + 3.0));
+        assert_eq!(written.matches("dacode.set").count(), 1, "{written}");
+    }
+
+    #[test]
+    fn a_settings_write_that_fails_says_so_on_the_status_line_and_in_the_bell() {
+        // An automatic save has nobody watching it. If it fails silently the change is lost at the
+        // next start with nothing to say why — so it says so where every other message goes.
+        //
+        // A file where the config directory should be makes the write fail for every user on every
+        // platform; a read-only directory does not stop root, and CI is sometimes root.
+        let dir = scratch("settings-unwritable");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        std::fs::write(dir.join("blocked"), "").unwrap();
+        app.config_dir = dir.join("blocked").join("dacode");
+
+        let last = *three_font_size_steps(&mut app).last().unwrap();
+        assert!(app.save_settings_if_due(last + SETTINGS_SAVE_AFTER));
+
+        let said = app
+            .state
+            .hover
+            .clone()
+            .expect("the failure is on the status line");
+        assert!(said.contains("not saved"), "{said}");
+        app.record_notice();
+        assert!(
+            app.state
+                .chrome
+                .notifications
+                .iter()
+                .any(|message| message.contains("not saved")),
+            "and in the bell: {:?}",
+            app.state.chrome.notifications
+        );
+        assert!(
+            app.settings_changed_at.is_none(),
+            "tried once, not on every pass of the loop"
+        );
+    }
+
+    #[test]
+    fn a_waiting_settings_change_sets_an_alarm_for_its_write() {
+        // The loop sleeps until input. A change made just before the editor goes idle has nothing to
+        // wake it for its write, so the write's deadline has to be in the sleep — as autosave's is.
+        let dir = scratch("settings-alarm");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        let now = std::time::Instant::now();
+        assert_eq!(app.control_flow(now), ControlFlow::Wait);
+
+        app.settings_changed_at = Some(now);
+        assert_eq!(
+            app.control_flow(now),
+            ControlFlow::WaitUntil(now + SETTINGS_SAVE_AFTER)
+        );
+        assert_eq!(
+            app.control_flow(now + SETTINGS_SAVE_AFTER),
+            ControlFlow::Wait,
+            "a deadline already reached is the idle step's to act on; waiting on it would spin"
+        );
+    }
+
+    #[test]
+    fn leaving_with_a_settings_change_still_waiting_writes_it() {
+        // Quitting inside the pause must not drop the change the pause was waiting to write.
+        let dir = scratch("settings-quit");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let size = app.state.typography.code_size;
+        three_font_size_steps(&mut app);
+
+        app.write_before_leaving();
+        let written = std::fs::read_to_string(app.config_dir.join("init.lua"))
+            .expect("written on the way out");
+        assert_eq!(
+            dacode_lua::eval(&written, "init.lua").font_size,
+            Some(size + 3.0)
+        );
+    }
+
+    #[test]
+    fn the_gear_opens_the_settings_tab_and_the_tab_bar_lists_it_with_the_gear() {
+        let dir = scratch("settings-gear");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        app.headless_size = (WINDOW.width as u32, WINDOW.height as u32);
+        let layout = app.layout();
+        let (_, gear) = dacode::layout::activity_items(layout.activity, 1.0)
+            .into_iter()
+            .find(|(item, _)| item.activity == dacode::layout::Activity::Settings)
+            .expect("the gear is in the activity bar");
+        app.pointer = middle(gear);
+        app.click(false);
+
+        assert!(app.state.settings_showing(), "the gear opens the tab");
+        assert!(
+            !app.state.sidebar_open(),
+            "a tab, not a view of the sidebar"
+        );
+        let names = app.state.tab_names();
+        let bar = app.tab_bar(layout.tabs, 1.0);
+        let tab = bar
+            .tabs
+            .iter()
+            .find(|tab| names[tab.index] == "Settings")
+            .expect("the tab bar lists Settings");
+        assert_eq!(Some(tab.index), app.state.settings_tab());
+        assert_eq!(app.state.active_tab(), tab.index, "and it is the one shown");
+
+        // Drawn with the gear: every stroke the gear icon makes in that box is in the frame.
+        let frame = draw_at(&mut app, std::time::Instant::now());
+        let mut gear = Frame::default();
+        gear.icon(dacode_render::Icon::Gear, tab.icon, app.state.theme.ink_dim);
+        let drawn: Vec<_> = frame
+            .shapes_on(dacode_render::Layer::Base)
+            .map(|shape| shape.kind)
+            .collect();
+        let wanted: Vec<_> = gear
+            .shapes_on(dacode_render::Layer::Base)
+            .map(|shape| shape.kind)
+            .collect();
+        assert!(!wanted.is_empty());
+        assert!(
+            wanted.iter().all(|kind| drawn.contains(kind)),
+            "the settings tab carries the gear icon"
+        );
+
+        // And again: the gear shows the tab, it does not close it.
+        app.click(false);
+        assert!(app.state.settings_showing());
+    }
+
+    #[test]
+    fn a_click_on_a_settings_control_changes_the_value_and_lights_the_row() {
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-click");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Editor);
+        let geometry = app.settings_page_geometry().expect("the page is showing");
+        let row = geometry
+            .rows
+            .iter()
+            .find(|row| row.field() == Some(Field::SoftWrap))
+            .expect("Editor › Wrapping is on screen");
+        let before = app.state.display.mode;
+
+        app.pointer = middle(row.control.expect("a switch"));
+        app.click(false);
+
+        assert_ne!(app.state.display.mode, before, "the switch flipped");
+        let glow = app.state.chrome.motion.get(
+            dacode::motion::Key::Glow(dacode::settings_ui::glow_index(Field::SoftWrap)),
+            std::time::Instant::now(),
+        );
+        assert!(glow > 0.5, "the row it changed glows: {glow}");
+        assert!(app.settings_changed_at.is_some(), "and a write is waiting");
+        assert_eq!(
+            app.state.focus,
+            dacode::focus::Focus::Editor,
+            "a click on the page gives it the keys"
+        );
+    }
+
+    #[test]
+    fn down_on_the_settings_tab_moves_the_selection_and_keeps_it_on_screen() {
+        // The Keys page is ninety-odd rows, far more than the page shows at this size; walking down
+        // it must scroll, or the selection walks off the bottom and the next → changes a row
+        // nobody can see.
+        let dir = scratch("settings-down");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Keys);
+        app.headless_size = (900, 600);
+        let caret = app.state.cursor();
+        let start = app.state.settings_page.as_ref().unwrap().selected();
+
+        for _ in 0..30 {
+            app.press(Key::named(KeyCode::Down));
+        }
+
+        let selected = app.state.settings_page.as_ref().unwrap().selected();
+        assert!(selected >= start + 30, "{start} → {selected}");
+        let geometry = app.settings_page_geometry().unwrap();
+        let row = geometry
+            .rows
+            .iter()
+            .find(|row| row.index == selected)
+            .expect("the selected row is on screen");
+        assert_eq!(row.clip, row.rect, "and whole");
+        assert_eq!(
+            app.state.cursor(),
+            caret,
+            "the text behind the tab did not move"
+        );
+    }
+
+    #[test]
+    fn the_text_behind_the_settings_tab_is_not_edited_while_it_shows() {
+        // The document is still there behind the tab, out of sight. An undo or a paste that reached
+        // it would change a file nobody can see; a printable key is the search box's.
+        let dir = scratch("settings-no-edits");
+        let mut app = editor(&dir, "a.rs", "abc");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        let _ = app.run(Action::InsertText("x".into()));
+        let text = app.state.document.text().to_string();
+
+        let _ = app.run(Action::ToggleSettings);
+        app.state.focus = dacode::focus::Focus::Editor;
+        let _ = app.run(Action::Undo);
+        let _ = app.run(Action::InsertText("y".into()));
+        let _ = app.run(Action::DeleteBackward);
+        app.press(Key::named(KeyCode::Char('q')));
+        assert_eq!(app.state.document.text().to_string(), text);
+        assert_eq!(
+            app.state
+                .settings_page
+                .as_ref()
+                .map(|page| page.query().to_string()),
+            Some("q".to_string()),
+            "the key went to the search box"
+        );
+
+        // Back on the file, the same keys edit it again.
+        app.press(Key::named(KeyCode::Escape));
+        app.press(Key::named(KeyCode::Escape));
+        assert!(
+            !app.state.settings_showing(),
+            "escape clears the search, then leaves"
+        );
+        let _ = app.run(Action::Undo);
+        assert_ne!(app.state.document.text().to_string(), text);
+    }
+
+    #[test]
+    fn closing_the_settings_tab_leaves_the_buffers_and_panes_as_they_were() {
+        // The tab is not a buffer. Opening and closing it must not renumber a file, move the live
+        // one, or leave a pane pointing at a different file than it was showing.
+        let dir = scratch("settings-close");
+        std::fs::write(dir.join("b.rs"), "b").unwrap();
+        std::fs::write(dir.join("c.rs"), "c").unwrap();
+        let mut app = editor(&dir, "a.rs", "a");
+        app.headless_size = (WINDOW.width as u32, WINDOW.height as u32);
+        app.activate(Target::File(dir.join("b.rs")));
+        app.activate(Target::File(dir.join("c.rs")));
+        let _ = app.run(Action::SplitPane { vertical: true });
+        app.switch_to(1);
+
+        let snapshot = |app: &App| {
+            (
+                app.state.tab_names(),
+                app.state.active_buffer,
+                app.state.file_path.clone(),
+                app.buffers
+                    .iter()
+                    .map(|buffer| buffer.file_path.clone())
+                    .collect::<Vec<_>>(),
+                app.panes.iter().map(|pane| pane.buffer).collect::<Vec<_>>(),
+                app.panes.active(),
+            )
+        };
+        let before = snapshot(&app);
+
+        let _ = app.run(Action::ToggleSettings);
+        assert_eq!(
+            app.state.tab_names().last().map(String::as_str),
+            Some("Settings")
+        );
+        let layout = app.layout();
+        let bar = app.tab_bar(layout.tabs, 1.0);
+        let tab = bar
+            .tabs
+            .iter()
+            .find(|tab| Some(tab.index) == app.state.settings_tab())
+            .expect("on the strip");
+        app.pointer = middle(tab.close);
+        app.click(false);
+        assert!(
+            app.state.settings_page.is_none(),
+            "its close button closes it"
+        );
+        assert_eq!(snapshot(&app), before);
+
+        // And ctrl-w, which closes the tab on screen, closes the settings tab rather than a file.
+        let _ = app.run(Action::ToggleSettings);
+        let _ = app.run(Action::CloseBuffer);
+        assert!(app.state.settings_page.is_none());
+        assert_eq!(snapshot(&app), before);
     }
 
     fn commands(app: &App) -> Palette {

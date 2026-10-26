@@ -13,10 +13,11 @@ use crate::layout::{Layout, contains};
 /// The surface that receives keys the grammar would otherwise take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Focus {
-    /// The text. The default, and what every key means unless somewhere else was chosen.
+    /// The text — or the settings tab, while it is the tab shown where the text would be. The
+    /// default, and what every key means unless somewhere else was chosen.
     #[default]
     Editor,
-    /// Whatever the sidebar is showing: the file tree or the settings panel.
+    /// Whatever the sidebar is showing that takes keys: the file tree.
     Sidebar,
     /// The results panel under the editor.
     Panel,

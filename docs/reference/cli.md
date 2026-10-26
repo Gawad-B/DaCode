@@ -49,51 +49,54 @@ USAGE
     dacode import …            bring settings over from VSCode (`dacode import --help`)
 
 OPTIONS
-    --no-session           start empty rather than reopening the last session
-    --no-welcome           skip the first-run questions
-    --no-vim               start with Vim keys off, whatever the config says
-    --version              print the version and exit
-    --help                 print this and exit
+    --no-session              start empty rather than reopening the last session
+    --no-welcome              skip the first-run questions
+    --version                 print the version and exit
+    --help                    print this and exit
 
 RENDERING WITHOUT A WINDOW
     Renders one frame to a PNG and exits. This is how the design is checked in CI and
     over SSH. Everything below needs --screenshot.
 
-    --screenshot PNG       render one frame to a file and exit
-    --size WxH             the window to render at (default 1600x1000)
-    --light                the light theme
-    --dark                 the dark theme
-    --theme NAME           any built-in or installed theme
-    --mode NAME            normal, insert, visual …
-    --empty                no file open
-    --splash               the cold-start screen
-    --at LINE              put the cursor on a line
-    --at-column N          and a column
-    --scroll-px N          scroll N more pixels, part-way into a row
-    --at-ms N              draw the moment N ms into whatever is animating
-    --columns N            wrap width, in columns
-    --no-wrap              soft wrap off
-    --split N[h]           N panes, `h` for stacked
-    --tree                 the file tree
-    --settings             the settings panel
-    --row N                select a settings row, scrolling to it
-    --welcome STEP         the first-run wizard at one step
-    --folded               with a block folded
-    --git                  the diff gutter
-    --palette QUERY        the file palette, filtered
-    --commands             the command palette
-    --search QUERY         the find box
-    --grep QUERY           project-wide search results
-    --symbols QUERY        the symbol picker
-    --complete PREFIX      the completion popup
-    --diagnostic L:C:MSG   one diagnostic, inline
-    --diagnostics-list     the problems list
-    --help-panel           the F1 key list
-    --menu                 the menu bar
-    --menu-title TITLE     the menu bar open at a title, or `...`
-    --context-menu         a right-click menu
-    --which-key PREFIX     what can follow a half-typed chord
-    --block LINE:COLUMN    a rectangular selection to that corner
+    --screenshot PNG          render one frame to a file and exit
+    --size WxH                the window to render at (default 1600x1000)
+    --light                   the light theme
+    --dark                    the dark theme
+    --theme NAME              any built-in or installed theme
+    --mode NAME               normal, insert, visual …
+    --no-vim                  render with Vim keys off
+    --transparency PERCENT    see-through, over a checkerboard
+    --empty                   no file open
+    --splash                  the cold-start screen
+    --at LINE                 put the cursor on a line
+    --at-column N             and a column
+    --scroll-px N             scroll N more pixels, part-way into a row
+    --at-ms N                 draw the moment N ms into whatever is animating
+    --columns N               wrap width, in columns
+    --no-wrap                 soft wrap off
+    --split N[h]              N panes, `h` for stacked
+    --tree                    the file tree
+    --settings                the settings tab
+    --settings-page NAME      open the settings tab at a page: appearance, editor, keys …
+    --settings-search QUERY   type a search into the settings tab
+    --row N                   select a settings row, scrolling to it
+    --welcome STEP            the first-run wizard at one step
+    --folded                  with a block folded
+    --git                     the diff gutter
+    --palette QUERY           the file palette, filtered
+    --commands                the command palette
+    --search QUERY            the find box
+    --grep QUERY              project-wide search results
+    --symbols QUERY           the symbol picker
+    --complete PREFIX         the completion popup
+    --diagnostic L:C:MSG      one diagnostic, inline
+    --diagnostics-list        the problems list
+    --help-panel              the F1 key list
+    --menu                    the menu bar
+    --menu-title TITLE        the menu bar open at a title, or `...`
+    --context-menu            a right-click menu
+    --which-key PREFIX        what can follow a half-typed chord
+    --block LINE:COLUMN       a rectangular selection to that corner
 
 Configuration lives in %APPDATA%\dacode. DACODE_CONFIG_DIR and DACODE_STATE_DIR move it;
 DACODE_NO_SYSTEM_FONTS=1 makes a render reproducible.
@@ -225,8 +228,10 @@ order.
 | 9 | `--which-key` | `PREFIX` | The which-key popup, driven by the pending cell exactly as a half-typed chord drives it. Quote it: `--which-key '<c-w>'`. |
 | 10 | `--symbols` | `QUERY` | The symbol palette over a canned ten-entry outline, so its indenting and kind column are inspectable without a language server. |
 | 11 | `--commands` | — | The command palette listing every command. |
-| 12 | `--settings` | — | The settings panel, with the language-server and formatter sections detected against this machine — the section is a report, and a screenshot of a report with invented contents verifies nothing. |
-| 12a | `--row` | `N` | Which settings row is selected, clamped to the list. Only meaningful with `--settings`; the panel scrolls to its selection, which is the only way to capture a section below the fold. |
+| 12 | `--settings` | — | The settings tab, with the Languages page's servers and formatters detected against this machine — the page is a report, and a screenshot of a report with invented contents verifies nothing. |
+| 12a | `--settings-page` | `NAME` | The page the tab opens at, by its name in the tree: `appearance`, `editor`, `files`, `keys`, `languages`, `import`. Only meaningful with `--settings`. |
+| 12b | `--settings-search` | `QUERY` | A search typed into the tab, so its results from every page can be captured. Only meaningful with `--settings`. |
+| 12c | `--row` | `N` | Which entry of the page is selected, headings counted, as ↓ would select it. Only meaningful with `--settings`; the page scrolls to its selection, which is the only way to capture a row below the fold. |
 | 13 | `--tree` | — | The file tree, revealing `crates/dacode-text/src/anchor.rs`. Indexes inline, waiting up to two seconds. |
 | 14 | `--split` | `N[h]` | N panes on one buffer, clamped to 1–4, defaulting to 2 if unparseable. A trailing `h` stacks them horizontally; anything else is vertical. Each pane looks at a different place in the file, because identical panes would hide a scroll bug. |
 

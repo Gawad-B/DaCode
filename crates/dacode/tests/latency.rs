@@ -105,8 +105,8 @@ fn state(lines: usize) -> EditorState {
         inlay_hints: Vec::new(),
         show_inlay_hints: false,
         welcome: None,
-        settings: None,
-        setting_sources: std::collections::HashMap::new(),
+        settings_page: None,
+        settings_active: false,
         tree: None,
         autosave: false,
         line_numbers: dacode::config::LineNumbers::Relative,
@@ -370,8 +370,9 @@ fn every_frame_a_panel_adds_is_still_bounded_by_the_viewport() {
     type Panel = (&'static str, fn(&mut EditorState));
 
     let panels: [Panel; 4] = [
-        ("the settings panel", |state| {
-            state.settings = Some(dacode::settings_ui::Settings::new());
+        ("the settings tab", |state| {
+            state.settings_page = Some(dacode::settings_ui::Page::new());
+            state.settings_active = true;
         }),
         ("the problems list", |state| {
             state.show_diagnostics = true;

@@ -1,154 +1,24 @@
-//! The settings panel.
+//! The settings tab: its model, its geometry, and the block it writes into `init.lua`.
 //!
-//! A list of every option, its current value, and **where that value came from** — default, imported
-//! from VSCode, or your own `init.lua`. That last column is the reason this exists rather than being
-//! only a file: when a setting is not what you expect, the useful question is which of three places
-//! last set it, and no text editor answers that by showing you one of them.
+//! JetBrains' category tree on the left, VSCode's rows on the right — a setting's name, a sentence
+//! or two under it when the name does not say everything, and its control — with one search box
+//! over all of it. The drawing (`chrome::draw_settings_page`) and the mouse both read
+//! [`Page::geometry_at`], so a click cannot land somewhere other than where it looks.
 //!
-//! Changes apply immediately and are written back to `init.lua` on request, into a clearly marked
-//! block at the end of the file. Rewriting the user's own lines is not attempted: config is *code*
-//! here, a `dacode.set` call may be inside a loop or a condition, and an editor that reformats your
-//! program to store a checkbox has overstepped. Appending wins because `init.lua` applies in order,
-//! so the panel's block is simply the last word.
+//! Changes apply immediately and are written back to `init.lua` a moment after the last one, into a
+//! clearly marked block at the end of the file. Rewriting the user's own lines is not attempted:
+//! config is *code* here, a `dacode.set` call may be inside a loop or a condition, and an editor that
+//! reformats your program to store a checkbox has overstepped. Appending wins because `init.lua`
+//! applies in order, so the page's block is simply the last word.
 
 use dacode_render::Rect;
 use dacode_theme::{Theme, Typography, space};
 
-/// One row of the panel, and the box it occupies.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Placement {
-    pub line: Line,
-    /// Its index in [`Settings::lines`], which is what `selected` counts in.
-    pub index: usize,
-    /// The full-width block, for the highlight and for the hit test.
-    pub rect: Rect,
-}
-
-/// A section heading, and where it goes.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Heading {
-    pub label: &'static str,
-    pub rect: Rect,
-}
-
-/// Where everything in the panel is.
-#[derive(Debug, Clone)]
-pub struct Panel {
-    /// Only the rows that fit. A row that would run into the footer is not drawn *and* not
-    /// clickable — the two must agree, which is the whole reason this type exists.
-    pub rows: Vec<Placement>,
-    /// The section headings that are on screen.
-    pub headings: Vec<Heading>,
-    pub footer: Rect,
-    /// Whether anything is scrolled out of view, so the panel can say so.
-    pub scrolls: bool,
-    /// Content width inside the padding, for text.
-    pub width: f32,
-    pub pad: f32,
-    pub line: f32,
-}
-
-/// Lays the panel out.
+/// Where a value came from: the built-in default, `init.lua`, or an import from VSCode.
 ///
-/// **One definition, read by the drawing code and by the mouse.** The panel had two: the drawing
-/// walked the row list and the click handler walked it again. That was survivable while the list
-/// never moved, and stopped being survivable the moment it started scrolling — a click then
-/// selected whichever row *used* to be under the pointer. That is precisely the failure `layout.rs`
-/// exists to prevent, reproduced in the panel next door, and it is why this returns rectangles
-/// rather than a formula for them.
-pub fn panel(rect: Rect, scale: f32, settings: &Settings) -> Panel {
-    let selected = settings.selected;
-    let pad = space::LG * scale;
-    let line = 20.0 * scale;
-    let width = rect.width - pad * 2.0;
-
-    // Under the heading, and above the footer.
-    let top = rect.y + pad + line * 1.7;
-    let footer = Rect::new(rect.x + pad, rect.bottom() - line * 2.2, width, line);
-    let bottom = footer.y - line * 0.6;
-
-    let entries = settings.lines();
-    let mut flow = 0.0;
-    let mut blocks = Vec::with_capacity(entries.len());
-    for entry in &entries {
-        // A heading before each section, so a checklist and a report do not read as more settings.
-        let heading = section(*entry).map(|label| {
-            flow += line * 0.6;
-            let at = (flow, label);
-            flow += line * 1.4;
-            at
-        });
-        let block = match entry {
-            Line::Option(_) => line * 2.0,
-            // Two lines: what DaCode looked for, and what it found.
-            Line::Server(_) | Line::Formatter(_) => line * 2.0,
-            _ => line * 1.4,
-        };
-        blocks.push((heading, flow, block));
-        flow += block + 4.0 * scale;
-    }
-
-    // Scroll by as little as it takes to keep the selection in view: a list that jumps while you
-    // walk down it is harder to read than one that holds still.
-    let window = (bottom - top).max(line);
-    let scrolls = flow > window;
-    let scroll = if scrolls {
-        blocks
-            .get(selected)
-            .map(|(_, at, block)| (at + block - window).max(0.0).min(*at))
-            .unwrap_or(0.0)
-            .clamp(0.0, flow - window)
-    } else {
-        0.0
-    };
-
-    let mut headings = Vec::new();
-    let mut rows = Vec::with_capacity(entries.len());
-    for (index, (entry, (at_heading, at, block))) in entries.iter().zip(&blocks).enumerate() {
-        if let Some((at_heading, label)) = at_heading {
-            let y = top - scroll + at_heading;
-            if y >= top && y + line <= bottom {
-                headings.push(Heading {
-                    label,
-                    rect: Rect::new(rect.x + pad, y, width, line),
-                });
-            }
-        }
-
-        // Half a row hanging into the footer is what this pass exists to stop.
-        let y = top - scroll + at;
-        if y < top || y + block > bottom {
-            continue;
-        }
-        rows.push(Placement {
-            line: *entry,
-            index,
-            rect: Rect::new(rect.x, y, rect.width, *block),
-        });
-    }
-
-    Panel {
-        rows,
-        headings,
-        footer,
-        scrolls,
-        width,
-        pad,
-        line,
-    }
-}
-
-/// The heading a row starts, if it starts one.
-fn section(entry: Line) -> Option<&'static str> {
-    match entry {
-        Line::Import(Importable::Settings) => Some("import from vscode"),
-        Line::Server(0) => Some("language servers"),
-        Line::Formatter(0) => Some("formatters"),
-        _ => None,
-    }
-}
-
-/// Where a value came from. The point of the panel.
+/// Kept by `config::load` for each setting it reads. The page no longer prints it beside every value
+/// — readers took "init.lua" and "imported" for section names, and it explained nothing — but where
+/// a value came from is still worth knowing to the code that loads it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Source {
     /// The built-in default — nothing has set it.
@@ -190,6 +60,15 @@ pub enum Field {
     Animations,
 }
 
+/// The index a field's glow is keyed by (`motion::Key::Glow`): its place in [`Field::ALL`], a set
+/// that does not grow, as every key with an index must be.
+pub fn glow_index(field: Field) -> u32 {
+    Field::ALL
+        .iter()
+        .position(|candidate| *candidate == field)
+        .unwrap_or(0) as u32
+}
+
 impl Field {
     pub const ALL: [Field; 12] = [
         Field::VimKeys,
@@ -220,39 +99,6 @@ impl Field {
             Field::Autosave => "autosave",
             Field::Transparency => "transparency",
             Field::Animations => "animations",
-        }
-    }
-
-    /// What the panel calls the row.
-    ///
-    /// Separate from [`Field::name`], which is the key written to `init.lua` and read back, and so
-    /// cannot change. This is the label, and with the modal grammar off it stops saying "vim".
-    pub fn title(self, modal: bool) -> &'static str {
-        match (self, modal) {
-            (Field::VimKeys, false) => "modal editing",
-            _ => self.name(),
-        }
-    }
-
-    pub fn help(self, modal: bool) -> &'static str {
-        match self {
-            // The one row that must talk about Vim, since it is the switch. With the switch already
-            // off, though, describing what "off" means is describing where the reader already is —
-            // so it says what turning it *on* would do.
-            Field::VimKeys if modal => "vim's modal editing: normal, insert and visual",
-            Field::VimKeys => "off: typing always inserts. on: vim's modal editing",
-            Field::FontSize => "size of the code face, in pixels",
-            Field::TabWidth => "columns a tab stands for",
-            Field::SoftWrap => "wrap long lines instead of scrolling sideways",
-            Field::FormatOnSave => "reformat through the language server after each save",
-            Field::Theme => "one of the six that ship with DaCode",
-            Field::LineNumbers if modal => "absolute, relative (vim's), or none at all",
-            Field::LineNumbers => "absolute, relative, or none at all",
-            Field::StickyScroll => "pin enclosing block heads above the viewport",
-            Field::InlayHints => "show inferred types and parameter names inline",
-            Field::Autosave => "write the file a moment after you stop typing",
-            Field::Transparency => "how much of the desktop shows through the window",
-            Field::Animations => "full, reduced (no overshoot) or off (everything jumps)",
         }
     }
 }
@@ -296,21 +142,17 @@ impl Importable {
     }
 }
 
-/// Every row in the panel: the options, then the import checklist, then the action that runs it,
-/// then what DaCode found when it looked for language servers.
-///
-/// One list rather than several panes, so `j` and `k` walk the whole thing and there is no second
-/// focus to keep track of.
+/// A row of the Import and Languages pages: an import item to tick, the actions that import and
+/// load, and what DaCode found when it looked for language servers and formatters.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Line {
-    Option(Field),
     Import(Importable),
     RunImport,
     /// Load a colour scheme from a file, in any format the importer reads.
     LoadTheme,
-    /// An index into [`Settings::servers`].
+    /// An index into [`Page::servers`].
     Server(usize),
-    /// An index into [`Settings::formatters`].
+    /// An index into [`Page::formatters`].
     Formatter(usize),
 }
 
@@ -457,103 +299,6 @@ pub fn detect_formatters(
     }
 
     rows
-}
-
-/// The panel's state: which row is selected, and whether anything is unsaved.
-pub struct Settings {
-    pub selected: usize,
-    /// Fields changed since the panel opened, so the footer can say there is something to write.
-    pub dirty: bool,
-    /// Which import items are ticked. Nothing, until asked — the same default the CLI has.
-    pub ticked: Vec<Importable>,
-    /// What the last import said, shown in place of the hint.
-    pub import_report: Option<String>,
-    /// What DaCode found when it looked for language servers, gathered when the panel opened.
-    ///
-    /// Gathered once rather than per frame: finding a program means walking `PATH` and asking the
-    /// filesystem about every candidate, which is exactly the kind of unbounded work that must
-    /// never happen while drawing.
-    pub servers: Vec<ServerRow>,
-    /// The same, for external formatters.
-    pub formatters: Vec<ServerRow>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Settings {
-    pub fn new() -> Self {
-        Self {
-            selected: 0,
-            dirty: false,
-            ticked: Vec::new(),
-            import_report: None,
-            servers: Vec::new(),
-            formatters: Vec::new(),
-        }
-    }
-
-    /// Every line, in display order.
-    ///
-    /// A method rather than an associated function because the last section's length depends on how
-    /// many servers were found — and a layout that disagrees with the list it is laying out is the
-    /// defect this module already has one test for.
-    pub fn lines(&self) -> Vec<Line> {
-        Field::ALL
-            .iter()
-            .map(|field| Line::Option(*field))
-            .chain(Importable::ALL.iter().map(|item| Line::Import(*item)))
-            .chain([Line::RunImport, Line::LoadTheme])
-            .chain((0..self.servers.len()).map(Line::Server))
-            .chain((0..self.formatters.len()).map(Line::Formatter))
-            .collect()
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        let last = self.lines().len() - 1;
-        self.selected = match delta {
-            d if d < 0 => self.selected.saturating_sub(d.unsigned_abs()),
-            d => (self.selected + d as usize).min(last),
-        };
-    }
-
-    /// The selected line.
-    pub fn line(&self) -> Line {
-        let lines = self.lines();
-        lines[self.selected.min(lines.len() - 1)]
-    }
-
-    /// The selected option, when one is selected.
-    pub fn field(&self) -> Option<Field> {
-        match self.line() {
-            Line::Option(field) => Some(field),
-            _ => None,
-        }
-    }
-
-    pub fn is_ticked(&self, item: Importable) -> bool {
-        self.ticked.contains(&item)
-    }
-
-    pub fn tick(&mut self, item: Importable) {
-        if let Some(at) = self.ticked.iter().position(|ticked| *ticked == item) {
-            self.ticked.remove(at);
-        } else {
-            self.ticked.push(item);
-        }
-    }
-
-    /// The checklist to hand the importer.
-    pub fn checklist(&self) -> dacode_import::Checklist {
-        self.ticked
-            .iter()
-            .fold(dacode_import::Checklist::nothing(), |list, item| {
-                list.with(item.item())
-            })
-    }
 }
 
 /// The values the panel shows and edits.
@@ -718,14 +463,16 @@ fn on_off(value: bool) -> String {
     if value { "on".into() } else { "off".into() }
 }
 
-/// The marker the panel's block is written under.
+/// The marker the settings block is written under. Its words predate the tab and are kept: an
+/// `init.lua` already carrying this line has to be found by it, or the next save appends a second
+/// block.
 const MARKER: &str =
     "-- dacode: written by the settings panel (ctrl-,). Edit freely — rewritten on save.";
 
 /// The start of the marker vex wrote, before the editor was called DaCode.
 const LEGACY_MARKER: &str = "-- vex: written by the settings panel";
 
-/// Rewrites `init.lua` so the panel's block reflects `values`.
+/// Rewrites `init.lua` so the settings block reflects `values`.
 ///
 /// Everything the user wrote is preserved verbatim; only the block under [`MARKER`] is replaced, and
 /// it is appended if absent. `init.lua` applies in order, so the panel's block being last is what
@@ -801,12 +548,12 @@ pub fn write_back(existing: &str, values: &Values) -> String {
 
 // ---- the settings page --------------------------------------------------------------------------
 //
-// The tab that replaces the panel above: JetBrains' category tree on the left, VSCode's rows on the
-// right — a setting's name, a sentence or two under it when the name does not say everything, and
-// its control — and one search box over all of it. This half is the model and the geometry; the
-// drawing and the mouse both read `Page::geometry`, for the reason `panel` gives.
+// JetBrains' category tree on the left, VSCode's rows on the right — a setting's name, a sentence
+// or two under it when the name does not say everything, and its control — and one search box over
+// all of it. This half is the model and the geometry; the drawing and the mouse both read
+// `Page::geometry_at`, so a click lands on the row that is drawn under the pointer.
 //
-// What the old panel printed beside every value — "default", "init.lua", "imported" — is gone. It
+// What the sidebar panel this replaced printed beside every value — "default", "init.lua", "imported" — is gone. It
 // answered where a value came from, which readers took for section names, and it explained
 // nothing. What a reader wants from a row is what the setting does and whether they have changed
 // it; the explanation says the first, and a ● against the default says the second.
@@ -1169,7 +916,7 @@ impl Line {
             Line::Import(Importable::Snippets) => Some("Snippets"),
             Line::RunImport => Some("Import the ticked items"),
             Line::LoadTheme => Some("Load a colour scheme"),
-            Line::Option(_) | Line::Server(_) | Line::Formatter(_) => None,
+            Line::Server(_) | Line::Formatter(_) => None,
         }
     }
 
@@ -1184,7 +931,7 @@ impl Line {
                 "Reads a colour scheme file in any format the importer understands, and keeps a \
                  copy so it survives a restart.",
             ),
-            Line::Option(_) | Line::Import(_) | Line::Server(_) | Line::Formatter(_) => None,
+            Line::Import(_) | Line::Server(_) | Line::Formatter(_) => None,
         }
     }
 }
@@ -1203,6 +950,38 @@ pub enum Entry {
     Command(&'static Command),
     /// A row of the Languages or Import page.
     Line(Line),
+    /// A row that takes you somewhere else: a link, not a setting.
+    Link(Link),
+}
+
+/// Where a link row goes.
+///
+/// A variant of its own rather than another [`Line`], because it is not an import or a report and
+/// the page treats it differently from both: it has no control, it is chosen like an action, and
+/// what choosing it does — opening a file — belongs to the editor rather than to the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    /// The Keys page's way to change a shortcut, which the page itself does not offer: rebinding from
+    /// the list is out of scope, and a list of keys with no word on how to change one reads as a
+    /// list of keys that cannot be changed.
+    RebindKeys,
+}
+
+impl Link {
+    pub fn label(self) -> &'static str {
+        match self {
+            Link::RebindKeys => "Rebind a key in init.lua",
+        }
+    }
+
+    /// What choosing it does, said on the status line when it is chosen — the row itself is one line,
+    /// so the first row of the Keys page fits under the search box at the smallest sizes. Searched,
+    /// so "dacode.map" finds the row.
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Link::RebindKeys => "a key is rebound with dacode.map(mode, keys, command) in init.lua",
+        }
+    }
 }
 
 impl Entry {
@@ -1245,6 +1024,8 @@ pub struct Page {
     selected: usize,
     servers: Vec<ServerRow>,
     formatters: Vec<ServerRow>,
+    /// Which import items are ticked. Nothing, until asked — the same default the CLI has.
+    ticked: Vec<Importable>,
     flow: RefCell<Option<Flow>>,
 }
 
@@ -1308,6 +1089,9 @@ pub struct PageRow {
     /// The ● and, on hover, the ⟲: present only when a setting differs from its default and
     /// [`Field::resettable`] allows it.
     pub reset: Option<Rect>,
+    /// The theme row's colour chip, inside `control` at its left: the theme shown rather than only
+    /// named. The control is measured with room for it, so the name beside it is not cut shorter.
+    pub swatch: Option<Rect>,
 }
 
 impl PageRow {
@@ -1366,6 +1150,10 @@ impl PageGeometry {
 fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
 }
+
+/// What the folded tree's button says during a search. Measured with the page titles when the button
+/// is sized, so it is never cut to "All resul…".
+const ALL_RESULTS: &str = "All results";
 
 /// The widest the list gets. Past this a line of explanation runs to a hundred characters, too long
 /// for the eye to find the start of the next one.
@@ -1433,9 +1221,19 @@ impl Metrics {
                     .chain([values.get(field).chars().count()])
                     .max()
                     .unwrap_or(0);
-                longest as f32 * self.ui_advance + self.control + self.gap * 2.0
+                let swatch = if field == Field::Theme {
+                    self.swatch() + self.gap
+                } else {
+                    0.0
+                };
+                longest as f32 * self.ui_advance + self.control + self.gap * 2.0 + swatch
             }
         }
+    }
+
+    /// The side of the theme's colour chip.
+    fn swatch(&self) -> f32 {
+        (self.control * 0.55).round()
     }
 
     /// How many lines `text` wraps to in `width`, by the same function the drawing wraps it with.
@@ -1448,21 +1246,26 @@ impl Metrics {
     ///
     /// The first heading has no space above it, and on a folded page none at all: the folded tree's
     /// button already names the page, and those pixels are the difference between a setting fitting
-    /// under the search box and not.
+    /// under the search box and not. A search's first heading is kept, folded or not: the button
+    /// then says "All results", and only the heading says which page "Soft wrap" came from.
     fn height(&self, entry: Entry, leading: bool, folded: bool, inner: f32, modal: bool) -> Slot {
         let explained = |text: Option<&str>| text.map_or(0, |text| self.lines(text, inner));
         let (height, lines) = match entry {
-            Entry::Heading { .. } if leading && folded => (0.0, 0),
+            Entry::Heading { category: None, .. } if leading && folded => (0.0, 0),
             Entry::Heading { .. } if leading => (self.label_line + self.small, 0),
             Entry::Heading { .. } => (self.heading_space + self.label_line, 0),
             Entry::Command(_) => (self.label_line + self.gap, 0),
             Entry::Line(Line::Server(_) | Line::Formatter(_)) => {
                 (self.gap * 2.0 + self.label_line + self.text_line, 1)
             }
-            Entry::Field(_) | Entry::Line(_) => {
+            Entry::Field(_) | Entry::Line(_) | Entry::Link(_) => {
                 let lines = match entry {
                     Entry::Field(field) => explained(field.explanation(modal)),
                     Entry::Line(line) => explained(line.explanation()),
+                    // One line, with no sentence under it: it heads the Keys page, and at the
+                    // smallest sizes the first row has to fit under the search box whole. What it
+                    // does is said when it is chosen.
+                    Entry::Link(_) => 0,
                     Entry::Heading { .. } | Entry::Command(_) => 0,
                 };
                 let text = if lines > 0 {
@@ -1510,7 +1313,9 @@ impl Skeleton {
             let width = (rect.width - pad * 2.0).clamp(0.0, PAGE_WIDTH * scale);
             let longest = Category::ALL
                 .iter()
-                .map(|category| category.title().chars().count())
+                .map(|category| category.title())
+                .chain([ALL_RESULTS])
+                .map(|title| title.chars().count())
                 .max()
                 .unwrap_or(0);
             let button =
@@ -1599,6 +1404,7 @@ impl Page {
             selected: 1,
             servers: Vec::new(),
             formatters: Vec::new(),
+            ticked: Vec::new(),
             flow: RefCell::new(None),
         }
     }
@@ -1651,6 +1457,39 @@ impl Page {
         self.selected
     }
 
+    pub fn is_ticked(&self, item: Importable) -> bool {
+        self.ticked.contains(&item)
+    }
+
+    /// Ticks an import item, or unticks it when it already is.
+    pub fn tick(&mut self, item: Importable) {
+        if let Some(at) = self.ticked.iter().position(|ticked| *ticked == item) {
+            self.ticked.remove(at);
+        } else {
+            self.ticked.push(item);
+        }
+    }
+
+    /// The checklist to hand the importer: what is ticked, and nothing else.
+    pub fn checklist(&self) -> dacode_import::Checklist {
+        self.ticked
+            .iter()
+            .fold(dacode_import::Checklist::nothing(), |list, item| {
+                list.with(item.item())
+            })
+    }
+
+    /// What the folded tree's one button says: the open page, or — while a search is showing rows
+    /// from every page — that it is. Naming one page over a list that mixes all six read as though
+    /// "Soft wrap" belonged under "Appearance".
+    pub fn folded_label(&self) -> &'static str {
+        if self.needle().is_some() {
+            ALL_RESULTS
+        } else {
+            self.category.title()
+        }
+    }
+
     /// The selected entry, or `None` on a list with nothing to select.
     pub fn selected_entry(&self, modal: bool) -> Option<Entry> {
         self.entries(modal)
@@ -1691,9 +1530,10 @@ impl Page {
                 .collect(),
             // `available` rather than the whole table: with the grammar off there is no visual
             // mode to list a key for.
-            Category::Keys => Group::ALL
-                .into_iter()
-                .map(|group| {
+            // The way to change a key first, where someone who came to change one looks; then every
+            // command under the help panel's groups.
+            Category::Keys => std::iter::once(("Rebinding", vec![Entry::Link(Link::RebindKeys)]))
+                .chain(Group::ALL.into_iter().map(|group| {
                     (
                         group_title(group),
                         commands::available(modal)
@@ -1701,7 +1541,7 @@ impl Page {
                             .map(Entry::Command)
                             .collect(),
                     )
-                })
+                }))
                 .collect(),
             Category::Languages => vec![
                 (
@@ -1769,6 +1609,7 @@ impl Page {
             Entry::Command(command) => {
                 found(command.name) || found(command.what) || found(&command.shown(modal))
             }
+            Entry::Link(link) => found(link.label()) || found(link.explanation()),
             Entry::Line(line) => {
                 line.label().is_some_and(found)
                     || line.explanation().is_some_and(found)
@@ -2134,6 +1975,7 @@ impl Layout<'_> {
             explanation: None,
             control: None,
             reset: None,
+            swatch: None,
         };
 
         let text =
@@ -2183,6 +2025,15 @@ impl Layout<'_> {
                     reserve,
                 );
                 row.control = Some(control);
+                row.swatch = (field == Field::Theme).then(|| {
+                    let side = metrics.swatch().min(control.height).min(control.width);
+                    Rect::new(
+                        control.x + metrics.gap,
+                        control.y + (control.height - side) / 2.0,
+                        side,
+                        side,
+                    )
+                });
                 row.reset = reset.then(|| {
                     Rect::new(
                         control.x - metrics.gap - metrics.control,
@@ -2194,6 +2045,10 @@ impl Layout<'_> {
                 let end = row.reset.unwrap_or(control).x - metrics.gap;
                 row.label = Rect::new(x, y, (end - x).max(0.0), metrics.control);
                 row.explanation = text(y + metrics.control + metrics.small);
+            }
+            Entry::Link(_) => {
+                let y = rect.y + metrics.gap;
+                row.label = Rect::new(x, y, inner, metrics.control);
             }
             Entry::Line(line) => {
                 let y = rect.y + metrics.gap;
@@ -2265,70 +2120,6 @@ mod tests {
     }
 
     #[test]
-    fn a_click_selects_the_row_it_looks_like_it_selects_at_every_height() {
-        // The regression this exists for: the drawing code was taught to scroll and the click
-        // handler was not, so in any window short enough to scroll the panel a click selected
-        // whichever row *used* to be under the pointer. One function now answers both, and this is
-        // the test that says so — at every height, and at every scroll position the panel can be in.
-        let mut settings = Settings::new();
-        settings.servers = vec![
-            ServerRow {
-                language: "Python".into(),
-                program: ".venv/bin/pylsp".into(),
-                status: "not found — check the path in init.lua".into(),
-                found: false,
-                configured: true,
-            },
-            ServerRow {
-                language: "Rust".into(),
-                program: "rust-analyzer".into(),
-                status: "/home/x/.cargo/bin/rust-analyzer".into(),
-                found: true,
-                configured: false,
-            },
-        ];
-
-        for height in [300.0_f32, 420.0, 560.0, 700.0, 860.0, 1000.0] {
-            for selected in 0..settings.lines().len() {
-                settings.selected = selected;
-                let rect = Rect::new(1300.0, 120.0, 292.0, height);
-                let panel = panel(rect, 1.0, &settings);
-
-                for row in &panel.rows {
-                    for probe in [row.rect.y + 1.0, row.rect.y + row.rect.height / 2.0] {
-                        let hit = panel
-                            .rows
-                            .iter()
-                            .find(|other| probe >= other.rect.y && probe < other.rect.bottom());
-                        assert_eq!(
-                            hit.map(|hit| hit.index),
-                            Some(row.index),
-                            "at height {height} with row {selected} selected, a click inside row \
-                             {} landed elsewhere",
-                            row.index
-                        );
-                    }
-                }
-
-                // Nothing may overlap the footer, which is what the original defect looked like.
-                for row in &panel.rows {
-                    assert!(
-                        row.rect.bottom() <= panel.footer.y,
-                        "a row runs into the footer at height {height}"
-                    );
-                }
-
-                // The selection is always reachable: a list that scrolls away from the thing you
-                // are changing is worse than one that does not scroll.
-                assert!(
-                    panel.rows.iter().any(|row| row.index == selected),
-                    "row {selected} is not visible at height {height}"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn a_named_server_is_reported_separately_from_the_one_dacode_would_fall_back_to() {
         // The failure this section exists to expose: a mistyped path in init.lua, hidden behind a
         // working fallback. Reporting only the winner would say "Python: found" and be useless.
@@ -2358,46 +2149,6 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_tall_panel_does_not_scroll_at_all() {
-        let settings = Settings::new();
-        let panel = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, &settings);
-        assert!(!panel.scrolls);
-        assert_eq!(panel.rows.len(), settings.lines().len(), "all of it fits");
-        assert!(
-            panel
-                .headings
-                .iter()
-                .any(|h| h.label == "import from vscode"),
-            "including the import heading"
-        );
-    }
-
-    #[test]
-    fn the_language_server_section_appears_only_when_there_is_something_to_report() {
-        // A heading over nothing is worse than no heading: it reads as a section that failed to
-        // load rather than one that had nothing to say.
-        let mut settings = Settings::new();
-        let empty = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, &settings);
-        assert!(!empty.headings.iter().any(|h| h.label == "language servers"));
-
-        settings.servers.push(ServerRow {
-            language: "Rust".into(),
-            program: "rust-analyzer".into(),
-            status: "/usr/bin/rust-analyzer".into(),
-            found: true,
-            configured: false,
-        });
-        let filled = panel(Rect::new(0.0, 0.0, 292.0, 1400.0), 1.0, &settings);
-        assert!(
-            filled
-                .headings
-                .iter()
-                .any(|h| h.label == "language servers")
-        );
-        assert_eq!(*settings.lines().last().unwrap(), Line::Server(0));
     }
 
     fn values() -> Values {
@@ -2526,15 +2277,6 @@ mod tests {
     }
 
     #[test]
-    fn the_selection_cannot_leave_the_list() {
-        let mut settings = Settings::new();
-        settings.move_selection(-3);
-        assert_eq!(settings.selected, 0);
-        settings.move_selection(99);
-        assert_eq!(settings.selected, settings.lines().len() - 1);
-    }
-
-    #[test]
     fn writing_to_an_empty_config_produces_a_readable_block() {
         let written = write_back("", &values());
         assert!(written.starts_with(MARKER));
@@ -2637,56 +2379,6 @@ mod tests {
         assert_eq!(
             config.font_size.map(|size| format!("{size:.1}")),
             Some(original.get(Field::FontSize))
-        );
-    }
-
-    #[test]
-    fn the_panel_is_one_list_of_options_then_imports_then_the_action() {
-        let lines = Settings::new().lines();
-        // Options, then the import checklist, then the two actions.
-        assert_eq!(lines.len(), Field::ALL.len() + Importable::ALL.len() + 2);
-        assert_eq!(
-            lines[0],
-            Line::Option(Field::VimKeys),
-            "the modal switch comes first: it changes what every other key does"
-        );
-        assert_eq!(lines[Field::ALL.len()], Line::Import(Importable::Settings));
-        assert_eq!(*lines.last().unwrap(), Line::LoadTheme);
-        assert!(lines.contains(&Line::RunImport));
-    }
-
-    #[test]
-    fn the_selection_walks_the_whole_list_and_stops() {
-        let mut settings = Settings::new();
-        settings.move_selection(99);
-        assert_eq!(settings.line(), Line::LoadTheme);
-        assert_eq!(settings.field(), None, "the action row is not an option");
-
-        settings.move_selection(-99);
-        assert_eq!(settings.field(), Some(Field::VimKeys));
-    }
-
-    #[test]
-    fn nothing_is_ticked_until_asked() {
-        // The rule the import CLI already follows: an import that replaces your theme because you
-        // wanted your keybindings is an import nobody runs twice.
-        let mut settings = Settings::new();
-        assert!(settings.checklist().is_empty());
-
-        settings.tick(Importable::Theme);
-        assert!(settings.is_ticked(Importable::Theme));
-        assert!(!settings.is_ticked(Importable::Settings));
-        assert!(settings.checklist().wants(dacode_import::ImportItem::Theme));
-        assert!(
-            !settings
-                .checklist()
-                .wants(dacode_import::ImportItem::Settings)
-        );
-
-        settings.tick(Importable::Theme);
-        assert!(
-            !settings.is_ticked(Importable::Theme),
-            "ticking again unticks"
         );
     }
 
@@ -3574,5 +3266,150 @@ mod page_tests {
                 .map(|flow| flow.entries.as_ptr()),
             built
         );
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+
+    fn editor(width: f32, height: f32, scale: f32) -> Rect {
+        crate::layout::Layout::of(Rect::new(0.0, 0.0, width, height), scale, None, 0.0).editor
+    }
+
+    #[test]
+    fn nothing_is_ticked_until_asked() {
+        // The rule the import CLI already follows: an import that replaces your theme because you
+        // wanted your keybindings is an import nobody runs twice.
+        let mut page = Page::new();
+        assert!(page.checklist().is_empty());
+
+        page.tick(Importable::Theme);
+        assert!(page.is_ticked(Importable::Theme));
+        assert!(!page.is_ticked(Importable::Settings));
+        assert!(page.checklist().wants(dacode_import::ImportItem::Theme));
+        assert!(!page.checklist().wants(dacode_import::ImportItem::Settings));
+
+        page.tick(Importable::Theme);
+        assert!(!page.is_ticked(Importable::Theme), "ticking again unticks");
+    }
+
+    #[test]
+    fn the_keys_page_says_how_to_rebind_from_a_row_that_scrolls_with_the_list() {
+        // Rebinding from the list is out of scope, and a list of keys with no word on how to change
+        // one reads as keys that cannot be changed. The way is a row: it is selected, scrolled and
+        // clicked like any other, rather than a box drawn somewhere the mouse was not told about.
+        let modal = true;
+        let mut page = Page::new();
+        page.set_category(Category::Keys, modal);
+        let link = Entry::Link(Link::RebindKeys);
+        assert_eq!(
+            page.selected_entry(modal),
+            Some(link),
+            "it is the first thing on the page"
+        );
+
+        let rect = editor(1600.0, 1000.0, 1.0);
+        let values = Values::defaults(modal);
+        let typography = Typography::default();
+        let at_top = page.geometry(rect, 1.0, &values, modal, &typography);
+        let row = at_top
+            .rows
+            .iter()
+            .find(|row| row.entry == link)
+            .expect("on screen at the top");
+        let middle = |rect: Rect| (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let (x, y) = middle(row.label);
+        assert_eq!(at_top.hit(x, y), Some((row.index, Part::Row)));
+
+        page.scroll_by(10_000.0, rect, 1.0, modal, &typography);
+        let scrolled = page.geometry(rect, 1.0, &values, modal, &typography);
+        assert!(
+            scrolled.rows.iter().all(|row| row.entry != link),
+            "and it scrolls away with the list"
+        );
+
+        page.set_query("rebind", modal);
+        assert!(
+            page.entries(modal).contains(&link),
+            "a search for how to rebind finds it"
+        );
+    }
+
+    #[test]
+    fn a_folded_tree_names_every_page_while_a_search_shows_them_all() {
+        // At 640x480 a search for "wrap" showed Soft wrap under a button saying "Appearance": the
+        // list is every page's during a search, and the button must not claim it for one.
+        let modal = true;
+        let mut page = Page::new();
+        assert_eq!(page.folded_label(), "Appearance");
+        page.set_query("wrap", modal);
+        assert_eq!(page.folded_label(), "All results");
+        page.set_query("  ", modal);
+        assert_eq!(
+            page.folded_label(),
+            "Appearance",
+            "only whitespace is no search"
+        );
+
+        // Folded, the button has room for the whole of it, and the first group keeps its heading:
+        // the button no longer names a page, so only the heading says where "Soft wrap" lives.
+        page.set_query("wrap", modal);
+        let typography = Typography::default();
+        for scale in [1.0, 2.0] {
+            let rect = editor(540.0 * scale, 480.0 * scale, scale);
+            let geometry = page.geometry(rect, scale, &Values::defaults(modal), modal, &typography);
+            assert!(geometry.folded, "folded at 540 wide");
+            let button = geometry.tree[0].1;
+            let advance = crate::layout::measured_advance(&typography, Role::Ui, scale);
+            assert!(
+                button.width >= ALL_RESULTS.chars().count() as f32 * advance,
+                "\"{ALL_RESULTS}\" fits its button at {scale}"
+            );
+            let first = geometry.rows.first().expect("a row");
+            assert_eq!(first.heading(), Some("Wrapping"));
+            assert!(first.label.height > 0.0, "and it is drawn at {scale}");
+        }
+    }
+
+    #[test]
+    fn the_theme_row_has_room_for_its_swatch_inside_its_control() {
+        // The swatch is drawn inside the control, from this box — so it must be there, inside it,
+        // and leave the rest of the control for the name.
+        let modal = true;
+        let mut page = Page::new();
+        page.set_category(Category::Appearance, modal);
+        let values = Values::defaults(modal);
+        let typography = Typography::default();
+        for scale in [1.0, 2.0] {
+            let geometry = page.geometry(
+                editor(1600.0, 1000.0, scale),
+                scale,
+                &values,
+                modal,
+                &typography,
+            );
+            let row = geometry
+                .rows
+                .iter()
+                .find(|row| row.field() == Some(Field::Theme))
+                .expect("the theme row is on screen");
+            let (control, swatch) = (row.control.unwrap(), row.swatch.expect("a swatch"));
+            assert!(
+                swatch.x >= control.x
+                    && swatch.right() <= control.right()
+                    && swatch.y >= control.y
+                    && swatch.bottom() <= control.bottom(),
+                "{swatch:?} outside {control:?}"
+            );
+            assert!(
+                geometry
+                    .rows
+                    .iter()
+                    .filter(|other| other.field() != Some(Field::Theme))
+                    .all(|other| other.swatch.is_none()),
+                "only the theme has one"
+            );
+        }
     }
 }

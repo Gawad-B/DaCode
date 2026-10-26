@@ -81,6 +81,13 @@ impl Spring {
     };
     /// The push that swings a [`Spring::WOBBLE`] about one unit out before it rings down.
     pub const WOBBLE_KICK: f32 = 26.0;
+    /// A settings row that has just changed, fading back from lit: slow enough to be seen from the
+    /// other side of the page, and without overshoot, since a glow that went below nothing would
+    /// flash back on.
+    pub const GLOW: Spring = Spring {
+        stiffness: 30.0,
+        damping_ratio: 1.0,
+    };
     /// Scrolling. Critically damped on purpose: text that bounces past where it was scrolled to
     /// reads as the page being loose, not as polish.
     pub const SCROLL: Spring = Spring {

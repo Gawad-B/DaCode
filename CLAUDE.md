@@ -157,7 +157,7 @@ modifier is held and leaves `shift` on the key for bindings that mean it. Never 
 platform event any other way.
 
 **Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
-the chrome's bars and buttons, `menu::geometry`, `welcome::geometry`, `settings_ui::panel`,
+the chrome's bars and buttons, `menu::geometry`, `welcome::geometry`, `settings_ui::Page::geometry_at`,
 `tree::panel`, `layout::CodeArea`, `palette::Palette::geometry`, `help::Help::geometry`. The drawing code reads the same function. A rectangle computed
 twice is a click that lands somewhere other than where it looks.
 
@@ -213,8 +213,9 @@ starting at that negative x, and glyphs are drawn after all quads in a layer —
 paint over the line numbers. Quads positioned from a column go through `Rect::intersect(code)` for
 the same reason; `Frame::fill` clips nothing.
 
-**A panel that scrolls must hand its rectangles to the mouse.** `settings_ui::panel` returns the
-visible rows and their boxes; drawing and hit-testing both read it. Teaching the drawing half to
+**A panel that scrolls must hand its rectangles to the mouse.** `settings_ui::Page::geometry_at`
+returns the visible rows and their boxes at the scroll spring's offset; drawing and hit-testing both
+read it (`App::settings_page_geometry`). Teaching the drawing half to
 scroll while the click handler kept its own copy of the walk immediately produced clicks landing on
 the row that *used* to be there — the same failure `layout.rs` exists to prevent, one panel over.
 
@@ -383,14 +384,16 @@ others: a transparent completion popup, tofu boxes where the bundled font had no
 came out as an X, clipped diagnostic messages, and a lockup misaligned by 2px. Screen capture does not
 work on Wayland here, so this is the only way — and it is better anyway, being reproducible.
 
-Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
+Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --settings-page NAME
+--settings-search Q --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
 --help-panel --menu --context-menu --commands --which-key PREFIX --symbols QUERY
 --block LINE:COLUMN`.
 
-`--row N` selects a settings row, which is the only way to see a section below the fold — the panel
-scrolls to its selection, and the language-server report is always below it.
+`--row N` selects a row of the settings tab, which is the only way to see a section below the fold —
+the page scrolls to its selection. `--settings-page NAME` opens it at a page of the tree, and
+`--settings-search Q` types a search into it.
 
 **Render at more than one size.** `--size WxH` exists because the harness was fixed at 1600x1000,
 and a whole family of defects lives below that: the settings rows collided with the footer under
@@ -455,7 +458,7 @@ anything platform-shaped:
 | A theme | `crates/dacode-theme/src/theme.rs` |
 | LSP behaviour | `crates/dacode-lsp/src/client.rs`, applied in `crates/dacode/src/edits.rs` |
 | Which language server runs | `crates/dacode-lsp/src/lib.rs` — `LANGUAGES`, plus `dacode.server` in config |
-| Where the settings rows are | `crates/dacode/src/settings_ui.rs` — `panel`, read by drawing and by the mouse |
+| Where the settings rows are | `crates/dacode/src/settings_ui.rs` — `Page::geometry_at`, read by drawing and by the mouse |
 | Where the tree's rows are | `crates/dacode/src/tree.rs` — `panel`, same rule |
 | Whether a file may be opened | `crates/dacode/src/open.rs` — every refusal is a sentence for the screen |
 | Whether a path is inside the project | `crates/dacode-project/src/lib.rs` — `within`, lexical and testable |
