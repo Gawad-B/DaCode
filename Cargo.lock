@@ -603,6 +603,7 @@ dependencies = [
  "dacode-theme",
  "lsp-types",
  "png",
+ "proptest",
  "serde_json",
  "winit",
 ]

@@ -19,6 +19,7 @@ pub mod import_cli;
 pub mod install;
 pub mod layout;
 pub mod menu;
+pub mod motion;
 pub mod open;
 pub mod palette;
 pub mod panes;
