@@ -90,6 +90,7 @@ RENDERING WITHOUT A WINDOW
     --diagnostics-list     the problems list
     --help-panel           the F1 key list
     --menu                 the menu bar
+    --menu-title TITLE     the menu bar open at a title, or `...`
     --context-menu         a right-click menu
     --which-key PREFIX     what can follow a half-typed chord
     --block LINE:COLUMN    a rectangular selection to that corner
@@ -219,6 +220,7 @@ order.
 | 5 | `--welcome` | `STEP` | The first-run wizard. `keys` is the first screen, `theme` the second with the third option highlighted, `import` the third. Any other value lands on `theme` without the highlight. Ignores the buffer. |
 | 6 | `--help-panel` | — | The F1 key list. |
 | 7 | `--menu` | — | The menu bar, opened. |
+| 7a | `--menu-title` | `TITLE` | The menu bar open at one title, named as on the bar (`Help`). A title the window is too narrow to show opens as F10 reaches it, under "…" with its name as a header; `...` opens the overflow's list of hidden titles. |
 | 8 | `--context-menu` | — | A right-click menu at (420, 300). |
 | 9 | `--which-key` | `PREFIX` | The which-key popup, driven by the pending cell exactly as a half-typed chord drives it. Quote it: `--which-key '<c-w>'`. |
 | 10 | `--symbols` | `QUERY` | The symbol palette over a canned ten-entry outline, so its indenting and kind column are inspectable without a language server. |

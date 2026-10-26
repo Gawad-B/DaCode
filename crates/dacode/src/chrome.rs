@@ -380,6 +380,26 @@ impl EditorState {
         }
     }
 
+    /// Opens a menu — the bar or a context menu — and makes it the one thing taking keys.
+    ///
+    /// **Every menu opens here.** Key routing offers the palette, a prompt, a hover box and the
+    /// completion popup a key before the menu, so a menu opened over any of them could be seen and
+    /// not driven: a click on Edit with completion showing, then Enter, accepted the completion
+    /// into the buffer with the menu still open. So the things that would take its keys are
+    /// dismissed, and with a prompt up — which is half-typed input, not something to throw away —
+    /// the menu does not open. Returns whether it did.
+    pub fn open_menu(&mut self, menu: crate::menu::Menu) -> bool {
+        if self.prompt.is_some() {
+            return false;
+        }
+        self.completion = None;
+        self.hover = None;
+        self.close_palette();
+        self.close_help();
+        self.menu = Some(menu);
+        true
+    }
+
     /// Closes the menu, leaving it to fade out.
     pub fn close_menu(&mut self) {
         if let Some(menu) = self.menu.take() {
@@ -2417,6 +2437,22 @@ fn draw_menu(
     frame.rule_bottom(card, theme.rule, border::BORDER);
     frame.rule_left(card, theme.rule, border::BORDER);
 
+    // The name of a menu whose own title is behind "…", which says nothing about which it is.
+    if let Some(header) = geometry.header {
+        frame.text(label(
+            state,
+            crate::menu::TITLES[menu.open.min(crate::menu::TITLES.len() - 1)],
+            Rect::new(
+                header.x + pad,
+                header.y,
+                header.width - pad * 2.0,
+                header.height,
+            ),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    }
     for (index, (item, row)) in menu.items.iter().zip(&geometry.rows).enumerate() {
         if index == menu.selected {
             frame.fill(*row, theme.row_active);

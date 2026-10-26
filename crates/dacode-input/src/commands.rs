@@ -568,7 +568,7 @@ pub const COMMANDS: &[Command] = &[
     command("run_and_debug", "show run and debug", View, "", ""),
     command("notifications", "show recent messages", View, "", ""),
     command("share", "copy link to line", Files, "", ""),
-    command("run", "run the project", Files, "", ""),
+    command("run", "copy the run command", Files, "", ""),
     command(
         "toggle_inlay_hints",
         "show or hide inlay hints",

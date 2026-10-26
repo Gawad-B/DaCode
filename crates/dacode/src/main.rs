@@ -355,8 +355,9 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 21] = [
+const VALUE_FLAGS: [&str; 22] = [
     "--which-key",
+    "--menu-title",
     "--screenshot",
     "--mode",
     "--columns",
@@ -388,7 +389,7 @@ const VALUE_FLAGS: [&str; 21] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 40] = [
+const FLAGS: [(&str, &str, &str); 41] = [
     // Opening.
     (
         "--no-session",
@@ -448,6 +449,11 @@ const FLAGS: [(&str, &str, &str); 40] = [
     ("--diagnostics-list", "", "the problems list"),
     ("--help-panel", "", "the F1 key list"),
     ("--menu", "", "the menu bar"),
+    (
+        "--menu-title",
+        "TITLE",
+        "the menu bar open at a title, or `...`",
+    ),
     ("--context-menu", "", "a right-click menu"),
     (
         "--which-key",
@@ -1117,6 +1123,27 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if let Some(title) = value("--menu-title") {
+        // A named title opens its menu as F10 and the arrows reach it — with the header that names
+        // it when it is behind the overflow — and `…` opens the overflow's list, as a click does.
+        let bar = dacode::layout::title_bar(
+            dacode::layout::title_strip(bounds, 1.0),
+            1.0,
+            &state.typography,
+        );
+        let shown = bar.menus.len();
+        state.menu = Some(if title == dacode::layout::OVERFLOW || title == "..." {
+            dacode::menu::Menu::from_title(shown, shown, state.modal)
+        } else {
+            let index = dacode::menu::TITLES
+                .iter()
+                .position(|name| name.eq_ignore_ascii_case(&title))
+                .unwrap_or(0);
+            dacode::menu::Menu::bar_at(index, state.modal)
+        });
+        refit(&mut state);
+        start(&mut state);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--context-menu") {
         state.menu = Some(dacode::menu::Menu::context((420.0, 300.0), state.modal));
         refit(&mut state);
@@ -1355,6 +1382,9 @@ struct View {
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
+    /// The window's size while there is no renderer to ask: before the window opens, and in the
+    /// tests, which set it to see the chrome at a size other than the default.
+    headless_size: (u32, u32),
     frame: Frame,
     modifiers: ModifiersState,
     state: EditorState,
@@ -1769,7 +1799,8 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                 // at all reads as a menu that cannot be clicked — which is exactly how it was
                 // reported, even though the hit test underneath was correct the whole time.
                 if self.state.menu.is_some() {
-                    if self.move_over_menu() {
+                    // The bar's own washes — the search box, the bell — follow the pointer too.
+                    if self.move_over_menu() || was_over_toolbar || self.over_toolbar() {
                         self.request_redraw();
                     }
                     return;
@@ -1904,6 +1935,7 @@ impl App {
         Self {
             window: None,
             renderer: None,
+            headless_size: (1280, 820),
             frame: Frame::default(),
             modifiers: ModifiersState::empty(),
             grammar,
@@ -2578,6 +2610,16 @@ impl App {
     /// arrow keys from the editor.
     fn press(&mut self, key: Key) -> bool {
         self.state.settle_focus();
+        // The menu owns the keyboard while it is open — it is something you are choosing from, and
+        // a key that fell through would type into the file behind it. First of all: completion,
+        // a hover box and a focused results panel each took Enter or the arrows ahead of it, so a
+        // menu opened over them from the title bar could be seen and not driven, and Enter
+        // accepted a completion into the buffer behind an open Edit menu. `open_menu` closes the
+        // palette and refuses over a prompt, so nothing above this can be open with it either.
+        // Returns whether to quit: `File ▸ Quit`.
+        if self.state.menu.is_some() {
+            return self.handle_menu_key(key);
+        }
         // While the palette is open it owns the keyboard: typing `i` into a file query must search
         // for `i`, not enter insert mode. The design says mode keys are swallowed, and they are.
         if self.state.palette.is_some() {
@@ -2595,13 +2637,6 @@ impl App {
         }
         if self.state.completion.is_some() && self.handle_completion_key(key) {
             return false;
-        }
-        // The menu owns the keyboard while it is open — it is something you are choosing from, and
-        // a key that fell through would type into the file behind it. Before the results panel,
-        // which had Enter and the arrows first when it held focus, so a menu opened over it from
-        // the title bar could be seen and not driven. Returns whether to quit: `File ▸ Quit`.
-        if self.state.menu.is_some() {
-            return self.handle_menu_key(key);
         }
         // Only with focus: the panel used to take Enter and the arrows whenever it was open, so a
         // search left showing turned every newline into "open the selected hit".
@@ -2692,6 +2727,12 @@ impl App {
             // a trap if you pressed f10 to find out what it was.
             KeyCode::Escape | KeyCode::Function(10) => self.state.close_menu(),
             KeyCode::Enter => {
+                // A row of the overflow's list opens its menu rather than running anything.
+                if let Some(menu) = &mut self.state.menu {
+                    if menu.follow(menu.selected, modal) {
+                        return false;
+                    }
+                }
                 let action = self
                     .state
                     .menu
@@ -2763,14 +2804,16 @@ impl App {
                 // Select the row first, so the menu acts on what was clicked.
                 self.click_sidebar(sidebar, self.pointer.1, self.scale());
             }
-            self.state.menu = Some(dacode::menu::Menu::tree(self.pointer, self.state.modal));
+            self.state
+                .open_menu(dacode::menu::Menu::tree(self.pointer, self.state.modal));
             return;
         }
 
         if self.state.menu.is_none() && !self.pointer_is_in_a_selection() {
             self.click(false);
         }
-        self.state.menu = Some(dacode::menu::Menu::context(self.pointer, self.state.modal));
+        self.state
+            .open_menu(dacode::menu::Menu::context(self.pointer, self.state.modal));
     }
 
     fn run(&mut self, action: Action) -> bool {
@@ -4979,7 +5022,8 @@ impl App {
                 if self.state.menu.is_some() {
                     self.state.close_menu();
                 } else {
-                    self.state.menu = Some(dacode::menu::Menu::bar(self.state.modal));
+                    self.state
+                        .open_menu(dacode::menu::Menu::bar(self.state.modal));
                 }
             }
             Action::ToggleContextMenu => self.open_context_menu(),
@@ -5617,12 +5661,15 @@ impl App {
 
     /// The whole window, as a rectangle.
     fn window_bounds(&self) -> Rect {
-        let (width, height) = self
-            .renderer
+        let (width, height) = self.window_size();
+        Rect::new(0.0, 0.0, width as f32, height as f32)
+    }
+
+    fn window_size(&self) -> (u32, u32) {
+        self.renderer
             .as_ref()
             .map(|renderer| renderer.size())
-            .unwrap_or((1280, 820));
-        Rect::new(0.0, 0.0, width as f32, height as f32)
+            .unwrap_or(self.headless_size)
     }
 
     fn handle_welcome_key(&mut self, key: Key) -> bool {
@@ -6971,11 +7018,7 @@ impl App {
     /// The sidebar is read at that frame's instant rather than the clock's: while it slides, the
     /// mouse has to agree with what is on screen, and the clock has moved on since it was drawn.
     fn layout(&self) -> dacode::layout::Layout {
-        let (width, height) = self
-            .renderer
-            .as_ref()
-            .map(|renderer| renderer.size())
-            .unwrap_or((1280, 820));
+        let (width, height) = self.window_size();
         dacode::layout::Layout::of(
             Rect::new(0.0, 0.0, width as f32, height as f32),
             self.scale(),
@@ -7306,14 +7349,15 @@ impl App {
         if at(layout.title) {
             let bar = dacode::layout::title_bar(layout.title, scale, &self.state.typography);
             // A title opens its menu exactly as F10 opens the first: the menu then owns the keys
-            // and the pointer until it closes. The overflow opens the first menu that did not fit.
+            // and the pointer until it closes. The overflow lists the menus that did not fit.
             let title = bar.menus.iter().position(|rect| at(*rect)).or_else(|| {
                 bar.overflow
                     .filter(|rect| at(*rect))
                     .map(|_| bar.menus.len())
             });
             if let Some(index) = title {
-                self.state.menu = Some(dacode::menu::Menu::bar_at(index, self.state.modal));
+                let menu = dacode::menu::Menu::from_title(index, bar.menus.len(), self.state.modal);
+                self.state.open_menu(menu);
                 return true;
             }
             let command = if bar.search.is_some_and(at) {
@@ -7417,24 +7461,50 @@ impl App {
         let bounds = self.window_bounds();
         let modal = self.state.modal;
 
+        let typography = self.state.typography;
         let Some(menu) = &mut self.state.menu else {
             return;
         };
-        let geometry = menu.geometry(bounds, scale, &self.state.typography);
+        let geometry = menu.geometry(bounds, scale, &typography);
+
+        // A context menu has no titles of its own, but the bar's are on screen beside it: a press
+        // on one means that menu, not "close this one and then press again".
+        if menu.kind == dacode::menu::Kind::Context {
+            let bar = dacode::layout::title_bar(
+                dacode::layout::title_strip(bounds, scale),
+                scale,
+                &typography,
+            );
+            let at = |rect: Rect| dacode::layout::contains(rect, x, y);
+            let title = bar.menus.iter().position(|rect| at(*rect)).or_else(|| {
+                bar.overflow
+                    .filter(|rect| at(*rect))
+                    .map(|_| bar.menus.len())
+            });
+            if let Some(index) = title {
+                let menu = dacode::menu::Menu::from_title(index, bar.menus.len(), modal);
+                self.state.open_menu(menu);
+                return;
+            }
+        }
 
         // Pressing the open title again closes it, as a menu bar does everywhere; any other title
-        // opens its own menu.
+        // opens its own menu, and "…" its list.
         if let Some(index) = menu.title_at(&geometry, x, y) {
             if menu.is_open_title(&geometry, index) {
                 self.state.close_menu();
             } else {
-                menu.open_menu(index, modal);
+                menu.choose_title(index, geometry.titles.len(), modal);
             }
             return;
         }
 
-        let chosen = menu
-            .row_at(&geometry, x, y)
+        // A row of the overflow's list opens its menu in place, under "…".
+        let row = menu.row_at(&geometry, x, y);
+        if row.is_some_and(|row| menu.follow(row, modal)) {
+            return;
+        }
+        let chosen = row
             .and_then(|index| menu.items.get(index))
             .map(|item| item.action.clone());
 
@@ -8635,22 +8705,158 @@ mod wiring_tests {
         assert!(app.state.menu.is_none(), "a click away closes it");
     }
 
-    /// A menu opened from the title bar takes the keys as one opened with F10 does — even when the
-    /// results panel had them, which used to be offered Enter and the arrows first.
+    /// A menu opened from the title bar takes the keys as one opened with F10 does — even from a
+    /// results panel that holds focus, which used to be offered Enter and the arrows first.
     #[test]
     fn a_menu_opened_by_the_mouse_takes_the_keys_from_a_focused_panel() {
         use dacode::focus::Focus;
         let dir = scratch("menu-bar-keys");
         let mut app = editor(&dir, "a.rs", "one\n");
-        app.state.focus = Focus::Panel;
+        app.state.show_results(two_hits(&dir));
+        assert_eq!(app.state.focus, Focus::Panel);
         let layout = app.layout();
         let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
         app.pointer = (bar.menus[0].x + 4.0, bar.menus[0].y + 4.0);
         app.click(false);
+
         app.press(Key::named(KeyCode::Down));
         assert_eq!(app.state.menu.as_ref().map(|menu| menu.selected), Some(1));
+        assert_eq!(
+            app.state.results.as_ref().map(|results| results.selected),
+            Some(0),
+            "the panel behind the menu did not move"
+        );
         app.press(Key::named(KeyCode::Right));
         assert_eq!(app.state.menu.as_ref().map(|menu| menu.open), Some(1));
+        app.press(Key::named(KeyCode::Escape));
+        assert!(app.state.menu.is_none());
+        assert!(
+            app.state.results.is_some(),
+            "Escape closed the menu, not the panel under it"
+        );
+    }
+
+    /// With completion showing, a click on a title used to open a menu the keys never reached:
+    /// Down moved the hidden popup and Enter accepted it into the buffer, with Help still open.
+    #[test]
+    fn a_menu_opened_over_completion_takes_the_keys_and_the_buffer_is_untouched() {
+        let dir = scratch("menu-over-completion");
+        let mut app = editor(&dir, "a.rs", "alpha alphabet\nal");
+        app.state.completion = Some(dacode::completion::Completion::new(
+            app.state.document.text(),
+            app.state.cursor(),
+            app.state.document.version(),
+        ));
+        let before = app.state.document.text().to_string();
+        let layout = app.layout();
+        let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
+        let help = dacode::menu::TITLES
+            .iter()
+            .position(|t| *t == "Help")
+            .unwrap();
+        app.pointer = (bar.menus[help].x + 4.0, bar.menus[help].y + 4.0);
+        app.click(false);
+
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.selected), Some(1));
+        app.press(Key::named(KeyCode::Enter));
+        assert_eq!(app.state.document.text().to_string(), before);
+        assert!(app.state.menu.is_none());
+        assert!(
+            app.state.palette.is_some(),
+            "Enter ran Help's second row, the command palette"
+        );
+    }
+
+    /// A title clicked with the palette open used to open a menu the keyboard could not drive —
+    /// the palette took every key, and Escape closed it rather than the menu on top.
+    #[test]
+    fn a_title_clicked_over_the_palette_closes_it_and_takes_the_keys() {
+        let dir = scratch("menu-over-palette");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.open_palette(PaletteKind::Commands);
+        assert!(app.state.palette.is_some());
+        let layout = app.layout();
+        let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
+        app.pointer = (bar.menus[1].x + 4.0, bar.menus[1].y + 4.0);
+        app.click(false);
+
+        assert!(app.state.palette.is_none(), "the menu replaced the palette");
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.open), Some(1));
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.selected), Some(1));
+        app.press(Key::named(KeyCode::Escape));
+        assert!(app.state.menu.is_none());
+    }
+
+    /// At 640 pixels five menus are behind "…". Help, the last, is reached by the mouse alone:
+    /// "…" lists the hidden titles, Help's row opens Help under it, and its first row runs.
+    #[test]
+    fn at_640_pixels_the_mouse_reaches_help_through_the_overflow() {
+        let dir = scratch("menu-overflow");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.headless_size = (640, 480);
+        let middle = |rect: Rect| (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        let layout = app.layout();
+        let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
+        let overflow = bar.overflow.expect("640px hides some menus");
+        assert!(
+            !bar.menus.is_empty() && bar.menus.len() < dacode::menu::TITLES.len(),
+            "Help is behind the overflow at this size"
+        );
+
+        app.pointer = middle(overflow);
+        app.click(false);
+        let menu = app
+            .state
+            .menu
+            .as_ref()
+            .expect("the overflow opened its list");
+        assert!(menu.listing);
+        let geometry = menu.geometry(app.window_bounds(), app.scale(), &app.state.typography);
+        let row = menu
+            .items
+            .iter()
+            .position(|item| item.label == "Help")
+            .expect("Help is listed");
+        app.pointer = middle(geometry.rows[row]);
+        app.state.pointer = app.pointer;
+        app.move_over_menu();
+        app.click(false);
+
+        let menu = app.state.menu.as_ref().expect("Help is open");
+        assert_eq!(dacode::menu::TITLES[menu.open], "Help");
+        assert!(!menu.listing);
+        let geometry = menu.geometry(app.window_bounds(), app.scale(), &app.state.typography);
+        assert!(geometry.header.is_some(), "the card names the hidden menu");
+        app.pointer = middle(geometry.rows[0]);
+        app.click(false);
+        assert!(app.state.menu.is_none());
+        assert!(
+            app.state.help.is_some(),
+            "Help's first row opened the help panel"
+        );
+    }
+
+    /// A right-click menu has no titles, but the bar's are beside it: one click on File opens
+    /// File, rather than closing the context menu and waiting for a second click.
+    #[test]
+    fn a_title_clicked_over_a_context_menu_opens_in_one_click() {
+        let dir = scratch("menu-context-title");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        let layout = app.layout();
+        app.pointer = (layout.editor.x + 200.0, layout.editor.y + 200.0);
+        app.open_context_menu();
+        assert_eq!(
+            app.state.menu.as_ref().map(|menu| menu.kind),
+            Some(dacode::menu::Kind::Context)
+        );
+        let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
+        app.pointer = (bar.menus[0].x + 4.0, bar.menus[0].y + 4.0);
+        app.click(false);
+        let menu = app.state.menu.as_ref().expect("File is open");
+        assert_eq!(menu.kind, dacode::menu::Kind::Bar);
+        assert_eq!(menu.open, 0);
     }
 
     /// Escape in the tree gives the keys back and leaves the tree standing: it is a view you were
@@ -8965,29 +9171,29 @@ mod wiring_tests {
         let t0 = std::time::Instant::now();
         app.state.menu = Some(dacode::menu::Menu::bar(app.state.modal));
         app.state.sync_motion(WINDOW, 1.0, t0);
+        // The same story without the menu: an editor that only ever opened the palette, at the
+        // same instants. The palette lists the same commands in the same words as the menu, so a
+        // row cannot be told apart by its text; whatever the first frame has that this one does
+        // not is something left behind by the menu.
+        let mut alone = editor(&dir, "a.rs", "fn main() {}\n");
+        alone.state.sync_motion(WINDOW, 1.0, t0);
 
         let open = ms(t0, 1500);
         app.state.close_menu();
         app.state.palette = Some(commands(&app));
         app.state.sync_motion(WINDOW, 1.0, open);
-        assert!(app.state.chrome.leaving.menu.is_none());
+        alone.state.palette = Some(commands(&alone));
+        alone.state.sync_motion(WINDOW, 1.0, open);
 
-        // What reaches the modal layer, against the same instant drawn with nothing left behind.
-        // The palette lists the same commands in the same words as the menu, so a row cannot be
-        // told apart by its text — and the titles that used to be the tell belong to the title bar
-        // now, on the base layer. Whatever the first frame has that the second does not is bleed.
         let modal = |frame: &Frame| -> Vec<String> {
             frame
                 .texts_on(dacode_render::Layer::Modal)
                 .map(|run| run.text.clone())
                 .collect()
         };
-        let drawn = modal(&draw_at(&mut app, ms(t0, 1540)));
-        app.state.chrome.leaving.menu = None;
-        let alone = modal(&draw_at(&mut app, ms(t0, 1540)));
-        let mut bleeding = drawn;
-        for text in &alone {
-            if let Some(index) = bleeding.iter().position(|drawn| drawn == text) {
+        let mut bleeding = modal(&draw_at(&mut app, ms(t0, 1540)));
+        for text in modal(&draw_at(&mut alone, ms(t0, 1540))) {
+            if let Some(index) = bleeding.iter().position(|drawn| *drawn == text) {
                 bleeding.remove(index);
             }
         }
@@ -8995,6 +9201,7 @@ mod wiring_tests {
             bleeding.is_empty(),
             "the closed menu's {bleeding:?} is drawn over the palette"
         );
+        assert!(app.state.chrome.leaving.menu.is_none());
     }
 
     #[test]

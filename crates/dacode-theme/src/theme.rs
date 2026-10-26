@@ -56,9 +56,9 @@ pub struct Theme {
     pub scrim: Oklch,
     pub shadow: Oklch,
 
-    /// The brand colour: the logo, a primary button, the explorer's selection. Fixed where the mode
-    /// accents move, because a Share button that turned green on entering insert mode would read as
-    /// a state change rather than as the button it is.
+    /// The brand colour: the logo, the bell's unread dot, the activity bar's marker, the explorer's
+    /// selection. Fixed where the mode accents move, because a marker that turned green on entering
+    /// insert mode would read as a change of state rather than as the place it marks.
     pub primary: Oklch,
 
     pub syntax: SyntaxPalette,

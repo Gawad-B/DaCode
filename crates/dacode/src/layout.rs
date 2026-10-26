@@ -152,12 +152,51 @@ pub struct TitleBar {
 /// The overflow title's text.
 pub const OVERFLOW: &str = "…";
 
+/// The strip across the top of the window that the title bar fills.
+///
+/// One definition, read by [`Layout::of`] and by `menu::geometry`: the titles are centred on this
+/// height, and a menu that measured its own strip would hang its card under a title that is not
+/// where the bar drew it.
+pub fn title_strip(bounds: Rect, scale: f32) -> Rect {
+    bounds.split_top((size::TITLE * scale).min(bounds.height)).0
+}
+
+/// What the title bar may hold besides the mark and the bell, in the order room is handed out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    /// A menu title, by its index in [`crate::menu::TITLES`].
+    Menu(usize),
+    Search,
+    Wordmark,
+}
+
+/// The fitting rule, as one list: an element is on the bar only if everything before it is and it
+/// fits too. File, Edit and Selection come first because a bar without them is not a menu bar;
+/// the search box next, because the palette is what the keyboard-minded reach for; then the other
+/// menus; the wordmark last, because it is the one thing on the bar that does nothing.
+///
+/// A rule shaped this way cannot drop a control as the window widens: room only grows with width,
+/// and what is shown is always a longer prefix of the same list. The rule before it gave the
+/// search box and the wordmark priority by threshold, and both thresholds took titles away from a
+/// window that had just been made wider.
+const PRIORITY: [Part; 10] = [
+    Part::Menu(0),
+    Part::Menu(1),
+    Part::Menu(2),
+    Part::Search,
+    Part::Menu(3),
+    Part::Menu(4),
+    Part::Menu(5),
+    Part::Menu(6),
+    Part::Menu(7),
+    Part::Wordmark,
+];
+
 /// The title bar's controls, for drawing and for the mouse.
 ///
-/// Room is handed out in this order, which is the fitting rule: the mark, the bell, the first menu
-/// title and the overflow; then the search box at its narrowest; then the rest of the titles, left
-/// to right, for as long as they fit; then the search box grows into what is left, centred on the
-/// window when it can be. The wordmark goes first of all on a bar under 560 logical pixels.
+/// Room between the mark and the bell is handed out along [`PRIORITY`]. While any title is left
+/// out the overflow's width is held back for "…", which opens the rest. The search box, once on
+/// the bar, grows into whatever is left — up to 440 pixels, centred on the window when it can be.
 ///
 /// Titles are sized from the `Ui` role's advance, with slack, because that is an estimate of the
 /// shaper rather than the shaper — a title a character too narrow would be cut mid-word.
@@ -166,11 +205,6 @@ pub fn title_bar(title: Rect, scale: f32, typography: &dacode_theme::Typography)
     let centre_y = |height: f32| title.y + (title.height - height) / 2.0;
 
     let logo = Rect::new(title.x + px(16.0), centre_y(px(28.0)), px(28.0), px(28.0));
-    let name = if title.width >= px(560.0) {
-        Rect::new(logo.right() + px(10.0), title.y, px(96.0), title.height)
-    } else {
-        Rect::new(logo.right(), title.y, 0.0, title.height)
-    };
     let button = px(size::BUTTON);
     let bell = Rect::new(
         title.right() - px(16.0) - button,
@@ -183,36 +217,54 @@ pub fn title_bar(title: Rect, scale: f32, typography: &dacode_theme::Typography)
     let measure = |text: &str| (text.chars().count() as f32 * advance + px(16.0)).ceil();
     let widths: Vec<f32> = crate::menu::TITLES.iter().map(|t| measure(t)).collect();
     let ellipsis = measure(OVERFLOW);
-
-    let start = name.right() + px(8.0);
-    let end = bell.x - px(16.0);
-    let room = (end - start).max(0.0);
     let gap = px(16.0);
     let narrowest_search = px(180.0);
-
-    // How many titles a budget holds, counting the overflow when any are left out.
-    let fit = |budget: f32| -> usize {
-        if widths.iter().sum::<f32>() <= budget {
-            return widths.len();
-        }
-        let mut used = ellipsis;
-        widths
-            .iter()
-            .take_while(|width| {
-                used += **width;
-                used <= budget
-            })
-            .count()
+    let wordmark = px(10.0 + 96.0);
+    let cost = |part: Part| match part {
+        Part::Menu(index) => widths[index],
+        Part::Search => narrowest_search + gap,
+        Part::Wordmark => wordmark,
     };
-    let beside_search = fit(room - narrowest_search - gap);
-    let (shown, has_search) = if beside_search >= 1 {
-        (beside_search, true)
+
+    let start = logo.right() + px(8.0);
+    let end = bell.x - px(16.0);
+    let room = (end - start).max(0.0);
+
+    // The longest prefix of the list that fits, holding the overflow's room while it is short of
+    // a title. Adding the last title releases that room, but the title is wider than "…", so the
+    // cost still only grows along the list and the prefix only lengthens with the window.
+    let mut taken = 0;
+    let mut used = 0.0;
+    for (index, part) in PRIORITY.iter().enumerate() {
+        let after = used + cost(*part);
+        let missing_a_title = PRIORITY[index + 1..]
+            .iter()
+            .any(|later| matches!(later, Part::Menu(_)));
+        let needed = if missing_a_title {
+            after + ellipsis
+        } else {
+            after
+        };
+        if needed > room {
+            break;
+        }
+        used = after;
+        taken = index + 1;
+    }
+    let chosen = &PRIORITY[..taken];
+    let shown = chosen
+        .iter()
+        .filter(|part| matches!(part, Part::Menu(_)))
+        .count();
+
+    let name = if chosen.contains(&Part::Wordmark) {
+        Rect::new(logo.right() + px(10.0), title.y, px(96.0), title.height)
     } else {
-        (fit(room), false)
+        Rect::new(logo.right(), title.y, 0.0, title.height)
     };
 
     let height = px(28.0);
-    let mut x = start;
+    let mut x = name.right() + px(8.0);
     let menus: Vec<Rect> = widths[..shown]
         .iter()
         .map(|width| {
@@ -221,21 +273,19 @@ pub fn title_bar(title: Rect, scale: f32, typography: &dacode_theme::Typography)
             rect
         })
         .collect();
-    let overflow = (shown < widths.len() && x + ellipsis <= end).then(|| {
+    let overflow = (shown < widths.len() && x + ellipsis <= end + 0.5).then(|| {
         let rect = Rect::new(x, centre_y(height), ellipsis, height);
         x += ellipsis;
         rect
     });
 
-    let search = has_search
-        .then(|| {
-            let left = x + gap;
-            let width = (end - left).min(px(440.0));
-            let middle = title.x + title.width / 2.0;
-            let x = (middle - width / 2.0).max(left).min(end - width);
-            Rect::new(x, centre_y(px(28.0)), width, px(28.0))
-        })
-        .filter(|search| search.width >= narrowest_search - 0.5);
+    let search = chosen.contains(&Part::Search).then(|| {
+        let left = x + gap;
+        let width = (end - left).min(px(440.0)).max(0.0);
+        let middle = title.x + title.width / 2.0;
+        let x = (middle - width / 2.0).max(left).min(end - width);
+        Rect::new(x, centre_y(px(28.0)), width, px(28.0))
+    });
 
     TitleBar {
         logo,
@@ -561,7 +611,8 @@ impl Layout {
     pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>, sidebar: f32) -> Self {
         let px = |v: f32| v * scale;
 
-        let (title, rest) = bounds.split_top(px(size::TITLE).min(bounds.height));
+        let title = title_strip(bounds, scale);
+        let (_, rest) = bounds.split_top(title.height);
         let (activity, rest) = rest.split_left(px(size::ACTIVITY).min(rest.width));
         let sidebar_width = px(size::SIDEBAR).min(rest.width * 0.34).floor();
         let fraction = if sidebar.is_finite() {
@@ -842,22 +893,8 @@ mod tests {
         // the end keeps every one that shows readable, and the overflow opens the rest.
         let typography = dacode_theme::Typography::default();
         let all = crate::menu::TITLES.len();
-        let mut before = (0, false);
-        for width in [
-            360.0, 420.0, 480.0, 560.0, 640.0, 760.0, 900.0, 1280.0, 1600.0, 2560.0,
-        ] {
-            let title = Rect::new(0.0, 0.0, width, size::TITLE);
-            let bar = title_bar(title, 1.0, &typography);
-            // The one exception is the width where the search box first fits: it takes priority
-            // over the trailing titles, so they give it their room.
-            if bar.search.is_some() == before.1 {
-                assert!(
-                    bar.menus.len() >= before.0,
-                    "a wider bar never shows fewer titles: {} at {width}px",
-                    bar.menus.len()
-                );
-            }
-            before = (bar.menus.len(), bar.search.is_some());
+        for width in [360.0, 480.0, 640.0, 900.0, 1280.0, 1600.0, 2560.0] {
+            let bar = title_bar(Rect::new(0.0, 0.0, width, size::TITLE), 1.0, &typography);
             assert_eq!(
                 bar.overflow.is_some(),
                 bar.menus.len() < all,
@@ -872,6 +909,40 @@ mod tests {
             narrow.menus.len() < all,
             "a phone-width bar cannot hold all eight"
         );
+    }
+
+    #[test]
+    fn widening_the_window_never_takes_anything_off_the_title_bar() {
+        // Dragging a window's edge outwards must not make a title vanish: the pointer heading for
+        // Edit would land on whatever moved into its place. The first fitting rule gave the search
+        // box and the wordmark priority by threshold, and each threshold did exactly that at one
+        // width — which a sample of seven widths could not see. Every pixel, then.
+        for code in [11.0, 13.5, 18.0] {
+            let typography = dacode_theme::Typography::with_code_size(code);
+            for scale in [1.0, 2.0] {
+                let mut before = (0, false, false);
+                for width in 360..=2560 {
+                    let title = Rect::new(0.0, 0.0, width as f32 * scale, size::TITLE * scale);
+                    let bar = title_bar(title, scale, &typography);
+                    let now = (bar.menus.len(), bar.search.is_some(), bar.name.width > 0.0);
+                    assert!(
+                        now.0 >= before.0,
+                        "titles fell from {} to {} at {width}px, scale {scale}, code {code}",
+                        before.0,
+                        now.0
+                    );
+                    assert!(
+                        now.1 || !before.1,
+                        "the search box left at {width}px, scale {scale}, code {code}"
+                    );
+                    assert!(
+                        now.2 || !before.2,
+                        "the wordmark left at {width}px, scale {scale}, code {code}"
+                    );
+                    before = now;
+                }
+            }
+        }
     }
 
     #[test]
