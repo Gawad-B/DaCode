@@ -162,11 +162,13 @@ pub struct Chrome {
     /// How see-through the window's backgrounds are: 0 is opaque.
     pub transparency: f32,
     /// Every animated quantity. Drawing reads it at [`EditorState::now`]; the executor and the event
-    /// loop retarget it.
+    /// loop retarget it, at the same `now()`, which outside a frame is the wall clock.
     pub motion: crate::motion::Motion,
-    /// The instant the frame being drawn is *for*. The event loop sets it to the wall clock just before
-    /// each frame, and a capture sets it to a chosen moment (`--at-ms`), which is how a transition is
-    /// photographed part-way. `None` means "now", so code that never sets it behaves as if it had.
+    /// The instant the frame being drawn is *for*, set only while a frame is drawn. `redraw` sets it to
+    /// the wall clock just before building the frame and puts it back to `None` afterwards, so input
+    /// handlers and the executor, which run between frames, read the real clock and never the time of a
+    /// frame drawn minutes ago. A capture sets it to a chosen moment (`--at-ms`) and never clears it,
+    /// which is how a transition is photographed part-way. `None` means "now".
     pub now: Option<std::time::Instant>,
 }
 

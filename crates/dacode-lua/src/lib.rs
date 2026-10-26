@@ -204,14 +204,27 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             // Validated here, unlike `line_numbers`, because a value that is not one of the three has
             // no sensible reading: "none" would otherwise leave the editor animating while its owner
             // believed they had turned motion off.
-            if let Some(animations) = string(&options, "animations") {
-                if ANIMATIONS.contains(&animations.as_str()) {
-                    config.animations = Some(animations);
-                } else {
-                    config.problems.push(format!(
-                        "animations must be \"full\", \"reduced\" or \"off\", got {animations:?}"
-                    ));
+            //
+            // Read as a raw value rather than through `string`, which turns a wrong type into
+            // "absent": `animations = false` is the most natural way to write "off", and it would be
+            // dropped without a word.
+            match options.get::<Value>("animations") {
+                Ok(Value::Nil) | Err(_) => {}
+                Ok(Value::String(name)) => {
+                    let name = name.to_string_lossy();
+                    if ANIMATIONS.contains(&name.as_str()) {
+                        config.animations = Some(name);
+                    } else {
+                        config.problems.push(format!(
+                            "animations must be \"full\", \"reduced\" or \"off\", got {name:?}"
+                        ));
+                    }
                 }
+                Ok(_) => config.problems.push(
+                    "animations must be \"full\", \"reduced\" or \"off\" (a string, not a \
+                     boolean or number)"
+                        .into(),
+                ),
             }
             // Kept as a string here: this crate owns no editor types, and the caller that has the
             // enum is also the one that can report a bad value in the user's terms.
@@ -567,13 +580,17 @@ mod tests {
         assert_eq!(config.animations, Some("reduced".into()));
         assert!(config.problems.is_empty(), "{:?}", config.problems);
 
-        let config = run("dacode.set { animations = \"none\" }");
-        assert_eq!(config.animations, None);
-        assert!(
-            config.problems.iter().any(|p| p.contains("animations")),
-            "{:?}",
-            config.problems
-        );
+        for bad in ["\"none\"", "false", "true", "0"] {
+            let config = run(&format!("dacode.set {{ animations = {bad} }}"));
+            assert_eq!(config.animations, None, "{bad}");
+            assert!(
+                config.problems.iter().any(|p| p.contains("animations")),
+                "{bad} was not reported: {:?}",
+                config.problems
+            );
+        }
+        // Absent is not a problem: most configs never mention it.
+        assert!(run("dacode.set { tab_width = 2 }").problems.is_empty());
     }
 
     #[test]

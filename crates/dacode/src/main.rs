@@ -617,6 +617,9 @@ fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
     }
 }
 
+/// How long after the start of a capture its default frame is drawn: past where every spring settles.
+const SETTLED: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn screenshot(args: &[String], output: &str) -> Result<()> {
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     let value = |name: &str| {
@@ -982,13 +985,25 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     // pure function of the instant it is read at, so only `state.chrome.now` has to be moved.
     //
     // Nothing animates yet. When the views start to (the sidebar, the overlays, the menus), the
-    // requested view's animations are started HERE, at `t0`, by retargeting `state.chrome.motion` with
-    // `t0` as the time — after all the state above is set and before the frame is drawn, so that
-    // `--at-ms 0` is the first instant of the transition and not its end.
+    // requested view's animations are started at `t0` by retargeting `state.chrome.motion` with `t0`
+    // as the time. That has to happen once the view's own state exists, which is inside the `if
+    // flag(...)` branches below or after them but before the frame is drawn, so that `--at-ms 0` is
+    // the first instant of the transition and not its end.
+    //
+    // Without `--at-ms` the capture is the *settled* view: every existing capture is of a finished
+    // screen, and drawn a few milliseconds after `t0` an overlay would be at progress zero, which is
+    // invisible. Ten seconds is far past where any spring settles.
     let t0 = std::time::Instant::now();
-    if let Some(ms) = value("--at-ms").and_then(|v| v.parse::<u64>().ok()) {
-        state.chrome.now = Some(t0 + std::time::Duration::from_millis(ms));
-    }
+    let at = match value("--at-ms") {
+        Some(ms) => std::time::Duration::from_millis(ms.parse::<u64>().with_context(|| {
+            format!("--at-ms takes a whole number of milliseconds, got {ms:?}")
+        })?),
+        None => SETTLED,
+    };
+    state.chrome.now = Some(
+        t0.checked_add(at)
+            .with_context(|| format!("--at-ms {} is too far in the future", at.as_millis()))?,
+    );
 
     let mut headless =
         dacode_render::Headless::new(width, height).context("initializing offscreen rendering")?;
@@ -1386,6 +1401,9 @@ struct App {
     /// Whether the last idle step found something moving, so the step after the motion ends can ask for
     /// one more frame: the last one drawn was a hair short of the target, and the loop is about to sleep.
     was_animating: bool,
+    /// Whether the window is hidden behind another or minimised, as winit last said. Nothing is
+    /// presented then, so asking for frames only makes the loop spin.
+    occluded: bool,
     /// Handed to every worker so a finished result wakes the sleeping event loop. `None` in tests,
     /// which have no loop and poll instead.
     waker: Option<dacode::wake::Waker>,
@@ -1603,6 +1621,12 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
 
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
 
+            WindowEvent::Occluded(hidden) => {
+                self.occluded = hidden;
+                if !hidden {
+                    self.request_redraw();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(size.width, size.height);
@@ -1883,6 +1907,7 @@ impl App {
             last_edit: None,
             wakes: 0,
             was_animating: false,
+            occluded: false,
             waker,
             wake_pending: Arc::default(),
             index: FileIndex::new(root),
@@ -1910,11 +1935,21 @@ impl App {
     /// Whether the idle step should ask for a frame for the sake of motion: while something moves, and
     /// once more after it stops, so the editor never goes to sleep showing a value a fraction short of
     /// where it was going. Not asking when nothing moved is what lets the loop sleep.
+    ///
+    /// Not while the window is occluded or minimised: `redraw` returns early without presenting, so
+    /// nothing would block on vsync and the loop would spin until the spring settled. Motion is a
+    /// function of the clock, so nothing is lost by not drawing it; the redraw that un-occluding asks
+    /// for shows wherever it has got to.
     fn wants_frame(&mut self, now: std::time::Instant) -> bool {
         let moving = self.animating(now);
         let settling = self.was_animating && !moving;
         self.was_animating = moving;
-        moving || settling
+        let drawable = !self.occluded
+            && self
+                .renderer
+                .as_ref()
+                .is_none_or(|renderer| renderer.is_visible());
+        drawable && (moving || settling)
     }
 
     fn request_redraw(&self) {
@@ -7508,6 +7543,14 @@ impl App {
     }
 
     fn redraw(&mut self) {
+        self.draw_frame();
+        // The frame's instant belongs to the frame. Left set, `state.now()` would answer with the time
+        // of the last draw for every handler that runs between frames, and a spring retargeted from a
+        // keypress after an idle minute would start a minute in the past and arrive before it began.
+        self.state.chrome.now = None;
+    }
+
+    fn draw_frame(&mut self) {
         // Also here, so the index and any server replies land without waiting for a keystroke.
         self.poll_walk();
         self.sync_lsp();
@@ -8194,6 +8237,53 @@ mod wiring_tests {
             ControlFlow::Wait,
             "and sleeping means Wait, not a poll"
         );
+    }
+
+    #[test]
+    fn a_redraw_leaves_the_clock_to_the_wall_clock_for_whatever_runs_between_frames() {
+        // `state.now()` is what an input handler would start a spring with. If a frame's instant stayed
+        // set, a keypress after an idle minute would retarget a spring a minute in the past, and the
+        // next frame would find it already arrived: the panel would jump instead of moving.
+        let dir = scratch("frame-clock");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        app.state.chrome.now = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+        let before = std::time::Instant::now();
+        app.redraw();
+        assert!(
+            app.state.now() >= before,
+            "state.now() is still the time of an old frame"
+        );
+        assert_eq!(app.state.chrome.now, None);
+    }
+
+    #[test]
+    fn nothing_asks_for_frames_for_a_window_nobody_can_see() {
+        // A hidden window's redraw returns without presenting, so nothing paces the loop to vsync and a
+        // request per idle step is a busy loop for as long as the spring takes to settle.
+        use dacode::motion::{Key as MotionKey, Spring};
+        let dir = scratch("occluded");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        let now = std::time::Instant::now();
+        app.state
+            .chrome
+            .motion
+            .to(MotionKey::Sidebar, 1.0, Spring::PANEL, now);
+        let mid = now + std::time::Duration::from_millis(16);
+
+        app.occluded = true;
+        assert!(!app.wants_frame(mid), "occluded");
+        app.occluded = false;
+        assert!(app.wants_frame(mid), "visible again, and still moving");
+    }
+
+    #[test]
+    fn a_bad_at_ms_is_an_error_not_a_silent_default() {
+        // Someone reproducing a mid-transition frame who typo'd the number would otherwise get a
+        // different frame and no hint why. Reached before any GPU is touched, so this needs no device.
+        let args: Vec<String> = ["--at-ms", "abc", "--empty"].map(String::from).to_vec();
+        let error = screenshot(&args, "/nonexistent/never-written.png")
+            .expect_err("a non-number is refused");
+        assert!(format!("{error:#}").contains("--at-ms"), "{error:#}");
     }
 
     #[test]
