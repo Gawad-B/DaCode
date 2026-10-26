@@ -83,6 +83,9 @@ impl Spring {
 
 /// What is being animated. A key per thing, so two retargets of the same thing share momentum
 /// instead of two animations fighting.
+///
+/// Entries are never removed and `busy` visits every one, so an index in a variant must come from a
+/// bounded set (a pane number, an activity icon), not from something that grows with the project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
     Sidebar,
@@ -113,6 +116,12 @@ struct Value {
     /// Already clamped for `Animations::Reduced` when it was stored.
     spring: Spring,
     since: Instant,
+    /// How close counts as arrived. Fixed at the retarget, from how far the value has to go, and not
+    /// from where the target happens to sit: a scroll offset of a hundred thousand pixels moved by a
+    /// wheel notch must still animate, and a large move must not keep asking for frames while it
+    /// creeps by a fraction of a pixel.
+    position_tolerance: f64,
+    velocity_tolerance: f64,
 }
 
 impl Value {
@@ -123,17 +132,34 @@ impl Value {
         (self.target + d, v)
     }
 
-    fn is_settled(&self, now: Instant) -> bool {
-        let (position, velocity) = self.sample(now);
-        settled(position, velocity, self.target)
+    /// A value at rest on `target`, which is settled at every instant.
+    fn at_rest(target: f64) -> Self {
+        let (position_tolerance, velocity_tolerance) = tolerances(0.0);
+        Self {
+            position: target,
+            velocity: 0.0,
+            target,
+            spring: Spring::HOVER,
+            since: Instant::now(),
+            position_tolerance,
+            velocity_tolerance,
+        }
+    }
+
+    fn is_settled(&self, position: f64, velocity: f64) -> bool {
+        (position - self.target).abs() < self.position_tolerance
+            && velocity.abs() < self.velocity_tolerance
     }
 }
 
-/// Close enough to stop asking for frames: well under a pixel of a pixel-scale value, and under
-/// a thousandth of a unit-range one.
-fn settled(position: f64, velocity: f64, target: f64) -> bool {
-    let scale = target.abs().max(1.0);
-    (position - target).abs() < 1e-3 * scale && velocity.abs() < 1e-2 * scale
+/// Close enough to stop asking for frames, for a move of `travel`: a thousandth of it, but never more
+/// than half a pixel of a pixel-valued key, and never so little that rounding keeps it awake.
+/// Velocity is looser by a decade, as a value arriving slowly is as good as arrived.
+fn tolerances(travel: f64) -> (f64, f64) {
+    (
+        (1e-3 * travel).clamp(1e-4, 0.5),
+        (1e-2 * travel).clamp(1e-3, 5.0),
+    )
 }
 
 /// Within this of exactly 1 the damping is treated as critical. The under- and over-damped forms
@@ -234,18 +260,44 @@ impl Motion {
         } else {
             spring
         };
-        let (position, velocity) = self
-            .values
-            .get(&key)
-            .map_or((0.0, 0.0), |value| value.sample(now));
+        // `Spring`'s fields are public. A zero or NaN would give an undamped or glacial spring that
+        // never settles, and `busy` would keep the loop awake for good.
+        let spring = Spring {
+            stiffness: spring.stiffness.max(1.0),
+            damping_ratio: spring.damping_ratio.max(0.05),
+        };
+        let target = f64::from(target);
+        let ((position, mut velocity), since) = match self.values.get(&key) {
+            // An earlier `now` than the value's own clock must not rewind it: the timeline would then
+            // replay motion that never happened.
+            Some(value) => (value.sample(now), now.max(value.since)),
+            None => ((0.0, 0.0), now),
+        };
+        let omega = f64::from(spring.stiffness).sqrt();
+        let zeta = f64::from(spring.damping_ratio);
+        if zeta >= 1.0 {
+            // Without overshoot from rest is not without overshoot from motion: retargeting to a nearer
+            // point while still travelling fast carries the value through it. This is the largest
+            // velocity toward the target that still arrives without crossing it (omega * |d0| when
+            // critically damped), so momentum is kept up to the point where it would cost the promise.
+            let d0 = position - target;
+            let bound = omega * (zeta + (zeta * zeta - 1.0).sqrt()) * d0.abs();
+            if velocity * d0 < 0.0 && velocity.abs() > bound {
+                velocity = -d0.signum() * bound;
+            }
+        }
+        let (position_tolerance, velocity_tolerance) =
+            tolerances((target - position).abs().max(velocity.abs() / omega));
         self.values.insert(
             key,
             Value {
                 position,
                 velocity,
-                target: f64::from(target),
+                target,
                 spring,
-                since: now,
+                since,
+                position_tolerance,
+                velocity_tolerance,
             },
         );
     }
@@ -257,16 +309,7 @@ impl Motion {
         }
         // A value at rest on its target evaluates to its target at every instant, so `since` is
         // irrelevant and the caller does not need to supply one.
-        self.values.insert(
-            key,
-            Value {
-                position: f64::from(value),
-                velocity: 0.0,
-                target: f64::from(value),
-                spring: Spring::HOVER,
-                since: Instant::now(),
-            },
-        );
+        self.values.insert(key, Value::at_rest(f64::from(value)));
     }
 
     /// Where `key` is at `now`; `0.0` for a key that was never set. Once it is within the settling
@@ -276,7 +319,7 @@ impl Motion {
             return 0.0;
         };
         let (position, velocity) = value.sample(now);
-        if settled(position, velocity, value.target) {
+        if value.is_settled(position, velocity) {
             value.target as f32
         } else {
             position as f32
@@ -290,7 +333,10 @@ impl Motion {
 
     /// Whether anything is still moving at `now`, which is the only thing the event loop asks.
     pub fn busy(&self, now: Instant) -> bool {
-        self.values.values().any(|value| !value.is_settled(now))
+        self.values.values().any(|value| {
+            let (position, velocity) = value.sample(now);
+            !value.is_settled(position, velocity)
+        })
     }
 }
 
@@ -480,6 +526,111 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_wheel_notch_deep_in_a_large_file_still_animates_and_settles() {
+        // A scroll key is a cumulative pixel offset. With a tolerance proportional to the target, a
+        // 60 px notch at 100,000 px counted as arrived before it started and scrolling never moved.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        motion.snap(Key::Scroll(0), 100_000.0);
+        motion.to(Key::Scroll(0), 100_060.0, Spring::SCROLL, start);
+        assert!(motion.busy(at(start, 16)));
+        let mid = motion.get(Key::Scroll(0), at(start, 16));
+        assert!(mid > 100_000.0 && mid < 100_060.0, "mid-flight {mid}");
+        assert_eq!(motion.get(Key::Scroll(0), at(start, 3000)), 100_060.0);
+        assert!(!motion.busy(at(start, 3000)));
+    }
+
+    #[test]
+    fn a_unit_range_value_settles_to_the_same_thousandth_as_before() {
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        motion.to(Key::Sidebar, 1.0, Spring::PANEL, start);
+        assert!(motion.busy(at(start, 300)));
+        assert!(!motion.busy(at(start, 2000)));
+    }
+
+    #[test]
+    fn a_large_move_stops_asking_for_frames_once_it_is_within_half_a_pixel() {
+        // Relative to the target, 10,000 px down to 0 kept the loop awake for 1.65 s of sub-pixel motion.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        motion.snap(Key::Scroll(0), 10_000.0);
+        motion.to(Key::Scroll(0), 0.0, Spring::PANEL, start);
+        let arrived = (0..3000)
+            .find(|&ms| !motion.busy(at(start, ms)))
+            .expect("settles");
+        assert!(arrived < 1300, "still busy at {arrived} ms");
+        let last_frame = motion.get(Key::Scroll(0), at(start, arrived - 1));
+        assert!(
+            last_frame.abs() < 1.0,
+            "the last drawn frame was {last_frame} px away"
+        );
+    }
+
+    #[test]
+    fn retargeting_nearer_mid_flight_does_not_carry_a_critical_spring_past_it() {
+        // From rest these springs cannot overshoot, but a retarget keeps the velocity, which toward a
+        // nearer point is more than the spring can absorb. Measured before the fix: 44 px past.
+        let start = Instant::now();
+        let mut scroll = Motion::new(Animations::Full);
+        scroll.to(Key::Scroll(0), 400.0, Spring::SCROLL, start);
+        scroll.to(Key::Scroll(0), 130.0, Spring::SCROLL, at(start, 60));
+        let beyond = (0..400)
+            .map(|step| scroll.get(Key::Scroll(0), at(start, 60 + step * 5)))
+            .fold(f32::MIN, f32::max);
+        assert!(beyond <= 130.0 + 1e-3, "peaked at {beyond}");
+
+        let mut reduced = Motion::new(Animations::Reduced);
+        reduced.to(Key::Palette, 1.0, Spring::PANEL, start);
+        reduced.to(Key::Palette, 0.274, Spring::PANEL, at(start, 75));
+        let beyond = (0..400)
+            .map(|step| reduced.get(Key::Palette, at(start, 75 + step * 5)))
+            .fold(f32::MIN, f32::max);
+        assert!(beyond <= 0.274 + 1e-3, "peaked at {beyond}");
+    }
+
+    #[test]
+    fn momentum_away_from_the_new_target_is_kept() {
+        // The clamp is for velocity toward the target only; reversing smoothly is why springs are used.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Reduced);
+        motion.to(Key::Sidebar, 1.0, Spring::PANEL, start);
+        let mid = at(start, 60);
+        let before = motion.get(Key::Sidebar, mid);
+        motion.to(Key::Sidebar, 0.0, Spring::PANEL, mid);
+        assert!(motion.get(Key::Sidebar, at(start, 70)) > before);
+    }
+
+    #[test]
+    fn a_degenerate_spring_still_comes_to_rest() {
+        // A zero or NaN field would otherwise be an undamped or glacial spring, and `busy` would
+        // keep the event loop awake for the rest of the session.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        let zero = Spring {
+            stiffness: 0.0,
+            damping_ratio: 0.0,
+        };
+        let nan = Spring {
+            stiffness: f32::NAN,
+            damping_ratio: f32::NAN,
+        };
+        motion.to(Key::Sidebar, 1.0, zero, start);
+        motion.to(Key::Menu, 1.0, nan, start);
+        assert!(!motion.busy(start + Duration::from_secs(900)));
+    }
+
+    #[test]
+    fn retargeting_with_an_earlier_clock_does_not_rewind_the_timeline() {
+        // Mixed time sources (a capture time against a real event time) must not make a value jump.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        motion.to(Key::Sidebar, 1.0, Spring::PANEL, at(start, 100));
+        motion.to(Key::Sidebar, 1.0, Spring::PANEL, start);
+        assert_eq!(motion.get(Key::Sidebar, at(start, 100)), 0.0);
+    }
+
     const SPRINGS: [Spring; 4] = [Spring::PANEL, Spring::POPUP, Spring::HOVER, Spring::SCROLL];
 
     proptest! {
@@ -511,6 +662,44 @@ mod tests {
                 motion.get(Key::Sidebar, later),
                 motion.target(Key::Sidebar).unwrap()
             );
+        }
+
+        /// A spring that promises not to overshoot keeps the promise through any retargeting, not only
+        /// from rest: the value never ends up on the far side of the target it was approaching.
+        /// Every retarget is checked as if it were the last, which `get` being pure makes possible.
+        #[test]
+        fn a_no_overshoot_spring_never_crosses_its_target_after_any_retargets(
+            steps in proptest::collection::vec((-1.0e3f32..1.0e3, 1u64..400), 2..=8),
+            reduced in proptest::bool::ANY,
+            spring in 0usize..SPRINGS.len(),
+        ) {
+            // Reduced makes every preset critical; Full only promises it for the critical ones.
+            let (animations, spring) = if reduced {
+                (Animations::Reduced, SPRINGS[spring])
+            } else {
+                (Animations::Full, [Spring::HOVER, Spring::SCROLL][spring % 2])
+            };
+            let start = Instant::now();
+            let mut motion = Motion::new(animations);
+            let mut clock = 0;
+            for (target, gap) in steps {
+                clock += gap;
+                let now = at(start, clock);
+                let before = motion.get(Key::Scroll(0), now);
+                motion.to(Key::Scroll(0), target, spring, now);
+                let scale = target.abs().max(1.0);
+                // The side being approached means nothing if the value is already on the target.
+                if (before - target).abs() > 1e-2 * scale {
+                    let side = (before - target).signum();
+                    for sample in 0..=400 {
+                        let value = motion.get(Key::Scroll(0), at(start, clock + sample * 5));
+                        prop_assert!(
+                            (value - target) * side >= -1e-4 * scale,
+                            "{value} crossed {target}, approaching from {side}"
+                        );
+                    }
+                }
+            }
         }
     }
 }
