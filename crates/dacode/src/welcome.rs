@@ -319,6 +319,7 @@ pub fn config_from(answers: &Answers, existing: &str) -> String {
         // editor has no `12j` to type and no use for distances.
         line_numbers: crate::config::LineNumbers::default_for(answers.modal),
         transparency: 0,
+        animations: crate::motion::Animations::Full,
         sticky_scroll: true,
         inlay_hints: false,
         // Chosen for them, and it is the right choice: a person who picks the conventional editor is

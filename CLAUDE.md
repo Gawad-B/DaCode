@@ -385,7 +385,7 @@ work on Wayland here, so this is the only way — and it is better anyway, being
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
---splash --empty --at LINE --at-column N --row N --columns N --no-wrap --size WxH --no-vim
+--splash --empty --at LINE --at-column N --at-ms N --row N --columns N --no-wrap --size WxH --no-vim
 --help-panel --menu --context-menu --commands --which-key PREFIX --symbols QUERY
 --block LINE:COLUMN`.
 

@@ -164,6 +164,8 @@ pub struct Settings {
     pub autosave: bool,
     /// How much of the desktop shows through the window, as a percentage. 0 is opaque.
     pub transparency: u8,
+    /// How much the interface moves.
+    pub animations: crate::motion::Animations,
     /// What the gutter counts.
     pub line_numbers: LineNumbers,
     /// Which theme file was loaded, for reporting.
@@ -206,6 +208,7 @@ impl Default for Settings {
             // Opaque: see-through is a taste, and on a desktop without a compositor it is not
             // available at all.
             transparency: 0,
+            animations: crate::motion::Animations::Full,
             line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
@@ -335,6 +338,14 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     if let Some(percent) = config.transparency {
         settings.transparency = percent.min(90);
         settings.sources.insert("transparency".into(), from_config);
+    }
+    if let Some(name) = &config.animations {
+        // `dacode-lua` has already refused a bad spelling and said so; this only fails if the two lists
+        // of names have drifted apart, which a test in this file rules out.
+        if let Some(animations) = crate::motion::Animations::from_name(name) {
+            settings.animations = animations;
+            settings.sources.insert("animations".into(), from_config);
+        }
     }
     // The gutter's default follows the grammar, so it has to be settled *after* `vim_keys` — which
     // is why this is not a plain `unwrap_or`.
@@ -599,6 +610,36 @@ mod tests {
         assert_eq!(settings.keymap.len(), 1);
         assert!((settings.typography.code_size - 16.0).abs() < 0.01);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn lua_sets_the_animations_and_every_name_the_enum_prints_is_accepted() {
+        // `dacode-lua` cannot see `Animations`, so it carries its own list of spellings. Round-tripping
+        // every variant through the real reader is what stops the two lists drifting apart.
+        for animations in crate::motion::Animations::ALL {
+            let dir = scratch(&format!("animations-{}", animations.name()));
+            std::fs::write(
+                dir.join("init.lua"),
+                format!("dacode.set {{ animations = \"{}\" }}\n", animations.name()),
+            )
+            .unwrap();
+
+            let settings = load_from(&dir);
+            assert!(settings.problems.is_empty(), "{:?}", settings.problems);
+            assert_eq!(settings.animations, animations);
+            assert_eq!(
+                settings.sources.get("animations"),
+                Some(&crate::settings_ui::Source::Config)
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn animations_default_to_full_when_nothing_says_otherwise() {
+        let dir = scratch("animations-default");
+        assert_eq!(load_from(&dir).animations, crate::motion::Animations::Full);
         std::fs::remove_dir_all(&dir).ok();
     }
 

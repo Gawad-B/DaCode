@@ -41,6 +41,7 @@ than logged.
 | `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |
 | `transparency` | number, 0–90 | `0` | How much of the desktop shows through the window, in percent. Backgrounds go see-through; text, highlights and popups stay solid. Needs a compositor, and turning it on from `0` takes effect at the next start. |
+| `animations` | `"full"` \| `"reduced"` \| `"off"` | `"full"` | How much the interface moves. `full` is springs with a little overshoot on panels and popups; `reduced` is the same travel without any overshoot; `off` makes everything jump. Switching to `off` finishes whatever is in flight at once. Typing, the cursor and selections never animate whatever this says. |
 | `leader` | string | `"<space>"` | What `<leader>` expands to in `dacode.map`. |
 
 Anything not named in a `dacode.set` call is left alone, and unset is not the same as false: reading a
@@ -48,7 +49,7 @@ boolean naively would have made every `dacode.set` that omitted `soft_wrap` turn
 Lua coerces a missing key to `false`. So a boolean is taken **only** when the value really is a
 boolean — which also means `soft_wrap = "yes"` reads as absent and is not reported. Numbers and
 strings go through mlua's own coercion, so `tab_width = "2"` works and `theme = 5` becomes `"5"`.
-Bad *values* for `appearance` and `line_numbers` are reported by name.
+Bad *values* for `appearance`, `line_numbers` and `animations` are reported by name.
 
 ### Notes on the ones that are not obvious
 

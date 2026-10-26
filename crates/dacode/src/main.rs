@@ -305,6 +305,7 @@ fn new_state(
         menu: None,
         chrome: dacode::chrome::Chrome {
             transparency: f32::from(settings.transparency) / 100.0,
+            motion: dacode::motion::Motion::new(settings.animations),
             ..Default::default()
         },
     };
@@ -354,7 +355,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 19] = [
+const VALUE_FLAGS: [&str; 20] = [
     "--which-key",
     "--screenshot",
     "--mode",
@@ -374,6 +375,7 @@ const VALUE_FLAGS: [&str; 19] = [
     "--symbols",
     "--block",
     "--transparency",
+    "--at-ms",
 ];
 
 /// Every flag `dacode` accepts, grouped, as the one description of its command line.
@@ -385,7 +387,7 @@ const VALUE_FLAGS: [&str; 19] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 38] = [
+const FLAGS: [(&str, &str, &str); 39] = [
     // Opening.
     (
         "--no-session",
@@ -416,6 +418,11 @@ const FLAGS: [(&str, &str, &str); 38] = [
     ("--splash", "", "the cold-start screen"),
     ("--at", "LINE", "put the cursor on a line"),
     ("--at-column", "N", "and a column"),
+    (
+        "--at-ms",
+        "N",
+        "draw the moment N ms into whatever is animating",
+    ),
     ("--columns", "N", "wrap width, in columns"),
     ("--no-wrap", "", "soft wrap off"),
     ("--split", "N[h]", "N panes, `h` for stacked"),
@@ -970,6 +977,19 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         }
     }
 
+    // `--at-ms N` photographs a transition part-way. The clock is chosen rather than waited for, which
+    // is what makes a frame 90 ms into a sidebar sliding open reproducible: every animated value is a
+    // pure function of the instant it is read at, so only `state.chrome.now` has to be moved.
+    //
+    // Nothing animates yet. When the views start to (the sidebar, the overlays, the menus), the
+    // requested view's animations are started HERE, at `t0`, by retargeting `state.chrome.motion` with
+    // `t0` as the time — after all the state above is set and before the frame is drawn, so that
+    // `--at-ms 0` is the first instant of the transition and not its end.
+    let t0 = std::time::Instant::now();
+    if let Some(ms) = value("--at-ms").and_then(|v| v.parse::<u64>().ok()) {
+        state.chrome.now = Some(t0 + std::time::Duration::from_millis(ms));
+    }
+
     let mut headless =
         dacode_render::Headless::new(width, height).context("initializing offscreen rendering")?;
     eprintln!("dacode: font — {}", headless.resolved_face());
@@ -1363,6 +1383,9 @@ struct App {
     last_edit: Option<std::time::Instant>,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
+    /// Whether the last idle step found something moving, so the step after the motion ends can ask for
+    /// one more frame: the last one drawn was a hair short of the target, and the loop is about to sleep.
+    was_animating: bool,
     /// Handed to every worker so a finished result wakes the sleeping event loop. `None` in tests,
     /// which have no loop and poll instead.
     waker: Option<dacode::wake::Waker>,
@@ -1535,13 +1558,19 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             changed |= results.poll();
         }
 
+        // Motion is the one thing that needs frames with neither input nor a worker to cause them.
+        // Redraws are paced to vsync by winit, so the loop turns once per frame only while something
+        // moves; the control flow below stays `Wait`, and it is not a timer.
+        let now = std::time::Instant::now();
+        changed |= self.wants_frame(now);
+
         if changed {
             self.request_redraw();
         }
         self.hold_lifeline();
         self.record_notice();
 
-        event_loop.set_control_flow(self.control_flow(std::time::Instant::now()));
+        event_loop.set_control_flow(self.control_flow(now));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1853,6 +1882,7 @@ impl App {
             click_count: 1,
             last_edit: None,
             wakes: 0,
+            was_animating: false,
             waker,
             wake_pending: Arc::default(),
             index: FileIndex::new(root),
@@ -1869,6 +1899,22 @@ impl App {
             .as_ref()
             .map(|window| window.scale_factor() as f32)
             .unwrap_or(1.0)
+    }
+
+    /// Whether anything is still moving at `now`. The one thing the event loop needs from the motion
+    /// engine: while this is true it draws a frame per vsync, and once it is false it sleeps.
+    fn animating(&self, now: std::time::Instant) -> bool {
+        self.state.chrome.motion.busy(now)
+    }
+
+    /// Whether the idle step should ask for a frame for the sake of motion: while something moves, and
+    /// once more after it stops, so the editor never goes to sleep showing a value a fraction short of
+    /// where it was going. Not asking when nothing moved is what lets the loop sleep.
+    fn wants_frame(&mut self, now: std::time::Instant) -> bool {
+        let moving = self.animating(now);
+        let settling = self.was_animating && !moving;
+        self.was_animating = moving;
+        moving || settling
     }
 
     fn request_redraw(&self) {
@@ -5285,6 +5331,7 @@ impl App {
             inlay_hints: self.state.show_inlay_hints,
             autosave: self.state.autosave,
             transparency: (self.state.chrome.transparency * 100.0).round() as u8,
+            animations: self.state.chrome.motion.animations(),
         }
     }
 
@@ -5354,6 +5401,7 @@ impl App {
             }
             Field::Autosave => self.state.autosave = values.autosave,
             Field::Transparency => self.set_transparency(values.transparency),
+            Field::Animations => self.state.chrome.motion.set_animations(values.animations),
         }
     }
 
@@ -7145,6 +7193,7 @@ impl App {
         self.state.sticky_scroll = settings.sticky_scroll;
         self.state.show_inlay_hints = settings.inlay_hints;
         self.set_transparency(settings.transparency);
+        self.state.chrome.motion.set_animations(settings.animations);
         self.state.setting_sources = settings.sources.clone();
         self.grammar.set_keymap(settings.keymap);
 
@@ -7471,6 +7520,10 @@ impl App {
         if !renderer.is_visible() {
             return;
         }
+
+        // Every animated value this frame draws is read at this one instant, so two things that move
+        // together cannot be sampled a few microseconds apart.
+        self.state.chrome.now = Some(std::time::Instant::now());
 
         // The clock starts here, not inside `render`: building the frame is the half of the work
         // this project has optimised hardest, and it was not in the number the statusline showed.
@@ -8114,6 +8167,53 @@ mod wiring_tests {
         let mut app = editor(dir, name, contents);
         app.waker = Some(Arc::new(|| {}));
         app
+    }
+
+    #[test]
+    fn the_loop_asks_for_frames_while_something_moves_and_sleeps_once_it_stops() {
+        // The editor has no frame timer any more: it is woken by workers and by input. Motion is the
+        // one thing that needs a frame *without* either, so `animating` is what keeps it drawing — and
+        // the moment it is false the loop must go back to `Wait`, or an idle editor burns a core.
+        use dacode::motion::{Key as MotionKey, Spring};
+        let dir = scratch("animating");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        let now = std::time::Instant::now();
+        assert!(!app.animating(now), "nothing is moving in a fresh editor");
+
+        app.state
+            .chrome
+            .motion
+            .to(MotionKey::Sidebar, 1.0, Spring::PANEL, now);
+        assert!(app.animating(now + std::time::Duration::from_millis(16)));
+        assert!(
+            !app.animating(now + std::time::Duration::from_secs(2)),
+            "a settled spring must let the loop sleep"
+        );
+        assert_eq!(
+            app.control_flow(now + std::time::Duration::from_secs(2)),
+            ControlFlow::Wait,
+            "and sleeping means Wait, not a poll"
+        );
+    }
+
+    #[test]
+    fn the_frame_after_the_last_one_that_moved_is_asked_for_too() {
+        // `busy` turns false once a value is within half a pixel of its target, but the frame drawn
+        // just before that was still a hair short of it. Without one more frame the editor would sleep
+        // showing a panel a fraction of a pixel from where it is meant to be.
+        use dacode::motion::{Key as MotionKey, Spring};
+        let dir = scratch("animating-last-frame");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        let now = std::time::Instant::now();
+        app.state
+            .chrome
+            .motion
+            .to(MotionKey::Sidebar, 1.0, Spring::PANEL, now);
+
+        assert!(app.wants_frame(now + std::time::Duration::from_millis(16)));
+        let later = now + std::time::Duration::from_secs(2);
+        assert!(app.wants_frame(later), "one settling frame after the move");
+        assert!(!app.wants_frame(later), "and then none");
     }
 
     #[test]

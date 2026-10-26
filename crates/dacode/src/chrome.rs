@@ -161,6 +161,13 @@ pub struct Chrome {
     pub show_notifications: bool,
     /// How see-through the window's backgrounds are: 0 is opaque.
     pub transparency: f32,
+    /// Every animated quantity. Drawing reads it at [`EditorState::now`]; the executor and the event
+    /// loop retarget it.
+    pub motion: crate::motion::Motion,
+    /// The instant the frame being drawn is *for*. The event loop sets it to the wall clock just before
+    /// each frame, and a capture sets it to a chosen moment (`--at-ms`), which is how a transition is
+    /// photographed part-way. `None` means "now", so code that never sets it behaves as if it had.
+    pub now: Option<std::time::Instant>,
 }
 
 impl Chrome {
@@ -189,6 +196,12 @@ impl Chrome {
 }
 
 impl EditorState {
+    /// The time this frame is drawn at. Drawing code asks here instead of calling `Instant::now`, so a
+    /// frame is a pure function of the state and one instant, and a test can draw any instant it likes.
+    pub fn now(&self) -> std::time::Instant {
+        self.chrome.now.unwrap_or_else(std::time::Instant::now)
+    }
+
     /// Whether any view is open in the sidebar.
     pub fn sidebar_open(&self) -> bool {
         self.tree.is_some()
@@ -2274,6 +2287,7 @@ fn draw_settings(
         theme: state.theme.name(),
         line_numbers: state.line_numbers,
         transparency: (state.chrome.transparency * 100.0).round() as u8,
+        animations: state.chrome.motion.animations(),
         sticky_scroll: state.sticky_scroll,
         inlay_hints: state.show_inlay_hints,
         autosave: state.autosave,

@@ -42,6 +42,9 @@ pub struct Config {
     pub autosave: Option<bool>,
     /// How much of the desktop shows through the window, as a percentage: 0 is opaque.
     pub transparency: Option<u8>,
+    /// How much the interface moves: "full", "reduced" or "off". Checked against [`ANIMATIONS`] here
+    /// and parsed into the enum by the caller, which owns it.
+    pub animations: Option<String>,
     /// "absolute", "relative" or "off" — parsed by the caller, which owns the enum.
     pub line_numbers: Option<String>,
     pub appearance: Option<Appearance>,
@@ -59,6 +62,10 @@ pub struct Config {
     /// Everything that went wrong, in the user's terms. Shown rather than swallowed.
     pub problems: Vec<String>,
 }
+
+/// The spellings `animations` accepts. This crate cannot see `dacode::motion::Animations`, so the
+/// binary has a test that every name that enum prints is in this list.
+pub const ANIMATIONS: [&str; 3] = ["full", "reduced", "off"];
 
 /// A language server named by `dacode.server(language, { command = …, args = {…} })`.
 ///
@@ -93,6 +100,7 @@ impl Config {
             && self.inlay_hints.is_none()
             && self.autosave.is_none()
             && self.transparency.is_none()
+            && self.animations.is_none()
             && self.line_numbers.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
@@ -192,6 +200,18 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             // stays solid — floats over whatever is behind with nothing to read it against.
             if let Some(percent) = number(&options, "transparency") {
                 config.transparency = Some(percent.clamp(0.0, 90.0).round() as u8);
+            }
+            // Validated here, unlike `line_numbers`, because a value that is not one of the three has
+            // no sensible reading: "none" would otherwise leave the editor animating while its owner
+            // believed they had turned motion off.
+            if let Some(animations) = string(&options, "animations") {
+                if ANIMATIONS.contains(&animations.as_str()) {
+                    config.animations = Some(animations);
+                } else {
+                    config.problems.push(format!(
+                        "animations must be \"full\", \"reduced\" or \"off\", got {animations:?}"
+                    ));
+                }
             }
             // Kept as a string here: this crate owns no editor types, and the caller that has the
             // enum is also the one that can report a bad value in the user's terms.
@@ -536,6 +556,23 @@ mod tests {
         assert_eq!(
             run("dacode.set { transparency = -5 }").transparency,
             Some(0)
+        );
+    }
+
+    #[test]
+    fn animations_takes_one_of_three_names_and_reports_anything_else() {
+        // A misspelt value must not quietly become "full": someone who typed "none" meant to switch
+        // motion off, and an editor that carries on animating says nothing about why.
+        let config = run("dacode.set { animations = \"reduced\" }");
+        assert_eq!(config.animations, Some("reduced".into()));
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+
+        let config = run("dacode.set { animations = \"none\" }");
+        assert_eq!(config.animations, None);
+        assert!(
+            config.problems.iter().any(|p| p.contains("animations")),
+            "{:?}",
+            config.problems
         );
     }
 

@@ -231,6 +231,11 @@ impl Motion {
         }
     }
 
+    /// What the user asked for, so the settings panel can show the live value rather than a copy.
+    pub fn animations(&self) -> Animations {
+        self.animations
+    }
+
     /// Switching to `Off` finishes whatever is in flight on the spot: otherwise a user who has just
     /// asked for no motion would watch the last transition play out, and `busy` would keep waking
     /// the loop for it.

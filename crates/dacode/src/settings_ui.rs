@@ -186,10 +186,12 @@ pub enum Field {
     InlayHints,
     Autosave,
     Transparency,
+    /// How much the interface moves: full, reduced or off.
+    Animations,
 }
 
 impl Field {
-    pub const ALL: [Field; 11] = [
+    pub const ALL: [Field; 12] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -201,6 +203,7 @@ impl Field {
         Field::InlayHints,
         Field::Autosave,
         Field::Transparency,
+        Field::Animations,
     ];
 
     pub fn name(self) -> &'static str {
@@ -216,6 +219,7 @@ impl Field {
             Field::InlayHints => "inlay_hints",
             Field::Autosave => "autosave",
             Field::Transparency => "transparency",
+            Field::Animations => "animations",
         }
     }
 
@@ -248,6 +252,7 @@ impl Field {
             Field::InlayHints => "show inferred types and parameter names inline",
             Field::Autosave => "write the file a moment after you stop typing",
             Field::Transparency => "how much of the desktop shows through the window",
+            Field::Animations => "full, reduced (no overshoot) or off (everything jumps)",
         }
     }
 }
@@ -571,6 +576,7 @@ pub struct Values {
     pub line_numbers: crate::config::LineNumbers,
     /// Percent, in steps of [`Values::TRANSPARENCY_STEP`].
     pub transparency: u8,
+    pub animations: crate::motion::Animations,
 }
 
 impl Values {
@@ -600,6 +606,7 @@ impl Values {
                 0 => "off".into(),
                 percent => format!("{percent}%"),
             },
+            Field::Animations => self.animations.name().to_string(),
         }
     }
 
@@ -684,6 +691,19 @@ impl Values {
             Field::StickyScroll => self.sticky_scroll = !self.sticky_scroll,
             Field::InlayHints => self.inlay_hints = !self.inlay_hints,
             Field::Autosave => self.autosave = !self.autosave,
+            Field::Animations => {
+                let all = crate::motion::Animations::ALL;
+                let at = all
+                    .iter()
+                    .position(|value| *value == self.animations)
+                    .unwrap_or(0);
+                let next = if delta < 0 {
+                    (at + all.len() - 1) % all.len()
+                } else {
+                    (at + 1) % all.len()
+                };
+                self.animations = all[next];
+            }
             Field::Transparency => {
                 let step = Self::TRANSPARENCY_STEP as i32;
                 self.transparency = (self.transparency as i32 + delta.signum() * step)
@@ -732,7 +752,8 @@ pub fn write_back(existing: &str, values: &Values) -> String {
          sticky_scroll = {},\n  \
          inlay_hints = {},\n  \
          autosave = {},\n  \
-         transparency = {},\n}}\n",
+         transparency = {},\n  \
+         animations = \"{}\",\n}}\n",
         values.modal,
         values.font_size,
         values.tab_width,
@@ -743,6 +764,7 @@ pub fn write_back(existing: &str, values: &Values) -> String {
         values.inlay_hints,
         values.autosave,
         values.transparency,
+        values.animations.name(),
     );
 
     // The block's marker as vex wrote it, too: an init.lua carried over from before the rename has
@@ -799,6 +821,7 @@ mod tests {
             theme: Some("dark"),
             line_numbers: crate::config::LineNumbers::Absolute,
             transparency: 0,
+            animations: crate::motion::Animations::Full,
             sticky_scroll: true,
             inlay_hints: false,
             autosave: false,
@@ -977,10 +1000,47 @@ mod tests {
             theme: Some("dark"),
             line_numbers: crate::config::LineNumbers::Relative,
             transparency: 0,
+            animations: crate::motion::Animations::Full,
             sticky_scroll: true,
             inlay_hints: false,
             autosave: false,
         }
+    }
+
+    #[test]
+    fn a_click_on_animations_goes_round_full_reduced_off_and_back() {
+        // Three states and one direction: a click must reach all of them and then wrap, or someone who
+        // turned motion off with the mouse could never turn it back on.
+        use crate::motion::Animations;
+        let mut values = values();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            values.cycle(Field::Animations);
+            seen.push(values.animations);
+        }
+        assert_eq!(
+            seen,
+            [
+                Animations::Reduced,
+                Animations::Off,
+                Animations::Full,
+                Animations::Reduced
+            ]
+        );
+        assert_eq!(values.get(Field::Animations), "reduced");
+    }
+
+    #[test]
+    fn the_animations_row_is_written_back_under_its_config_name() {
+        let mut values = values();
+        values.cycle(Field::Animations);
+        let written = write_back("", &values);
+        assert!(written.contains("animations = \"reduced\""), "{written}");
+
+        // And what was written is something the config reader accepts, closing the loop.
+        let config = dacode_lua::eval(&written, "written.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(config.animations.as_deref(), Some("reduced"));
     }
 
     #[test]
@@ -1251,6 +1311,7 @@ mod click_tests {
             theme: Some("dark"),
             line_numbers: crate::config::LineNumbers::Relative,
             transparency: 0,
+            animations: crate::motion::Animations::Full,
             sticky_scroll: true,
             inlay_hints: false,
             autosave: false,
