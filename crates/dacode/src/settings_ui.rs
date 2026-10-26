@@ -916,7 +916,8 @@ impl Values {
         }
     }
 
-    fn differs(&self, field: Field, defaults: &Values) -> bool {
+    /// Whether one field has a different value in `other`.
+    pub fn differs(&self, field: Field, defaults: &Values) -> bool {
         match field {
             Field::VimKeys => self.modal != defaults.modal,
             Field::FontSize => self.font_size != defaults.font_size,
@@ -936,6 +937,12 @@ impl Values {
     /// Puts one setting back to its default: what the ⟲ does.
     pub fn reset(&mut self, field: Field) {
         let defaults = Values::defaults(self.modal);
+        self.copy(field, &defaults);
+    }
+
+    /// Takes one field's value from `from`.
+    pub fn copy(&mut self, field: Field, from: &Values) {
+        let defaults = from;
         match field {
             Field::VimKeys => self.modal = defaults.modal,
             Field::FontSize => self.font_size = defaults.font_size,

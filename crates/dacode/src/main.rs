@@ -1604,6 +1604,9 @@ struct App {
     /// The settings put back to their default on the page since the last write: their lines are
     /// taken out of the block.
     settings_reset: Vec<dacode::settings_ui::Field>,
+    /// What the file said for each setting when it was last loaded or written by the page. A reload
+    /// compares against it to tell whether the file itself changed a field the page has pending.
+    file_values: dacode::settings_ui::Values,
     /// The text the settings tab last wrote to `init.lua`, so the watcher can tell that write from
     /// someone else's.
     page_wrote: Option<String>,
@@ -2114,6 +2117,7 @@ impl App {
             settings_changed_at: None,
             settings_touched: Vec::new(),
             settings_reset: Vec::new(),
+            file_values: state.setting_values(),
             page_wrote: None,
             settings_blocked: false,
             config_dir: dacode::config::config_dir(),
@@ -6544,6 +6548,10 @@ impl App {
             Ok(()) => {
                 self.self_written.insert(dacode_project::canonical(&path));
                 self.page_wrote = Some(updated.clone());
+                let live = self.state.setting_values();
+                for field in self.settings_touched.iter().chain(&self.settings_reset) {
+                    self.file_values.copy(*field, &live);
+                }
                 self.reload_config_buffers(&path, &updated);
                 Ok(())
             }
@@ -8362,6 +8370,13 @@ impl App {
     /// reported by the watcher in the same idle step, ahead of the write. Without this the reload
     /// put the old value back and the write then pinned it. The pending fields are taken from the
     /// live editor before loading and applied again after.
+    ///
+    /// **Unless the file changed that same field: then the file wins.** The most recent intent is
+    /// what applies. A reload that leaves a pending field where the file last had it — the save
+    /// releasing a held write, an edit to another line — says nothing about that field, so the page's
+    /// change stands. One that moves it is a newer edit than the page's, made by hand while the
+    /// change waited, and re-applying the page over it reverted that edit live and on disk. The
+    /// field is then no longer pending, and nothing writes it back.
     fn reload_config(&mut self) {
         let pending: Vec<dacode::settings_ui::Field> = self
             .settings_touched
@@ -8370,10 +8385,22 @@ impl App {
             .copied()
             .collect();
         let kept = self.state.setting_values();
+        let before = self.file_values.clone();
         self.reload_config_from_file();
+        let loaded = self.state.setting_values();
         for field in pending {
-            self.apply_setting(field, &kept);
+            if loaded.differs(field, &before) {
+                self.settings_touched.retain(|touched| *touched != field);
+                self.settings_reset.retain(|reset| *reset != field);
+            } else {
+                self.apply_setting(field, &kept);
+            }
         }
+        if self.settings_touched.is_empty() && self.settings_reset.is_empty() {
+            self.settings_changed_at = None;
+            self.settings_blocked = false;
+        }
+        self.file_values = loaded;
     }
 
     fn reload_config_from_file(&mut self) {
@@ -10564,6 +10591,39 @@ mod wiring_tests {
         assert!(config.problems.is_empty(), "{:?}", config.problems);
         assert_eq!(config.font_size, Some(chosen));
         assert_eq!(config.tab_width, Some(3));
+    }
+
+    #[test]
+    fn a_hand_edit_to_the_same_setting_made_while_a_change_waits_wins() {
+        // The most recent intent applies. A change on the page waits out its pause; meanwhile
+        // init.lua is edited by hand to set that very field. The edit is newer: re-applying the
+        // page over it reverted the user's 17.0 to 14.5, live and in their file.
+        use dacode::settings_ui::Field;
+        let dir = scratch("settings-newer-hand-edit");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        step_on_page(&mut app, Field::FontSize);
+        let changed = app.settings_changed_at.unwrap();
+
+        let init = app.config_dir.join("init.lua");
+        std::fs::create_dir_all(&app.config_dir).unwrap();
+        std::fs::write(&init, "dacode.set { font_size = 17.0 }\n").unwrap();
+        app.handle_changed_paths(vec![init.clone()]);
+        assert_eq!(
+            app.state.typography.code_size, 17.0,
+            "the newer hand edit wins live"
+        );
+
+        app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER);
+        let on_disk = std::fs::read_to_string(&init).unwrap();
+        assert_eq!(
+            dacode_lua::eval(&on_disk, "init.lua").font_size,
+            Some(17.0),
+            "and on disk:\n{on_disk}"
+        );
+        assert!(
+            !on_disk.contains("14.5"),
+            "nothing writes the page's value back:\n{on_disk}"
+        );
     }
 
     #[test]
