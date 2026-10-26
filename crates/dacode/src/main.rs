@@ -160,13 +160,20 @@ fn main() -> Result<()> {
     grammar.set_keymap(keymap);
     grammar.set_modal(starting_settings.modal);
 
-    let mut app = App::new(root.clone(), state, grammar, &starting_settings);
     // Workers call this from their own threads when they have an answer; the loop, asleep with
-    // nothing to do, wakes and collects it rather than waiting for the next keypress.
+    // nothing to do, wakes and collects it rather than waiting for the next keypress. Made before
+    // the app so that `App::new` can hand it to every worker as it builds them.
     let proxy = event_loop.create_proxy();
-    app.waker = Some(std::sync::Arc::new(move || {
+    let waker: dacode::wake::Waker = std::sync::Arc::new(move || {
         let _ = proxy.send_event(dacode::wake::Wake);
-    }));
+    });
+    let mut app = App::new(
+        root.clone(),
+        state,
+        grammar,
+        &starting_settings,
+        Some(waker),
+    );
     app.walk = Some(FileWalk::start(root.clone()));
     dacode::recovery::install_panic_hook(app.lifeline.clone());
 
@@ -1377,7 +1384,7 @@ struct Buffer {
 impl ApplicationHandler<dacode::wake::Wake> for App {
     /// A worker finished. Collect what it produced and redraw if that changed anything on screen.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: dacode::wake::Wake) {
-        if self.collect_syntax() {
+        if self.collect_background() {
             self.request_redraw();
         }
     }
@@ -1505,11 +1512,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             }
         }
         let mut changed = self.poll_walk();
-        changed |= self.collect_syntax();
-        changed |= self.sync_lsp();
-        changed |= self.poll_formatter();
-        changed |= self.poll_installer();
-        changed |= self.sync_git();
+        changed |= self.collect_background();
         changed |= self.handle_file_changes();
         changed |= self.rewalk_if_project_changed();
         changed |= self.poll_folder_picker();
@@ -1524,9 +1527,8 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         self.hold_lifeline();
         self.record_notice();
 
-        // Sleep until input, or briefly if something is still working. 100ms is far below the
-        // threshold where a diagnostic feels late, and a `try_recv` ten times a second costs
-        // nothing measurable.
+        // Sleep until input or a worker's wake-up. Only what has no waker keeps a timer: the file
+        // walk and a streaming search, and everything when there is no loop to wake (tests).
         event_loop.set_control_flow(if self.services_busy() {
             ControlFlow::WaitUntil(
                 std::time::Instant::now() + std::time::Duration::from_millis(100),
@@ -1773,6 +1775,7 @@ impl App {
         state: EditorState,
         grammar: Grammar,
         settings: &dacode::config::Settings,
+        waker: Option<dacode::wake::Waker>,
     ) -> Self {
         Self {
             window: None,
@@ -1789,8 +1792,8 @@ impl App {
             configured_servers: settings.servers.clone(),
             server_formats: std::collections::HashMap::new(),
             configured_formatters: settings.formatters.clone(),
-            formatter: dacode::format::FormatWorker::spawn(),
-            installer: dacode::install::InstallWorker::spawn(),
+            formatter: dacode::format::FormatWorker::spawn_with(waker.clone()),
+            installer: dacode::install::InstallWorker::spawn_with(waker.clone()),
             confirm_install: None,
             formatting_version: None,
             missing_servers: std::collections::HashSet::new(),
@@ -1823,7 +1826,7 @@ impl App {
             overwrite: None,
             last_notice: None,
             server_hover: None,
-            git: dacode::git::GitWorker::spawn(),
+            git: dacode::git::GitWorker::spawn_with(waker.clone()),
             diffed_version: None,
             watcher: match dacode_project::FileWatcher::new() {
                 Ok(watcher) => Some(watcher),
@@ -1844,7 +1847,7 @@ impl App {
             click_count: 1,
             last_edit: None,
             wakes: 0,
-            waker: None,
+            waker,
             index: FileIndex::new(root),
             // The project walk is started by `run`, not here: a test wants an editor, not an
             // indexing thread over whatever directory it was handed.
@@ -2476,7 +2479,13 @@ impl App {
         };
 
         let arguments: Vec<&str> = spec.args.iter().map(String::as_str).collect();
-        match dacode_lsp::LspClient::start(&executable, &spec.program, &arguments, &root) {
+        match dacode_lsp::LspClient::start_with(
+            &executable,
+            &spec.program,
+            &arguments,
+            &root,
+            self.waker.clone(),
+        ) {
             Ok(client) => {
                 eprintln!(
                     "dacode: starting {} ({}) in {}",
@@ -3261,6 +3270,16 @@ impl App {
         if self.state.results.as_ref().is_some_and(|r| !r.finished) {
             return true;
         }
+        // Every worker below announces its own result through the waker, so an editor with a loop
+        // to wake has nothing left to poll for — and an idle one with a language server running
+        // sleeps instead of waking ten times a second to find nothing. The walk and the search
+        // above are the two producers that have no waker.
+        if self.waker.is_some() {
+            return false;
+        }
+        // Without a waker (headless tests) nobody would announce anything, so each answer is
+        // waited for here.
+        //
         // A format in flight, or its result would sit in the channel until the next keypress —
         // which for `format_on_save` means the save that follows it never happens.
         if self.formatting_version.is_some() {
@@ -3283,9 +3302,7 @@ impl App {
             // A live server always warrants a slow poll: replies arrive unprompted.
             return client.state() != dacode_lsp::State::Stopped;
         }
-        // With a waker the worker announces its own result, so the loop need not keep polling for
-        // it. Without one (headless tests) nobody would, so the answer is waited for here.
-        self.waker.is_none() && self.syntax.as_ref().is_some_and(|worker| worker.pending())
+        self.syntax.as_ref().is_some_and(|worker| worker.pending())
     }
 
     /// Keys the completion popup consumes. Returns true if the key was used.
@@ -3701,6 +3718,21 @@ impl App {
         }
         self.requested_range = Some(range);
         self.collect_syntax();
+    }
+
+    /// The one idle step for every background worker: syntax, language server, formatter, installer
+    /// and git. Returns whether anything on screen changed.
+    ///
+    /// Called from `user_event`, which is how a worker's wake-up is answered, and from
+    /// `about_to_wait`. One function so that the two cannot disagree about which workers there are —
+    /// a worker added to one list and not the other is a result that arrives on a keypress.
+    fn collect_background(&mut self) -> bool {
+        let mut changed = self.collect_syntax();
+        changed |= self.sync_lsp();
+        changed |= self.poll_formatter();
+        changed |= self.poll_installer();
+        changed |= self.sync_git();
+        changed
     }
 
     /// Takes whatever the highlighter has finished and applies it if it still describes the buffer.
@@ -7692,6 +7724,7 @@ mod wiring_tests {
             state,
             Grammar::new(),
             &dacode::config::Settings::default(),
+            None,
         )
     }
 
@@ -7700,11 +7733,9 @@ mod wiring_tests {
     fn settle(app: &mut App, mut done: impl FnMut(&App) -> bool) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while std::time::Instant::now() < deadline {
-            app.route_format();
-            app.poll_formatter();
-            app.sync_git();
-            // What `about_to_wait` does for syntax: a real editor is woken, a test has to look.
-            app.collect_syntax();
+            // What the event loop does when a worker wakes it: a real editor is woken, a test has
+            // to look.
+            app.collect_background();
             if done(app) {
                 return true;
             }
@@ -8355,6 +8386,7 @@ mod buffer_tests {
             state,
             Grammar::new(),
             &dacode::config::Settings::default(),
+            None,
         );
         for name in &names[1..] {
             app.activate(Target::File(dir.join(name)));
@@ -8548,6 +8580,7 @@ mod session_tests {
             state,
             Grammar::new(),
             &dacode::config::Settings::default(),
+            None,
         );
         for name in &names[1..] {
             app.activate(Target::File(dir.join(name)));

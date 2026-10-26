@@ -29,6 +29,7 @@
 //! streamed: progress from a package manager is carriage-return animation that means nothing once
 //! it is text, and the useful report is "it worked" or the last few lines of why it did not.
 
+use crate::wake::Waker;
 use dacode_lsp::Installer;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
@@ -73,6 +74,12 @@ impl Default for InstallWorker {
 
 impl InstallWorker {
     pub fn spawn() -> Self {
+        Self::spawn_with(None)
+    }
+
+    /// Like [`spawn`](Self::spawn), but `waker` is called from the worker thread after every result
+    /// has been sent, so a loop that sleeps until input still collects it.
+    pub fn spawn_with(waker: Option<Waker>) -> Self {
         let (requests, incoming) = channel::<Request>();
         let (outgoing, results) = channel::<Installed>();
 
@@ -80,6 +87,9 @@ impl InstallWorker {
             while let Ok(request) = incoming.recv() {
                 if outgoing.send(run(&request)).is_err() {
                     break;
+                }
+                if let Some(wake) = &waker {
+                    wake();
                 }
             }
         });
@@ -249,6 +259,33 @@ mod tests {
             "got: {}",
             result.message
         );
+    }
+
+    #[test]
+    fn a_finished_install_wakes_whoever_is_waiting() {
+        // An install takes tens of seconds, which is exactly when the editor is idle. Its verdict
+        // must not wait for a keypress.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = woken.clone();
+        let worker = InstallWorker::spawn_with(Some(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        worker.request(Request {
+            installer: installer("definitely-not-a-real-program-xyz"),
+            program: "pyright-langserver".into(),
+            language: "Python".into(),
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            woken.load(Ordering::SeqCst) > 0,
+            "the waker was never called"
+        );
+        assert!(worker.poll().is_some_and(|result| !result.ok));
     }
 
     #[test]

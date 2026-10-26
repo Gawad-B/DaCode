@@ -62,6 +62,9 @@ pub struct SyntaxWorker {
 }
 
 /// Called from the worker thread each time a result is ready. Must be cheap and must not block.
+///
+/// This crate sits below the binary and cannot name `dacode::wake::Waker`, so it keeps its own copy
+/// of the alias — **it must stay identical to that one**, as `dacode-lsp`'s process helper does.
 type Waker = Arc<dyn Fn() + Send + Sync>;
 
 enum Message {

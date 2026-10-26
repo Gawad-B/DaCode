@@ -18,6 +18,7 @@
 //! would rewrite it on disk behind the editor, and the buffer — which may be dirty — would then
 //! disagree with it. Every formatter worth having supports this; the table only holds ones that do.
 
+use crate::wake::Waker;
 use dacode_text::Version;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -308,6 +309,12 @@ impl Default for FormatWorker {
 
 impl FormatWorker {
     pub fn spawn() -> Self {
+        Self::spawn_with(None)
+    }
+
+    /// Like [`spawn`](Self::spawn), but `waker` is called from the worker thread after every result
+    /// has been sent, so a loop that sleeps until input still collects it.
+    pub fn spawn_with(waker: Option<Waker>) -> Self {
         let (requests, incoming) = channel::<Request>();
         let (outgoing, results) = channel::<Formatted>();
 
@@ -324,6 +331,9 @@ impl FormatWorker {
                     .is_err()
                 {
                     break;
+                }
+                if let Some(wake) = &waker {
+                    wake();
                 }
             }
         });
@@ -499,6 +509,45 @@ pub fn resolve(formatter: &Formatter, root: &Path, home: Option<&Path>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finished_format_wakes_whoever_is_waiting() {
+        // A formatted buffer that waits in the channel for the next keypress is a save that seems
+        // to have done nothing. A program that cannot start is the cheapest way to get an answer
+        // without needing any formatter installed.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = woken.clone();
+        let worker = FormatWorker::spawn_with(Some(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        let root = std::env::temp_dir();
+        worker.request(Request {
+            formatter: Formatter {
+                program: "dacode-no-such-formatter".into(),
+                args: Vec::new(),
+                language: "Nothing".into(),
+                install: String::new(),
+                configured: false,
+            },
+            executable: root.join("dacode-no-such-formatter"),
+            path: root.join("a.txt"),
+            root,
+            text: "x\n".into(),
+            version: Version(1),
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            woken.load(Ordering::SeqCst) > 0,
+            "the waker was never called"
+        );
+        let answer = worker.poll().expect("the answer is in the channel");
+        assert!(answer.problem.is_some(), "a program that will not start");
+    }
 
     #[test]
     fn a_file_finds_the_formatters_for_its_language() {

@@ -10,6 +10,7 @@
 //! against a snapshot, with the result tagged by document version — the same contract the syntax
 //! worker and the language server already follow.
 
+use crate::wake::Waker;
 use dacode_text::Version;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -176,6 +177,12 @@ pub struct GitWorker {
 
 impl GitWorker {
     pub fn spawn() -> Self {
+        Self::spawn_with(None)
+    }
+
+    /// Like [`spawn`](Self::spawn), but `waker` is called from the worker thread after every result
+    /// has been sent, so a loop that sleeps until input still collects it.
+    pub fn spawn_with(waker: Option<Waker>) -> Self {
         let (requests, incoming) = channel::<DiffRequest>();
         let (outgoing, results) = channel::<GitResult>();
 
@@ -200,6 +207,9 @@ impl GitWorker {
                 for _ in 0..skipped {
                     if outgoing.send(GitResult::Superseded).is_err() {
                         return;
+                    }
+                    if let Some(wake) = &waker {
+                        wake();
                     }
                 }
 
@@ -232,6 +242,9 @@ impl GitWorker {
 
                 if outgoing.send(result).is_err() {
                     break;
+                }
+                if let Some(wake) = &waker {
+                    wake();
                 }
             }
         });
@@ -886,6 +899,39 @@ mod live_tests {
         git(&["add", "."])?;
         git(&["commit", "-q", "-m", "first"])?;
         Some(root)
+    }
+
+    #[test]
+    fn a_finished_diff_wakes_whoever_is_waiting() {
+        // The editor sleeps until something wakes it. A diff that lands in the channel silently is
+        // gutter marks that wait for the next keypress.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let Some(root) = repository("wake") else {
+            return;
+        };
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = woken.clone();
+        let worker = GitWorker::spawn_with(Some(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })));
+        worker.request(DiffRequest {
+            path: root.join("src/main.rs"),
+            text: "one\nTWO!\nthree\nfour\n".into(),
+            version: Version(1),
+            revert: None,
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            woken.load(Ordering::SeqCst) > 0,
+            "the waker was never called"
+        );
+        assert!(worker.poll().is_some());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

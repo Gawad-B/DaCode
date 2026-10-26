@@ -961,3 +961,67 @@ fn a_uri_has_an_empty_authority_so_the_path_is_never_read_as_a_host() {
         );
     }
 }
+
+/// A server's reply must wake an event loop that is asleep.
+///
+/// The editor sleeps until input; without the waker the handshake's answer sits in the channel until
+/// somebody presses a key, and every language-server feature starts a keypress late.
+#[test]
+fn a_server_reply_wakes_whoever_is_waiting() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    if !dacode_lsp::can_start("rust-analyzer") {
+        eprintln!("skipping: rust-analyzer is not installed, or is a shim that cannot run");
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("dacode-lsp-wake-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let woken = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = woken.clone();
+    let mut client = dacode_lsp::LspClient::start_with(
+        &dacode_lsp::resolve("rust-analyzer").expect("checked by can_start above"),
+        "rust-analyzer",
+        &[],
+        &root,
+        Some(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })),
+    )
+    .expect("rust-analyzer starts");
+
+    // Nothing is polled until the waker has fired: that is the sleeping loop. Only then does the
+    // reply get read, as `user_event` would.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let woken_before_reading = woken.load(Ordering::SeqCst);
+
+    let mut ready = false;
+    while !ready && std::time::Instant::now() < deadline {
+        ready = client
+            .poll()
+            .iter()
+            .any(|event| matches!(event, dacode_lsp::ServerEvent::Ready { .. }));
+        if !ready {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    client.stop();
+    std::fs::remove_dir_all(&root).ok();
+
+    assert!(
+        woken_before_reading > 0,
+        "the server answered and nothing woke the loop"
+    );
+    assert!(ready, "the handshake never completed");
+}

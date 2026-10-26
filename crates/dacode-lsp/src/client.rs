@@ -418,6 +418,18 @@ fn describe_request(kind: &Pending) -> String {
     }
 }
 
+/// Called from a reader thread when an event is queued. Cheap and non-blocking.
+///
+/// This crate sits below the binary and cannot name `dacode::wake::Waker`, so it keeps its own copy
+/// of the alias — **it must stay identical to that one**, as the process helper's copy does.
+type Waker = Arc<dyn Fn() + Send + Sync>;
+
+fn wake(waker: &Option<Waker>) {
+    if let Some(wake) = waker {
+        wake();
+    }
+}
+
 /// A running language server.
 pub struct LspClient {
     child: Child,
@@ -440,6 +452,19 @@ impl LspClient {
     /// interface. Passing the bare name is what broke every npm-installed server on Windows: see
     /// [`crate::resolve_in`].
     pub fn start(executable: &Path, name: &str, args: &[&str], root: &Path) -> Result<Self> {
+        Self::start_with(executable, name, args, root, None)
+    }
+
+    /// Like [`start`](Self::start), but `waker` is called from the reader and stderr threads after
+    /// each event they queue. An event loop that sleeps until input would otherwise not look at the
+    /// queue until the next keypress, and every reply would arrive a key late.
+    pub fn start_with(
+        executable: &Path,
+        name: &str,
+        args: &[&str],
+        root: &Path,
+        waker: Option<Waker>,
+    ) -> Result<Self> {
         let mut command = Command::new(executable);
         no_window(&mut command);
         let mut child = command
@@ -471,6 +496,7 @@ impl LspClient {
             let pending = pending.clone();
             let sender = sender.clone();
             let stopping = stopping.clone();
+            let waker = waker.clone();
             std::thread::Builder::new()
                 .name("dacode-lsp-reader".into())
                 .spawn(move || {
@@ -482,6 +508,7 @@ impl LspClient {
                                     if sender.send(event).is_err() {
                                         return;
                                     }
+                                    wake(&waker);
                                 }
                             }
                             // Clean end of stream, or a framing error we cannot recover from: the
@@ -492,12 +519,14 @@ impl LspClient {
                                     let _ = sender.send(ServerEvent::Message {
                                         text: format!("protocol error: {error}"),
                                     });
+                                    wake(&waker);
                                 }
                                 break;
                             }
                         }
                     }
                     let _ = sender.send(ServerEvent::Stopped);
+                    wake(&waker);
                 })
                 .context("spawning the LSP reader thread")?;
         }
@@ -507,6 +536,7 @@ impl LspClient {
         if let Some(stderr) = stderr {
             let sender = sender.clone();
             let stopping = stopping.clone();
+            let waker = waker.clone();
             std::thread::Builder::new()
                 .name("dacode-lsp-stderr".into())
                 .spawn(move || {
@@ -524,6 +554,7 @@ impl LspClient {
                         {
                             return;
                         }
+                        wake(&waker);
                     }
                 })
                 .context("spawning the LSP stderr thread")?;
