@@ -110,6 +110,8 @@ pub enum Key {
     ActivityIndicator,
     Scroll(usize),
     ScrollX(usize),
+    /// The settings tab's list, which is not a pane and must not share a code pane's spring.
+    SettingsScroll,
     Bell,
     Welcome,
     SettingsCategory,

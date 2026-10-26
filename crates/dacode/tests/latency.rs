@@ -512,3 +512,40 @@ fn the_palette_lays_out_the_rows_on_screen_and_not_the_whole_list() {
         palette_geometry(LARGE),
     );
 }
+
+/// The settings page's geometry for a Languages page carrying `rows` reports, scrolled half-way.
+/// Drawing asks for it every frame, and every frame of a scroll spring.
+fn settings_geometry(rows: usize) -> Duration {
+    use dacode::settings_ui::{Category, Page, ServerRow, Values};
+    let report = |index: usize| ServerRow {
+        language: format!("language {index}"),
+        program: "server".into(),
+        status: "/usr/bin/server".into(),
+        found: true,
+        configured: false,
+    };
+    let mut page = Page::new();
+    page.set_reports((0..rows).map(report).collect(), Vec::new(), true);
+    page.set_category(Category::Languages, true);
+    let bounds = Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1);
+    let typography = Typography::default();
+    let values = Values::defaults(true);
+    let half = page.max_scroll(bounds, 1.0, true, &typography) / 2.0;
+    median(2_000, || {
+        let geometry = page.geometry_at(half, bounds, 1.0, &values, true, &typography);
+        std::hint::black_box(geometry.rows.len());
+    })
+}
+
+/// The page's list, heights and match flags are built when the page, query, grammar or width
+/// changes, and a frame lays out only the rows on screen. A list of a hundred reports and one of a
+/// hundred thousand must cost a frame the same — which they could not if the list were rebuilt per
+/// call, as the first version of the page did.
+#[test]
+fn the_settings_page_lays_out_the_rows_on_screen_and_not_the_whole_list() {
+    assert_flat(
+        "laying out the settings page",
+        settings_geometry(SMALL / 10),
+        settings_geometry(LARGE),
+    );
+}
