@@ -2083,6 +2083,7 @@ impl App {
     /// order of the checks below *is* the behaviour, and it is where the file tree once took the
     /// arrow keys from the editor.
     fn press(&mut self, key: Key) -> bool {
+        self.state.settle_focus();
         // While the palette is open it owns the keyboard: typing `i` into a file query must search
         // for `i`, not enter insert mode. The design says mode keys are swallowed, and they are.
         if self.state.palette.is_some() {
@@ -2101,7 +2102,9 @@ impl App {
         if self.state.completion.is_some() && self.handle_completion_key(key) {
             return false;
         }
-        if self.state.results.is_some() && self.handle_results_key(key) {
+        // Only with focus: the panel used to take Enter and the arrows whenever it was open, so a
+        // search left showing turned every newline into "open the selected hit".
+        if self.state.focus == dacode::focus::Focus::Panel && self.handle_results_key(key) {
             return false;
         }
 
@@ -3232,7 +3235,7 @@ impl App {
                     if hits.is_empty() {
                         self.state.hover = Some("no references found".into());
                     } else {
-                        self.state.results = Some(dacode::results::Results::from_hits(
+                        self.state.show_results(dacode::results::Results::from_hits(
                             &self.state.project_root,
                             "references",
                             hits,
@@ -4013,7 +4016,7 @@ impl App {
                 let query = prompt.input.clone();
                 self.state.prompt = None;
                 if !query.is_empty() {
-                    self.state.results = Some(dacode::results::Results::start(
+                    self.state.show_results(dacode::results::Results::start(
                         &self.state.project_root,
                         &query,
                     ));
@@ -4200,7 +4203,7 @@ impl App {
                 if pattern.is_empty() {
                     self.warn("usage: :grep <pattern>");
                 } else {
-                    self.state.results = Some(dacode::results::Results::start(
+                    self.state.show_results(dacode::results::Results::start(
                         &self.state.project_root,
                         &pattern,
                     ));
@@ -5538,6 +5541,9 @@ impl App {
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
                 if let Some(path) = tree.activate() {
                     self.activate(Target::File(path));
+                    // Opening a file is going to it: the next key is typed into it, not into the
+                    // tree. Expanding a folder is not, so it keeps the keys.
+                    self.state.focus = dacode::focus::Focus::Editor;
                 }
             }
             _ => return false,
@@ -5554,10 +5560,12 @@ impl App {
         match key.code {
             KeyCode::Escape => {
                 self.state.results = None;
+                self.state.focus = dacode::focus::Focus::Editor;
                 true
             }
             KeyCode::Enter => {
                 self.open_hit();
+                self.state.focus = dacode::focus::Focus::Editor;
                 true
             }
             // Only the navigation keys are consumed, so editing continues to work with the panel
@@ -6495,7 +6503,11 @@ impl App {
         // bars say `None`, so a toolbar button does not move focus; the buttons that open a view
         // set it themselves.
         if !extend {
-            if let Some(focus) = dacode::focus::focus_for(&layout, x, y) {
+            // The sidebar only takes the keys when it is showing something that uses them; a click
+            // in the problems list or a placeholder leaves focus where it was.
+            if let Some(focus) = dacode::focus::focus_for(&layout, x, y).filter(|focus| {
+                *focus != dacode::focus::Focus::Sidebar || self.state.sidebar_takes_keys()
+            }) {
                 self.state.focus = focus;
             }
         }
@@ -6950,6 +6962,7 @@ impl App {
             tree.reveal(&target);
             if let Some(path) = tree.activate() {
                 self.activate(Target::File(path));
+                self.state.focus = dacode::focus::Focus::Editor;
             }
             return;
         }
@@ -7833,9 +7846,11 @@ mod wiring_tests {
     #[test]
     fn arrows_follow_focus_not_whichever_panel_is_open() {
         let dir = scratch("focus");
+        std::fs::write(dir.join("b.rs"), "x").unwrap();
         let mut app = editor(&dir, "a.rs", "one\ntwo\nthree\n");
         app.state.modal = false;
         app.grammar.set_modal(false);
+        indexed(&mut app);
         app.show_tree();
         app.state.focus = dacode::focus::Focus::Editor;
         app.press(Key::named(KeyCode::Down));
@@ -7843,8 +7858,179 @@ mod wiring_tests {
 
         app.state.focus = dacode::focus::Focus::Sidebar;
         let before = app.state.cursor_point();
+        let row = app.state.tree.as_ref().unwrap().selected_row().cloned();
         app.press(Key::named(KeyCode::Down));
         assert_eq!(app.state.cursor_point(), before, "the tree took it");
+        assert_ne!(
+            app.state.tree.as_ref().unwrap().selected_row().cloned(),
+            row,
+            "and the tree's selection really moved"
+        );
+    }
+
+    /// The Vim grammar had the same defect: `j` is also the tree's down key.
+    #[test]
+    fn normal_mode_j_moves_the_caret_while_the_tree_is_merely_open() {
+        let dir = scratch("focus-vim");
+        std::fs::write(dir.join("b.rs"), "x").unwrap();
+        let mut app = editor(&dir, "a.rs", "one\ntwo\nthree\n");
+        app.state.modal = true;
+        app.grammar.set_modal(true);
+        app.state.mode = Mode::Normal;
+        app.show_tree();
+        app.state.focus = dacode::focus::Focus::Editor;
+        app.press(Key::char('j'));
+        assert_eq!(app.state.cursor_point().line, 1, "the caret moved");
+    }
+
+    /// Waits for the background walk, so the tree has rows to move through. Without it the tree is
+    /// empty and "the selection moved" is `None` against `None`.
+    fn indexed(app: &mut App) {
+        app.walk = Some(FileWalk::start(app.index.root().to_path_buf()));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while app.index.files().is_empty() && std::time::Instant::now() < deadline {
+            app.poll_walk();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!app.index.files().is_empty(), "the walk finished");
+    }
+
+    fn two_hits(dir: &std::path::Path) -> dacode::results::Results {
+        let hit = |line_number| dacode_project::SearchHit {
+            path: dir.join("a.rs"),
+            line_number,
+            line: "x".into(),
+            range: 0..0,
+        };
+        dacode::results::Results::from_hits(dir, "x", vec![hit(1), hit(2)])
+    }
+
+    /// An open search used to take Enter and the arrows whatever the caret was doing, so a newline
+    /// became "open the selected hit".
+    #[test]
+    fn results_take_keys_only_when_they_have_focus() {
+        use dacode::focus::Focus;
+        let dir = scratch("focus-results");
+        let mut app = editor(&dir, "a.rs", "one\ntwo\nthree\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app.state.show_results(two_hits(&dir));
+        assert_eq!(
+            app.state.focus,
+            Focus::Panel,
+            "showing results gives them the keys"
+        );
+
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(
+            app.state.results.as_ref().unwrap().selected,
+            1,
+            "the panel took it"
+        );
+        assert_eq!(app.state.cursor_point().line, 0);
+
+        app.state.focus = Focus::Editor;
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(
+            app.state.results.as_ref().unwrap().selected,
+            1,
+            "the panel did not"
+        );
+        assert_eq!(app.state.cursor_point().line, 1, "the caret did");
+
+        let before = app.state.document.text().to_string();
+        app.press(Key::named(KeyCode::Enter));
+        assert_ne!(
+            app.state.document.text().to_string(),
+            before,
+            "Enter typed a newline"
+        );
+        assert!(app.state.results.is_some(), "and opened no hit");
+    }
+
+    /// Escape from the panel closes it and hands the keys back in one press.
+    #[test]
+    fn escape_in_the_results_closes_them_and_returns_the_keys() {
+        let dir = scratch("focus-results-escape");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.show_results(two_hits(&dir));
+        app.press(Key::named(KeyCode::Escape));
+        assert!(app.state.results.is_none());
+        assert_eq!(app.state.focus, dacode::focus::Focus::Editor);
+    }
+
+    /// A click in a sidebar view that takes no keys must not leave focus there: Escape would be
+    /// swallowed by a list that has no use for it.
+    #[test]
+    fn escape_reaches_the_editor_after_a_click_in_the_problems_list() {
+        let dir = scratch("focus-problems");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.modal = true;
+        app.grammar.set_modal(true);
+        assert_eq!(app.state.mode, Mode::Insert);
+
+        app.run(Action::ToggleDiagnosticsList);
+        assert!(app.state.show_diagnostics);
+        let layout = app.layout();
+        let sidebar = layout.sidebar.expect("the list is a sidebar view");
+        app.pointer = (sidebar.x + 20.0, sidebar.y + 100.0);
+        app.click(false);
+
+        app.press(Key::named(KeyCode::Escape));
+        assert_eq!(app.state.mode, Mode::Normal, "Escape left insert mode");
+    }
+
+    /// Even a focus left over from a view that has since closed must not eat a key.
+    #[test]
+    fn a_stale_sidebar_focus_never_swallows_escape() {
+        let dir = scratch("focus-stale");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.modal = true;
+        app.grammar.set_modal(true);
+        app.state.focus = dacode::focus::Focus::Sidebar;
+        app.press(Key::named(KeyCode::Escape));
+        assert_eq!(app.state.mode, Mode::Normal);
+        assert_eq!(app.state.focus, dacode::focus::Focus::Editor);
+    }
+
+    /// Opening a file goes to it, as it does everywhere: the next `j` is typed, not a tree move.
+    /// Expanding a folder is not opening a file, so it keeps the keys.
+    #[test]
+    fn opening_a_file_from_the_tree_returns_the_keys_to_it() {
+        use dacode::focus::Focus;
+        let dir = scratch("focus-open");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("c.rs"), "c").unwrap();
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        indexed(&mut app);
+        app.show_tree();
+        let tree = app.state.tree.as_mut().unwrap();
+        tree.reveal("a.rs");
+        assert_eq!(app.state.focus, Focus::Sidebar);
+        app.press(Key::named(KeyCode::Enter));
+        assert_eq!(app.state.focus, Focus::Editor, "a file was opened");
+
+        app.state.focus = Focus::Sidebar;
+        app.state.tree.as_mut().unwrap().reveal("sub");
+        app.press(Key::named(KeyCode::Enter));
+        assert_eq!(app.state.focus, Focus::Sidebar, "a folder only expanded");
+    }
+
+    /// The title bar is chrome: pressing it must not move the keys, through the real `click()`.
+    #[test]
+    fn a_click_on_the_title_bar_leaves_focus_alone() {
+        use dacode::focus::Focus;
+        let dir = scratch("focus-title");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.show_tree();
+        assert_eq!(app.state.focus, Focus::Sidebar);
+        let layout = app.layout();
+        // The far left of the title bar, clear of the search box and every button.
+        app.pointer = (layout.title.x + 2.0, layout.title.y + 2.0);
+        app.click(false);
+        assert_eq!(app.state.focus, Focus::Sidebar);
     }
 
     /// Escape in the tree gives the keys back and leaves the tree standing: it is a view you were

@@ -197,6 +197,36 @@ impl EditorState {
             || self.chrome.activity.is_some()
     }
 
+    /// Whether the sidebar is showing a view that takes keys of its own. Only the tree and the
+    /// settings panel do; the problems list and the activity placeholders are looked at, so
+    /// giving them the keyboard would only make it disappear.
+    pub fn sidebar_takes_keys(&self) -> bool {
+        self.tree.is_some() || self.settings.is_some()
+    }
+
+    /// Drops a focus whose surface is gone, so a stale one can never eat a key.
+    ///
+    /// Called when a key is routed rather than at every site that closes something: there are a
+    /// dozen of those (toggles, the activity bar, replace, open-folder, a hit being opened), and
+    /// "remember to reset focus too" is exactly the rule that does not survive a year.
+    pub fn settle_focus(&mut self) {
+        use crate::focus::Focus;
+        let stale = match self.focus {
+            Focus::Sidebar => !self.sidebar_takes_keys(),
+            Focus::Panel => self.results.is_none(),
+            Focus::Editor => false,
+        };
+        if stale {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Shows search results and gives them the keys, as opening any view does.
+    pub fn show_results(&mut self, results: crate::results::Results) {
+        self.results = Some(results);
+        self.focus = crate::focus::Focus::Panel;
+    }
+
     /// Which activity icon is lit: the view the sidebar is showing, in the order it would choose.
     pub fn active_activity(&self) -> Option<crate::layout::Activity> {
         use crate::layout::Activity;
@@ -2758,20 +2788,12 @@ fn draw_explorer(
             box_.height - 2.0 * scale,
         );
         if selected {
-            // The selection says whose it is. Lit and outlined, the arrow keys are the tree's; a
-            // quiet fill means they are the text's and the tree is only being looked at — which is
-            // the difference that used to be invisible, and why ↓ seemed to move the wrong thing.
-            let focused = state.focus == crate::focus::Focus::Sidebar;
-            frame.fill_rounded(
-                highlight,
-                if focused {
-                    theme.row_active
-                } else {
-                    theme.rule_soft
-                },
-                5.0 * scale,
-            );
-            if focused {
+            // The selection says whose it is. Outlined, the arrow keys are the tree's; filled with
+            // no outline, they are the text's and the tree is only being looked at. Both keep the
+            // `row_active` fill and hover keeps `rule_soft`, so a selected row never reads as a
+            // hovered one — which is what the quiet state used to look like.
+            frame.fill_rounded(highlight, theme.row_active, 5.0 * scale);
+            if state.focus == crate::focus::Focus::Sidebar {
                 frame.outline_rounded(highlight, theme.primary, 5.0 * scale, 1.0 * scale);
             }
         } else if hovered(state, *box_) {

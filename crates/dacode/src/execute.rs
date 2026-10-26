@@ -269,8 +269,9 @@ pub fn execute(
             // rather than one silently winning.
             if state.show_diagnostics {
                 state.tree = None;
-                state.focus = crate::focus::Focus::Editor;
             }
+            // Either way the list takes no keys, so the keys are the text's.
+            state.settle_focus();
         }
         Action::ShowSourceControl | Action::ShowRunAndDebug => {
             let view = if *action == Action::ShowSourceControl {
@@ -385,7 +386,7 @@ pub fn execute(
                     prompt.input.push_str("grep ");
                 }
             } else {
-                state.results = Some(Results::start(&state.project_root, &query));
+                state.show_results(Results::start(&state.project_root, &query));
             }
         }
     }
