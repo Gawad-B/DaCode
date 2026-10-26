@@ -37,6 +37,9 @@ use winit::window::{Window, WindowId};
 /// Rows of context kept between the cursor and the edge of the viewport.
 const SCROLL_MARGIN: usize = 3;
 
+/// How long typing must pause before autosave writes. Read by the write and by the loop's sleep.
+const AUTOSAVE_QUIET: std::time::Duration = std::time::Duration::from_millis(900);
+
 /// Columns of context kept beside the cursor when the view scrolls sideways.
 ///
 /// Eight, where the vertical margin is three: a row of context is a whole line, a column is one
@@ -164,7 +167,9 @@ fn main() -> Result<()> {
     // nothing to do, wakes and collects it rather than waiting for the next keypress. Made before
     // the app so that `App::new` can hand it to every worker as it builds them.
     let proxy = event_loop.create_proxy();
-    let waker: dacode::wake::Waker = std::sync::Arc::new(move || {
+    // Coalescing: a language server indexing queues events many times a second, and one wake
+    // collects them all.
+    let (waker, wake_pending) = dacode::wake::coalescing(move || {
         let _ = proxy.send_event(dacode::wake::Wake);
     });
     let mut app = App::new(
@@ -174,6 +179,7 @@ fn main() -> Result<()> {
         &starting_settings,
         Some(waker),
     );
+    app.wake_pending = wake_pending;
     app.walk = Some(FileWalk::start(root.clone()));
     dacode::recovery::install_panic_hook(app.lifeline.clone());
 
@@ -1359,6 +1365,9 @@ struct App {
     /// Handed to every worker so a finished result wakes the sleeping event loop. `None` in tests,
     /// which have no loop and poll instead.
     waker: Option<dacode::wake::Waker>,
+    /// Raised by the coalescing waker and cleared by `user_event` before it collects. Fresh and
+    /// unshared when there is no waker, where nothing ever raises it.
+    wake_pending: Arc<std::sync::atomic::AtomicBool>,
     /// Open panes, and which has focus. Always at least one — see `dacode::panes`.
     panes: Panes,
     /// Buffers other than the active one. The active document lives in `state`, and switching swaps
@@ -1384,6 +1393,10 @@ struct Buffer {
 impl ApplicationHandler<dacode::wake::Wake> for App {
     /// A worker finished. Collect what it produced and redraw if that changed anything on screen.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: dacode::wake::Wake) {
+        // Cleared first: a result that lands while collecting then raises a new event, instead of
+        // being swallowed by a flag that says one is already on its way.
+        self.wake_pending
+            .store(false, std::sync::atomic::Ordering::Release);
         if self.collect_background() {
             self.request_redraw();
         }
@@ -1527,15 +1540,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         self.hold_lifeline();
         self.record_notice();
 
-        // Sleep until input or a worker's wake-up. Only what has no waker keeps a timer: the file
-        // walk and a streaming search, and everything when there is no loop to wake (tests).
-        event_loop.set_control_flow(if self.services_busy() {
-            ControlFlow::WaitUntil(
-                std::time::Instant::now() + std::time::Duration::from_millis(100),
-            )
-        } else {
-            ControlFlow::Wait
-        });
+        event_loop.set_control_flow(self.control_flow(std::time::Instant::now()));
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1828,7 +1833,7 @@ impl App {
             server_hover: None,
             git: dacode::git::GitWorker::spawn_with(waker.clone()),
             diffed_version: None,
-            watcher: match dacode_project::FileWatcher::new() {
+            watcher: match dacode_project::FileWatcher::with_waker(waker.clone()) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
                     // Not fatal: the editor works, it just will not notice outside edits.
@@ -1848,6 +1853,7 @@ impl App {
             last_edit: None,
             wakes: 0,
             waker,
+            wake_pending: Arc::default(),
             index: FileIndex::new(root),
             // The project walk is started by `run`, not here: a test wants an editor, not an
             // indexing thread over whatever directory it was handed.
@@ -3256,12 +3262,17 @@ impl App {
         changed
     }
 
-    /// Whether any background service still owes the editor an answer.
+    /// Whether the idle step still has to be run on a timer, because something it collects cannot
+    /// wake the loop itself.
     ///
-    /// This is what keeps the event loop alive without spinning: `ControlFlow::Wait` sleeps until
-    /// input arrives, which is right for an editor — but a language server that finishes its
-    /// handshake while the user is reading has nobody to tell. Without a wake-up, `didOpen` is never
-    /// sent and diagnostics never arrive, which is exactly the bug this fixes.
+    /// With a waker that is only the file walk and a streaming search. Every worker — syntax, git,
+    /// format, install, the language server, the file watcher and the folder picker — announces its
+    /// own result, so an idle editor with a server running sleeps instead of waking ten times a
+    /// second to find nothing. Without a waker (headless tests) nobody announces anything, so the
+    /// old rules apply: stay awake while any worker still owes an answer.
+    ///
+    /// Autosave is not here: it waits on a deadline rather than on work, and
+    /// [`autosave_due_at`](Self::autosave_due_at) supplies that.
     fn services_busy(&self) -> bool {
         if self.walk.is_some() {
             return true;
@@ -3479,6 +3490,41 @@ impl App {
     ///
     /// Throttled by `recovery::INTERVAL`, so this is safe to call on every keystroke; `force` is for
     /// the moments where losing anything is unacceptable.
+    /// When autosave will next be due, if it is waiting on the clock.
+    ///
+    /// The only thing in the idle step that is a *time* rather than an event: nothing happens at
+    /// the end of the quiet period, so nothing wakes the loop for it, and a sleeping editor would
+    /// save on the next unrelated input instead. `None` once the moment has passed — what is still
+    /// dirty then has been tried and refused (it changed on disk), and a deadline in the past would
+    /// spin the loop.
+    fn autosave_due_at(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        if !self.state.autosave || !self.state.document.is_dirty() || self.state.file_path.is_none()
+        {
+            return None;
+        }
+        let due = self.last_edit? + AUTOSAVE_QUIET;
+        (due > now).then_some(due)
+    }
+
+    /// How the loop sleeps after an idle step: until input or a wake-up, except for the two things
+    /// that cannot announce themselves.
+    ///
+    /// Those are anything [`services_busy`](Self::services_busy) still polls for, which a tick of
+    /// 100 ms covers, and autosave's quiet period, which needs a wake-up at its own deadline.
+    fn control_flow(&self, now: std::time::Instant) -> ControlFlow {
+        let tick = self
+            .services_busy()
+            .then(|| now + std::time::Duration::from_millis(100));
+        match [tick, self.autosave_due_at(now)]
+            .into_iter()
+            .flatten()
+            .min()
+        {
+            Some(at) => ControlFlow::WaitUntil(at),
+            None => ControlFlow::Wait,
+        }
+    }
+
     /// Writes the file if autosave is on and typing has paused. Returns whether anything happened.
     ///
     /// **A pause, not a timer.** Saving every N seconds while someone is mid-word writes broken
@@ -3489,8 +3535,6 @@ impl App {
     /// Nothing here blocks: it is a clock comparison and, at most, one write of a buffer already in
     /// memory — the same write `ctrl-s` does, on the same thread, with the same cost.
     fn poll_autosave(&mut self) -> bool {
-        const QUIET: std::time::Duration = std::time::Duration::from_millis(900);
-
         if !self.state.autosave || !self.state.document.is_dirty() {
             return false;
         }
@@ -3500,7 +3544,10 @@ impl App {
         if self.state.file_path.is_none() {
             return false;
         }
-        if self.last_edit.is_none_or(|at| at.elapsed() < QUIET) {
+        if self
+            .last_edit
+            .is_none_or(|at| at.elapsed() < AUTOSAVE_QUIET)
+        {
             return false;
         }
 
@@ -4423,7 +4470,10 @@ impl App {
                             .parent()
                             .unwrap_or(&self.state.project_root)
                             .to_path_buf();
-                        self.folder_picker = Some(dacode::picker::FolderPicker::open(start));
+                        self.folder_picker = Some(dacode::picker::FolderPicker::open(
+                            start,
+                            self.waker.clone(),
+                        ));
                         self.state.hover = Some("choose a folder…".into());
                     }
                 } else {
@@ -7742,6 +7792,73 @@ mod wiring_tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         false
+    }
+
+    /// An editor as the real one is built: with a waker, which is what makes the loop sleep.
+    fn woken_editor(dir: &std::path::Path, name: &str, contents: &str) -> App {
+        let mut app = editor(dir, name, contents);
+        app.waker = Some(Arc::new(|| {}));
+        app
+    }
+
+    #[test]
+    fn a_dirty_autosaving_buffer_sets_an_alarm_for_the_end_of_the_quiet_period() {
+        // With a waker the loop sleeps until input. Autosave waits on the *clock*, which nothing
+        // wakes the loop for — with a language server running it used to ride the 100 ms tick, and
+        // the tick is gone. Without this the save waits for an unrelated keypress.
+        let dir = scratch("autosave-alarm");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        app.state.autosave = true;
+        let now = std::time::Instant::now();
+        assert_eq!(
+            app.control_flow(now),
+            ControlFlow::Wait,
+            "a clean buffer needs nothing"
+        );
+
+        app.state.mutate(|document| document.insert("x"));
+        app.last_edit = Some(now);
+        assert_eq!(
+            app.control_flow(now),
+            ControlFlow::WaitUntil(now + AUTOSAVE_QUIET)
+        );
+
+        app.state.autosave = false;
+        assert_eq!(
+            app.control_flow(now),
+            ControlFlow::Wait,
+            "and nothing when autosave is off"
+        );
+
+        app.state.autosave = true;
+        assert_eq!(
+            app.control_flow(now + AUTOSAVE_QUIET),
+            ControlFlow::Wait,
+            "a deadline already passed would spin the loop: what is still dirty then was refused"
+        );
+    }
+
+    #[test]
+    fn with_a_waker_only_the_walk_and_a_search_keep_a_timer() {
+        // The contract that lets an idle editor with a language server sleep. `formatting_version`
+        // stands in for any worker that owes an answer: with a waker it announces itself.
+        let dir = scratch("busy-contract");
+        let mut app = woken_editor(&dir, "a.rs", "fn main() {}\n");
+        app.formatting_version = Some(Version(1));
+        assert!(
+            !app.services_busy(),
+            "a worker with a waker must not keep the loop polling"
+        );
+
+        app.walk = Some(FileWalk::start(dir.clone()));
+        assert!(app.services_busy(), "the walk has no waker");
+        app.walk = None;
+
+        // And without a waker, the old clauses still apply: nobody would announce the answer.
+        app.waker = None;
+        assert!(app.services_busy(), "a format in flight must be waited for");
+        app.formatting_version = None;
+        assert!(!app.services_busy());
     }
 
     /// Colours arrive from the idle step alone — no key, no click. They used to wait for one.

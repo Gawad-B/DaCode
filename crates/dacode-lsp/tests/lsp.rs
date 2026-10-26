@@ -984,6 +984,9 @@ fn a_server_reply_wakes_whoever_is_waiting() {
     .unwrap();
     std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
 
+    // Only wakes from the *reader* thread are counted. The stderr thread wakes too, and rust-analyzer
+    // prints to stderr as it starts: counting every wake let a log line satisfy a test that is about
+    // the reply. Nothing the server writes on stdout reaches the queue without this thread's wake.
     let woken = std::sync::Arc::new(AtomicUsize::new(0));
     let counter = woken.clone();
     let mut client = dacode_lsp::LspClient::start_with(
@@ -992,13 +995,15 @@ fn a_server_reply_wakes_whoever_is_waiting() {
         &[],
         &root,
         Some(std::sync::Arc::new(move || {
-            counter.fetch_add(1, Ordering::SeqCst);
+            if std::thread::current().name() == Some("dacode-lsp-reader") {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
         })),
     )
     .expect("rust-analyzer starts");
 
-    // Nothing is polled until the waker has fired: that is the sleeping loop. Only then does the
-    // reply get read, as `user_event` would.
+    // Nothing is polled until the reader has woken: that is the sleeping loop. Only then is the
+    // queue read, as `user_event` would, and the reply must be in it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1021,7 +1026,7 @@ fn a_server_reply_wakes_whoever_is_waiting() {
 
     assert!(
         woken_before_reading > 0,
-        "the server answered and nothing woke the loop"
+        "the reader queued the server's reply and nothing woke the loop"
     );
     assert!(ready, "the handshake never completed");
 }

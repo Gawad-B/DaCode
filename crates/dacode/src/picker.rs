@@ -53,13 +53,19 @@ pub struct FolderPicker {
 
 impl FolderPicker {
     /// Opens the dialog, starting at `start`. Returns immediately.
-    pub fn open(start: PathBuf) -> Self {
+    ///
+    /// `waker` is called once the dialog closes, so a loop that sleeps until input still collects
+    /// the answer; the dialog is the one thing here that is slow *because* a person is using it.
+    pub fn open(start: PathBuf, waker: Option<crate::wake::Waker>) -> Self {
         let (sender, result) = channel();
 
         std::thread::spawn(move || {
             let chosen = choose(&start);
             // A closed channel means the editor moved on; nothing to do about that here.
             let _ = sender.send(chosen);
+            if let Some(wake) = &waker {
+                wake();
+            }
         });
 
         Self { result }

@@ -48,6 +48,12 @@ enum Change {
     Existence,
 }
 
+/// Called from the watcher's thread when it has queued an event. Cheap and non-blocking.
+///
+/// This crate sits below the binary and cannot name `dacode::wake::Waker`, so it keeps its own copy
+/// of the alias — **it must stay identical to that one**, as `dacode-lsp`'s does.
+type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 pub struct FileWatcher {
     /// Held only to keep the watcher thread alive; dropping it stops the watch.
     _watcher: RecommendedWatcher,
@@ -69,6 +75,13 @@ pub struct FileWatcher {
 
 impl FileWatcher {
     pub fn new() -> notify::Result<Self> {
+        Self::with_waker(None)
+    }
+
+    /// Like [`new`](Self::new), but `waker` is called from the watcher's thread after each event it
+    /// queues. An editor asleep until input would otherwise not look until the next keypress, and a
+    /// file changed by `git checkout` would sit unnoticed behind a window nobody touched.
+    pub fn with_waker(waker: Option<Waker>) -> notify::Result<Self> {
         let (sender, events) = channel();
 
         let watcher = notify::recommended_watcher(move |result: notify::Result<Event>| {
@@ -87,6 +100,9 @@ impl FileWatcher {
             for path in event.paths {
                 // A closed channel means the editor is gone; nothing to do about it here.
                 let _ = sender.send((path, change));
+                if let Some(wake) = &waker {
+                    wake();
+                }
             }
         })?;
 
@@ -254,6 +270,36 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_change_on_disk_wakes_whoever_is_waiting() {
+        // The editor sleeps until something wakes it. A file changed by `git checkout` behind an
+        // untouched window must not wait for a keypress to be noticed.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = scratch("wake");
+        let file = dir.join("watched.rs");
+        std::fs::write(&file, "before\n").unwrap();
+
+        let woken = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = woken.clone();
+        let mut watcher = FileWatcher::with_waker(Some(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })))
+        .expect("a watcher starts");
+        watcher.watch(&file).expect("watching succeeds");
+
+        std::fs::write(&file, "after\n").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while woken.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            woken.load(Ordering::SeqCst) > 0,
+            "the waker was never called"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
