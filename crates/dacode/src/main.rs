@@ -4977,16 +4977,18 @@ impl App {
                 }
             }
             Action::ToggleHelp => {
-                self.state.help = match self.state.help {
-                    Some(_) => None,
-                    None => Some(dacode::help::Help::new(self.state.modal)),
-                };
+                if self.state.help.is_some() {
+                    self.state.close_help();
+                } else {
+                    self.state.help = Some(dacode::help::Help::new(self.state.modal));
+                }
             }
             Action::ToggleMenu => {
-                self.state.menu = match self.state.menu {
-                    Some(_) => None,
-                    None => Some(dacode::menu::Menu::bar(self.state.modal)),
-                };
+                if self.state.menu.is_some() {
+                    self.state.close_menu();
+                } else {
+                    self.state.menu = Some(dacode::menu::Menu::bar(self.state.modal));
+                }
             }
             Action::ToggleContextMenu => self.open_context_menu(),
             Action::OpenFolder => {
@@ -7991,8 +7993,10 @@ impl App {
         self.poll_walk();
         self.sync_lsp();
         // And the targets, for a redraw delivered before the idle step: a frame must never draw a view
-        // that has opened at the place it was closed.
-        self.sync_motion(std::time::Instant::now());
+        // that has opened at the place it was closed. At the frame's own instant, so the retarget and
+        // what is drawn and what the mouse later measures are one moment.
+        let now = std::time::Instant::now();
+        self.sync_motion(now);
 
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -8005,7 +8009,6 @@ impl App {
 
         // Every animated value this frame draws is read at this one instant, so two things that move
         // together cannot be sampled a few microseconds apart.
-        let now = std::time::Instant::now();
         self.state.chrome.now = Some(now);
         self.last_frame = Some(now);
 
@@ -8803,6 +8806,36 @@ mod wiring_tests {
     }
 
     #[test]
+    fn reduced_motion_asks_for_no_frames_for_movement_it_does_not_show() {
+        // Every frame of a sidebar spring under reduced motion would draw the same pixels.
+        let dir = scratch("reduced-frames");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        app.state
+            .chrome
+            .motion
+            .set_animations(dacode::motion::Animations::Reduced);
+        let t0 = std::time::Instant::now();
+        app.state.pointer = (26.0, 80.0);
+        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        assert!(!app.animating(ms(t0, 16)));
+    }
+
+    #[test]
+    fn the_sidebar_overshoot_settles_instead_of_widening_past_its_view() {
+        // The view is laid out at the open width; a slot wider than that would reflow it.
+        let dir = scratch("overshoot");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        let widest = (0..200)
+            .map(|step| app.state.sidebar_fraction_at(ms(t0, step * 5)))
+            .fold(0.0, f32::max);
+        assert_eq!(widest, 1.0);
+    }
+
+    #[test]
     fn full_motion_slides_the_sidebar_and_the_mouse_follows_the_drawn_frame() {
         let dir = scratch("slide");
         let mut app = editor(&dir, "a.rs", "fn main() {}\n");
@@ -8841,6 +8874,45 @@ mod wiring_tests {
         );
         let frame = draw_at(&mut app, ms(t0, 4000));
         assert!(strongest(&frame, dacode_render::Layer::Modal).is_none());
+    }
+
+    #[test]
+    fn a_modal_that_opens_replaces_one_still_fading_out() {
+        // Every modal draws on the same layer, and within a layer all quads are drawn before any
+        // glyphs: a menu fading out behind the palette it just opened would print its rows through
+        // the palette's card. "Command palette" in the Help menu is exactly that path.
+        let dir = scratch("modal-replaces");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.menu = Some(dacode::menu::Menu::bar(app.state.modal));
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        // The bar's titles, which the menu draws and the palette never does.
+        let titles: Vec<String> = app
+            .state
+            .menu
+            .as_ref()
+            .expect("open")
+            .titles
+            .iter()
+            .map(|title| title.to_string())
+            .collect();
+
+        let open = ms(t0, 1500);
+        app.state.close_menu();
+        app.state.palette = Some(commands(&app));
+        app.state.sync_motion(WINDOW, 1.0, open);
+        assert!(app.state.chrome.leaving.menu.is_none());
+
+        let frame = draw_at(&mut app, ms(t0, 1540));
+        let bleeding: Vec<&str> = frame
+            .texts_on(dacode_render::Layer::Modal)
+            .map(|run| run.text.as_str())
+            .filter(|text| titles.iter().any(|title| title == text))
+            .collect();
+        assert!(
+            bleeding.is_empty(),
+            "the closed menu's {bleeding:?} is drawn over the palette"
+        );
     }
 
     #[test]

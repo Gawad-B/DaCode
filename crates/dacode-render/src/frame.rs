@@ -344,7 +344,9 @@ impl Frame {
     /// Whether a shape's extent lies inside the clip. A shape cannot be cut the way a rectangle can,
     /// so one that pokes out is left out whole: a sliding panel's icons pop at its edge rather than
     /// being painted over the bar beside it.
-    fn inside_clip(&self, kind: &ShapeKind) -> bool {
+    ///
+    /// Conservative for an arc, which is bounded by its whole circle.
+    fn inside_clip(&self, kind: &ShapeKind, width: f32) -> bool {
         let Some(clip) = self.clip else {
             return true;
         };
@@ -364,11 +366,12 @@ impl Frame {
                 [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1])],
             ),
         };
-        const SLACK: f32 = 0.5;
-        min[0] >= clip.x - SLACK
-            && min[1] >= clip.y - SLACK
-            && max[0] <= clip.right() + SLACK
-            && max[1] <= clip.bottom() + SLACK
+        // Half the stroke falls outside the geometry; half a pixel of antialiasing is allowed.
+        let slack = 0.5 - width / 2.0;
+        min[0] >= clip.x - slack
+            && min[1] >= clip.y - slack
+            && max[0] <= clip.right() + slack
+            && max[1] <= clip.bottom() + slack
     }
 
     fn push_shape(&mut self, kind: ShapeKind, width: f32, color: [f32; 4]) {
@@ -411,7 +414,7 @@ impl Frame {
         let Some(color) = self.faded(color) else {
             return;
         };
-        if !self.inside_clip(&kind) {
+        if !self.inside_clip(&kind, width) {
             return;
         }
         self.shapes.push(Shape {
@@ -684,7 +687,10 @@ impl Frame {
         if let Some(zoom) = self.zoom {
             run.rect = zoom.rect(run.rect);
             run.clip = run.clip.map(|clip| zoom.rect(clip));
-            run.spec.size_px *= zoom.factor;
+            // In quarter pixels, so the frames of a card growing share sizes: each new size is a
+            // reshape of every run and new glyphs in the atlas, and a few hundredths of a pixel
+            // between frames cannot be seen.
+            run.spec.size_px = (run.spec.size_px * zoom.factor * 4.0).round() / 4.0;
         }
         if let Some(clip) = self.clip {
             let clip = run.clip.map_or(clip, |own| own.intersect(clip));

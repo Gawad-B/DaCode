@@ -103,6 +103,8 @@ pub enum Key {
     Info,
     Help,
     Notifications,
+    /// An activity-bar icon under the pointer, by its index in `layout::ACTIVITIES`. Anything else
+    /// that lifts on hover needs a variant of its own, or it shares springs with these.
     Hover(u32),
     TabIndicator,
     ActivityIndicator,
@@ -406,7 +408,10 @@ impl Motion {
             }
             None => (0.0, 0.0, 0.0, now),
         };
-        let velocity = moving + f64::from(velocity);
+        // Kicks in quick succession do not add up: a second message rings the bell again, not
+        // twice as hard into the clamp drawing puts on it.
+        let kick = f64::from(velocity);
+        let velocity = (moving + kick).clamp(-kick.abs(), kick.abs());
         let omega = f64::from(spring.stiffness).sqrt();
         let (position_tolerance, velocity_tolerance) =
             tolerances((target - position).abs().max(velocity.abs() / omega));

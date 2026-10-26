@@ -355,18 +355,21 @@ impl EditorState {
         self.focus = crate::focus::Focus::Editor;
     }
 
-    /// How far open the sidebar is drawn at the frame's instant: 0 closed, 1 open, a little past 1
-    /// while it overshoots. Drawing and the mouse read this; soft wrap reads [`Self::sidebar_open`].
+    /// How far open the sidebar is drawn at the frame's instant: 0 closed, 1 open. Drawing and the mouse read this; soft wrap reads [`Self::sidebar_open`].
     pub fn sidebar_fraction(&self) -> f32 {
         self.sidebar_fraction_at(self.now())
     }
 
+    ///
+    /// Clamped to `[0, 1]`: the panel spring's overshoot would widen the slot past the width its view
+    /// is laid out at, and the view would reflow every frame of it. Past 1 there is nothing to show
+    /// but a reflow, so the overshoot shows as the slide settling instead.
     pub fn sidebar_fraction_at(&self, now: std::time::Instant) -> f32 {
         let open = if self.sidebar_open() { 1.0 } else { 0.0 };
         self.chrome
             .motion
             .movement(crate::motion::Key::Sidebar, open, now)
-            .max(0.0)
+            .clamp(0.0, 1.0)
     }
 
     /// Closes the palette, leaving it to fade out. Setting the field to `None` also closes it, only
@@ -435,6 +438,11 @@ impl EditorState {
         // box fades in for a hover reply only: the diagnostic under the caret is found by walking
         // every diagnostic, and this runs after every batch of events. A diagnostic's box simply
         // appears with the caret that lands on it, which is caret-following and never animated.
+        //
+        // Drawing reads both as "open" and lets the draw function decide whether there is anything
+        // to show, so a key snapped to 0 here while a diagnostic box is up falls back to the state in
+        // `Motion::fade` and is drawn whole. That fallback is load-bearing for this, not only for
+        // "nothing has synced yet".
         let cut = [
             (Key::Completion, self.completion.is_some()),
             (Key::Info, self.hover.is_some()),
@@ -467,8 +475,16 @@ impl EditorState {
 
         let chrome = &mut self.chrome;
         let motion = &mut chrome.motion;
+        // Under reduced motion a value that only moves things is never drawn anywhere but at its
+        // target, so it is put there: a spring running underneath would keep the loop drawing frames
+        // that do not change, on every pass of the pointer over the activity bar.
+        let still = motion.animations() == crate::motion::Animations::Reduced;
         for (key, open, kind) in fading {
-            motion.to(key, flag(open), spring(open, kind), now);
+            if still && key == Key::Sidebar {
+                motion.snap(key, flag(open));
+            } else {
+                motion.to(key, flag(open), spring(open, kind), now);
+            }
         }
         for (key, open) in cut {
             if open {
@@ -478,12 +494,16 @@ impl EditorState {
             }
         }
         for (index, over) in hovers {
-            motion.to(Key::Hover(index), flag(over), Spring::HOVER, now);
+            if still {
+                motion.snap(Key::Hover(index), flag(over));
+            } else {
+                motion.to(Key::Hover(index), flag(over), Spring::HOVER, now);
+            }
         }
 
         // Something that slides between places is put in its first place, not slid in from zero.
         let glide = |motion: &mut crate::motion::Motion, key: Key, to: f32, fresh: bool| {
-            if fresh || motion.target(key).is_none() {
+            if still || fresh || motion.target(key).is_none() {
                 motion.snap(key, to);
             } else {
                 motion.to(key, to, Spring::POPUP, now);
@@ -517,9 +537,13 @@ impl EditorState {
             }
         }
 
-        // What has finished leaving is forgotten, and what has come back is not leaving.
+        // What has finished leaving is forgotten, and what has come back is not leaving. Nor does
+        // anything keep leaving once another modal is open: they all draw on one layer, where every
+        // quad goes down before any glyph, so a menu fading out behind the palette it opened would
+        // print its rows through the palette's card.
+        let modal = self.palette.is_some() || self.menu.is_some() || self.help.is_some();
         let gone = |motion: &crate::motion::Motion, key: Key, open: bool| {
-            open || motion.get(key, now) <= 0.0
+            modal || open || motion.get(key, now) <= 0.0
         };
         if gone(motion, Key::Palette, self.palette.is_some()) {
             chrome.leaving.palette = None;
