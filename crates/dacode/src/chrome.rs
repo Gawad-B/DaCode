@@ -2713,7 +2713,7 @@ fn draw_heading(frame: &mut Frame, state: &EditorState, title: &str, rect: Rect,
 }
 
 /// [`wrap_to`] at an advance of the caller's, for text set off the type scale.
-fn wrap_at(text: &str, width: f32, advance: f32) -> Vec<String> {
+pub(crate) fn wrap_at(text: &str, width: f32, advance: f32) -> Vec<String> {
     let per_line = if advance > 0.0 && width > 0.0 {
         (width / advance).floor().max(1.0) as usize
     } else {

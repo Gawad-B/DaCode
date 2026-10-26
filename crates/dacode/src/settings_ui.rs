@@ -799,6 +799,1016 @@ pub fn write_back(existing: &str, values: &Values) -> String {
     }
 }
 
+// ---- the settings page --------------------------------------------------------------------------
+//
+// The tab that replaces the panel above: JetBrains' category tree on the left, VSCode's rows on the
+// right — a setting's name, a sentence or two under it when the name does not say everything, and
+// its control — and one search box over all of it. This half is the model and the geometry; the
+// drawing and the mouse both read `Page::geometry`, for the reason `panel` gives.
+//
+// What the old panel printed beside every value — "default", "init.lua", "imported" — is gone. It
+// answered where a value came from, which readers took for section names, and it explained
+// nothing. What a reader wants from a row is what the setting does and whether they have changed
+// it; the explanation says the first, and a ● against the default says the second.
+
+use dacode_input::commands::{self, Command, Group};
+use dacode_theme::Role;
+
+/// A page of the settings tab, as the tree lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Category {
+    #[default]
+    Appearance,
+    Editor,
+    Files,
+    Keys,
+    Languages,
+    Import,
+}
+
+impl Category {
+    pub const ALL: [Category; 6] = [
+        Category::Appearance,
+        Category::Editor,
+        Category::Files,
+        Category::Keys,
+        Category::Languages,
+        Category::Import,
+    ];
+
+    /// The tree's name for the page.
+    ///
+    /// One word each, deliberately. Below [`SIDE_TREE_MIN`] the tree folds into a strip of three
+    /// tiles, where "Import from VSCode" would be elided to nothing useful; the section headings
+    /// inside each page ("From VSCode", "Saving") say the rest.
+    pub fn title(self) -> &'static str {
+        match self {
+            Category::Appearance => "Appearance",
+            Category::Editor => "Editor",
+            Category::Files => "Files",
+            Category::Keys => "Keys",
+            Category::Languages => "Languages",
+            Category::Import => "Import",
+        }
+    }
+}
+
+/// A heading on a page, and the settings it groups — VSCode's "Editor › Wrapping".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Section {
+    pub title: &'static str,
+    pub fields: &'static [Field],
+}
+
+const APPEARANCE: &[Section] = &[
+    Section {
+        title: "Theme",
+        fields: &[Field::Theme],
+    },
+    Section {
+        title: "Text",
+        fields: &[Field::FontSize],
+    },
+    Section {
+        title: "Window",
+        fields: &[Field::Transparency, Field::Animations],
+    },
+];
+
+const EDITOR: &[Section] = &[
+    Section {
+        title: "Editing",
+        fields: &[Field::VimKeys, Field::TabWidth],
+    },
+    Section {
+        title: "Wrapping",
+        fields: &[Field::SoftWrap],
+    },
+    Section {
+        title: "Display",
+        fields: &[Field::LineNumbers, Field::StickyScroll, Field::InlayHints],
+    },
+];
+
+const FILES: &[Section] = &[Section {
+    title: "Saving",
+    fields: &[Field::Autosave, Field::FormatOnSave],
+}];
+
+/// The settings on a page, under their headings, in order.
+///
+/// Empty for Keys, Languages and Import: those pages list commands, detected programs and import
+/// actions rather than [`Field`]s, and [`Page::entries`] builds them. Every `Field` is in exactly
+/// one section of one page, which a test holds — a setting on no page cannot be reached with the
+/// mouse, and one on two is two rows to keep in step.
+pub fn sections(category: Category) -> &'static [Section] {
+    match category {
+        Category::Appearance => APPEARANCE,
+        Category::Editor => EDITOR,
+        Category::Files => FILES,
+        Category::Keys | Category::Languages | Category::Import => &[],
+    }
+}
+
+/// The section a field is listed in, for search: its heading is part of what a query matches.
+fn section_of(field: Field) -> Option<&'static Section> {
+    Category::ALL
+        .into_iter()
+        .flat_map(sections)
+        .find(|section| section.fields.contains(&field))
+}
+
+/// The Keys page's headings: the help panel's groups, capitalised as the other pages' headings are.
+fn group_title(group: Group) -> &'static str {
+    match group {
+        Group::Files => "Files",
+        Group::Editing => "Editing",
+        Group::Selection => "Selection and cursors",
+        Group::Navigation => "Moving around",
+        Group::Search => "Finding things",
+        Group::Language => "The language server",
+        Group::View => "The view",
+        Group::Panes => "Panes and panels",
+    }
+}
+
+/// How a setting is changed on the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    /// On or off.
+    Switch,
+    /// A number, with a step down and a step up.
+    Stepper,
+    /// One of a fixed set of names, in the order a click cycles through them.
+    Choice(&'static [&'static str]),
+}
+
+/// The names a choice offers, taken from the lists the values themselves cycle through — written
+/// out a second time here they would be a list that disagrees the first time a theme is added.
+const THEMES: [&str; Theme::BUILT_IN.len()] = {
+    let mut names = [""; Theme::BUILT_IN.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = Theme::BUILT_IN[at].0;
+        at += 1;
+    }
+    names
+};
+
+const LINE_NUMBERS: [&str; crate::config::LineNumbers::ALL.len()] = {
+    let all = crate::config::LineNumbers::ALL;
+    let mut names = [""; crate::config::LineNumbers::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = all[at].name();
+        at += 1;
+    }
+    names
+};
+
+const ANIMATIONS: [&str; crate::motion::Animations::ALL.len()] = {
+    let all = crate::motion::Animations::ALL;
+    let mut names = [""; crate::motion::Animations::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = all[at].name();
+        at += 1;
+    }
+    names
+};
+
+impl Field {
+    /// The row's name, in bold on the page.
+    ///
+    /// With the modal grammar off the switch stops calling itself Vim: someone who chose the
+    /// conventional editor is shown what the switch does rather than a name from an editor they did
+    /// not pick. Search still finds it by "vim", through [`Field::name`].
+    pub fn label(self, modal: bool) -> &'static str {
+        match self {
+            Field::VimKeys if modal => "Vim keys",
+            Field::VimKeys => "Modal editing",
+            Field::FontSize => "Font size",
+            Field::TabWidth => "Tab width",
+            Field::SoftWrap => "Soft wrap",
+            Field::FormatOnSave => "Format on save",
+            Field::Theme => "Theme",
+            Field::LineNumbers => "Line numbers",
+            Field::StickyScroll => "Sticky scroll",
+            Field::InlayHints => "Inlay hints",
+            Field::Autosave => "Autosave",
+            Field::Transparency => "Transparency",
+            Field::Animations => "Animations",
+        }
+    }
+
+    /// What the setting does and what each choice means, the way VSCode writes it under a setting:
+    /// a sentence or two, at most three lines of the page (a test holds that, at the largest font).
+    ///
+    /// `None` where the name says everything — a theme, a font size and a tab width need no
+    /// sentence, and one there would only push the rows that do need one further down.
+    pub fn explanation(self, modal: bool) -> Option<&'static str> {
+        Some(match self {
+            Field::Theme | Field::FontSize | Field::TabWidth => return None,
+            Field::VimKeys if modal => {
+                "Normal, insert and visual modes: keys move and edit until you press i to type. \
+                 Off: typing always inserts, as in most editors."
+            }
+            Field::VimKeys => {
+                "On: keys become commands that move and edit, and you switch to a separate mode to \
+                 type. Off: typing always inserts, as in most editors."
+            }
+            Field::SoftWrap => {
+                "Long lines continue on the next row instead of scrolling sideways. Only the \
+                 display changes; the file is untouched."
+            }
+            Field::FormatOnSave => {
+                "Reformats the file each time it is saved, through the language server or a \
+                 formatter such as rustfmt, ruff or prettier."
+            }
+            Field::LineNumbers if modal => {
+                "Relative: each line shows its distance from the cursor, for Vim counts like 12j. \
+                 Absolute: each line shows its own number. Off: no numbers."
+            }
+            Field::LineNumbers => {
+                "Absolute: each line shows its own number. Relative: each line shows its distance \
+                 from the cursor. Off: no numbers."
+            }
+            Field::StickyScroll => {
+                "Keeps the opening line of each function or block you are inside pinned to the top \
+                 of the view while you scroll through it."
+            }
+            Field::InlayHints => {
+                "Shows the types and parameter names the language server works out, inline beside \
+                 the code. Needs a server that offers them."
+            }
+            Field::Autosave => {
+                "Saves the file a moment after you stop typing. Off: nothing is written until you \
+                 save."
+            }
+            Field::Transparency => {
+                "How much of the desktop shows through the window. Turning it on from opaque takes \
+                 effect the next time DaCode starts."
+            }
+            Field::Animations => {
+                "How much the interface moves. Full: panels and popups spring into place. \
+                 Reduced: the same movement with no overshoot. Off: everything appears at once."
+            }
+        })
+    }
+
+    pub fn control(self) -> Control {
+        match self {
+            Field::VimKeys
+            | Field::SoftWrap
+            | Field::FormatOnSave
+            | Field::StickyScroll
+            | Field::InlayHints
+            | Field::Autosave => Control::Switch,
+            Field::FontSize | Field::TabWidth | Field::Transparency => Control::Stepper,
+            Field::Theme => Control::Choice(&THEMES),
+            Field::LineNumbers => Control::Choice(&LINE_NUMBERS),
+            Field::Animations => Control::Choice(&ANIMATIONS),
+        }
+    }
+
+    /// Whether the value is what DaCode would use if nothing had set it — what decides the ● and
+    /// the ⟲ beside a row.
+    pub fn is_default(self, values: &Values) -> bool {
+        !values.differs(self, &Values::defaults(values.modal))
+    }
+}
+
+impl Values {
+    /// What every setting is when nothing has set it.
+    ///
+    /// Read from [`crate::config::Settings::default`], which is what the editor starts from, rather
+    /// than written out again — a default stated twice is a ● on a row the user never touched, the
+    /// first time one of the two changes. `modal` is the grammar in force, because the gutter's
+    /// default follows it exactly as `config::load` does: relative numbers under Vim's grammar,
+    /// plain ones without.
+    pub fn defaults(modal: bool) -> Values {
+        let settings = crate::config::Settings::default();
+        Values {
+            modal: settings.modal,
+            font_size: settings.typography.code_size,
+            tab_width: settings.tab_width,
+            soft_wrap: settings.soft_wrap,
+            format_on_save: settings.format_on_save,
+            theme: settings.theme.name(),
+            sticky_scroll: settings.sticky_scroll,
+            inlay_hints: settings.inlay_hints,
+            autosave: settings.autosave,
+            line_numbers: crate::config::LineNumbers::default_for(modal),
+            transparency: settings.transparency,
+            animations: settings.animations,
+        }
+    }
+
+    fn differs(&self, field: Field, defaults: &Values) -> bool {
+        match field {
+            Field::VimKeys => self.modal != defaults.modal,
+            Field::FontSize => self.font_size != defaults.font_size,
+            Field::TabWidth => self.tab_width != defaults.tab_width,
+            Field::SoftWrap => self.soft_wrap != defaults.soft_wrap,
+            Field::FormatOnSave => self.format_on_save != defaults.format_on_save,
+            Field::Theme => self.theme != defaults.theme,
+            Field::LineNumbers => self.line_numbers != defaults.line_numbers,
+            Field::StickyScroll => self.sticky_scroll != defaults.sticky_scroll,
+            Field::InlayHints => self.inlay_hints != defaults.inlay_hints,
+            Field::Autosave => self.autosave != defaults.autosave,
+            Field::Transparency => self.transparency != defaults.transparency,
+            Field::Animations => self.animations != defaults.animations,
+        }
+    }
+
+    /// Puts one setting back to its default: what the ⟲ does.
+    pub fn reset(&mut self, field: Field) {
+        let defaults = Values::defaults(self.modal);
+        match field {
+            Field::VimKeys => self.modal = defaults.modal,
+            Field::FontSize => self.font_size = defaults.font_size,
+            Field::TabWidth => self.tab_width = defaults.tab_width,
+            Field::SoftWrap => self.soft_wrap = defaults.soft_wrap,
+            Field::FormatOnSave => self.format_on_save = defaults.format_on_save,
+            Field::Theme => self.theme = defaults.theme,
+            Field::LineNumbers => self.line_numbers = defaults.line_numbers,
+            Field::StickyScroll => self.sticky_scroll = defaults.sticky_scroll,
+            Field::InlayHints => self.inlay_hints = defaults.inlay_hints,
+            Field::Autosave => self.autosave = defaults.autosave,
+            Field::Transparency => self.transparency = defaults.transparency,
+            Field::Animations => self.animations = defaults.animations,
+        }
+    }
+}
+
+impl Line {
+    /// What the page calls a row that is not a setting.
+    ///
+    /// `None` for a setting, whose name is [`Field::label`], and for a detected program, whose text
+    /// is the [`ServerRow`] it points at.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Line::Import(item) => Some(item.name()),
+            Line::RunImport => Some("Import the ticked items"),
+            Line::LoadTheme => Some("Load a colour scheme"),
+            Line::Option(_) | Line::Server(_) | Line::Formatter(_) => None,
+        }
+    }
+
+    /// The sentence under an action, as [`Field::explanation`] is under a setting.
+    pub fn explanation(self) -> Option<&'static str> {
+        match self {
+            Line::RunImport => Some(
+                "Copies the ticked items from your VSCode installation into DaCode. Nothing that \
+                 is not ticked is touched.",
+            ),
+            Line::LoadTheme => Some(
+                "Reads a colour scheme file in any format the importer understands, and keeps a \
+                 copy so it survives a restart.",
+            ),
+            Line::Option(_) | Line::Import(_) | Line::Server(_) | Line::Formatter(_) => None,
+        }
+    }
+}
+
+/// One entry in a page's list: a heading, or a row under one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entry {
+    /// A section heading. Not selectable. `category` is set during a search, when the list mixes
+    /// pages and the heading has to say which one it came from: "Editor › Wrapping".
+    Heading {
+        title: &'static str,
+        category: Option<Category>,
+    },
+    Field(Field),
+    /// A row of the Keys page.
+    Command(&'static Command),
+    /// A row of the Languages or Import page.
+    Line(Line),
+}
+
+/// The settings tab's state: the open page, the search, and where the list is.
+///
+/// `scroll` and `selected` count entries of [`Page::entries`], headings included, so a scroll
+/// position names one row whatever height it is. `selected` is kept off headings by
+/// [`Page::move_selection`].
+///
+/// While `query` is not empty the list is the search's, across every page, and `category` only
+/// says which tree row is marked; see [`Page::entries`].
+#[derive(Debug, Clone)]
+pub struct Page {
+    pub category: Category,
+    pub query: String,
+    pub scroll: usize,
+    pub selected: usize,
+    /// The Languages page's reports, gathered by [`detect`] and [`detect_formatters`] when the tab
+    /// opens — never while drawing, since finding a program walks `PATH`.
+    pub servers: Vec<ServerRow>,
+    pub formatters: Vec<ServerRow>,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Where everything on the page is. Read by the drawing and by the mouse, so they cannot disagree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageGeometry {
+    pub search: Rect,
+    /// Every category, always — a page the mouse cannot reach is not finished. A column on the left
+    /// at ordinary widths; below [`SIDE_TREE_MIN`] a strip of tiles above the search box.
+    pub tree: Vec<(Category, Rect)>,
+    /// Only the rows that fit, from `scroll` on.
+    pub rows: Vec<PageRow>,
+}
+
+/// One visible row of the page and the boxes inside it.
+///
+/// Exactly one of `field`, `command`, `line` and `heading` is set. `index` is there because the
+/// page is windowed, so a click has to say which entry of the whole list it hit; `label` and
+/// `explanation` because text that wraps has to be wrapped in the box its height was measured for,
+/// or it runs past it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageRow {
+    /// Its position in [`Page::entries`], which `selected` and `scroll` count in.
+    pub index: usize,
+    pub field: Option<Field>,
+    pub command: Option<&'static Command>,
+    /// An import item or action, or a detected language server or formatter.
+    pub line: Option<Line>,
+    pub heading: Option<&'static str>,
+    /// For a heading during a search, the page it belongs to; see [`PageRow::heading_text`].
+    pub category: Option<Category>,
+    /// The whole row: the selection highlight, and the hit test.
+    pub rect: Rect,
+    /// The name. For a heading, the line its text sits on, below the space that separates it from
+    /// the section before. For a detected program, the language and the program.
+    pub label: Rect,
+    /// Wrapped text under the name: a setting's or an action's explanation, at most as many lines
+    /// as the box is tall. The first row under the headings can be cut short on a page too small
+    /// for it, so draw it with `wrap_lines` and its ellipsis.
+    /// For a detected program, the line saying where it is or how to install it.
+    pub explanation: Option<Rect>,
+    /// A setting's switch, stepper or choice; an import item's tick box. For a command, where its
+    /// keys are drawn — not a control, since rebinding from the page is out of scope.
+    pub control: Option<Rect>,
+    /// The ● and, on hover, the ⟲: present only when a setting differs from its default.
+    pub reset: Option<Rect>,
+}
+
+impl PageRow {
+    /// A heading as drawn: "Wrapping" on its own page, "Editor › Wrapping" in a search.
+    pub fn heading_text(&self) -> Option<String> {
+        let title = self.heading?;
+        Some(match self.category {
+            Some(category) => format!("{} › {title}", category.title()),
+            None => title.to_string(),
+        })
+    }
+}
+
+/// The widest the list gets. Past this a line of explanation runs to a hundred characters, too long
+/// for the eye to find the start of the next one.
+const PAGE_WIDTH: f32 = 640.0;
+
+/// Below this width the tree folds from a column into a strip of tiles above the search box, so the
+/// rows keep enough width for a name and a control side by side.
+const SIDE_TREE_MIN: f32 = 560.0;
+
+/// The tree column's width, as a share of the page and within these bounds.
+const TREE_SHARE: f32 = 0.22;
+const TREE_MIN: f32 = 150.0;
+const TREE_MAX: f32 = 210.0;
+
+/// Tiles per row of the folded tree: two rows of three hold all six categories.
+const STRIP_COLUMNS: usize = 3;
+
+/// The page's measurements, from the type scale so a larger font grows the rows rather than
+/// overflowing them.
+struct Metrics {
+    scale: f32,
+    /// A name, in the interface face.
+    label_line: f32,
+    /// One line of an explanation.
+    text_line: f32,
+    ui_advance: f32,
+    text_advance: f32,
+    /// A control's height, and the head of a setting row.
+    control: f32,
+    /// Horizontal padding inside a row.
+    inset: f32,
+    /// Vertical padding inside a row, and the gap between boxes.
+    gap: f32,
+    small: f32,
+    heading_space: f32,
+}
+
+impl Metrics {
+    fn new(typography: &Typography, scale: f32) -> Self {
+        let label_line = (typography.spec(Role::Ui).size_px * 1.5).ceil() * scale;
+        Self {
+            scale,
+            label_line,
+            text_line: (typography.spec(Role::Value).size_px * 1.5).ceil() * scale,
+            ui_advance: crate::layout::measured_advance(typography, Role::Ui, scale),
+            text_advance: crate::layout::measured_advance(typography, Role::Value, scale),
+            control: label_line + space::XS * scale,
+            inset: space::SM * scale,
+            gap: space::XS * scale,
+            small: space::XXS * scale,
+            heading_space: space::MD * scale,
+        }
+    }
+
+    /// How wide a setting's control is: a switch is a fixed pill, a stepper holds the value between
+    /// its two buttons, and a choice is as wide as its longest name — or the current value, which
+    /// for a theme loaded from a file is "from a file" and on no list.
+    fn control_width(&self, field: Field, values: &Values) -> f32 {
+        match field.control() {
+            Control::Switch => self.control * 1.8,
+            Control::Stepper => self.control * 2.0 + self.ui_advance * 6.0 + self.gap * 2.0,
+            Control::Choice(names) => {
+                let longest = names
+                    .iter()
+                    .map(|name| name.chars().count())
+                    .chain([values.get(field).chars().count()])
+                    .max()
+                    .unwrap_or(0);
+                longest as f32 * self.ui_advance + self.control + self.gap * 2.0
+            }
+        }
+    }
+
+    /// How many lines `text` wraps to in `width`, by the same function the drawing wraps it with.
+    fn lines(&self, text: &str, width: f32) -> usize {
+        crate::chrome::wrap_at(text, width, self.text_advance).len()
+    }
+}
+
+impl Page {
+    pub fn new() -> Self {
+        Self {
+            category: Category::Appearance,
+            query: String::new(),
+            scroll: 0,
+            // Every page opens with a heading, so the first thing to select is the row after it.
+            selected: 1,
+            servers: Vec::new(),
+            formatters: Vec::new(),
+        }
+    }
+
+    /// The query as it is matched: trimmed, lower case, and `None` when there is nothing to find.
+    fn needle(&self) -> Option<String> {
+        let needle = self.query.trim().to_lowercase();
+        (!needle.is_empty()).then_some(needle)
+    }
+
+    /// A page's rows under their headings, before any search.
+    ///
+    /// Bounded by the tables, not the document: the command table is about a hundred entries, and
+    /// the reports are one per language DaCode knows.
+    fn groups(&self, category: Category, modal: bool) -> Vec<(&'static str, Vec<Entry>)> {
+        let lines = |lines: Vec<Line>| lines.into_iter().map(Entry::Line).collect::<Vec<_>>();
+        match category {
+            Category::Appearance | Category::Editor | Category::Files => sections(category)
+                .iter()
+                .map(|section| {
+                    (
+                        section.title,
+                        section.fields.iter().copied().map(Entry::Field).collect(),
+                    )
+                })
+                .collect(),
+            // `available` rather than the whole table: with the grammar off there is no visual
+            // mode to list a key for.
+            Category::Keys => Group::ALL
+                .into_iter()
+                .map(|group| {
+                    (
+                        group_title(group),
+                        commands::available(modal)
+                            .filter(|command| command.group == group)
+                            .map(Entry::Command)
+                            .collect(),
+                    )
+                })
+                .collect(),
+            Category::Languages => vec![
+                (
+                    "Language servers",
+                    lines((0..self.servers.len()).map(Line::Server).collect()),
+                ),
+                (
+                    "Formatters",
+                    lines((0..self.formatters.len()).map(Line::Formatter).collect()),
+                ),
+            ],
+            Category::Import => vec![
+                (
+                    "From VSCode",
+                    lines(
+                        Importable::ALL
+                            .into_iter()
+                            .map(Line::Import)
+                            .chain([Line::RunImport])
+                            .collect(),
+                    ),
+                ),
+                ("From a file", lines(vec![Line::LoadTheme])),
+            ],
+        }
+    }
+
+    /// The report a Languages row points at.
+    fn report(&self, line: Line) -> Option<&ServerRow> {
+        match line {
+            Line::Server(at) => self.servers.get(at),
+            Line::Formatter(at) => self.formatters.get(at),
+            _ => None,
+        }
+    }
+
+    /// Whether an entry matches `needle`, which is already lower case.
+    ///
+    /// A setting matches by its name, its explanation, its section's heading — and its config key,
+    /// so "vim" still finds the modal switch when its label no longer says Vim, and someone
+    /// copying a line out of `init.lua` finds the row it sets. A command matches by its name, what
+    /// it does and its keys; a report by its language and program.
+    fn entry_matches(&self, entry: Entry, section: &str, needle: &str, modal: bool) -> bool {
+        let found = |text: &str| text.to_lowercase().contains(needle);
+        if found(section) {
+            return !matches!(entry, Entry::Heading { .. });
+        }
+        match entry {
+            Entry::Heading { .. } => false,
+            Entry::Field(field) => {
+                found(field.label(modal))
+                    || field.explanation(modal).is_some_and(found)
+                    || found(field.name())
+            }
+            Entry::Command(command) => {
+                found(command.name) || found(command.what) || found(&command.shown(modal))
+            }
+            Entry::Line(line) => {
+                line.label().is_some_and(found)
+                    || line.explanation().is_some_and(found)
+                    || self
+                        .report(line)
+                        .is_some_and(|row| found(&row.language) || found(&row.program))
+            }
+        }
+    }
+
+    /// Every entry of the list, headings included, in order.
+    ///
+    /// With no query, the open page's sections. With one, the matching rows of **every** page,
+    /// each group under a heading naming its page and section, and a page with nothing matching
+    /// contributes nothing at all — it collapses, and [`Page::has_matches`] lets the tree dim it.
+    /// The tree keeps all six rows during a search: hiding them would move the ones left under the
+    /// pointer as the query is typed.
+    pub fn entries(&self, modal: bool) -> Vec<Entry> {
+        let mut entries = Vec::new();
+        let Some(needle) = self.needle() else {
+            for (title, items) in self.groups(self.category, modal) {
+                // A heading over nothing reads as a section that failed to load.
+                if !items.is_empty() {
+                    entries.push(Entry::Heading {
+                        title,
+                        category: None,
+                    });
+                    entries.extend(items);
+                }
+            }
+            return entries;
+        };
+        for category in Category::ALL {
+            for (title, items) in self.groups(category, modal) {
+                let mut found = items
+                    .into_iter()
+                    .filter(|entry| self.entry_matches(*entry, title, &needle, modal))
+                    .peekable();
+                if found.peek().is_some() {
+                    entries.push(Entry::Heading {
+                        title,
+                        category: Some(category),
+                    });
+                    entries.extend(found);
+                }
+            }
+        }
+        entries
+    }
+
+    /// Whether a page has anything for the query — always, with no query. The tree dims a page
+    /// that does not.
+    pub fn has_matches(&self, category: Category, modal: bool) -> bool {
+        let Some(needle) = self.needle() else {
+            return true;
+        };
+        self.groups(category, modal)
+            .into_iter()
+            .any(|(title, items)| {
+                items
+                    .into_iter()
+                    .any(|entry| self.entry_matches(entry, title, &needle, modal))
+            })
+    }
+
+    /// Whether a setting matches the query: case-insensitively, by its label, its explanation, its
+    /// section's heading and its config key. Everything matches an empty query.
+    pub fn matches(&self, field: Field, modal: bool) -> bool {
+        let Some(needle) = self.needle() else {
+            return true;
+        };
+        let section = section_of(field).map_or("", |section| section.title);
+        self.entry_matches(Entry::Field(field), section, &needle, modal)
+    }
+
+    /// Moves the selection `delta` rows, stepping over headings and stopping at either end.
+    ///
+    /// A selection resting on a heading — a fresh page, or a search that just changed the list —
+    /// counts as the row after it, so `delta` 0 puts it somewhere it can be used.
+    pub fn move_selection(&mut self, delta: isize, modal: bool) {
+        let selectable: Vec<usize> = self
+            .entries(modal)
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !matches!(entry, Entry::Heading { .. }))
+            .map(|(index, _)| index)
+            .collect();
+        let Some(last) = selectable.len().checked_sub(1) else {
+            self.selected = 0;
+            return;
+        };
+        let at = selectable
+            .iter()
+            .position(|index| *index >= self.selected)
+            .unwrap_or(last);
+        let to = at.saturating_add_signed(delta).min(last);
+        self.selected = selectable[to];
+    }
+
+    /// Lays the page out.
+    ///
+    /// **One definition, read by the drawing and by the mouse**, as [`panel`] is and for the same
+    /// reason. The list is windowed: rows are measured from `scroll` and only until the page is
+    /// full, so the cost of a frame is the rows on screen, not the ninety-odd commands on the Keys
+    /// page. A row that would cross the bottom is left off rather than cut — except when it is the
+    /// first row under the headings, which is cut to fit (its explanation keeps the whole lines
+    /// that fit) because a page showing nothing at all is worse than one showing half a row.
+    pub fn geometry(
+        &self,
+        rect: Rect,
+        scale: f32,
+        values: &Values,
+        modal: bool,
+        typography: &Typography,
+    ) -> PageGeometry {
+        let metrics = Metrics::new(typography, scale);
+        let side = rect.width >= SIDE_TREE_MIN * scale;
+        let pad = if side { space::LG } else { space::SM } * scale;
+        let tile = metrics.control + metrics.gap;
+
+        let mut tree = Vec::with_capacity(Category::ALL.len());
+        let (content_x, top) = if side {
+            let width = (rect.width * TREE_SHARE).clamp(TREE_MIN * scale, TREE_MAX * scale);
+            // Squeezed rather than dropped when the window is short: every page stays clickable.
+            let rows = Category::ALL.len() as f32;
+            let height = tile.min(((rect.height - pad * 2.0) / rows - metrics.small).max(0.0));
+            for (at, category) in Category::ALL.into_iter().enumerate() {
+                tree.push((
+                    category,
+                    Rect::new(
+                        rect.x + metrics.gap,
+                        rect.y + pad + at as f32 * (height + metrics.small),
+                        (width - metrics.gap * 2.0).max(0.0),
+                        height,
+                    ),
+                ));
+            }
+            (rect.x + width + pad, rect.y + pad)
+        } else {
+            let across = (rect.width - pad * 2.0).max(0.0);
+            let width = ((across - metrics.small * (STRIP_COLUMNS - 1) as f32)
+                / STRIP_COLUMNS as f32)
+                .max(0.0);
+            for (at, category) in Category::ALL.into_iter().enumerate() {
+                let (row, column) = (at / STRIP_COLUMNS, at % STRIP_COLUMNS);
+                tree.push((
+                    category,
+                    Rect::new(
+                        rect.x + pad + column as f32 * (width + metrics.small),
+                        rect.y + pad + row as f32 * (tile + metrics.small),
+                        width,
+                        tile,
+                    ),
+                ));
+            }
+            let rows = Category::ALL.len().div_ceil(STRIP_COLUMNS) as f32;
+            (
+                rect.x + pad,
+                rect.y + pad + rows * (tile + metrics.small) + metrics.gap,
+            )
+        };
+
+        let width = (rect.right() - pad - content_x)
+            .min(PAGE_WIDTH * scale)
+            .max(0.0);
+        let search = Rect::new(content_x, top, width, metrics.control + metrics.gap);
+        let first = search.bottom() + metrics.gap * 2.0;
+        let bottom = rect.bottom() - pad;
+
+        let entries = self.entries(modal);
+        let layout = Layout {
+            metrics: &metrics,
+            values,
+            defaults: Values::defaults(values.modal),
+            modal,
+            typography,
+        };
+        let inner = (width - metrics.inset * 2.0).max(0.0);
+        let mut rows = Vec::new();
+        let mut placed = false;
+        let mut y = first;
+
+        for (index, entry) in entries.iter().enumerate().skip(self.scroll) {
+            let wanted = layout.height(*entry, inner);
+            let height = if y + wanted <= bottom {
+                wanted
+            } else if !placed && !matches!(entry, Entry::Heading { .. }) {
+                bottom - y
+            } else {
+                break;
+            };
+            let Some(row) = layout.row(*entry, index, Rect::new(content_x, y, width, height))
+            else {
+                break;
+            };
+            placed |= row.heading.is_none();
+            rows.push(row);
+            y += height;
+        }
+        // A heading with nothing under it on screen is a heading for the next page of rows.
+        while rows.last().is_some_and(|row| row.heading.is_some()) {
+            rows.pop();
+        }
+
+        PageGeometry { search, tree, rows }
+    }
+}
+
+/// What laying out one row needs to know.
+struct Layout<'a> {
+    metrics: &'a Metrics,
+    values: &'a Values,
+    defaults: Values,
+    modal: bool,
+    typography: &'a Typography,
+}
+
+impl Layout<'_> {
+    /// A row's height at full length, in a row whose content is `inner` wide.
+    fn height(&self, entry: Entry, inner: f32) -> f32 {
+        let metrics = self.metrics;
+        let explained = |text: Option<&str>| {
+            text.map_or(0.0, |text| {
+                metrics.small + metrics.lines(text, inner) as f32 * metrics.text_line
+            })
+        };
+        match entry {
+            Entry::Heading { .. } => metrics.heading_space + metrics.label_line,
+            Entry::Field(field) => {
+                metrics.gap * 2.0 + metrics.control + explained(field.explanation(self.modal))
+            }
+            Entry::Command(_) => metrics.label_line + metrics.gap,
+            Entry::Line(Line::Server(_) | Line::Formatter(_)) => {
+                metrics.gap * 2.0 + metrics.label_line + metrics.text_line
+            }
+            Entry::Line(line) => {
+                metrics.gap * 2.0 + metrics.control + explained(line.explanation())
+            }
+        }
+    }
+
+    /// The boxes inside one row, which is `rect` — shorter than the row wants when it is the first
+    /// on the page and the page is too short for it. `None` when not even its name fits.
+    fn row(&self, entry: Entry, index: usize, rect: Rect) -> Option<PageRow> {
+        let metrics = self.metrics;
+        let x = rect.x + metrics.inset;
+        let inner = (rect.width - metrics.inset * 2.0).max(0.0);
+        let mut row = PageRow {
+            index,
+            field: None,
+            command: None,
+            line: None,
+            heading: None,
+            category: None,
+            rect,
+            label: Rect::new(x, rect.y, inner, 0.0),
+            explanation: None,
+            control: None,
+            reset: None,
+        };
+
+        // As many of `lines` lines of text as fit between `y` and the row's bottom padding.
+        let text = |y: f32, lines: usize| {
+            let room = ((rect.bottom() - metrics.gap - y) / metrics.text_line)
+                .floor()
+                .max(0.0);
+            let lines = (lines as f32).min(room);
+            (lines >= 1.0).then(|| Rect::new(x, y, inner, lines * metrics.text_line))
+        };
+        // A box of `width` at the right-hand end of the row's head.
+        let right = |y: f32, width: f32, height: f32| {
+            let width = width.min(inner * 0.5);
+            Rect::new(x + inner - width, y, width, height)
+        };
+
+        match entry {
+            Entry::Heading { title, category } => {
+                let y = rect.bottom() - metrics.label_line;
+                if y < rect.y {
+                    return None;
+                }
+                row.heading = Some(title);
+                row.category = category;
+                row.label = Rect::new(x, y, inner, metrics.label_line);
+            }
+            Entry::Command(command) => {
+                let y = rect.y + metrics.small;
+                if y + metrics.label_line > rect.bottom() {
+                    return None;
+                }
+                row.command = Some(command);
+                let keys = crate::layout::chips_width(
+                    self.typography,
+                    &command.shown(self.modal),
+                    metrics.scale,
+                );
+                // A command with no key in this grammar has nothing to draw there; the palette is
+                // its only way in, and the empty space says so.
+                row.control = (keys > 0.0).then(|| right(y, keys, metrics.label_line));
+                let end = row.control.map_or(x + inner, |keys| keys.x - metrics.gap);
+                row.label = Rect::new(x, y, (end - x).max(0.0), metrics.label_line);
+            }
+            Entry::Line(line @ (Line::Server(_) | Line::Formatter(_))) => {
+                let y = rect.y + metrics.gap;
+                if y + metrics.label_line > rect.bottom() {
+                    return None;
+                }
+                row.line = Some(line);
+                row.label = Rect::new(x, y, inner, metrics.label_line);
+                row.explanation = text(y + metrics.label_line, 1);
+            }
+            Entry::Field(_) | Entry::Line(_) => {
+                let y = rect.y + metrics.gap;
+                if y + metrics.control > rect.bottom() {
+                    return None;
+                }
+                let explanation = match entry {
+                    Entry::Field(field) => {
+                        row.field = Some(field);
+                        let control = right(
+                            y,
+                            metrics.control_width(field, self.values),
+                            metrics.control,
+                        );
+                        row.control = Some(control);
+                        if self.values.differs(field, &self.defaults) {
+                            row.reset = Some(Rect::new(
+                                control.x - metrics.gap - metrics.control,
+                                y,
+                                metrics.control,
+                                metrics.control,
+                            ));
+                        }
+                        field.explanation(self.modal)
+                    }
+                    Entry::Line(line) => {
+                        row.line = Some(line);
+                        // A tick box the width of a switch, so the two kinds of row line up.
+                        row.control = matches!(line, Line::Import(_))
+                            .then(|| right(y, metrics.control * 1.8, metrics.control));
+                        line.explanation()
+                    }
+                    Entry::Heading { .. } | Entry::Command(_) => None,
+                };
+                let end = row
+                    .reset
+                    .or(row.control)
+                    .map_or(x + inner, |left| left.x - metrics.gap);
+                row.label = Rect::new(x, y, (end - x).max(0.0), metrics.control);
+                let lines = explanation.map_or(0, |text| metrics.lines(text, inner));
+                row.explanation = text(y + metrics.control + metrics.small, lines);
+            }
+        }
+        Some(row)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1370,5 +2380,504 @@ mod click_tests {
             })
             .collect();
         assert_eq!(seen, vec!["off", "absolute", "relative"]);
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    /// The sizes the page is checked at: the smallest window DaCode is laid out for, the 360-wide
+    /// strip the tree collapses into, a common laptop, and the largest common desktop.
+    const SIZES: [(f32, f32); 6] = [
+        (360.0, 480.0),
+        (360.0, 640.0),
+        (640.0, 480.0),
+        (1024.0, 768.0),
+        (1600.0, 1000.0),
+        (2560.0, 1440.0),
+    ];
+
+    fn servers() -> Vec<ServerRow> {
+        vec![
+            ServerRow {
+                language: "Python".into(),
+                program: ".venv/bin/pylsp".into(),
+                status: "not found — check the path in init.lua".into(),
+                found: false,
+                configured: true,
+            },
+            ServerRow {
+                language: "Rust".into(),
+                program: "rust-analyzer".into(),
+                status: "/home/x/.cargo/bin/rust-analyzer".into(),
+                found: true,
+                configured: false,
+            },
+        ]
+    }
+
+    fn page(category: Category, query: &str) -> Page {
+        Page {
+            category,
+            query: query.into(),
+            servers: servers(),
+            formatters: servers(),
+            ..Page::new()
+        }
+    }
+
+    /// Every value changed from its default, so every field row carries a reset box too.
+    fn changed() -> Values {
+        let mut values = Values::defaults(true);
+        for field in Field::ALL {
+            if field != Field::VimKeys {
+                values.adjust(field, 1);
+            }
+        }
+        values
+    }
+
+    fn inside(inner: Rect, outer: Rect) -> bool {
+        const SLACK: f32 = 0.01;
+        inner.x >= outer.x - SLACK
+            && inner.y >= outer.y - SLACK
+            && inner.right() <= outer.right() + SLACK
+            && inner.bottom() <= outer.bottom() + SLACK
+            && inner.width >= 0.0
+            && inner.height >= 0.0
+    }
+
+    fn overlap(a: Rect, b: Rect) -> bool {
+        const SLACK: f32 = 0.01;
+        a.x < b.right() - SLACK
+            && b.x < a.right() - SLACK
+            && a.y < b.bottom() - SLACK
+            && b.y < a.bottom() - SLACK
+    }
+
+    fn category_of(field: Field) -> Category {
+        Category::ALL
+            .into_iter()
+            .find(|category| {
+                sections(*category)
+                    .iter()
+                    .any(|section| section.fields.contains(&field))
+            })
+            .unwrap_or_else(|| panic!("{field:?} is on no page"))
+    }
+
+    #[test]
+    fn every_field_appears_in_exactly_one_section() {
+        // A setting on no page cannot be changed with the mouse at all, and one on two pages is two
+        // rows that must be kept in step. Both have happened to settings screens that kept their
+        // lists by hand.
+        for field in Field::ALL {
+            let homes: Vec<(Category, &str)> = Category::ALL
+                .into_iter()
+                .flat_map(|category| {
+                    sections(category)
+                        .iter()
+                        .filter(move |section| section.fields.contains(&field))
+                        .map(move |section| (category, section.title))
+                })
+                .collect();
+            assert_eq!(homes.len(), 1, "{field:?} is in {homes:?}");
+        }
+        for category in Category::ALL {
+            for section in sections(category) {
+                assert!(
+                    !section.fields.is_empty(),
+                    "a heading over nothing: {}",
+                    section.title
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_search_for_wrap_finds_soft_wrap_and_no_setting_in_another_category() {
+        // Search is across every page, so a query that matched loosely would fill the page with
+        // rows that have nothing to do with it. Upper case too: nobody types a search in the case
+        // the label happens to be set in.
+        for query in ["wrap", "WRAP", " Wrap "] {
+            for modal in [true, false] {
+                let page = page(Category::Appearance, query);
+                let found: Vec<Field> = Field::ALL
+                    .into_iter()
+                    .filter(|field| page.matches(*field, modal))
+                    .collect();
+                assert_eq!(found, [Field::SoftWrap], "{query:?}, modal {modal}");
+
+                let fields: Vec<Field> = page
+                    .entries(modal)
+                    .into_iter()
+                    .filter_map(|entry| match entry {
+                        Entry::Field(field) => Some(field),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    fields,
+                    [Field::SoftWrap],
+                    "the page shows it, whatever category was open"
+                );
+                assert!(
+                    page.entries(modal).contains(&Entry::Heading {
+                        title: "Wrapping",
+                        category: Some(Category::Editor),
+                    }),
+                    "under the page and section it lives in"
+                );
+
+                for category in [
+                    Category::Appearance,
+                    Category::Files,
+                    Category::Languages,
+                    Category::Import,
+                ] {
+                    assert!(
+                        !page.has_matches(category, modal),
+                        "{category:?} has nothing for {query:?}, so it collapses"
+                    );
+                }
+                assert!(page.has_matches(Category::Editor, modal));
+                // The one other page with a hit, deliberately: the command that toggles soft wrap
+                // is on the Keys page, and someone searching for "wrap" wants its key as much as
+                // its switch.
+                assert!(page.has_matches(Category::Keys, modal));
+            }
+        }
+    }
+
+    #[test]
+    fn rows_stay_inside_the_page_and_nothing_overlaps_at_every_size() {
+        // The defect this family of tests exists for: four overflow bugs shipped because the
+        // harness only ever rendered one size. Every page, a search, at the smallest and largest
+        // windows, at both scales, scrolled to the top and part way down.
+        let typography = Typography::default();
+        for (width, height) in SIZES {
+            for scale in [1.0_f32, 2.0] {
+                let rect = Rect::new(40.0, 30.0, width, height);
+                for (category, query) in Category::ALL
+                    .into_iter()
+                    .map(|category| (category, ""))
+                    .chain([(Category::Appearance, "e"), (Category::Keys, "s")])
+                {
+                    for modal in [true, false] {
+                        for scroll in [0, 3, 40] {
+                            let mut page = page(category, query);
+                            page.scroll = scroll;
+                            let geometry =
+                                page.geometry(rect, scale, &changed(), modal, &typography);
+                            let at = format!(
+                                "{width}x{height} at {scale}, {category:?} {query:?}, \
+                                 scroll {scroll}, modal {modal}"
+                            );
+
+                            assert!(inside(geometry.search, rect), "search outside: {at}");
+                            assert!(geometry.search.width > 0.0, "no search box: {at}");
+                            assert_eq!(
+                                geometry.tree.len(),
+                                Category::ALL.len(),
+                                "a page the mouse cannot reach: {at}"
+                            );
+                            for (index, (_, tree)) in geometry.tree.iter().enumerate() {
+                                assert!(inside(*tree, rect), "tree outside: {at}");
+                                assert!(!overlap(*tree, geometry.search), "tree on search: {at}");
+                                for (_, other) in &geometry.tree[index + 1..] {
+                                    assert!(!overlap(*tree, *other), "tree rows overlap: {at}");
+                                }
+                            }
+
+                            if scroll == 0 && scale == 1.0 {
+                                assert!(!geometry.rows.is_empty(), "an empty page: {at}");
+                            }
+                            for (index, row) in geometry.rows.iter().enumerate() {
+                                assert!(inside(row.rect, rect), "row outside the page: {at}");
+                                assert!(!overlap(row.rect, geometry.search), "row on search: {at}");
+                                for (_, tree) in &geometry.tree {
+                                    assert!(!overlap(row.rect, *tree), "row on tree: {at}");
+                                }
+                                for other in &geometry.rows[index + 1..] {
+                                    assert!(!overlap(row.rect, other.rect), "rows overlap: {at}");
+                                    assert!(other.index > row.index, "rows out of order: {at}");
+                                }
+
+                                let parts: Vec<Rect> =
+                                    [Some(row.label), row.explanation, row.control, row.reset]
+                                        .into_iter()
+                                        .flatten()
+                                        .collect();
+                                for (at_part, part) in parts.iter().enumerate() {
+                                    assert!(
+                                        inside(*part, row.rect),
+                                        "a part outside its row: {at}, {row:?}"
+                                    );
+                                    for other in &parts[at_part + 1..] {
+                                        assert!(
+                                            !overlap(*part, *other),
+                                            "parts overlap: {at}, {row:?}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_changed_setting_offers_a_reset_and_one_at_its_default_does_not() {
+        // The ● and ⟲ answer "what have I changed?", the question a list of forty values cannot.
+        // A reset on a row that is already at its default would be a button that does nothing.
+        let typography = Typography::default();
+        let rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        let defaults = Values::defaults(true);
+
+        for field in Field::ALL {
+            assert!(
+                field.is_default(&defaults),
+                "{field:?} is not at its own default"
+            );
+            let page = page(category_of(field), "");
+            let geometry = page.geometry(rect, 1.0, &defaults, true, &typography);
+            for row in &geometry.rows {
+                assert_eq!(row.reset, None, "a reset on a default row: {row:?}");
+            }
+
+            let mut values = defaults.clone();
+            values.adjust(field, 1);
+            assert!(
+                !field.is_default(&values),
+                "{field:?} changed and still default"
+            );
+            let geometry = page.geometry(rect, 1.0, &values, values.modal, &typography);
+            let row = geometry
+                .rows
+                .iter()
+                .find(|row| row.field == Some(field))
+                .unwrap_or_else(|| panic!("{field:?} is not on its own page"));
+            assert!(row.reset.is_some(), "{field:?} changed, with no way back");
+            // Every other row answers for itself — turning Vim off changes what the line numbers'
+            // default is, so that row is now changed too, and says so.
+            for other in &geometry.rows {
+                if let Some(other_field) = other.field {
+                    assert_eq!(
+                        other.reset.is_some(),
+                        !other_field.is_default(&values),
+                        "{other_field:?} after changing {field:?}"
+                    );
+                }
+            }
+
+            values.reset(field);
+            assert!(
+                field.is_default(&values),
+                "{field:?} reset and still changed"
+            );
+        }
+    }
+
+    #[test]
+    fn no_heading_is_a_source_caption() {
+        // "init.lua" and "imported" over a value were the old panel's answer to where it came
+        // from. Readers took them for section names, and they explained nothing.
+        let captions: Vec<String> = [Source::Default, Source::Config, Source::Imported]
+            .into_iter()
+            .map(|source| source.label().to_lowercase())
+            .chain(["init.lua", "imported", "default"].map(String::from))
+            .collect();
+        let typography = Typography::default();
+        for category in Category::ALL {
+            for query in ["", "a", "e", "i"] {
+                for modal in [true, false] {
+                    let page = page(category, query);
+                    let headings =
+                        page.entries(modal)
+                            .into_iter()
+                            .filter_map(|entry| match entry {
+                                Entry::Heading { title, .. } => Some(title),
+                                _ => None,
+                            });
+                    let drawn = page
+                        .geometry(
+                            Rect::new(0.0, 0.0, 2560.0, 1440.0),
+                            1.0,
+                            &changed(),
+                            modal,
+                            &typography,
+                        )
+                        .rows
+                        .into_iter()
+                        .filter_map(|row| row.heading);
+                    for heading in headings.chain(drawn) {
+                        assert!(
+                            !captions.contains(&heading.trim().to_lowercase()),
+                            "{heading:?} is a source caption"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            !page(Category::Appearance, "").entries(true).is_empty(),
+            "and there were headings to check"
+        );
+    }
+
+    #[test]
+    fn the_keys_page_lays_out_only_the_rows_that_fit() {
+        // Ninety-odd commands: laying all of them out to draw the forty on screen is per-frame work
+        // that grows with the table rather than the window.
+        let typography = Typography::default();
+        for (width, height) in SIZES {
+            for scale in [1.0_f32, 2.0] {
+                for scroll in [0, 50] {
+                    let mut page = page(Category::Keys, "");
+                    page.scroll = scroll;
+                    let rect = Rect::new(0.0, 0.0, width, height);
+                    let total = page.entries(true).len();
+                    assert!(total > 90, "the whole table is the list: {total}");
+
+                    let geometry = page.geometry(rect, scale, &changed(), true, &typography);
+                    assert!(
+                        !geometry.rows.is_empty(),
+                        "nothing on the Keys page at {width}x{height}"
+                    );
+                    assert_eq!(
+                        geometry.rows[0].index, scroll,
+                        "the list starts where it was scrolled to"
+                    );
+                    let smallest = geometry
+                        .rows
+                        .iter()
+                        .map(|row| row.rect.height)
+                        .fold(f32::MAX, f32::min);
+                    let window = rect.bottom() - geometry.search.bottom();
+                    assert!(
+                        geometry.rows.len() as f32 <= (window / smallest).ceil(),
+                        "{} rows laid out in room for {} at {width}x{height}",
+                        geometry.rows.len(),
+                        (window / smallest).ceil()
+                    );
+                    assert!(
+                        geometry.rows.len() < total,
+                        "the whole table at {width}x{height}"
+                    );
+                    for row in &geometry.rows {
+                        assert!(
+                            inside(row.rect, rect),
+                            "a row past the window at {width}x{height}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nothing_says_vim_to_someone_who_turned_it_off() {
+        // Someone who chose the conventional editor should not be taught Vim's ideas by the one
+        // screen that describes the editor they chose.
+        let mut texts: Vec<&str> = Vec::new();
+        for field in Field::ALL {
+            texts.push(field.label(false));
+            texts.extend(field.explanation(false));
+        }
+        for line in [
+            Line::RunImport,
+            Line::LoadTheme,
+            Line::Import(Importable::Keybindings),
+        ] {
+            texts.extend(line.label());
+            texts.extend(line.explanation());
+        }
+        for entry in page(Category::Appearance, "").entries(false) {
+            if let Entry::Heading { title, .. } = entry {
+                texts.push(title);
+            }
+        }
+        assert!(texts.len() > Field::ALL.len(), "there was text to check");
+        for text in texts {
+            assert!(!text.to_lowercase().contains("vim"), "{text:?}");
+        }
+
+        // And the switch itself is still findable by the name people know it by.
+        let page = page(Category::Files, "vim");
+        assert!(page.matches(Field::VimKeys, false));
+    }
+
+    #[test]
+    fn every_explanation_fits_three_lines_of_the_page() {
+        // An explanation is a sentence or two, the way VSCode writes them. One that runs to a
+        // paragraph turns a list of settings into a document nobody scans — so the limit is a
+        // test, at the largest font the editor allows, where the lines are shortest.
+        for typography in [
+            Typography::default(),
+            Typography::with_code_size(Typography::MAX_CODE_SIZE),
+        ] {
+            let metrics = Metrics::new(&typography, 1.0);
+            for category in [
+                Category::Appearance,
+                Category::Editor,
+                Category::Files,
+                Category::Import,
+            ] {
+                for modal in [true, false] {
+                    let geometry = page(category, "").geometry(
+                        Rect::new(0.0, 0.0, 2560.0, 1440.0),
+                        1.0,
+                        &changed(),
+                        modal,
+                        &typography,
+                    );
+                    for row in &geometry.rows {
+                        if let Some(explanation) = row.explanation {
+                            assert!(
+                                explanation.height <= metrics.text_line * 3.0 + 0.01,
+                                "{row:?} explains itself in {} lines",
+                                explanation.height / metrics.text_line
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // The settings whose names say everything say nothing more.
+        for field in Field::ALL {
+            let silent = matches!(field, Field::Theme | Field::FontSize | Field::TabWidth);
+            for modal in [true, false] {
+                assert_eq!(field.explanation(modal).is_none(), silent, "{field:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_selection_steps_over_headings_and_stays_on_the_list() {
+        // A heading is not something to change, and a selection resting on one would make the
+        // arrow keys look broken.
+        let mut page = page(Category::Editor, "");
+        page.selected = 0;
+        page.move_selection(0, true);
+        let entries = page.entries(true);
+        assert!(
+            matches!(entries[page.selected], Entry::Field(_)),
+            "{:?}",
+            entries[page.selected]
+        );
+        for _ in 0..entries.len() * 2 {
+            page.move_selection(1, true);
+            assert!(!matches!(entries[page.selected], Entry::Heading { .. }));
+        }
+        assert_eq!(page.selected, entries.len() - 1);
+        page.move_selection(-99, true);
+        assert!(matches!(
+            entries[page.selected],
+            Entry::Field(Field::VimKeys)
+        ));
     }
 }

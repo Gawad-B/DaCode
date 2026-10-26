@@ -34,7 +34,7 @@ impl Animations {
     pub const ALL: [Animations; 3] = [Animations::Full, Animations::Reduced, Animations::Off];
 
     /// The spelling used in `init.lua` and in the settings panel.
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Animations::Full => "full",
             Animations::Reduced => "reduced",
