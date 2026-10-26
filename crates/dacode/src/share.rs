@@ -1,10 +1,11 @@
-//! What the Share button copies, and what the Run button offers to run.
+//! What File ▸ Copy link to line copies, and what the Run button offers to run.
 //!
 //! **Share** copies a permanent link to the cursor's line on the repository's host — pinned to the
 //! commit that is checked out, so the link still points at the same line after the file changes —
 //! or `path:line` when the project has no remote anyone else could open. A local editor has no
 //! account and no server to share through; a link to the line is what people paste into a review,
-//! an issue or a chat, and it is what the button in an editor's title bar is reached for.
+//! an issue or a chat. It was a Share button in the title bar; it is a File entry now, beside the
+//! other things done to the file, and the command is still `share`.
 //!
 //! The repository is read from its own files, `.git/config` and `HEAD`, not by running `git`: these
 //! are a few small files, and a process spawn is exactly the kind of unbounded wait that must not

@@ -108,7 +108,7 @@ These are the editor's, not Vim's, and they work in both keymaps:
 |---|---|
 | <kbd>F1</kbd> | every key that works right now, filterable |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> | every command, searchable, with its key beside it |
-| <kbd>F10</kbd> · right-click | menu bar · context menu |
+| <kbd>F10</kbd> · right-click | open the menu bar (it is always on the title bar to click) · context menu |
 | <kbd>ctrl</kbd>+<kbd>p</kbd> · <kbd>ctrl</kbd>+<kbd>b</kbd> | file palette · buffer palette |
 | <kbd>ctrl</kbd>+<kbd>e</kbd> | file tree |
 | <kbd>ctrl</kbd>+<kbd>,</kbd> | settings |

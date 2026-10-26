@@ -2382,7 +2382,8 @@ fn draw_help(
     ));
 }
 
-/// The menu bar, or a context menu at the pointer.
+/// The open menu's card, under its title in the bar or at the pointer. The bar's titles are not
+/// drawn here — see [`draw_menu_titles`].
 fn draw_menu(
     frame: &mut Frame,
     state: &EditorState,
@@ -2392,35 +2393,13 @@ fn draw_menu(
     scale: f32,
 ) {
     let theme = &state.theme;
-    let accent = theme.accent(state.mode);
 
     // Geometry comes from the menu, not from here: the mouse reads the same function, and a second
     // copy of this arithmetic is how clicks start landing a row off.
-    let geometry = menu.geometry(bounds, scale);
+    let geometry = menu.geometry(bounds, scale, &state.typography);
     let card = geometry.card;
     let pad = geometry.pad;
     let label_width = geometry.label_width;
-
-    // The bar's titles are drawn here too, since the bar only exists while it is open — a permanent
-    // menu bar would cost a row of every window for something most people use twice.
-    for (index, (title, rect)) in menu.titles.iter().zip(&geometry.titles).enumerate() {
-        if index == menu.open {
-            frame.fill(*rect, theme.row_active);
-        }
-        frame.text(run(
-            state,
-            Role::Value,
-            *title,
-            Rect::new(rect.x + 4.0 * scale, rect.y, rect.width, rect.height),
-            if index == menu.open {
-                accent
-            } else {
-                theme.ink_dim
-            },
-            Align::Left,
-            scale,
-        ));
-    }
 
     // The card hangs from its title, or from the pointer that opened it.
     frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
@@ -3454,48 +3433,49 @@ pub fn file_color(theme: &Theme, name: &str) -> Oklch {
     }
 }
 
-/// The window's top bar: the logo and name, the command centre, and the account, bell and Share
-/// controls.
+/// The window's top bar: the logo and name, the menu bar, the command centre and the bell.
 fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     let theme = &state.theme;
     frame.fill_backdrop(rect, theme.bg_alt);
     frame.rule_bottom(rect, theme.rule_soft, border::BORDER);
-    let bar = crate::layout::title_bar(rect, scale);
-    let white = Oklch::new(0.99, 0.0, 0.0);
+    let bar = crate::layout::title_bar(rect, scale, &state.typography);
 
     // The mark and the wordmark, as the logo sheet sets them: "Da" in the brand's amber, "Code" in
     // the ink. Two runs placed by the face's own advance — one monospaced face, so the second word
     // starts exactly where the first ends.
     frame.mark(bar.logo, theme.ink, theme.brand());
     let advance = state.typography.advance(Role::Brand) * scale;
-    frame.text(run(
-        state,
-        Role::Brand,
-        "Da",
-        bar.name,
-        theme.brand(),
-        Align::Left,
-        scale,
-    ));
-    frame.text(run(
-        state,
-        Role::Brand,
-        "Code",
-        Rect::new(
-            bar.name.x + advance * 2.0,
-            bar.name.y,
-            (bar.name.width - advance * 2.0).max(0.0),
-            bar.name.height,
-        ),
-        theme.ink,
-        Align::Left,
-        scale,
-    ));
+    // On a bar too narrow for it the wordmark gives its room to the menus.
+    if bar.name.width > 0.0 {
+        frame.text(run(
+            state,
+            Role::Brand,
+            "Da",
+            bar.name,
+            theme.brand(),
+            Align::Left,
+            scale,
+        ));
+        frame.text(run(
+            state,
+            Role::Brand,
+            "Code",
+            Rect::new(
+                bar.name.x + advance * 2.0,
+                bar.name.y,
+                (bar.name.width - advance * 2.0).max(0.0),
+                bar.name.height,
+            ),
+            theme.ink,
+            Align::Left,
+            scale,
+        ));
+    }
+    draw_menu_titles(frame, state, &bar, scale);
 
     // The command centre, as VSCode and Zed both have it: a box that looks like a search field,
     // opens the palette, and says what it is for and which key does the same.
-    // Hidden while the menu bar is open: its titles sit in the same strip.
-    if let Some(search) = bar.search.filter(|_| state.menu.is_none()) {
+    if let Some(search) = bar.search {
         let over = hovered(state, search);
         frame.fill_rounded(
             search,
@@ -3527,15 +3507,22 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         } else {
             format!("Search {project}")
         };
+        // The key gives way first: at the box's narrowest the two met in the middle and printed
+        // over each other. The prompt says what the box is; the key is a bonus.
+        let key_width = key.chars().count() as f32 * state.typography.advance(Role::Value) * scale;
+        let beside_key = text.width - key_width - 12.0 * scale;
+        let show_key =
+            !key.is_empty() && beside_key >= 10.0 * state.typography.advance(Role::Ui) * scale;
+        let prompt_width = if show_key { beside_key } else { text.width };
         frame.text(ui(
             state,
-            elide(state, Role::Ui, &prompt, text.width * 0.7, scale),
+            elide(state, Role::Ui, &prompt, prompt_width, scale),
             text,
             theme.ink_faint,
             Align::Left,
             scale,
         ));
-        if !key.is_empty() {
+        if show_key {
             frame.text(run(
                 state,
                 Role::Value,
@@ -3548,7 +3535,6 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         }
     }
 
-    icon_button(frame, state, bar.account, Icon::User, theme.ink_dim, scale);
     // The bell swings when a message arrives, and rings down in under a second.
     let swing = state
         .chrome
@@ -3572,18 +3558,58 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
             theme.primary,
         );
     }
+}
 
-    let over = hovered(state, bar.share);
-    frame.fill_rounded(
-        bar.share,
-        if over {
-            theme.primary.mix(white, 0.12)
-        } else {
-            theme.primary
-        },
-        6.0 * scale,
-    );
-    frame.text(ui(state, "Share", bar.share, white, Align::Center, scale));
+/// The menu bar's titles, always on the title bar. The open one is lit, and under the pointer one
+/// is washed the way an icon button is, because every one is a button.
+///
+/// Drawn here rather than with the menu: the titles used to belong to the overlay, so the bar
+/// existed only while a menu was open and faded with it. Only the card fades now.
+fn draw_menu_titles(
+    frame: &mut Frame,
+    state: &EditorState,
+    bar: &crate::layout::TitleBar,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    // Only the bar's own menu lights a title; a context menu has nothing to do with the bar.
+    let open = state
+        .menu
+        .as_ref()
+        .filter(|menu| menu.kind == crate::menu::Kind::Bar)
+        .map(|menu| menu.open);
+    let shown = bar.menus.len();
+    let cells = bar
+        .menus
+        .iter()
+        .zip(crate::menu::TITLES)
+        .enumerate()
+        .map(|(index, (rect, text))| (*rect, text, open == Some(index)))
+        .chain(bar.overflow.map(|rect| {
+            (
+                rect,
+                crate::layout::OVERFLOW,
+                open.is_some_and(|open| open >= shown),
+            )
+        }));
+    for (rect, text, lit) in cells {
+        let over = hovered(state, rect);
+        if lit || over {
+            frame.fill_rounded(rect, theme.row_active, 5.0 * scale);
+        }
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, text, rect.width, scale),
+            rect,
+            if lit || over {
+                theme.ink
+            } else {
+                theme.ink_dim
+            },
+            Align::Center,
+            scale,
+        ));
+    }
 }
 
 /// The column of view icons down the left edge.
@@ -3728,15 +3754,9 @@ fn draw_tooltip(
             found = Some((item.label, item.command, cell));
         }
     }
-    let bar = crate::layout::title_bar(regions.title, scale);
-    for (label_text, command, rect) in [
-        ("Menu", "menu", bar.account),
-        ("Notifications", "notifications", bar.bell),
-        ("Copy a link to this line", "share", bar.share),
-    ] {
-        if crate::layout::contains(rect, x, y) {
-            found = Some((label_text, command, rect));
-        }
+    let bell = crate::layout::title_bar(regions.title, scale, &state.typography).bell;
+    if crate::layout::contains(bell, x, y) {
+        found = Some(("Notifications", "notifications", bell));
     }
     let names = tab_names(state);
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -3799,7 +3819,7 @@ fn draw_notifications(
     scale: f32,
 ) {
     let theme = &state.theme;
-    let bar = crate::layout::title_bar(title, scale);
+    let bar = crate::layout::title_bar(title, scale, &state.typography);
     let width = (380.0 * scale).min(bounds.width - 16.0 * scale);
     let line = 22.0 * scale;
     let shown: Vec<&String> = state.chrome.notifications.iter().rev().take(12).collect();

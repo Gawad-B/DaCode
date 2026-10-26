@@ -1769,17 +1769,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                 // at all reads as a menu that cannot be clicked — which is exactly how it was
                 // reported, even though the hit test underneath was correct the whole time.
                 if self.state.menu.is_some() {
-                    let (x, y) = self.pointer;
-                    let (bounds, scale) = (self.window_bounds(), self.scale());
-                    let mut moved = false;
-                    if let Some(menu) = &mut self.state.menu {
-                        let geometry = menu.geometry(bounds, scale);
-                        if let Some(index) = menu.row_at(&geometry, x, y) {
-                            moved = menu.selected != index;
-                            menu.selected = index;
-                        }
-                    }
-                    if moved {
+                    if self.move_over_menu() {
                         self.request_redraw();
                     }
                     return;
@@ -2606,6 +2596,13 @@ impl App {
         if self.state.completion.is_some() && self.handle_completion_key(key) {
             return false;
         }
+        // The menu owns the keyboard while it is open — it is something you are choosing from, and
+        // a key that fell through would type into the file behind it. Before the results panel,
+        // which had Enter and the arrows first when it held focus, so a menu opened over it from
+        // the title bar could be seen and not driven. Returns whether to quit: `File ▸ Quit`.
+        if self.state.menu.is_some() {
+            return self.handle_menu_key(key);
+        }
         // Only with focus: the panel used to take Enter and the arrows whenever it was open, so a
         // search left showing turned every newline into "open the selected hit".
         if self.state.focus == dacode::focus::Focus::Panel && self.handle_results_key(key) {
@@ -2615,12 +2612,7 @@ impl App {
         if self.handle_welcome_key(key) {
             return false;
         }
-        // The menu and the help panel own the keyboard while they are open — they are things you are
-        // reading or choosing from, and a key that fell through would type into the file behind
-        // them. Both return whether the editor should quit, which a menu entry can ask for.
-        if self.state.menu.is_some() {
-            return self.handle_menu_key(key);
-        }
+        // The help panel owns the keyboard while it is open too, for the same reason.
         if self.state.help.is_some() {
             return self.handle_help_key(key);
         }
@@ -7312,15 +7304,22 @@ impl App {
         let at = |rect: Rect| dacode::layout::contains(rect, x, y);
 
         if at(layout.title) {
-            let bar = dacode::layout::title_bar(layout.title, scale);
+            let bar = dacode::layout::title_bar(layout.title, scale, &self.state.typography);
+            // A title opens its menu exactly as F10 opens the first: the menu then owns the keys
+            // and the pointer until it closes. The overflow opens the first menu that did not fit.
+            let title = bar.menus.iter().position(|rect| at(*rect)).or_else(|| {
+                bar.overflow
+                    .filter(|rect| at(*rect))
+                    .map(|_| bar.menus.len())
+            });
+            if let Some(index) = title {
+                self.state.menu = Some(dacode::menu::Menu::bar_at(index, self.state.modal));
+                return true;
+            }
             let command = if bar.search.is_some_and(at) {
                 Some("command_palette")
-            } else if at(bar.account) {
-                Some("menu")
             } else if at(bar.bell) {
                 Some("notifications")
-            } else if at(bar.share) {
-                Some("share")
             } else {
                 None
             };
@@ -7390,6 +7389,29 @@ impl App {
         }
     }
 
+    /// The pointer moved while a menu is open. The row under it lights up, and over another title
+    /// of the bar that menu opens — sweeping along the bar walks it, as VSCode's does. Returns
+    /// whether anything changed, so an idle wobble does not cost a frame.
+    fn move_over_menu(&mut self) -> bool {
+        let (x, y) = self.pointer;
+        let (bounds, scale, modal) = (self.window_bounds(), self.scale(), self.state.modal);
+        let typography = self.state.typography;
+        let Some(menu) = &mut self.state.menu else {
+            return false;
+        };
+        let geometry = menu.geometry(bounds, scale, &typography);
+        if menu.hover_title(&geometry, x, y, modal) {
+            return true;
+        }
+        match menu.row_at(&geometry, x, y) {
+            Some(index) if menu.selected != index => {
+                menu.selected = index;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// A click while a menu is open.
     fn click_menu(&mut self, x: f32, y: f32, scale: f32) {
         let bounds = self.window_bounds();
@@ -7398,12 +7420,16 @@ impl App {
         let Some(menu) = &mut self.state.menu else {
             return;
         };
-        let geometry = menu.geometry(bounds, scale);
+        let geometry = menu.geometry(bounds, scale, &self.state.typography);
 
+        // Pressing the open title again closes it, as a menu bar does everywhere; any other title
+        // opens its own menu.
         if let Some(index) = menu.title_at(&geometry, x, y) {
-            menu.open = index;
-            menu.selected = 0;
-            menu.fill(modal);
+            if menu.is_open_title(&geometry, index) {
+                self.state.close_menu();
+            } else {
+                menu.open_menu(index, modal);
+            }
             return;
         }
 
@@ -8574,6 +8600,59 @@ mod wiring_tests {
         assert_eq!(app.state.focus, Focus::Sidebar);
     }
 
+    /// The menu bar through the real `click()` and the real pointer handler: a title opens its
+    /// menu, sweeping to the next opens that one, and pressing the open title again closes it.
+    #[test]
+    fn a_title_in_the_bar_opens_its_menu_and_a_sweep_opens_the_next() {
+        let dir = scratch("menu-bar-click");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        let layout = app.layout();
+        let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
+        let middle = |rect: Rect| (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+
+        app.pointer = middle(bar.menus[0]);
+        app.click(false);
+        let menu = app.state.menu.as_ref().expect("a click on File opens it");
+        assert_eq!(menu.kind, dacode::menu::Kind::Bar);
+        assert_eq!(menu.open, 0);
+
+        app.pointer = middle(bar.menus[1]);
+        app.state.pointer = app.pointer;
+        assert!(app.move_over_menu(), "moving onto Edit redraws");
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.open), Some(1));
+
+        app.click(false);
+        assert!(
+            app.state.menu.is_none(),
+            "pressing the open title again closes it"
+        );
+
+        app.pointer = middle(bar.menus[2]);
+        app.click(false);
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.open), Some(2));
+        app.pointer = (layout.editor.x + 300.0, layout.editor.y + 300.0);
+        app.click(false);
+        assert!(app.state.menu.is_none(), "a click away closes it");
+    }
+
+    /// A menu opened from the title bar takes the keys as one opened with F10 does — even when the
+    /// results panel had them, which used to be offered Enter and the arrows first.
+    #[test]
+    fn a_menu_opened_by_the_mouse_takes_the_keys_from_a_focused_panel() {
+        use dacode::focus::Focus;
+        let dir = scratch("menu-bar-keys");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.state.focus = Focus::Panel;
+        let layout = app.layout();
+        let bar = dacode::layout::title_bar(layout.title, app.scale(), &app.state.typography);
+        app.pointer = (bar.menus[0].x + 4.0, bar.menus[0].y + 4.0);
+        app.click(false);
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.selected), Some(1));
+        app.press(Key::named(KeyCode::Right));
+        assert_eq!(app.state.menu.as_ref().map(|menu| menu.open), Some(1));
+    }
+
     /// Escape in the tree gives the keys back and leaves the tree standing: it is a view you were
     /// reading, and closing it threw away the place you had reached just to type.
     #[test]
@@ -8886,16 +8965,6 @@ mod wiring_tests {
         let t0 = std::time::Instant::now();
         app.state.menu = Some(dacode::menu::Menu::bar(app.state.modal));
         app.state.sync_motion(WINDOW, 1.0, t0);
-        // The bar's titles, which the menu draws and the palette never does.
-        let titles: Vec<String> = app
-            .state
-            .menu
-            .as_ref()
-            .expect("open")
-            .titles
-            .iter()
-            .map(|title| title.to_string())
-            .collect();
 
         let open = ms(t0, 1500);
         app.state.close_menu();
@@ -8903,16 +8972,70 @@ mod wiring_tests {
         app.state.sync_motion(WINDOW, 1.0, open);
         assert!(app.state.chrome.leaving.menu.is_none());
 
-        let frame = draw_at(&mut app, ms(t0, 1540));
-        let bleeding: Vec<&str> = frame
-            .texts_on(dacode_render::Layer::Modal)
-            .map(|run| run.text.as_str())
-            .filter(|text| titles.iter().any(|title| title == text))
-            .collect();
+        // What reaches the modal layer, against the same instant drawn with nothing left behind.
+        // The palette lists the same commands in the same words as the menu, so a row cannot be
+        // told apart by its text — and the titles that used to be the tell belong to the title bar
+        // now, on the base layer. Whatever the first frame has that the second does not is bleed.
+        let modal = |frame: &Frame| -> Vec<String> {
+            frame
+                .texts_on(dacode_render::Layer::Modal)
+                .map(|run| run.text.clone())
+                .collect()
+        };
+        let drawn = modal(&draw_at(&mut app, ms(t0, 1540)));
+        app.state.chrome.leaving.menu = None;
+        let alone = modal(&draw_at(&mut app, ms(t0, 1540)));
+        let mut bleeding = drawn;
+        for text in &alone {
+            if let Some(index) = bleeding.iter().position(|drawn| drawn == text) {
+                bleeding.remove(index);
+            }
+        }
         assert!(
             bleeding.is_empty(),
             "the closed menu's {bleeding:?} is drawn over the palette"
         );
+    }
+
+    #[test]
+    fn the_menu_titles_are_always_drawn_and_only_the_dropdown_fades() {
+        // The titles used to be part of the menu overlay, so the bar existed only while a menu was
+        // open and faded in and out with it. They belong to the title bar now: there when nothing
+        // is open, and never on the modal layer where the fading card is.
+        use dacode_render::Layer;
+        let dir = scratch("menu-titles");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        let texts = |frame: &Frame, layer: Layer| -> Vec<String> {
+            frame.texts_on(layer).map(|run| run.text.clone()).collect()
+        };
+
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        let frame = draw_at(&mut app, t0);
+        let base = texts(&frame, Layer::Base);
+        for title in dacode::menu::TITLES {
+            assert!(
+                base.iter().any(|text| text == title),
+                "{title} is on the bar"
+            );
+        }
+        assert!(
+            !base.iter().any(|text| text == "Share"),
+            "the Share button is gone"
+        );
+
+        app.state.menu = Some(dacode::menu::Menu::bar(app.state.modal));
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        let frame = draw_at(&mut app, t0);
+        let base = texts(&frame, Layer::Base);
+        let modal = texts(&frame, Layer::Modal);
+        for title in dacode::menu::TITLES {
+            assert!(base.iter().any(|text| text == title), "{title} stays put");
+            assert!(
+                !modal.iter().any(|text| text == title),
+                "{title} is not drawn with the fading card"
+            );
+        }
     }
 
     #[test]

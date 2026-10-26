@@ -133,59 +133,117 @@ pub fn activity_items(bar: Rect, scale: f32) -> Vec<(ActivityItem, Rect)> {
 }
 
 /// What the title bar holds, left to right.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TitleBar {
     pub logo: Rect,
+    /// The wordmark. Zero wide on a bar too narrow to spare it, where the menus matter more.
     pub name: Rect,
+    /// One rectangle per menu title that fits, in the order of [`crate::menu::TITLES`]: always a
+    /// prefix of it, because the titles that do not fit drop from the end.
+    pub menus: Vec<Rect>,
+    /// "…", standing for the titles that did not fit. Absent when they all did.
+    pub overflow: Option<Rect>,
     /// The command centre: a search box that opens the palette. Absent when the bar is too narrow
-    /// to hold it without crowding the buttons, which matter more.
+    /// to hold it beside the first menu.
     pub search: Option<Rect>,
-    pub account: Rect,
     pub bell: Rect,
-    pub share: Rect,
 }
 
+/// The overflow title's text.
+pub const OVERFLOW: &str = "…";
+
 /// The title bar's controls, for drawing and for the mouse.
-pub fn title_bar(title: Rect, scale: f32) -> TitleBar {
+///
+/// Room is handed out in this order, which is the fitting rule: the mark, the bell, the first menu
+/// title and the overflow; then the search box at its narrowest; then the rest of the titles, left
+/// to right, for as long as they fit; then the search box grows into what is left, centred on the
+/// window when it can be. The wordmark goes first of all on a bar under 560 logical pixels.
+///
+/// Titles are sized from the `Ui` role's advance, with slack, because that is an estimate of the
+/// shaper rather than the shaper — a title a character too narrow would be cut mid-word.
+pub fn title_bar(title: Rect, scale: f32, typography: &dacode_theme::Typography) -> TitleBar {
     let px = |v: f32| v * scale;
     let centre_y = |height: f32| title.y + (title.height - height) / 2.0;
 
     let logo = Rect::new(title.x + px(16.0), centre_y(px(28.0)), px(28.0), px(28.0));
-    let name = Rect::new(logo.right() + px(10.0), title.y, px(96.0), title.height);
-
-    let share_width = px(76.0);
-    let share = Rect::new(
-        (title.right() - px(16.0) - share_width).max(name.right()),
-        centre_y(px(30.0)),
-        share_width,
-        px(30.0),
-    );
+    let name = if title.width >= px(560.0) {
+        Rect::new(logo.right() + px(10.0), title.y, px(96.0), title.height)
+    } else {
+        Rect::new(logo.right(), title.y, 0.0, title.height)
+    };
     let button = px(size::BUTTON);
     let bell = Rect::new(
-        share.x - px(12.0) - button,
+        title.right() - px(16.0) - button,
         centre_y(button),
         button,
         button,
     );
-    let account = Rect::new(bell.x - px(4.0) - button, centre_y(button), button, button);
 
-    let room = account.x - px(24.0) - (name.right() + px(24.0));
-    let width = room.min(px(440.0));
-    let search = (width >= px(180.0)).then(|| {
-        let middle = title.x + title.width / 2.0;
-        let x = (middle - width / 2.0)
-            .max(name.right() + px(24.0))
-            .min(account.x - px(24.0) - width);
-        Rect::new(x, centre_y(px(28.0)), width, px(28.0))
+    let advance = typography.advance(dacode_theme::Role::Ui) * scale * 1.1;
+    let measure = |text: &str| (text.chars().count() as f32 * advance + px(16.0)).ceil();
+    let widths: Vec<f32> = crate::menu::TITLES.iter().map(|t| measure(t)).collect();
+    let ellipsis = measure(OVERFLOW);
+
+    let start = name.right() + px(8.0);
+    let end = bell.x - px(16.0);
+    let room = (end - start).max(0.0);
+    let gap = px(16.0);
+    let narrowest_search = px(180.0);
+
+    // How many titles a budget holds, counting the overflow when any are left out.
+    let fit = |budget: f32| -> usize {
+        if widths.iter().sum::<f32>() <= budget {
+            return widths.len();
+        }
+        let mut used = ellipsis;
+        widths
+            .iter()
+            .take_while(|width| {
+                used += **width;
+                used <= budget
+            })
+            .count()
+    };
+    let beside_search = fit(room - narrowest_search - gap);
+    let (shown, has_search) = if beside_search >= 1 {
+        (beside_search, true)
+    } else {
+        (fit(room), false)
+    };
+
+    let height = px(28.0);
+    let mut x = start;
+    let menus: Vec<Rect> = widths[..shown]
+        .iter()
+        .map(|width| {
+            let rect = Rect::new(x, centre_y(height), *width, height);
+            x += width;
+            rect
+        })
+        .collect();
+    let overflow = (shown < widths.len() && x + ellipsis <= end).then(|| {
+        let rect = Rect::new(x, centre_y(height), ellipsis, height);
+        x += ellipsis;
+        rect
     });
+
+    let search = has_search
+        .then(|| {
+            let left = x + gap;
+            let width = (end - left).min(px(440.0));
+            let middle = title.x + title.width / 2.0;
+            let x = (middle - width / 2.0).max(left).min(end - width);
+            Rect::new(x, centre_y(px(28.0)), width, px(28.0))
+        })
+        .filter(|search| search.width >= narrowest_search - 0.5);
 
     TitleBar {
         logo,
         name,
+        menus,
+        overflow,
         search,
-        account,
         bell,
-        share,
     }
 }
 
@@ -711,16 +769,19 @@ mod tests {
     fn the_title_bars_controls_stay_inside_it_and_apart_at_every_width() {
         // Four overflow defects shipped because the harness only ever rendered at 1600x1000. These
         // are all clickable, so one drawn past the edge or over another is a click on the wrong thing.
+        let typography = dacode_theme::Typography::default();
         for width in [360.0, 480.0, 640.0, 900.0, 1280.0, 1600.0, 2560.0] {
-            for scale in [1.0, 1.5, 2.0] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
                 let title = Rect::new(0.0, 0.0, width * scale, size::TITLE * scale);
-                let bar = title_bar(title, scale);
-                let mut controls = vec![bar.logo, bar.account, bar.bell, bar.share];
+                let bar = title_bar(title, scale, &typography);
+                let mut controls = vec![bar.logo, bar.bell];
+                controls.extend(bar.menus.iter().copied());
+                controls.extend(bar.overflow);
                 controls.extend(bar.search);
                 for control in &controls {
                     assert!(
-                        control.x >= title.x - 0.01,
-                        "{control:?} starts left of {width}"
+                        control.x >= title.x - 0.01 && control.right() <= title.right() + 0.01,
+                        "{control:?} leaves a {width}px bar"
                     );
                     assert!(control.y >= title.y && control.bottom() <= title.bottom());
                 }
@@ -734,11 +795,83 @@ mod tests {
                 }
                 if width >= 900.0 {
                     let search = bar.search.expect("a wide bar has the search box");
-                    assert!(search.right() <= bar.account.x);
+                    assert!(search.right() <= bar.bell.x);
                     assert!(search.x >= bar.name.right());
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_menu_titles_sit_after_the_name_and_before_the_search_box() {
+        // The bar reads left to right as every desktop editor's does: the mark, the name, the menus,
+        // then the search box. A title under the search box is a click that opens the palette when
+        // it looked like it opened a menu.
+        let typography = dacode_theme::Typography::default();
+        for width in [360.0, 480.0, 640.0, 900.0, 1280.0, 1600.0, 2560.0] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let title = Rect::new(0.0, 0.0, width * scale, size::TITLE * scale);
+                let bar = title_bar(title, scale, &typography);
+                assert!(
+                    !bar.menus.is_empty(),
+                    "File at least is always on the bar, at {width}px scale {scale}"
+                );
+                let mut row: Vec<Rect> = bar.menus.clone();
+                row.extend(bar.overflow);
+                assert!(
+                    row[0].x >= bar.name.right(),
+                    "the first title is after the name"
+                );
+                for pair in row.windows(2) {
+                    assert!(pair[0].right() <= pair[1].x + 0.01, "titles are in order");
+                }
+                if let Some(search) = bar.search {
+                    let last = row.last().expect("not empty");
+                    assert!(
+                        last.right() <= search.x,
+                        "the titles end before the search box at {width}px scale {scale}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn trailing_menu_titles_drop_behind_an_overflow_when_they_do_not_fit() {
+        // Squeezing the titles below the width a word needs would cut them mid-word; dropping from
+        // the end keeps every one that shows readable, and the overflow opens the rest.
+        let typography = dacode_theme::Typography::default();
+        let all = crate::menu::TITLES.len();
+        let mut before = (0, false);
+        for width in [
+            360.0, 420.0, 480.0, 560.0, 640.0, 760.0, 900.0, 1280.0, 1600.0, 2560.0,
+        ] {
+            let title = Rect::new(0.0, 0.0, width, size::TITLE);
+            let bar = title_bar(title, 1.0, &typography);
+            // The one exception is the width where the search box first fits: it takes priority
+            // over the trailing titles, so they give it their room.
+            if bar.search.is_some() == before.1 {
+                assert!(
+                    bar.menus.len() >= before.0,
+                    "a wider bar never shows fewer titles: {} at {width}px",
+                    bar.menus.len()
+                );
+            }
+            before = (bar.menus.len(), bar.search.is_some());
+            assert_eq!(
+                bar.overflow.is_some(),
+                bar.menus.len() < all,
+                "the overflow is there exactly when a title is missing, at {width}px"
+            );
+            if width >= 1280.0 {
+                assert_eq!(bar.menus.len(), all, "a wide bar shows every menu");
+            }
+        }
+        let narrow = title_bar(Rect::new(0.0, 0.0, 360.0, size::TITLE), 1.0, &typography);
+        assert!(
+            narrow.menus.len() < all,
+            "a phone-width bar cannot hold all eight"
+        );
     }
 
     #[test]

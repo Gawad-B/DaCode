@@ -63,65 +63,86 @@ impl Item {
     }
 }
 
-/// The menus along the bar, and what is in each.
-///
-/// Named by what they are for rather than by the industry's habit — "go" and "code" say more than
-/// "edit" and "tools" — but File and Edit keep their names, because those two are muscle memory.
-const MENUS: [(&str, &[&str]); 5] = [
-    (
-        "file",
-        &[
-            "save",
-            "save_as",
-            "open_folder",
-            "close_buffer",
-            "toggle_tree",
-            "settings",
-            "quit",
-        ],
-    ),
-    (
-        "edit",
-        &[
-            "undo",
-            "redo",
-            "paste",
-            "replace",
-            "toggle_comment",
-            "duplicate_line_down",
-            "delete_line",
-            "format",
-        ],
-    ),
-    (
-        "selection",
-        &[
-            "select_all",
-            "select_line",
-            "select_next_occurrence",
-            "select_all_occurrences",
-            "add_caret_below",
-            "collapse_selections",
-        ],
-    ),
-    (
-        "go",
-        &[
-            "goto_definition",
-            "find_references",
-            "goto_symbol",
-            "goto_symbol_in_project",
-            "search",
-            "search_project",
-            "next_diagnostic",
-            "jump_back",
-        ],
-    ),
-    (
-        "help",
-        &["help", "command_palette", "toggle_diagnostics", "hover"],
-    ),
+/// The titles along the bar, left to right — VSCode's, because a menu bar is the one place in an
+/// interface where being where people expect matters more than being clever. They are always on
+/// the title bar, drawn by it; a menu opens under one.
+pub const TITLES: [&str; 8] = [
+    "File",
+    "Edit",
+    "Selection",
+    "View",
+    "Go",
+    "Run",
+    "Terminal",
+    "Help",
 ];
+
+/// What is in each menu, by command name, in the order of [`TITLES`].
+///
+/// Run and Terminal hold what exists today — copying the run command, since there is no terminal
+/// to run it in — and fill in as those features land.
+const MENUS: [&[&str]; 8] = [
+    &[
+        "new_file",
+        "open_folder",
+        "save",
+        "save_as",
+        "share",
+        "close_buffer",
+        "settings",
+        "quit",
+    ],
+    &[
+        "undo",
+        "redo",
+        "cut",
+        "copy",
+        "paste",
+        "search",
+        "replace",
+        "search_project",
+        "toggle_comment",
+    ],
+    &[
+        "select_all",
+        "select_line",
+        "select_next_occurrence",
+        "select_all_occurrences",
+        "add_caret_above",
+        "add_caret_below",
+    ],
+    &[
+        "command_palette",
+        "toggle_tree",
+        "toggle_diagnostics",
+        "notifications",
+        "toggle_soft_wrap",
+        "split_vertical",
+        "split_horizontal",
+        "increase_font_size",
+        "decrease_font_size",
+        "toggle_theme",
+    ],
+    &[
+        "goto_definition",
+        "find_references",
+        "goto_symbol",
+        "goto_symbol_in_project",
+        "jump_back",
+        "jump_forward",
+        "next_diagnostic",
+        "previous_diagnostic",
+    ],
+    &["run"],
+    &["run"],
+    &["help", "command_palette"],
+];
+
+/// Entries whose label in one menu is not the command's own description: (title, command, label).
+///
+/// Under Terminal, "run the project" would promise a terminal that does not open; what the entry
+/// does until there is one is put the command where it can be pasted into one.
+const RELABELLED: [(&str, &str, &str); 1] = [("Terminal", "run", "copy the run command")];
 
 /// What a right-click offers.
 ///
@@ -179,10 +200,15 @@ impl Menu {
     /// menu still advertised `:w  <c-s>` for save and `:q  <c-q>` for quit — two ex-commands whose
     /// leading `:` the user's own grammar cannot even parse.
     pub fn bar(modal: bool) -> Self {
+        Self::bar_at(0, modal)
+    }
+
+    /// The bar, with the menu under one title open — what a click on that title opens.
+    pub fn bar_at(open: usize, modal: bool) -> Self {
         let mut menu = Self {
             kind: Kind::Bar,
-            titles: MENUS.iter().map(|(title, _)| *title).collect(),
-            open: 0,
+            titles: TITLES.to_vec(),
+            open: open.min(TITLES.len() - 1),
             items: Vec::new(),
             selected: 0,
             at: (0.0, 0.0),
@@ -212,11 +238,21 @@ impl Menu {
         if self.kind == Kind::Context {
             return;
         }
-        let (_, names) = MENUS[self.open.min(MENUS.len() - 1)];
-        self.items = names
+        let open = self.open.min(MENUS.len() - 1);
+        let title = TITLES[open];
+        self.items = MENUS[open]
             .iter()
             .filter_map(|name| commands::by_name(name))
-            .map(|command| Item::from_command(command, modal))
+            .map(|command| {
+                let mut item = Item::from_command(command, modal);
+                if let Some((_, _, label)) = RELABELLED
+                    .iter()
+                    .find(|(menu, name, _)| *menu == title && *name == command.name)
+                {
+                    item.label = label.to_string();
+                }
+                item
+            })
             .collect();
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
     }
@@ -254,7 +290,12 @@ impl Menu {
     ///
     /// A menu that could only be driven from the keyboard would also be a joke: the menu bar is
     /// *for* the person reaching for a mouse.
-    pub fn geometry(&self, bounds: Rect, scale: f32) -> Geometry {
+    pub fn geometry(
+        &self,
+        bounds: Rect,
+        scale: f32,
+        typography: &dacode_theme::Typography,
+    ) -> Geometry {
         let row_height = 24.0 * scale;
         let pad = space::MD * scale;
 
@@ -266,9 +307,10 @@ impl Menu {
         let height = self.items.len() as f32 * row_height + pad * 2.0;
 
         let mut titles = Vec::new();
+        let mut overflow = None;
         let (x, y) = match self.kind {
-            // In the title bar, after the product's name, where VSCode and Zed both put their menus —
-            // read from the same title-bar geometry the chrome draws, so the two cannot drift.
+            // Under its title in the title bar — read from the title bar's own geometry, which is
+            // what draws the titles, so the card cannot hang under a word that is somewhere else.
             Kind::Bar => {
                 let title = Rect::new(
                     bounds.x,
@@ -276,18 +318,18 @@ impl Menu {
                     bounds.width,
                     crate::layout::size::TITLE * scale,
                 );
-                let title_y = title.y + (title.height - row_height) / 2.0;
-                let mut x = crate::layout::title_bar(title, scale).name.right() + space::XS * scale;
-                let mut open_x = x;
-                for (index, title) in self.titles.iter().enumerate() {
-                    let width = (title.chars().count() as f32 + 2.0) * 9.0 * scale;
-                    titles.push(Rect::new(x, title_y, width, row_height));
-                    if index == self.open {
-                        open_x = x;
-                    }
-                    x += width;
-                }
-                (open_x, title_y + row_height)
+                let bar = crate::layout::title_bar(title, scale, typography);
+                titles = bar.menus;
+                overflow = bar.overflow;
+                let anchor = titles
+                    .get(self.open)
+                    .copied()
+                    .or(overflow)
+                    .unwrap_or(Rect::new(title.x, title.y, 0.0, title.height));
+                (
+                    anchor.x.min(bounds.right() - width).max(bounds.x),
+                    anchor.bottom() + 4.0 * scale,
+                )
             }
             // Clamped, so a right-click near an edge still shows the whole menu rather than half of
             // it off the window.
@@ -311,6 +353,7 @@ impl Menu {
 
         Geometry {
             titles,
+            overflow,
             card,
             rows,
             label_width,
@@ -330,20 +373,79 @@ impl Menu {
             .position(|row| crate::layout::contains(*row, x, y))
     }
 
-    /// Which title along the bar a point is over, if any.
+    /// Which menu the title under a point opens, if any. The overflow opens the first menu that
+    /// did not fit; the arrows walk on from there to the rest.
     pub fn title_at(&self, geometry: &Geometry, x: f32, y: f32) -> Option<usize> {
         geometry
             .titles
             .iter()
             .position(|title| crate::layout::contains(*title, x, y))
+            .or_else(|| {
+                geometry
+                    .overflow
+                    .filter(|rect| crate::layout::contains(*rect, x, y))
+                    .map(|_| geometry.titles.len())
+            })
+    }
+
+    /// The title the open menu hangs from: its own, or the overflow for a menu behind it.
+    pub fn open_title(&self, geometry: &Geometry) -> Option<Rect> {
+        if self.kind == Kind::Context {
+            return None;
+        }
+        geometry
+            .titles
+            .get(self.open)
+            .copied()
+            .or(geometry.overflow)
+    }
+
+    /// Whether the title [`title_at`](Self::title_at) answered with is the one already open. Every
+    /// menu behind the overflow shares its title.
+    pub fn is_open_title(&self, geometry: &Geometry, index: usize) -> bool {
+        let shown = geometry.titles.len();
+        if index >= shown {
+            self.open >= shown
+        } else {
+            index == self.open
+        }
+    }
+
+    /// Opens the menu under a title, from its first row.
+    pub fn open_menu(&mut self, index: usize, modal: bool) {
+        if self.kind == Kind::Context {
+            return;
+        }
+        self.open = index.min(TITLES.len() - 1);
+        self.selected = 0;
+        self.fill(modal);
+    }
+
+    /// The pointer moved while the bar is open: over another title, that menu opens, as VSCode's
+    /// bar does once one is open. Returns whether anything changed. Over the open title nothing
+    /// does, so the highlighted row is not reset under a pointer that merely wobbled.
+    pub fn hover_title(&mut self, geometry: &Geometry, x: f32, y: f32, modal: bool) -> bool {
+        if self.kind == Kind::Context {
+            return false;
+        }
+        match self.title_at(geometry, x, y) {
+            Some(index) if !self.is_open_title(geometry, index) => {
+                self.open_menu(index, modal);
+                true
+            }
+            _ => false,
+        }
     }
 }
 
 /// Where a menu's parts are.
 #[derive(Debug, Clone)]
 pub struct Geometry {
-    /// The bar's titles, left to right. Empty for a context menu.
+    /// The bar's titles that fit, left to right — [`crate::layout::TitleBar::menus`]. Empty for a
+    /// context menu.
     pub titles: Vec<Rect>,
+    /// The title standing for those that did not fit.
+    pub overflow: Option<Rect>,
     /// The open list.
     pub card: Rect,
     /// One rectangle per item, in order.
@@ -357,12 +459,16 @@ pub struct Geometry {
 mod tests {
     use super::*;
 
+    fn typography() -> dacode_theme::Typography {
+        dacode_theme::Typography::default()
+    }
+
     #[test]
     fn every_menu_entry_names_a_real_command() {
         // A menu is a promise about what the editor can do. An entry naming a command that does not
         // exist would silently vanish from the menu instead of failing loudly, and nobody would
         // notice until a user went looking for it.
-        for (title, names) in MENUS {
+        for (title, names) in TITLES.iter().zip(MENUS) {
             for name in names {
                 assert!(
                     commands::by_name(name).is_some(),
@@ -387,7 +493,7 @@ mod tests {
         let named = CONTEXT
             .iter()
             .chain(TREE.iter())
-            .chain(MENUS.iter().flat_map(|(_, names)| names.iter()));
+            .chain(MENUS.iter().flat_map(|names| names.iter()));
         for name in named {
             let command = commands::by_name(name).expect("checked above");
             assert!(
@@ -400,12 +506,42 @@ mod tests {
     #[test]
     fn the_bar_opens_on_its_first_menu_with_items_in_it() {
         let menu = Menu::bar(true);
-        assert_eq!(menu.titles.first(), Some(&"file"));
+        assert_eq!(menu.titles, TITLES.to_vec());
+        assert_eq!(menu.titles.first(), Some(&"File"));
         assert!(!menu.items.is_empty());
         assert_eq!(
             menu.selection().map(|item| item.action.clone()),
-            Some(Action::Save)
+            Some(Action::NewFile)
         );
+    }
+
+    #[test]
+    fn the_file_menu_is_where_the_share_button_went() {
+        // The title bar's Share button is gone; copying a link to the line is a File entry now,
+        // and a command nobody can reach from the mouse is not finished.
+        let menu = Menu::bar(false);
+        assert!(
+            menu.items.iter().any(|item| item.action == Action::Share),
+            "File offers share: {:?}",
+            menu.items
+                .iter()
+                .map(|item| &item.label)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_terminal_menu_says_what_its_entry_really_does() {
+        // There is no terminal yet, and `run` copies the command for one. An entry reading "run the
+        // project" under Terminal would promise a terminal that does not open.
+        let mut menu = Menu::bar_at(TITLES.iter().position(|t| *t == "Terminal").unwrap(), false);
+        menu.selected = 0;
+        let run = menu
+            .items
+            .iter()
+            .find(|item| item.action == Action::Run)
+            .expect("Terminal offers run");
+        assert_eq!(run.label, "copy the run command");
     }
 
     #[test]
@@ -414,7 +550,7 @@ mod tests {
         menu.move_menu(-1, true);
         assert_eq!(
             menu.open,
-            MENUS.len() - 1,
+            TITLES.len() - 1,
             "left from the first is the last"
         );
         menu.move_menu(1, true);
@@ -426,7 +562,11 @@ mod tests {
         // The point of the menu: you read it once and learn the shortcut. An entry with no key is
         // allowed — some commands have none — but save is not one of them.
         let menu = Menu::bar(true);
-        let save = menu.selection().expect("file menu has entries");
+        let save = menu
+            .items
+            .iter()
+            .find(|item| item.action == Action::Save)
+            .expect("file menu has save");
         assert!(
             save.keys.contains("<c-s>"),
             "save should advertise its key, got {:?}",
@@ -441,7 +581,7 @@ mod tests {
         // copies of the arithmetic, and it always gets blamed on something else.
         let menu = Menu::bar(true);
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
-        let geometry = menu.geometry(bounds, 1.0);
+        let geometry = menu.geometry(bounds, 1.0, &typography());
 
         for (index, row) in geometry.rows.iter().enumerate() {
             let middle = (row.x + row.width / 2.0, row.y + row.height / 2.0);
@@ -466,7 +606,7 @@ mod tests {
         // the geometry when the causes were hover, drag and the pad strip.
         let menu = Menu::context((640.0, 380.0), false);
         let bounds = Rect::new(0.0, 0.0, 1920.0, 1200.0);
-        let geometry = menu.geometry(bounds, 1.5);
+        let geometry = menu.geometry(bounds, 1.5, &typography());
 
         for (index, row) in geometry.rows.iter().enumerate() {
             let middle = (row.x + row.width / 2.0, row.y + row.height / 2.0);
@@ -482,7 +622,7 @@ mod tests {
         // first thing anyone tries. The geometry is right; the caller has to know about this strip.
         let menu = Menu::context((100.0, 200.0), false);
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
-        let geometry = menu.geometry(bounds, 1.0);
+        let geometry = menu.geometry(bounds, 1.0, &typography());
 
         let corner = (geometry.card.x + 2.0, geometry.card.y + 2.0);
         assert_eq!(menu.row_at(&geometry, corner.0, corner.1), None);
@@ -496,13 +636,73 @@ mod tests {
     fn clicking_a_title_is_how_the_bar_is_walked_with_a_mouse() {
         let menu = Menu::bar(true);
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
-        let geometry = menu.geometry(bounds, 1.0);
+        let geometry = menu.geometry(bounds, 1.0, &typography());
         let second = geometry.titles[1];
 
         assert_eq!(
             menu.title_at(&geometry, second.x + 2.0, second.y + 2.0),
             Some(1)
         );
+    }
+
+    #[test]
+    fn the_bar_reads_its_titles_from_the_title_bar_and_hangs_the_card_under_the_open_one() {
+        // The titles are drawn by the title bar, always; the menu only opens under one. Two copies
+        // of where a title is would be a dropdown hanging under the wrong word.
+        let bounds = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        let title = Rect::new(0.0, 0.0, 1600.0, crate::layout::size::TITLE);
+        let bar = crate::layout::title_bar(title, 1.0, &typography());
+        for (index, name) in TITLES.iter().enumerate() {
+            let menu = Menu::bar_at(index, false);
+            let geometry = menu.geometry(bounds, 1.0, &typography());
+            assert_eq!(geometry.titles, bar.menus);
+            let open = geometry.titles[index];
+            assert_eq!(geometry.card.x, open.x, "{name} hangs under its title");
+            assert!(geometry.card.y >= open.bottom());
+        }
+    }
+
+    #[test]
+    fn a_menu_past_the_overflow_hangs_under_it_and_its_title_opens_the_rest() {
+        // At a narrow width the trailing menus are behind "…". Clicking it opens the first of them,
+        // and the card has to hang under it rather than under a title that is not drawn.
+        let bounds = Rect::new(0.0, 0.0, 360.0, 640.0);
+        let menu = Menu::bar(false);
+        let geometry = menu.geometry(bounds, 1.0, &typography());
+        let overflow = geometry.overflow.expect("360px cannot hold eight titles");
+        let first_hidden = geometry.titles.len();
+        assert_eq!(
+            menu.title_at(&geometry, overflow.x + 2.0, overflow.y + 2.0),
+            Some(first_hidden)
+        );
+
+        let hidden = Menu::bar_at(TITLES.len() - 1, false);
+        let geometry = hidden.geometry(bounds, 1.0, &typography());
+        assert_eq!(hidden.open_title(&geometry), geometry.overflow);
+        assert!(geometry.card.right() <= bounds.right(), "on the window");
+        assert!(
+            hidden.is_open_title(&geometry, first_hidden),
+            "the overflow is the open title while any menu behind it is open"
+        );
+    }
+
+    #[test]
+    fn moving_over_another_title_while_one_is_open_opens_that_one() {
+        // VSCode's bar: once a menu is open, sweeping along the titles opens each in turn. Moving
+        // over the open one changes nothing, so the highlighted row is not reset under the pointer.
+        let bounds = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        let mut menu = Menu::bar(false);
+        menu.selected = 2;
+        let geometry = menu.geometry(bounds, 1.0, &typography());
+        let file = geometry.titles[0];
+        assert!(!menu.hover_title(&geometry, file.x + 2.0, file.y + 2.0, false));
+        assert_eq!(menu.selected, 2);
+
+        let edit = geometry.titles[1];
+        assert!(menu.hover_title(&geometry, edit.x + 2.0, edit.y + 2.0, false));
+        assert_eq!(menu.open, 1);
+        assert_eq!(menu.selected, 0);
+        assert!(menu.items.iter().any(|item| item.action == Action::Undo));
     }
 
     #[test]
@@ -535,7 +735,7 @@ mod tests {
         // would be unusable exactly where people click most.
         let menu = Menu::context((1275.0, 815.0), false);
         let bounds = Rect::new(0.0, 0.0, 1280.0, 820.0);
-        let geometry = menu.geometry(bounds, 1.0);
+        let geometry = menu.geometry(bounds, 1.0, &typography());
 
         assert!(
             geometry.card.right() <= bounds.right(),

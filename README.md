@@ -81,9 +81,11 @@ anything over from VSCode — writes the answers to your config, and never appea
 
 ## You do not have to learn it first
 
-There are buttons along the top, a right-click menu with the clipboard and language-server verbs, a
-menu bar on <kbd>F10</kbd>, and a settings panel you change by clicking. Every one of them prints the
-shortcut for what it does, so the mouse teaches the keyboard and then gets out of the way.
+The title bar carries a menu bar — File, Edit, Selection, View, Go, Run, Terminal, Help — that is
+always there to click, and <kbd>F10</kbd> opens it from the keyboard. There are buttons along the
+top, a right-click menu with the clipboard and language-server verbs, and a settings panel you
+change by clicking. Every one of them prints the shortcut for what it does, so the mouse teaches the
+keyboard and then gets out of the way.
 
 |  |  |
 |---|---|

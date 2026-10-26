@@ -152,8 +152,11 @@ Click a row to change it.
 
 ![The command palette](images/commands.png)
 
-There is also a toolbar along the top, a right-click menu, and a menu bar on <kbd>F10</kbd>. Every
-one of them prints the shortcut for what it does, so using the mouse teaches you the keyboard.
+The title bar holds a menu bar — File, Edit, Selection, View, Go, Run, Terminal, Help — that you
+can click at any time or open with <kbd>F10</kbd>; once one menu is open, moving along the bar opens
+the others. A link to the line you are on is File ▸ Copy link to line. There is also a toolbar under
+it and a right-click menu. Every one of them prints the shortcut for what it does, so using the
+mouse teaches you the keyboard.
 
 ## Where to go next
 
