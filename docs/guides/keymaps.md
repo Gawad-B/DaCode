@@ -130,6 +130,17 @@ A few commands have no key at all in either keymap — toggling the theme and ch
 among them, and installing a language server. They are in the command palette, which is why the
 palette exists.
 
+### Scrolling and zooming
+
+A touchpad scrolls the code by the pixel, following the fingers; a wheel glides three lines a notch
+and always comes to rest on a whole line. With soft wrap off, a sideways swipe — or
+<kbd>shift</kbd> with a wheel — scrolls across.
+
+<kbd>ctrl</kbd> with the wheel or a two-finger scroll changes the font size a step at a time, and so
+does pinching where the window system reports a pinch: macOS today. winit, which DaCode's window is
+built on, does not deliver the gesture on Wayland or X11, so on Linux <kbd>ctrl</kbd>-scroll is the
+way to zoom.
+
 ## Rebinding
 
 `dacode.map(mode, keys, action)` in `init.lua`:

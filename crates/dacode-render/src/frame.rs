@@ -215,6 +215,11 @@ pub struct TextRun {
     /// wrap itself in display coordinates.
     pub wrap: bool,
     pub layer: Layer,
+    /// A tighter clip than `rect`, when the run must be laid out in one box and shown only inside
+    /// another — a row of code part-scrolled above the top of the code area keeps its position and
+    /// loses the part over the tab bar. Set by [`Frame::text`] from [`Frame::set_clip`]; `None`
+    /// clips to `rect` alone.
+    pub clip: Option<Rect>,
 }
 
 /// A complete description of one frame. Cleared and rebuilt each time.
@@ -226,6 +231,8 @@ pub struct Frame {
     pub shapes: Vec<Shape>,
     /// The layer subsequent drawing lands on.
     layer: Layer,
+    /// Where subsequent rectangles and text may appear, until it is cleared. See [`Frame::set_clip`].
+    clip: Option<Rect>,
     /// How see-through the window's backgrounds are: 0 is opaque. Kept across [`Frame::clear`],
     /// because it belongs to the window rather than to any one frame.
     transparency: f32,
@@ -238,6 +245,18 @@ impl Frame {
         self.marks.clear();
         self.shapes.clear();
         self.layer = Layer::Base;
+        self.clip = None;
+    }
+
+    /// Confines subsequent rectangles and text to `clip`, until it is set again; `None` lifts it.
+    ///
+    /// For drawing that is positioned from something other than the box it must stay inside. Rows of
+    /// code are placed from the scroll position, and the top one is partly above the code area while
+    /// a touchpad has it part-scrolled: without a clip its line-number band and its glyphs would paint
+    /// over the tab bar. Rectangles are cut to the clip; a run keeps its layout box and is clipped at
+    /// draw time. Icons, shapes and marks are not affected — nothing positioned that way needs it.
+    pub fn set_clip(&mut self, clip: Option<Rect>) {
+        self.clip = clip;
     }
 
     /// Sets how see-through backgrounds drawn with [`Frame::fill_backdrop`] are.
@@ -329,6 +348,10 @@ impl Frame {
     }
 
     fn push_quad(&mut self, rect: Rect, color: [f32; 4], radius: f32, border: f32) {
+        let rect = match self.clip {
+            Some(clip) => rect.intersect(clip),
+            None => rect,
+        };
         if rect.is_visible() {
             self.quads.push(Quad {
                 rect,
@@ -458,6 +481,14 @@ impl Frame {
 
     pub fn text(&mut self, mut run: TextRun) {
         run.layer = self.layer;
+        if let Some(clip) = self.clip {
+            let clip = run.clip.map_or(clip, |own| own.intersect(clip));
+            // Wholly outside: there is nothing to shape, and nothing to draw.
+            if !run.rect.intersect(clip).is_visible() {
+                return;
+            }
+            run.clip = Some(clip);
+        }
         // The label role is always uppercase. Applied here rather than at every call site, so
         // a caller cannot accidentally ship a lowercase label.
         if run.spec.uppercase {

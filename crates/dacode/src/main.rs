@@ -355,7 +355,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 20] = [
+const VALUE_FLAGS: [&str; 21] = [
     "--which-key",
     "--screenshot",
     "--mode",
@@ -376,6 +376,7 @@ const VALUE_FLAGS: [&str; 20] = [
     "--block",
     "--transparency",
     "--at-ms",
+    "--scroll-px",
 ];
 
 /// Every flag `dacode` accepts, grouped, as the one description of its command line.
@@ -387,7 +388,7 @@ const VALUE_FLAGS: [&str; 20] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 39] = [
+const FLAGS: [(&str, &str, &str); 40] = [
     // Opening.
     (
         "--no-session",
@@ -418,6 +419,11 @@ const FLAGS: [(&str, &str, &str); 39] = [
     ("--splash", "", "the cold-start screen"),
     ("--at", "LINE", "put the cursor on a line"),
     ("--at-column", "N", "and a column"),
+    (
+        "--scroll-px",
+        "N",
+        "scroll N more pixels, part-way into a row",
+    ),
     (
         "--at-ms",
         "N",
@@ -829,6 +835,24 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         let offset = text.point_to_char(dacode_text::Point::new(line, 0));
         state.document.set_primary_caret(offset);
         state.scroll = ScrollAnchor::at_line(line.saturating_sub(2));
+    }
+
+    // `--scroll-px N` scrolls on by N pixels the way a touchpad does, through the same function, so a
+    // part-scrolled top row — the one place drawing has to clip against the tab bar — can be looked
+    // at. Negative goes back up, which draws from the row above.
+    if let Some(px) = value("--scroll-px") {
+        let px = px
+            .parse::<f32>()
+            .with_context(|| format!("--scroll-px takes a number of pixels, got {px:?}"))?;
+        let row_height = state.typography.row_height();
+        state.scroll = dacode::scroll::by_pixels(
+            &state.display,
+            state.document.text(),
+            state.scroll,
+            &mut state.chrome.scroll_input,
+            px,
+            row_height,
+        );
     }
 
     // `--block LINE:COLUMN` draws a rectangular selection from the cursor to there, so the one
@@ -1254,6 +1278,47 @@ fn fit_wrap_columns(state: &mut EditorState, window_width: f32, scale: f32) {
     state.display.columns = grid.columns().max(20);
 }
 
+/// Scrolling and zooming that has not yet added up to a whole step, and the wheel's glide.
+#[derive(Debug, Default)]
+struct Gestures {
+    /// Sideways pixels short of a whole column. Never drawn: the view moves sideways by columns.
+    column_input: dacode::scroll::ScrollInput,
+    /// Pixels short of a row for a panel that owns the wheel — the palette, the tree, the results.
+    /// Apart from the code's, which would otherwise carry a panel's leftovers into the file.
+    panel_input: dacode::scroll::ScrollInput,
+    /// ctrl-scroll pixels short of a font-size step. A touchpad sends dozens of deltas per gesture,
+    /// and a step per delta would take the type from smallest to largest in one flick.
+    zoom_input: dacode::scroll::ScrollInput,
+    /// Pinch magnification short of a font-size step, which is a tenth.
+    pinch: f64,
+    /// The wheel's glide on each axis.
+    glide: Glide,
+    /// The view the remainders were measured against. When the focused view is found to have moved
+    /// any other way — a key, a jump, a search, another pane or buffer, a new font size — they are
+    /// forgotten and any glide stops: scrolling that follows the cursor is never offset or animated.
+    view: Option<View>,
+}
+
+/// A wheel notch in flight. Each axis keeps the spring value it last turned into pixels, so each
+/// frame scrolls by the spring's movement since the one before; `None` when that axis is still.
+#[derive(Debug, Default, Clone, Copy)]
+struct Glide {
+    /// The pane whose `Scroll` and `ScrollX` keys are gliding.
+    pane: usize,
+    rows: Option<f32>,
+    columns: Option<f32>,
+}
+
+/// What the focused view was when the scroll remainders were last brought up to date.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct View {
+    pane: usize,
+    buffer: usize,
+    scroll: ScrollAnchor,
+    cursor: CharOffset,
+    row_height: f32,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -1404,6 +1469,9 @@ struct App {
     /// Whether the window is hidden behind another or minimised, as winit last said. Nothing is
     /// presented then, so asking for frames only makes the loop spin.
     occluded: bool,
+    /// The wheel's, the touchpad's and the pinch's state, except the focused pane's vertical
+    /// remainder, which drawing reads and so lives in `state.chrome.scroll_input`.
+    gestures: Gestures,
     /// Handed to every worker so a finished result wakes the sleeping event loop. `None` in tests,
     /// which have no loop and poll instead.
     waker: Option<dacode::wake::Waker>,
@@ -1580,6 +1648,11 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         // Redraws are paced to vsync by winit, so the loop turns once per frame only while something
         // moves; the control flow below stays `Wait`, and it is not a timer.
         let now = std::time::Instant::now();
+        self.settle_scroll_input();
+        if self.advance_glide(now) {
+            changed = true;
+            self.sync_syntax();
+        }
         changed |= self.wants_frame(now);
 
         if changed {
@@ -1592,6 +1665,9 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // Whatever the last event did to the view is accounted for before this one reads the scroll
+        // remainder — a click measured against a remainder a keystroke has made stale lands a row off.
+        self.settle_scroll_input();
         match event {
             WindowEvent::CloseRequested => {
                 // Closing the window with unsaved work used to exit immediately. Recovery would have
@@ -1673,6 +1749,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                 // Dragging extends the selection, which is how every editor spells "select this".
                 if self.dragging {
                     self.click(true);
+                    self.keep_offset_under_pointer();
                     self.request_redraw();
                 } else if was_over_toolbar || self.over_toolbar() {
                     // Redraw only when a toolbar button lights up or stops being lit. Repainting on
@@ -1693,6 +1770,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                         self.dragging = self.state.menu.is_none() && self.state.welcome.is_none();
                         self.click_count = self.count_click();
                         self.click(false);
+                        self.keep_offset_under_pointer();
                     }
                     (winit::event::MouseButton::Left, ElementState::Released) => {
                         self.dragging = false;
@@ -1709,50 +1787,14 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (x, y),
-                    MouseScrollDelta::PixelDelta(position) => {
-                        (position.x as f32 / 40.0, position.y as f32 / 40.0)
-                    }
-                };
+                self.mouse_wheel(delta);
+                self.request_redraw();
+            }
 
-                // ctrl-scroll resizes the text, as it does in every browser and every other editor.
-                // The wheel handler ignored modifiers entirely, so the one gesture people try first
-                // when the type is too small did nothing.
-                if self.modifiers.control_key() {
-                    if dy != 0.0 {
-                        let _ = self.run(if dy > 0.0 {
-                            Action::IncreaseFontSize
-                        } else {
-                            Action::DecreaseFontSize
-                        });
-                        self.request_redraw();
-                    }
-                    return;
-                }
-
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => -y as isize * 3,
-                    MouseScrollDelta::PixelDelta(position) => -(position.y / 40.0) as isize,
-                };
-                if lines != 0 && !self.wheel(lines) {
-                    self.scroll_by(lines);
-                    self.sync_syntax();
-                }
-
-                // Sideways. A trackpad and a tilt wheel send an x delta directly; shift plus a
-                // plain wheel is the conventional way to send one from a mouse that cannot. Reading
-                // only y, and ignoring the modifier, is why a horizontal gesture did nothing.
-                let sideways = if self.modifiers.shift_key() && dx == 0.0 {
-                    -dy
-                } else {
-                    -dx
-                };
-                if sideways != 0.0 && self.state.display.mode == WrapMode::None {
-                    let columns = (sideways * 6.0) as isize;
-                    self.scroll_sideways(columns);
-                }
-
+            // Pinch-to-zoom, where the platform reports it: macOS today. winit 0.30 does not deliver
+            // the gesture on Wayland or X11, and ctrl-scroll is the way to resize the text there.
+            WindowEvent::PinchGesture { delta, .. } => {
+                self.pinch(delta);
                 self.request_redraw();
             }
 
@@ -1908,6 +1950,7 @@ impl App {
             wakes: 0,
             was_animating: false,
             occluded: false,
+            gestures: Gestures::default(),
             waker,
             wake_pending: Arc::default(),
             index: FileIndex::new(root),
@@ -2038,6 +2081,9 @@ impl App {
     /// are computed from `selected` inside the same function the drawing reads, so there is no
     /// second copy of the walk here and no new state. Help is the one with a real offset, and it
     /// already had one going unused.
+    ///
+    /// Zero lines moves nothing and still answers, which is how a touchpad's delta too small to make
+    /// a row of the panel's is kept from scrolling the file behind it.
     fn wheel(&mut self, lines: isize) -> bool {
         // Modal surfaces own the wheel wherever the pointer is — the same rule the keyboard uses,
         // and for the same reason: scrolling the file under an open palette is not what the gesture
@@ -2093,12 +2139,305 @@ impl App {
         false
     }
 
-    fn scroll_by(&mut self, rows: isize) {
-        let text = self.state.document.text().clone();
-        // The walk lives in the display map, which is the only thing that knows what a fold hides.
-        // This function kept its own copy of it and did not, so the wheel stepped over closed
-        // blocks a line at a time and could not climb back up over one.
-        self.state.scroll = self.state.display.step(&text, self.state.scroll, rows);
+    /// Routes one wheel or touchpad event.
+    ///
+    /// A touchpad sends pixels, and they are followed one-to-one: whole rows move the scroll anchor
+    /// and the rest is drawn as a part-scrolled top row. They used to be divided by forty and
+    /// truncated per event, so a touchpad's stream of three-pixel deltas was a stream of zeros and
+    /// nothing scrolled at all. A wheel sends notches, which glide: each one moves the target three
+    /// rows on, and `advance_glide` turns the spring's travel into pixels a frame at a time.
+    fn mouse_wheel(&mut self, delta: MouseScrollDelta) {
+        self.settle_scroll_input();
+        let row_height = self.row_height_px();
+        let (dx, dy, pixels) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (x, y, false),
+            MouseScrollDelta::PixelDelta(position) => (position.x as f32, position.y as f32, true),
+        };
+
+        // ctrl-scroll resizes the text, as it does in every browser and every other editor.
+        // The wheel handler ignored modifiers entirely, so the one gesture people try first
+        // when the type is too small did nothing.
+        if self.modifiers.control_key() {
+            let steps = if pixels {
+                self.gestures.zoom_input.add_pixels(dy, row_height)
+            } else if dy != 0.0 {
+                dy.signum() as isize
+            } else {
+                0
+            };
+            self.zoom(steps);
+            return;
+        }
+
+        // Sideways. A trackpad and a tilt wheel send an x delta directly; shift plus a plain wheel
+        // is the conventional way to send one from a mouse that cannot. Reading only y, and ignoring
+        // the modifier, is why a horizontal gesture did nothing — and a shifted wheel then scrolled
+        // down as well as across, which is not what anybody holding shift meant.
+        let (sideways, down) = if self.modifiers.shift_key() && dx == 0.0 {
+            (-dy, 0.0)
+        } else {
+            (-dx, -dy)
+        };
+
+        if down != 0.0 {
+            if pixels {
+                // A panel under the pointer takes whole rows of its own; the code takes the pixels.
+                let rows = self.gestures.panel_input.add_pixels(down, row_height);
+                if !self.wheel(rows) {
+                    self.gestures.panel_input.clear();
+                    // The fingers are on the glass: whatever a wheel notch started is overtaken.
+                    self.cancel_glide();
+                    self.scroll_pixels(down);
+                    self.sync_syntax();
+                }
+            } else {
+                let lines = (down * 3.0).round() as isize;
+                if lines != 0 && !self.wheel(lines) {
+                    self.glide_rows(lines);
+                }
+            }
+        }
+
+        if sideways != 0.0 && self.state.display.mode == WrapMode::None {
+            if pixels {
+                self.cancel_glide();
+                self.scroll_columns_px(sideways);
+            } else {
+                self.glide_columns((sideways * 6.0).round() as isize);
+            }
+        }
+    }
+
+    /// Pinch-to-zoom: a step of the font size per tenth of magnification, the remainder kept.
+    fn pinch(&mut self, delta: f64) {
+        if !delta.is_finite() {
+            return;
+        }
+        self.gestures.pinch += delta;
+        let steps = (self.gestures.pinch / 0.1).trunc();
+        self.gestures.pinch -= steps * 0.1;
+        self.zoom(steps as isize);
+    }
+
+    /// Runs `steps` font-size changes, larger for positive. A handful at most per event: the size is
+    /// clamped anyway, and a runaway delta must not turn into a loop.
+    fn zoom(&mut self, steps: isize) {
+        let action = if steps > 0 {
+            Action::IncreaseFontSize
+        } else {
+            Action::DecreaseFontSize
+        };
+        for _ in 0..steps.unsigned_abs().min(8) {
+            let _ = self.run(action.clone());
+        }
+    }
+
+    /// The height of a row of code in physical pixels, the unit a touchpad's deltas arrive in.
+    fn row_height_px(&self) -> f32 {
+        self.state.typography.row_height() * self.scale()
+    }
+
+    /// What the focused view is now, for telling whether something other than scrolling moved it.
+    fn view(&self) -> View {
+        View {
+            pane: self.panes.active(),
+            buffer: self.state.active_buffer,
+            scroll: self.state.scroll,
+            cursor: self.state.cursor(),
+            row_height: self.row_height_px(),
+        }
+    }
+
+    /// Moves the focused view by `px` pixels, down for positive, keeping the part of a row left over.
+    ///
+    /// Through the display map's own walk, which is the only thing that knows what a fold hides.
+    fn scroll_pixels(&mut self, px: f32) {
+        let row_height = self.row_height_px();
+        self.state.scroll = dacode::scroll::by_pixels(
+            &self.state.display,
+            self.state.document.text(),
+            self.state.scroll,
+            &mut self.state.chrome.scroll_input,
+            px,
+            row_height,
+        );
+        self.gestures.view = Some(self.view());
+    }
+
+    /// Moves the view sideways by `px` pixels, in whole columns, keeping the rest.
+    fn scroll_columns_px(&mut self, px: f32) {
+        let advance = self.focused_grid().advance();
+        let columns = self.gestures.column_input.add_pixels(px, advance);
+        let before = self.state.scroll.column;
+        if columns != 0 {
+            self.scroll_sideways(columns);
+        }
+        // Against an edge the columns were not all taken, and what is left over would only have to be
+        // scrolled back through before the view moved the other way.
+        let moved = self.state.scroll.column as isize - before as isize;
+        let remainder = self.gestures.column_input.remainder();
+        if moved != columns || (remainder < 0.0 && self.state.scroll.column == 0) {
+            self.gestures.column_input.clear();
+        }
+        self.gestures.view = Some(self.view());
+    }
+
+    /// Sends the focused pane's wheel glide `rows` further.
+    ///
+    /// A glide that starts from a part-scrolled row makes up the difference in its target, so it ends
+    /// on a whole row: after a wheel notch the view is never left a fraction of a line off.
+    fn glide_rows(&mut self, rows: isize) {
+        let row_height = self.row_height_px();
+        let key = self.glide_key(false);
+        let target = match self.gestures.glide.rows {
+            Some(_) => {
+                self.state.chrome.motion.target(key).unwrap_or(0.0) + rows as f32 * row_height
+            }
+            None => {
+                self.state.chrome.motion.snap(key, 0.0);
+                self.gestures.glide.rows = Some(0.0);
+                rows as f32 * row_height - self.state.chrome.scroll_input.remainder()
+            }
+        };
+        let now = self.state.now();
+        self.state
+            .chrome
+            .motion
+            .to(key, target, dacode::motion::Spring::SCROLL, now);
+    }
+
+    /// Sends the focused pane's sideways glide `columns` further, landing on a whole column.
+    fn glide_columns(&mut self, columns: isize) {
+        let advance = self.focused_grid().advance();
+        let key = self.glide_key(true);
+        let target = match self.gestures.glide.columns {
+            Some(_) => {
+                self.state.chrome.motion.target(key).unwrap_or(0.0) + columns as f32 * advance
+            }
+            None => {
+                self.state.chrome.motion.snap(key, 0.0);
+                self.gestures.glide.columns = Some(0.0);
+                columns as f32 * advance - self.gestures.column_input.remainder()
+            }
+        };
+        let now = self.state.now();
+        self.state
+            .chrome
+            .motion
+            .to(key, target, dacode::motion::Spring::SCROLL, now);
+    }
+
+    /// The motion key the focused pane glides on. A glide left running in another pane is stopped
+    /// first: its travel belongs to a view that is no longer the one being scrolled.
+    fn glide_key(&mut self, sideways: bool) -> dacode::motion::Key {
+        let pane = self.panes.active();
+        if self.gestures.glide.pane != pane {
+            self.cancel_glide();
+            self.gestures.glide.pane = pane;
+        }
+        if sideways {
+            dacode::motion::Key::ScrollX(pane)
+        } else {
+            dacode::motion::Key::Scroll(pane)
+        }
+    }
+
+    /// Stops a glide where it has got to. The keys go back to zero, so a value accumulated over a
+    /// session never grows large enough for an `f32` to lose the pixel.
+    fn cancel_glide(&mut self) {
+        let pane = self.gestures.glide.pane;
+        let motion = &mut self.state.chrome.motion;
+        if self.gestures.glide.rows.take().is_some() {
+            motion.snap(dacode::motion::Key::Scroll(pane), 0.0);
+        }
+        if self.gestures.glide.columns.take().is_some() {
+            motion.snap(dacode::motion::Key::ScrollX(pane), 0.0);
+        }
+    }
+
+    /// Turns the glide's travel since the last call into scrolling. Returns whether the view moved.
+    ///
+    /// Called once per turn of the loop, which while a glide runs is once per frame. When the spring
+    /// arrives the view is settled on the whole row the glide was aimed at.
+    fn advance_glide(&mut self, now: std::time::Instant) -> bool {
+        let pane = self.gestures.glide.pane;
+        let mut moved = false;
+
+        if let Some(last) = self.gestures.glide.rows {
+            let key = dacode::motion::Key::Scroll(pane);
+            let value = self.state.chrome.motion.get(key, now);
+            if value != last {
+                self.scroll_pixels(value - last);
+                moved = true;
+            }
+            if self.state.chrome.motion.target(key) == Some(value) {
+                let row_height = self.row_height_px();
+                self.state.scroll = dacode::scroll::land_on_row(
+                    &self.state.display,
+                    self.state.document.text(),
+                    self.state.scroll,
+                    &mut self.state.chrome.scroll_input,
+                    row_height,
+                );
+                self.state.chrome.motion.snap(key, 0.0);
+                self.gestures.glide.rows = None;
+                self.gestures.view = Some(self.view());
+                moved = true;
+            } else {
+                self.gestures.glide.rows = Some(value);
+            }
+        }
+
+        if let Some(last) = self.gestures.glide.columns {
+            let key = dacode::motion::Key::ScrollX(pane);
+            let value = self.state.chrome.motion.get(key, now);
+            if value != last {
+                self.scroll_columns_px(value - last);
+                moved = true;
+            }
+            if self.state.chrome.motion.target(key) == Some(value) {
+                self.gestures.column_input.clear();
+                self.state.chrome.motion.snap(key, 0.0);
+                self.gestures.glide.columns = None;
+            } else {
+                self.gestures.glide.columns = Some(value);
+            }
+        }
+        moved
+    }
+
+    /// Forgets the scroll remainders and stops any glide if the focused view was moved by anything
+    /// but scrolling since they were last brought up to date.
+    ///
+    /// A remainder is a distance from a particular top row. After the cursor moved, the view jumped
+    /// to a search hit, another pane took focus or the font changed size, it is a distance from
+    /// something that is no longer there — and scrolling that follows the cursor is never offset or
+    /// animated. Asked before every use of the remainders, and once per turn of the loop.
+    fn settle_scroll_input(&mut self) {
+        let view = self.view();
+        if self.gestures.view == Some(view) {
+            return;
+        }
+        self.cancel_glide();
+        self.state.chrome.scroll_input.clear();
+        self.gestures.column_input.clear();
+        self.gestures.view = Some(view);
+    }
+
+    /// A click or a drag moves the cursor to the text under the pointer, which must not then slide
+    /// away from it by the part-scrolled row. Only the cursor is excused: a click that switched the
+    /// buffer or scrolled still settles as anything else would.
+    fn keep_offset_under_pointer(&mut self) {
+        let view = self.view();
+        if let Some(seen) = &mut self.gestures.view {
+            let only_the_cursor = View {
+                cursor: view.cursor,
+                ..*seen
+            };
+            if only_the_cursor == view {
+                seen.cursor = view.cursor;
+            }
+        }
     }
 
     /// Translates a platform key event into the editor's own key type. Keeping `winit` out of
@@ -6741,10 +7080,8 @@ impl App {
         // copy, and the two already disagreed about the left pad — drawing used 12, this used 8 —
         // so a click landed most of a character out before any of the horizontal work existed.
         let grid = self.code_grid(code, scale);
-        let height = self
-            .state
-            .visible_rows(grid.code.height, grid.row_height())
-            .max(1);
+        // The rows drawn, including the one sliding in at the bottom while the top one is part-scrolled.
+        let height = grid.rows_drawn();
         self.state.display.offset_at_display_point(
             self.state.document.text(),
             self.state.scroll,
@@ -6787,6 +7124,8 @@ impl App {
             },
             scale,
         )
+        // The same reading `draw_code` takes, so a click on a part-scrolled row hits that row.
+        .with_sub_row(self.state.sub_row_px(row_height))
     }
 
     /// The focused pane's grid, for the wheel and the horizontal reveal.
@@ -7551,6 +7890,8 @@ impl App {
     }
 
     fn draw_frame(&mut self) {
+        // A redraw can be delivered before the idle step that would have done this.
+        self.settle_scroll_input();
         // Also here, so the index and any server replies land without waiting for a keystroke.
         self.poll_walk();
         self.sync_lsp();
@@ -9322,5 +9663,139 @@ mod session_tests {
             app.opened_document, None,
             "the server still believes a file is open that the editor has moved off"
         );
+    }
+}
+
+/// The wheel, the touchpad and the pinch, driven through the handlers `window_event` and
+/// `about_to_wait` call, on an editor with no window.
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use winit::dpi::PhysicalPosition;
+
+    fn editor(label: &str) -> App {
+        let dir =
+            std::env::temp_dir().join(format!("dacode-scroll-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        let contents: String = (0..400).map(|i| format!("let line_{i} = {i};\n")).collect();
+        let path = dir.join("long.rs");
+        std::fs::write(&path, &contents).unwrap();
+        let (state, _) = new_state(
+            Text::from_str(&contents),
+            vec!["long.rs".to_string()],
+            Some(path.to_string_lossy().to_string()),
+            Mode::Insert,
+            None,
+            dir.clone(),
+        );
+        App::new(
+            dir,
+            state,
+            Grammar::new(),
+            &dacode::config::Settings::default(),
+            None,
+        )
+    }
+
+    /// A touchpad's delta: `down` pixels of the content moving up.
+    fn swipe(app: &mut App, down: f32) {
+        app.settle_scroll_input();
+        app.mouse_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+            0.0,
+            -f64::from(down),
+        )));
+    }
+
+    #[test]
+    fn a_touchpad_stream_of_small_deltas_scrolls_the_file() {
+        // The report: "I can't scroll with the touchpad". Every 3-pixel delta was divided by forty
+        // and truncated, so the file did not move at all however far the fingers went.
+        let mut app = editor("stream");
+        let row = app.row_height_px();
+        for _ in 0..40 {
+            swipe(&mut app, 3.0);
+        }
+        let whole = (120.0 / row).floor();
+        assert_eq!(app.state.scroll.line, whole as usize);
+        assert!(
+            (app.state.sub_row_px(row) - (120.0 - whole * row)).abs() < 1e-3,
+            "the part of a row left over is drawn, not dropped"
+        );
+    }
+
+    #[test]
+    fn a_wheel_notch_glides_and_lands_on_a_whole_row() {
+        let mut app = editor("glide");
+        let row = app.row_height_px();
+        // Part-scrolled first, which is where a glide could most easily end a fraction of a row off.
+        swipe(&mut app, row * 0.4);
+        let start = Instant::now();
+        app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        assert_eq!(
+            app.state.scroll.line, 0,
+            "a notch glides rather than jumping"
+        );
+
+        app.advance_glide(start + Duration::from_millis(40));
+        let travelled = app.state.scroll.line as f32 * row + app.state.sub_row_px(row);
+        assert!(
+            travelled > row * 0.4 && travelled < row * 3.0,
+            "part-way, {travelled} px down"
+        );
+
+        app.advance_glide(start + Duration::from_secs(2));
+        assert_eq!(app.state.scroll.line, 3, "three rows a notch");
+        assert_eq!(app.state.sub_row_px(row), 0.0, "and on a whole row");
+        assert!(!app.state.chrome.motion.busy(start + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_touchpad_overtakes_a_glide_in_flight() {
+        let mut app = editor("overtake");
+        let start = Instant::now();
+        app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        app.advance_glide(start + Duration::from_millis(30));
+        let line = app.state.scroll.line;
+
+        swipe(&mut app, 1.0);
+        app.advance_glide(start + Duration::from_secs(2));
+        assert!(
+            app.state.scroll.line <= line + 1,
+            "the rest of the notch's travel is abandoned, not played out under the fingers"
+        );
+    }
+
+    #[test]
+    fn moving_the_cursor_drops_the_part_scrolled_row() {
+        // Scrolling that follows the cursor is never offset: a caret on a row half under the tab bar
+        // is a caret nobody can see.
+        let mut app = editor("cursor");
+        let row = app.row_height_px();
+        swipe(&mut app, row * 2.5);
+        assert!(app.state.sub_row_px(row) > 0.0);
+
+        app.press(Key::named(KeyCode::Down));
+        app.settle_scroll_input();
+        assert_eq!(app.state.sub_row_px(row), 0.0);
+    }
+
+    #[test]
+    fn pinching_steps_the_font_size_a_tenth_at_a_time() {
+        let mut app = editor("pinch");
+        let size = app.state.typography.code_size;
+
+        app.pinch(0.06);
+        assert_eq!(
+            app.state.typography.code_size, size,
+            "under a tenth does nothing yet"
+        );
+        app.pinch(0.06);
+        let larger = app.state.typography.code_size;
+        assert!(larger > size, "the two together are a step");
+
+        app.pinch(-0.25);
+        assert!(app.state.typography.code_size < larger);
     }
 }

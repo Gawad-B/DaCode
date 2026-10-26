@@ -69,6 +69,7 @@ RENDERING WITHOUT A WINDOW
     --splash               the cold-start screen
     --at LINE              put the cursor on a line
     --at-column N          and a column
+    --scroll-px N          scroll N more pixels, part-way into a row
     --at-ms N              draw the moment N ms into whatever is animating
     --columns N            wrap width, in columns
     --no-wrap              soft wrap off
@@ -194,6 +195,7 @@ gets captured small too.
 | `--no-wrap` | — | Turn soft wrap off. |
 | `--at` | `LINE` | Park the cursor on a line, zero-based, clamped to the last line, with the view scrolled two rows above it. Sticky scroll only appears once a block head has actually scrolled off. |
 | `--at-column` | `N` | Scroll sideways to column N, turning wrap off. Without it the horizontal axis cannot be captured at all, and an axis whose defects cannot be seen is one whose defects ship. |
+| `--scroll-px` | `N` | Scroll on by N pixels after `--at` has placed the view, through the same function a touchpad's deltas go through. Part of a row is drawn as the top row slid partly out of view, which is the one place the code's rows have to be clipped against the tab bar or the pinned strip, so this is how that clipping is looked at. Negative goes back up. Not a whole number of pixels is fine; not a number at all is an error. |
 | `--at-ms` | `N` | Draw the frame N milliseconds into whatever is animating. Every animated value is a pure function of the instant it is read at, so the capture moves the clock rather than waiting for it: the result is the same on every machine. `0` is the first instant of a transition. Without it the capture is drawn ten seconds in, which is past where every spring settles, so a plain capture is always the finished screen and never a half-arrived one. Anything that is not a whole number of milliseconds is an error rather than being ignored. Nothing is animated by the views yet, so for the moment it moves a clock nothing reads. |
 | `--block` | `LINE:COLUMN` | Draw a rectangular selection from the cursor to there — the one gesture that has no key. A missing `:COLUMN` means column 0. |
 | `--diagnostic` | `LINE:COL:MESSAGE` | Inject one error diagnostic, twelve columns wide, at that zero-based position. The cursor is parked three lines below so the underline renders unobstructed. Needs all three parts. |
@@ -227,7 +229,7 @@ order.
 | 14 | `--split` | `N[h]` | N panes on one buffer, clamped to 1–4, defaulting to 2 if unparseable. A trailing `h` stacks them horizontally; anything else is vertical. Each pane looks at a different place in the file, because identical panes would hide a scroll bug. |
 
 Anything that only *modifies state* — `--palette`, `--search`, `--grep`, `--complete`,
-`--diagnostic`, `--at`, `--at-column`, `--block`, `--columns`, `--no-wrap` — needs the chain to fall
+`--diagnostic`, `--at`, `--at-column`, `--scroll-px`, `--block`, `--columns`, `--no-wrap` — needs the chain to fall
 all the way through to the plain editor to be visible. Combining `--palette` with `--splash` shows
 the splash and nothing else.
 

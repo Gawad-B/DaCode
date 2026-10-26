@@ -426,3 +426,43 @@ fn typing_a_closing_brace_costs_the_same_in_a_huge_file_as_in_a_small_one() {
     assert_flat("typing a closing brace", small, large);
     assert_under("typing a closing brace", large, Duration::from_micros(500));
 }
+
+/// A touchpad burst: two hundred three-pixel deltas, through the same function the wheel handler
+/// calls, from the same place in each document.
+///
+/// From a fresh anchor every time rather than carrying on from where the last burst stopped: carried
+/// on, the small document would reach its last line within a few iterations and every one after that
+/// would time the clamp at the bottom instead of the scrolling.
+fn touchpad_burst(lines: usize) -> Duration {
+    let state = state(lines);
+    let text = state.document.text().clone();
+    let row = state.typography.row_height();
+
+    median(400, || {
+        let mut input = dacode::scroll::ScrollInput::default();
+        let mut anchor = ScrollAnchor::at_line(20);
+        for _ in 0..200 {
+            anchor = dacode::scroll::by_pixels(&state.display, &text, anchor, &mut input, 3.0, row);
+        }
+        std::hint::black_box((anchor, input.remainder()));
+    })
+}
+
+#[test]
+fn a_touchpad_burst_costs_the_same_in_a_huge_file_as_in_a_small_one() {
+    // A touchpad sends a delta every few milliseconds for as long as the fingers move, and each one
+    // now does real work — whole rows, the remainder, the clamp at either end. Any of that reaching
+    // for the size of the document (counting its rows to clamp the bottom, say) would be paid dozens
+    // of times a second.
+    let small = touchpad_burst(SMALL);
+    let large = touchpad_burst(LARGE);
+
+    assert_flat("a burst of touchpad deltas", small, large);
+    // Two hundred deltas is a long swipe, measured at about 0.35 ms for all of them. Five is far past
+    // anything a slow machine explains, and far short of a document walk repeated two hundred times.
+    assert_under(
+        "a burst of touchpad deltas",
+        large,
+        Duration::from_millis(5),
+    );
+}

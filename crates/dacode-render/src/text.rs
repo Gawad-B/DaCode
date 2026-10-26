@@ -247,11 +247,14 @@ impl TextStack {
                 left: left.round(),
                 top: top.round(),
                 scale: 1.0,
-                bounds: TextBounds {
-                    left: run.rect.x.floor() as i32,
-                    top: run.rect.y.floor() as i32,
-                    right: run.rect.right().ceil() as i32,
-                    bottom: run.rect.bottom().ceil() as i32,
+                bounds: {
+                    let shown = run.clip.map_or(run.rect, |clip| run.rect.intersect(clip));
+                    TextBounds {
+                        left: shown.x.floor() as i32,
+                        top: shown.y.floor() as i32,
+                        right: shown.right().ceil() as i32,
+                        bottom: shown.bottom().ceil() as i32,
+                    }
                 },
                 default_color: Color::rgba(r, g, b, a),
                 custom_glyphs: &[],

@@ -65,6 +65,7 @@ fn labels_are_uppercased_centrally() {
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
 
     assert_eq!(frame.texts[0].text, "NORMAL MODE");
@@ -82,6 +83,7 @@ fn code_runs_are_not_uppercased() {
         center_vertically: false,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
 
     assert_eq!(frame.texts[0].text, "let mut offset = CharOffset(0);");
@@ -99,6 +101,7 @@ fn empty_text_is_dropped() {
         center_vertically: false,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
     assert!(frame.texts.is_empty());
 }
@@ -235,6 +238,37 @@ fn a_panel_layer_carries_everything_drawn_after_it() {
     assert_eq!(Layer::default(), Layer::Base);
 }
 
+#[test]
+fn a_clip_cuts_rectangles_and_keeps_text_where_it_was_laid_out() {
+    // A row of code part-scrolled above the top of the code area is placed from the scroll position,
+    // not from the box it must stay in. Its band has to be cut at the edge, and its glyphs must keep
+    // their place and lose only the part outside — moving the run's box down instead would move the
+    // text with it, and the row would no longer line up with its line number.
+    let mut frame = Frame::default();
+    let code = Rect::new(0.0, 100.0, 400.0, 300.0);
+    frame.set_clip(Some(code));
+
+    frame.fill(Rect::new(0.0, 87.0, 400.0, 26.0), Theme::dark().ink);
+    assert_eq!(frame.quads[0].rect, Rect::new(0.0, 100.0, 400.0, 13.0));
+
+    let row = Rect::new(0.0, 87.0, 400.0, 26.0);
+    frame.text(run("fn main()", row));
+    assert_eq!(frame.texts[0].rect, row, "laid out where the row is");
+    assert_eq!(
+        frame.texts[0].clip,
+        Some(code),
+        "shown only inside the code area"
+    );
+
+    // A row wholly above the code area is not drawn at all.
+    frame.text(run("gone", Rect::new(0.0, 50.0, 400.0, 26.0)));
+    assert_eq!(frame.texts.len(), 1);
+
+    frame.set_clip(None);
+    frame.fill(Rect::new(0.0, 0.0, 10.0, 10.0), Theme::dark().ink);
+    assert_eq!(frame.quads[1].rect, Rect::new(0.0, 0.0, 10.0, 10.0));
+}
+
 fn run(text: &str, rect: Rect) -> TextRun {
     TextRun {
         text: text.to_string(),
@@ -245,6 +279,7 @@ fn run(text: &str, rect: Rect) -> TextRun {
         center_vertically: false,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     }
 }
 

@@ -170,6 +170,10 @@ pub struct Chrome {
     /// frame drawn minutes ago. A capture sets it to a chosen moment (`--at-ms`) and never clears it,
     /// which is how a transition is photographed part-way. `None` means "now".
     pub now: Option<std::time::Instant>,
+    /// The focused pane's scrolling that has not yet made a whole row: a touchpad's pixels, and a wheel
+    /// glide's as it travels. Drawn as how far the top row has moved up out of view. Here rather than
+    /// on the event loop because drawing reads it, and a capture (`--scroll-px`) has no event loop.
+    pub scroll_input: crate::scroll::ScrollInput,
 }
 
 impl Chrome {
@@ -381,6 +385,21 @@ impl EditorState {
             && !self.document.is_dirty()
     }
 
+    /// How far the focused pane's top row has scrolled up out of view, in pixels.
+    ///
+    /// The one reading of [`Chrome::scroll_input`] that drawing and the mouse share, through
+    /// [`crate::layout::CodeGrid::with_sub_row`]. Clamped to a row: the remainder is kept inside one by
+    /// `scroll::by_pixels`, and a font-size change between that and this frame must not turn a few
+    /// pixels of an old row height into a whole row of gap.
+    pub fn sub_row_px(&self, row_height: f32) -> f32 {
+        let px = self.chrome.scroll_input.remainder();
+        if px.is_finite() && px > 0.0 {
+            px.min(row_height)
+        } else {
+            0.0
+        }
+    }
+
     /// How many display rows fit in a viewport of this pixel height.
     pub fn visible_rows(&self, height_px: f32, row_height: f32) -> usize {
         ((height_px / row_height).floor() as usize).max(1)
@@ -467,6 +486,7 @@ pub fn draw_welcome(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
 
     y += mark + px(48.0);
@@ -483,6 +503,7 @@ pub fn draw_welcome(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
     frame.text(welcome_label(
         typography,
@@ -594,6 +615,7 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             center_vertically: true,
             wrap: false,
             layer: Layer::default(),
+            clip: None,
         });
 
         let mut body = typography.spec(Role::Value);
@@ -612,6 +634,7 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             center_vertically: false,
             wrap: true,
             layer: Layer::default(),
+            clip: None,
         });
     }
 }
@@ -676,6 +699,7 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
                 center_vertically: true,
                 wrap: false,
                 layer: Layer::default(),
+                clip: None,
             });
         }
 
@@ -773,6 +797,7 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
             center_vertically: true,
             wrap: false,
             layer: Layer::default(),
+            clip: None,
         });
     }
 
@@ -806,6 +831,7 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
 }
 
@@ -850,6 +876,7 @@ fn welcome_label(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     }
 }
 
@@ -900,6 +927,7 @@ pub fn draw_splash(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
 }
 
@@ -1104,7 +1132,7 @@ fn draw_completion(
 
     let x = (code.x + space::SM * scale + point.column as f32 * advance)
         .min(code.right() - width - space::SM * scale);
-    let cursor_y = code.y + point.row as f32 * row_height;
+    let cursor_y = row_grid(state, code, row_height, scale).y_of(point.row);
     // Below the line normally, above it when there is no room — the same rule as the hover box.
     let below = cursor_y + row_height;
     let y = if below + height <= code.bottom() {
@@ -1250,6 +1278,19 @@ fn tail_of(item: &crate::completion::Item) -> String {
     }
 }
 
+/// The focused pane's rows, for a popup that sits against the cursor's line. Through the grid
+/// `draw_code` placed that line with, so a popup follows a part-scrolled row rather than sitting a
+/// fraction of a row away from it.
+fn row_grid(
+    state: &EditorState,
+    code: Rect,
+    row_height: f32,
+    scale: f32,
+) -> crate::layout::CodeGrid {
+    crate::layout::CodeGrid::new(code, column_advance(state, scale), row_height, 0, scale)
+        .with_sub_row(state.sub_row_px(row_height))
+}
+
 /// A hover reply, or the message of the diagnostic under the cursor.
 ///
 /// Hover wins when both apply: it was asked for explicitly, while the diagnostic message appears
@@ -1311,7 +1352,7 @@ fn draw_info(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32
     let cursor_y = state
         .display
         .display_point(state.document.text(), state.scroll, 512, state.cursor())
-        .map(|point| code.y + point.row as f32 * row_height)
+        .map(|point| row_grid(state, code, row_height, scale).y_of(point.row))
         .unwrap_or(code.y);
     let below = cursor_y + row_height;
     let y = if below + height <= code.bottom() {
@@ -1575,6 +1616,7 @@ fn draw_palette(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
 
     // Caret after the query. Its width is an estimate of the serif advance — the palette is not on
@@ -1895,6 +1937,7 @@ fn draw_help(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     });
     frame.text(label(
         state,
@@ -2083,6 +2126,7 @@ fn run(
         center_vertically: true,
         wrap: false,
         layer: Layer::default(),
+        clip: None,
     }
 }
 
@@ -2744,6 +2788,7 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
             // when it matters, and there is a second row of space here already.
             wrap: true,
             layer: Layer::default(),
+            clip: None,
         });
 
         y += line * 2.0;
@@ -3547,12 +3592,10 @@ fn draw_code(
         }
     }
 
-    let height = state.visible_rows(code.height, row_height);
-    let rows = state.display.rows_from(text, pane.scroll, height);
     let advance = column_advance(state, scale);
-    // One grid, read by every x below and by the mouse. The horizontal scroll offset enters the
-    // arithmetic here and nowhere else — a second copy is a click landing in a different column
-    // from the one under the pointer the instant the view moves sideways.
+    // One grid, read by every x and y below and by the mouse. The horizontal scroll offset and the
+    // touchpad's part of a row enter the arithmetic here and nowhere else — a second copy is a click
+    // landing in a different column or row from the one under the pointer the instant the view moves.
     let grid = crate::layout::CodeGrid::new(
         code,
         advance,
@@ -3565,7 +3608,26 @@ fn draw_code(
             0
         },
         scale,
-    );
+    )
+    // Only the focused pane scrolls by pixels; the others sit on whole rows where they were left.
+    .with_sub_row(if pane.focused {
+        state.sub_row_px(row_height)
+    } else {
+        0.0
+    });
+    let height = grid.rows_drawn();
+    let rows = state.display.rows_from(text, pane.scroll, height);
+
+    // Everything from here is placed from the scroll position, and while a touchpad has the top row
+    // part-scrolled that row starts above the code area: its band, its line number and its glyphs
+    // would paint over the pinned strip or the tab bar. Gutter and code together, so the number
+    // stays beside its line.
+    frame.set_clip(Some(Rect::new(
+        gutter.x,
+        code.y,
+        (code.right() - gutter.x).max(0.0),
+        code.height,
+    )));
     let text_left = grid.x_of(0);
     let em = state.typography.code_size * scale;
 
@@ -3636,7 +3698,7 @@ fn draw_code(
     };
 
     for (index, row) in rows.iter().enumerate() {
-        let y = code.y + index as f32 * row_height;
+        let y = grid.y_of(index);
         let on_cursor_line = row.line == cursor_line;
 
         if on_cursor_line && pane.focused {
@@ -3890,21 +3952,23 @@ fn draw_code(
 
     // The cursor is drawn only where typing would go. A second blinking cursor in an unfocused pane
     // is the single most confusing thing a split view can do.
-    if !pane.focused {
-        return;
-    }
-
+    //
     // The cursor comes from the display map, so it lands correctly on a wrapped row.
-    if let Some(point) = state
-        .display
-        .display_point(text, pane.scroll, height, cursor)
+    if let Some(point) = pane
+        .focused
+        .then(|| {
+            state
+                .display
+                .display_point(text, pane.scroll, height, cursor)
+        })
+        .flatten()
     {
         draw_cursor(
             frame,
             state,
             CursorGeometry {
                 x: text_left + point.column as f32 * advance,
-                y: code.y + point.row as f32 * row_height,
+                y: grid.y_of(point.row),
                 row_height,
                 em,
                 advance,
@@ -3912,6 +3976,7 @@ fn draw_code(
             },
         );
     }
+    frame.set_clip(None);
 }
 
 /// Where and how big the cursor is, in pixels.
@@ -4392,6 +4457,7 @@ fn draw_internals(
             center_vertically: false,
             wrap: true,
             layer: Layer::default(),
+            clip: None,
         });
         frame.fill(
             Rect::new(

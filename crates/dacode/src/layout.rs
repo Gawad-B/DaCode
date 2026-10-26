@@ -202,6 +202,10 @@ pub struct CodeGrid {
     row_height: f32,
     /// Leftmost visible column. Always 0 while soft wrap is on.
     offset: usize,
+    /// How far the top row has scrolled up out of view, in pixels: the part of a touchpad's motion
+    /// that has not yet made a whole row. The vertical counterpart of `offset`, and like it, it
+    /// enters pixel arithmetic here and nowhere else.
+    sub_row: f32,
 }
 
 impl CodeGrid {
@@ -212,6 +216,7 @@ impl CodeGrid {
             advance,
             row_height,
             offset,
+            sub_row: 0.0,
         }
     }
 
@@ -238,9 +243,45 @@ impl CodeGrid {
         (columns.max(0.0) as usize) + self.offset
     }
 
-    /// Which visible row a pixel is in, counted from the top of the code area.
+    /// Which visible row a pixel is in, counted from the top of the code area. A part-scrolled top
+    /// row is still row zero, so a click lands on the row under the pointer.
     pub fn row_at(&self, y: f32) -> usize {
-        ((y - self.code.y) / self.row_height).floor().max(0.0) as usize
+        ((y - self.code.y + self.sub_row) / self.row_height)
+            .floor()
+            .max(0.0) as usize
+    }
+
+    /// The same grid with its rows moved up by `px`: how far the top row has scrolled out of view.
+    ///
+    /// Clamped to `[0, row_height]`. A negative offset would pull the top row down and leave a gap
+    /// above it; [`crate::scroll::by_pixels`] never produces one, and this refuses one anyway.
+    pub fn with_sub_row(self, px: f32) -> Self {
+        let sub_row = if px.is_finite() {
+            px.clamp(0.0, self.row_height)
+        } else {
+            0.0
+        };
+        Self { sub_row, ..self }
+    }
+
+    /// How far the top row has scrolled up out of view, in pixels.
+    pub fn sub_row(&self) -> f32 {
+        self.sub_row
+    }
+
+    /// The top edge of a visible row, in pixels. The exact inverse of [`CodeGrid::row_at`].
+    ///
+    /// Row zero is above `code.y` when part-scrolled, so anything drawn from this must be clipped
+    /// to the code area — `draw_code` sets the frame's clip for exactly that.
+    pub fn y_of(&self, row: usize) -> f32 {
+        self.code.y + row as f32 * self.row_height - self.sub_row
+    }
+
+    /// How many rows to draw: the ones that fit whole, and one more while part-scrolled, which is the
+    /// row sliding in at the bottom as the top one slides out.
+    pub fn rows_drawn(&self) -> usize {
+        let whole = ((self.code.height / self.row_height).floor() as usize).max(1);
+        whole + usize::from(self.sub_row > 0.0)
     }
 
     /// How many whole columns fit across the code area.
@@ -792,6 +833,15 @@ mod tests {
                 "the leftmost visible column must not be drawn left of the code area"
             );
         }
+    }
+
+    #[test]
+    fn a_part_scrolled_row_is_still_the_row_under_the_pointer() {
+        let code = Rect::new(0.0, 100.0, 800.0, 400.0);
+        let grid = CodeGrid::new(code, 8.0, 26.0, 0, 1.0).with_sub_row(13.0);
+        assert_eq!(grid.row_at(code.y), 0, "the half-hidden top row");
+        assert_eq!(grid.row_at(code.y + 13.0 + 1.0), 1);
+        assert_eq!(grid.row_at(code.y + 13.0 + 26.0 + 1.0), 2);
     }
 
     #[test]
