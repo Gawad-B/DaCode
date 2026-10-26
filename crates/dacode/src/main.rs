@@ -139,7 +139,9 @@ fn main() -> Result<()> {
     eprintln!("dacode: project root {}", root.display());
     dacode::session::remember_project(&dacode::session::session_dir(), &root);
 
-    let event_loop = EventLoop::new().context("creating the event loop")?;
+    let event_loop = EventLoop::<dacode::wake::Wake>::with_user_event()
+        .build()
+        .context("creating the event loop")?;
     // Wait, not Poll: an editor redraws in response to input, not continuously. Polling would
     // spin the GPU and the fan for a screen that is not changing.
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -159,6 +161,12 @@ fn main() -> Result<()> {
     grammar.set_modal(starting_settings.modal);
 
     let mut app = App::new(root.clone(), state, grammar, &starting_settings);
+    // Workers call this from their own threads when they have an answer; the loop, asleep with
+    // nothing to do, wakes and collects it rather than waiting for the next keypress.
+    let proxy = event_loop.create_proxy();
+    app.waker = Some(std::sync::Arc::new(move || {
+        let _ = proxy.send_event(dacode::wake::Wake);
+    }));
     app.walk = Some(FileWalk::start(root.clone()));
     dacode::recovery::install_panic_hook(app.lifeline.clone());
 
@@ -1341,6 +1349,9 @@ struct App {
     last_edit: Option<std::time::Instant>,
     /// Counts event-loop wake-ups, for tracing only.
     wakes: u64,
+    /// Handed to every worker so a finished result wakes the sleeping event loop. `None` in tests,
+    /// which have no loop and poll instead.
+    waker: Option<dacode::wake::Waker>,
     /// Open panes, and which has focus. Always at least one — see `dacode::panes`.
     panes: Panes,
     /// Buffers other than the active one. The active document lives in `state`, and switching swaps
@@ -1363,7 +1374,14 @@ struct Buffer {
     highlights: Vec<dacode_syntax::HighlightSpan>,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<dacode::wake::Wake> for App {
+    /// A worker finished. Collect what it produced and redraw if that changed anything on screen.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: dacode::wake::Wake) {
+        if self.collect_syntax() {
+            self.request_redraw();
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -1461,7 +1479,7 @@ impl ApplicationHandler for App {
             .as_deref()
             .and_then(Language::from_path)
         {
-            match SyntaxWorker::spawn(language) {
+            match SyntaxWorker::spawn_with(language, self.waker.clone()) {
                 Ok(worker) => self.syntax = Some(worker),
                 // Highlighting is a nicety; the editor must still open the file without it.
                 Err(err) => eprintln!("dacode: syntax highlighting unavailable: {err}"),
@@ -1487,6 +1505,7 @@ impl ApplicationHandler for App {
             }
         }
         let mut changed = self.poll_walk();
+        changed |= self.collect_syntax();
         changed |= self.sync_lsp();
         changed |= self.poll_formatter();
         changed |= self.poll_installer();
@@ -1825,6 +1844,7 @@ impl App {
             click_count: 1,
             last_edit: None,
             wakes: 0,
+            waker: None,
             index: FileIndex::new(root),
             // The project walk is started by `run`, not here: a test wants an editor, not an
             // indexing thread over whatever directory it was handed.
@@ -3263,10 +3283,9 @@ impl App {
             // A live server always warrants a slow poll: replies arrive unprompted.
             return client.state() != dacode_lsp::State::Stopped;
         }
-        self.syntax
-            .as_ref()
-            .map(|worker| worker.latest().is_none())
-            .unwrap_or(false)
+        // With a waker the worker announces its own result, so the loop need not keep polling for
+        // it. Without one (headless tests) nobody would, so the answer is waited for here.
+        self.waker.is_none() && self.syntax.as_ref().is_some_and(|worker| worker.pending())
     }
 
     /// Keys the completion popup consumes. Returns true if the key was used.
@@ -3633,7 +3652,6 @@ impl App {
         }
 
         // Everything that needs `&self` is read before the worker is borrowed mutably.
-        let buffer = self.state.document.version();
         let range = self.visible_range();
         let range_moved = self.requested_range.as_ref() != Some(&range);
         let resync = self.state.document.take_needs_resync();
@@ -3681,25 +3699,39 @@ impl App {
                 resync: resync || never_parsed,
             });
         }
+        self.requested_range = Some(range);
+        self.collect_syntax();
+    }
+
+    /// Takes whatever the highlighter has finished and applies it if it still describes the buffer.
+    /// Returns whether anything on screen changed.
+    ///
+    /// Called after each request and from the idle step, so a parse that finishes while the editor
+    /// is asleep is applied when the waker rouses it. Comparing before replacing is what keeps an
+    /// idle poll from asking for a redraw on every wake-up.
+    fn collect_syntax(&mut self) -> bool {
+        let Some(worker) = self.syntax.as_mut() else {
+            return false;
+        };
         // Apply only what is fresh. A stale result is kept for the ledger to report, never
         // painted over text that has since moved.
         worker.poll();
         let version = worker.version().unwrap_or(Version(0));
-        let fresh = worker.fresh_for(buffer).map(|result| {
-            (
-                result.spans.clone(),
-                result.node_path.clone(),
-                result.has_error,
-            )
-        });
-
-        self.requested_range = Some(range);
+        let mut changed = version != self.state.syntax_version;
         self.state.syntax_version = version;
-        if let Some((spans, node_path, has_error)) = fresh {
-            self.state.highlights = spans;
-            self.state.node_path = node_path;
-            self.state.syntax_error = has_error;
+
+        let buffer = self.state.document.version();
+        if let Some(result) = worker.fresh_for(buffer)
+            && (result.spans != self.state.highlights
+                || result.node_path != self.state.node_path
+                || result.has_error != self.state.syntax_error)
+        {
+            self.state.highlights = result.spans.clone();
+            self.state.node_path = result.node_path.clone();
+            self.state.syntax_error = result.has_error;
+            changed = true;
         }
+        changed
     }
 
     /// Keys for the `/` and `:` prompt. Returns true if the editor should quit.
@@ -7270,7 +7302,7 @@ impl App {
             .as_deref()
             .and_then(Language::from_path)
         {
-            match SyntaxWorker::spawn(language) {
+            match SyntaxWorker::spawn_with(language, self.waker.clone()) {
                 Ok(worker) => self.syntax = Some(worker),
                 Err(err) => eprintln!("dacode: syntax unavailable: {err}"),
             }
@@ -7671,12 +7703,25 @@ mod wiring_tests {
             app.route_format();
             app.poll_formatter();
             app.sync_git();
+            // What `about_to_wait` does for syntax: a real editor is woken, a test has to look.
+            app.collect_syntax();
             if done(app) {
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         false
+    }
+
+    /// Colours arrive from the idle step alone — no key, no click. They used to wait for one.
+    #[test]
+    fn highlights_arrive_without_any_input() {
+        let dir = scratch("idle-colours");
+        let mut app = editor(&dir, "a.rs", "fn main() { let x = 1; }\n");
+        // `resumed` starts the worker in the real editor; a test has no window to resume.
+        app.syntax = Some(SyntaxWorker::spawn(Language::Rust).expect("the Rust grammar loads"));
+        app.sync_syntax();
+        assert!(settle(&mut app, |app| !app.state.highlights.is_empty()));
     }
 
     /// The span for a token, as a parse would hand it over.

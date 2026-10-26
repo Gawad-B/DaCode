@@ -297,6 +297,52 @@ fn the_worker_returns_a_version_tagged_result() {
     assert!(!result.node_path.is_empty());
 }
 
+/// What the editor's tests construct for one whole-document request.
+fn request_for(source: &str, version: u64) -> SyntaxRequest {
+    let text = Text::from_str(source);
+    SyntaxRequest {
+        range: CharOffset(0)..text.len_chars(),
+        text,
+        version: Version(version),
+        edits: Vec::new(),
+        resync: false,
+    }
+}
+
+#[test]
+fn a_finished_parse_wakes_whoever_is_waiting() {
+    // The editor sleeps until something wakes it. A parse that finishes silently is a parse whose
+    // colours wait for the next keypress — the bug this exists for.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let woken = std::sync::Arc::new(AtomicUsize::new(0));
+    let counter = woken.clone();
+    let mut worker = SyntaxWorker::spawn_with(
+        Language::Rust,
+        Some(std::sync::Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })),
+    )
+    .expect("the worker starts");
+    worker.request(request_for("fn main() {}\n", 1));
+    assert!(
+        worker.pending(),
+        "a request is outstanding until it is collected"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while woken.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        woken.load(Ordering::SeqCst) > 0,
+        "the waker was never called"
+    );
+    assert!(worker.poll().is_some());
+    assert!(
+        !worker.pending(),
+        "nothing is outstanding once the answer is collected"
+    );
+}
+
 #[test]
 fn a_stale_result_is_never_reported_as_fresh() {
     // The rule from §1.1: a result computed against an older version is discarded, not applied.

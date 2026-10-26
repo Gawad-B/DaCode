@@ -19,6 +19,7 @@
 use crate::highlight::{HighlightSpan, Highlighter, Language};
 use dacode_text::{CharOffset, Edit, Text, Version};
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread::JoinHandle;
 
@@ -56,7 +57,12 @@ pub struct SyntaxWorker {
     handle: Option<JoinHandle<()>>,
     /// The newest result received, whether or not it is still fresh.
     latest: Option<SyntaxResult>,
+    /// The newest version asked for, so [`SyntaxWorker::pending`] can say whether an answer is owed.
+    requested: Option<Version>,
 }
+
+/// Called from the worker thread each time a result is ready. Must be cheap and must not block.
+type Waker = Arc<dyn Fn() + Send + Sync>;
 
 enum Message {
     Work(Box<SyntaxRequest>),
@@ -72,8 +78,21 @@ fn build(highlighter: &Highlighter, request: &SyntaxRequest) -> SyntaxResult {
     }
 }
 
+fn wake(waker: &Option<Waker>) {
+    if let Some(wake) = waker {
+        wake();
+    }
+}
+
 impl SyntaxWorker {
     pub fn spawn(language: Language) -> Result<Self, String> {
+        Self::spawn_with(language, None)
+    }
+
+    /// Like [`spawn`](Self::spawn), but `waker` is called from the worker thread whenever a result
+    /// has been sent. An event loop that sleeps until input would otherwise not look at the channel
+    /// until the next keypress, and the colours would arrive a key late.
+    pub fn spawn_with(language: Language, waker: Option<Waker>) -> Result<Self, String> {
         // Construct the highlighter on this thread so a bad grammar or query is a startup error
         // with a message, not a silently dead worker.
         let mut highlighter = Highlighter::new(language)?;
@@ -146,6 +165,7 @@ impl SyntaxWorker {
                                 if result_tx.send(result).is_err() {
                                     return;
                                 }
+                                wake(&waker);
                             }
                         }
                     } else {
@@ -154,6 +174,7 @@ impl SyntaxWorker {
                         if result_tx.send(result).is_err() {
                             break;
                         }
+                        wake(&waker);
                     }
 
                     if stop {
@@ -168,11 +189,13 @@ impl SyntaxWorker {
             results: result_rx,
             handle: Some(handle),
             latest: None,
+            requested: None,
         })
     }
 
     /// Queues work. Never blocks, so this is safe to call from the UI thread on every edit.
-    pub fn request(&self, request: SyntaxRequest) {
+    pub fn request(&mut self, request: SyntaxRequest) {
+        self.requested = Some(request.version);
         // A dead worker degrades highlighting; it must not take the editor down with it.
         let _ = self.requests.send(Message::Work(Box::new(request)));
     }
@@ -183,6 +206,15 @@ impl SyntaxWorker {
             self.latest = Some(result);
         }
         self.latest.as_ref()
+    }
+
+    /// Whether an answer to the newest request has not been collected yet.
+    ///
+    /// Compares versions rather than counting messages, because the worker coalesces: forty queued
+    /// edits produce one result, for the last of them.
+    pub fn pending(&self) -> bool {
+        self.requested
+            .is_some_and(|wanted| self.latest.as_ref().map(|result| result.version) != Some(wanted))
     }
 
     /// The newest result, or `None` if it is stale for this buffer version.
