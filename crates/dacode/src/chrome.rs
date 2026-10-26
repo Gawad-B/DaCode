@@ -7,6 +7,7 @@
 //! The code area draws **display rows**, not buffer lines — with soft wrap one line can occupy
 //! several rows, and the gutter figure belongs only to the first of them.
 
+use crate::motion::Key;
 use crate::palette::{Palette, PaletteKind};
 use crate::prompt::Prompt;
 use crate::results::Results;
@@ -147,8 +148,22 @@ pub struct EditorState {
     pub chrome: Chrome,
 }
 
+/// Overlays that have closed and are still fading out.
+///
+/// The palette, a menu and the help panel drop their state the moment they close, and a fade-out
+/// needs something to fade. What closed is moved here by [`EditorState::close_palette`] and its
+/// siblings — a move, not a copy — drawn at the fading value, and forgotten once it reaches zero or
+/// the overlay opens again. **Nothing here takes input**: the mouse and the keys read the live
+/// fields, so a card on its way out cannot be clicked or typed into.
+#[derive(Debug, Default)]
+pub struct Leaving {
+    pub palette: Option<Box<Palette>>,
+    pub menu: Option<crate::menu::Menu>,
+    pub help: Option<crate::help::Help>,
+}
+
 /// State belonging to the window's chrome rather than to any document.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Chrome {
     /// The sidebar view chosen from the activity bar, for the views that keep no state of their own.
     /// The explorer, problems and settings are open when their own state is, as they always were.
@@ -174,6 +189,14 @@ pub struct Chrome {
     /// glide's as it travels. Drawn as how far the top row has moved up out of view. Here rather than
     /// on the event loop because drawing reads it, and a capture (`--scroll-px`) has no event loop.
     pub scroll_input: crate::scroll::ScrollInput,
+    /// What is fading out. See [`Leaving`].
+    pub leaving: Leaving,
+    /// Whether the activity bar's marker was showing at the last [`EditorState::sync_motion`], so
+    /// that a marker appearing is put in place rather than slid in from wherever it last was.
+    pub marker_shown: bool,
+    /// How many tabs there were at the last sync, so a new one can be grown in. `None` before the
+    /// first, which is a window opening and not a tab.
+    pub tabs_seen: Option<usize>,
 }
 
 impl Chrome {
@@ -198,7 +221,64 @@ impl Chrome {
         if !self.show_notifications {
             self.unread += 1;
         }
+        // A message is an event, not a state, so the bell is kicked here rather than synced. The
+        // frame's instant while one is drawn, the wall clock otherwise — the same rule as `now()`.
+        let now = self.now.unwrap_or_else(std::time::Instant::now);
+        self.motion.kick(
+            crate::motion::Key::Bell,
+            crate::motion::Spring::WOBBLE_KICK,
+            crate::motion::Spring::WOBBLE,
+            now,
+        );
     }
+}
+
+/// Where an overlay grows from as it arrives: the edge it hangs from, or its middle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    Top,
+    Bottom,
+    Centre,
+}
+
+/// The scale an overlay at `progress` is drawn at, about `anchor` on `rect`: 0.96 at nothing, 1 at
+/// arrival. A spring overshooting past 1 grows it a hair past full size, which is the "expressive"
+/// part; anything wilder is clamped.
+pub fn appear_zoom(rect: Rect, progress: f32, anchor: Anchor) -> dacode_render::Zoom {
+    let progress = if progress.is_finite() {
+        progress.clamp(0.0, 1.25)
+    } else {
+        1.0
+    };
+    let x = rect.x + rect.width / 2.0;
+    let y = match anchor {
+        Anchor::Top => rect.y,
+        Anchor::Bottom => rect.bottom(),
+        Anchor::Centre => rect.y + rect.height / 2.0,
+    };
+    dacode_render::Zoom::about([x, y], 0.96 + 0.04 * progress)
+}
+
+/// `rect` scaled about its `anchor` from 0.96 to 1 as `progress` goes from 0 to 1.
+///
+/// Callers fade every colour by `progress.clamp(0.0, 1.0)` as well, which [`overlay`] does through
+/// [`Frame::set_opacity`] for everything a card draws at once.
+pub fn appear(rect: Rect, progress: f32, anchor: Anchor) -> Rect {
+    appear_zoom(rect, progress, anchor).rect(rect)
+}
+
+/// Draws an overlay that fades in and out: everything `draw` adds is faded by `fade`, and nothing at
+/// all is drawn at zero. `draw` scales its own card with [`appear_zoom`] once it knows where the card
+/// is; both are lifted here, so an early return inside it cannot leave the rest of the frame faded.
+fn overlay(frame: &mut Frame, fade: f32, draw: impl FnOnce(&mut Frame)) {
+    let fade = fade.clamp(0.0, 1.0);
+    if fade <= 0.0 {
+        return;
+    }
+    frame.set_opacity(fade);
+    draw(frame);
+    frame.set_opacity(1.0);
+    frame.set_zoom(None);
 }
 
 impl EditorState {
@@ -273,6 +353,183 @@ impl EditorState {
         // Nothing is left to hold the keys, and a focus that outlived its view would swallow the
         // next view's first key before anyone had chosen it.
         self.focus = crate::focus::Focus::Editor;
+    }
+
+    /// How far open the sidebar is drawn at the frame's instant: 0 closed, 1 open, a little past 1
+    /// while it overshoots. Drawing and the mouse read this; soft wrap reads [`Self::sidebar_open`].
+    pub fn sidebar_fraction(&self) -> f32 {
+        self.sidebar_fraction_at(self.now())
+    }
+
+    pub fn sidebar_fraction_at(&self, now: std::time::Instant) -> f32 {
+        let open = if self.sidebar_open() { 1.0 } else { 0.0 };
+        self.chrome
+            .motion
+            .movement(crate::motion::Key::Sidebar, open, now)
+            .max(0.0)
+    }
+
+    /// Closes the palette, leaving it to fade out. Setting the field to `None` also closes it, only
+    /// without the fade.
+    pub fn close_palette(&mut self) {
+        if let Some(palette) = self.palette.take() {
+            self.chrome.leaving.palette = Some(Box::new(palette));
+        }
+    }
+
+    /// Closes the menu, leaving it to fade out.
+    pub fn close_menu(&mut self) {
+        if let Some(menu) = self.menu.take() {
+            self.chrome.leaving.menu = Some(menu);
+        }
+    }
+
+    /// Closes the help panel, leaving it to fade out.
+    pub fn close_help(&mut self) {
+        if let Some(help) = self.help.take() {
+            self.chrome.leaving.help = Some(help);
+        }
+    }
+
+    /// Points every animated value at where the state says it should be, at `now`.
+    ///
+    /// **The one place targets are set from state.** The event loop calls it after every batch of
+    /// events and before every frame; asking for a target a value already has changes nothing, so
+    /// calling it often costs a few hash lookups and cannot restart anything. That is what makes it
+    /// impossible to miss a site: there are dozens of places that open or close a view, and a
+    /// transition started at each of them would be one more thing to remember at the next. Drawing
+    /// only ever reads. Events that are not states — a message arriving, a tab being opened — are
+    /// kicked where they happen or detected here by comparing with the last sync.
+    ///
+    /// `bounds` and `scale` place the activity icons, so the one under the pointer can lift.
+    pub fn sync_motion(&mut self, bounds: Rect, scale: f32, now: std::time::Instant) {
+        use crate::motion::{Key, Spring};
+        let flag = |open: bool| if open { 1.0 } else { 0.0 };
+        // Arriving overshoots; leaving does not. A value that rang below zero on its way out would
+        // come back up past it, and a closed palette would blink back into view for a frame.
+        let spring = |open: bool, spring: Spring| {
+            if open {
+                spring
+            } else {
+                Spring {
+                    damping_ratio: spring.damping_ratio.max(1.0),
+                    ..spring
+                }
+            }
+        };
+
+        let fading = [
+            (Key::Sidebar, self.sidebar_open(), Spring::PANEL),
+            (Key::Palette, self.palette.is_some(), Spring::PANEL),
+            (Key::Help, self.help.is_some(), Spring::PANEL),
+            (Key::Menu, self.menu.is_some(), Spring::POPUP),
+            (
+                Key::Notifications,
+                self.chrome.show_notifications,
+                Spring::POPUP,
+            ),
+        ];
+        // These two fade in and leave at once. Typing closes them — a keystroke past the end of a
+        // word, a caret moved off what was hovered — and typing is never animated; their anchor is
+        // the caret, which has already moved, so a fade-out would drift across the text. The info
+        // box fades in for a hover reply only: the diagnostic under the caret is found by walking
+        // every diagnostic, and this runs after every batch of events. A diagnostic's box simply
+        // appears with the caret that lands on it, which is caret-following and never animated.
+        let cut = [
+            (Key::Completion, self.completion.is_some()),
+            (Key::Info, self.hover.is_some()),
+        ];
+
+        let hovers: Vec<(u32, bool)> = {
+            let layout = crate::layout::Layout::of(bounds, scale, None, 0.0);
+            let (x, y) = self.pointer;
+            crate::layout::activity_items(layout.activity, scale)
+                .into_iter()
+                .filter_map(|(item, cell)| {
+                    let index = crate::layout::ACTIVITIES
+                        .iter()
+                        .position(|candidate| candidate.activity == item.activity)?;
+                    Some((index as u32, crate::layout::contains(cell, x, y)))
+                })
+                .collect()
+        };
+        let marker = self.active_activity().and_then(|active| {
+            crate::layout::ACTIVITIES
+                .iter()
+                .position(|item| item.activity == active)
+        });
+        let tabs = self.buffer_count.max(1);
+        let active_tab = self.active_buffer as f32;
+        let step = self
+            .welcome
+            .as_ref()
+            .map(|welcome| welcome.step.number() as f32);
+
+        let chrome = &mut self.chrome;
+        let motion = &mut chrome.motion;
+        for (key, open, kind) in fading {
+            motion.to(key, flag(open), spring(open, kind), now);
+        }
+        for (key, open) in cut {
+            if open {
+                motion.to(key, 1.0, Spring::POPUP, now);
+            } else {
+                motion.snap(key, 0.0);
+            }
+        }
+        for (index, over) in hovers {
+            motion.to(Key::Hover(index), flag(over), Spring::HOVER, now);
+        }
+
+        // Something that slides between places is put in its first place, not slid in from zero.
+        let glide = |motion: &mut crate::motion::Motion, key: Key, to: f32, fresh: bool| {
+            if fresh || motion.target(key).is_none() {
+                motion.snap(key, to);
+            } else {
+                motion.to(key, to, Spring::POPUP, now);
+            }
+        };
+        if let Some(index) = marker {
+            glide(
+                motion,
+                Key::ActivityIndicator,
+                index as f32,
+                !chrome.marker_shown,
+            );
+        }
+        chrome.marker_shown = marker.is_some();
+        glide(motion, Key::TabIndicator, active_tab, false);
+        if chrome.tabs_seen.is_some_and(|seen| tabs > seen) {
+            motion.snap(Key::TabGrow, 0.0);
+            motion.to(Key::TabGrow, 1.0, Spring::POPUP, now);
+        }
+        chrome.tabs_seen = Some(tabs);
+        if let Some(step) = step {
+            if motion.target(Key::Welcome).is_none() {
+                motion.snap(Key::Welcome, step);
+            } else {
+                // Without overshoot: past its place, a page would fade out again as it settled.
+                let settle = Spring {
+                    damping_ratio: 1.0,
+                    ..Spring::PANEL
+                };
+                motion.to(Key::Welcome, step, settle, now);
+            }
+        }
+
+        // What has finished leaving is forgotten, and what has come back is not leaving.
+        let gone = |motion: &crate::motion::Motion, key: Key, open: bool| {
+            open || motion.get(key, now) <= 0.0
+        };
+        if gone(motion, Key::Palette, self.palette.is_some()) {
+            chrome.leaving.palette = None;
+        }
+        if gone(motion, Key::Menu, self.menu.is_some()) {
+            chrome.leaving.menu = None;
+        }
+        if gone(motion, Key::Help, self.help.is_some()) {
+            chrome.leaving.help = None;
+        }
     }
 
     /// Mutates the document and moves everything outside it that names a position in it.
@@ -439,16 +696,33 @@ fn shift(range: &mut std::ops::Range<CharOffset>, edits: &[dacode_text::Edit]) -
     range.start < range.end
 }
 
+/// How the welcome step on screen is arriving at `now`: how faded in it is, and how far it still has
+/// to slide, in logical pixels. A step comes in from the side it lies on — forwards from the right,
+/// back from the left — over the one before, which is gone the moment the answer is given.
+pub fn welcome_arrival(
+    motion: &crate::motion::Motion,
+    welcome: &crate::welcome::Welcome,
+    now: std::time::Instant,
+) -> (f32, f32) {
+    let step = welcome.step.number() as f32;
+    let away = step - motion.fade(Key::Welcome, step, now);
+    let moving = step - motion.movement(Key::Welcome, step, now);
+    ((1.0 - away.abs()).clamp(0.0, 1.0), moving * 48.0)
+}
+
 /// The first-run setup screen.
 ///
 /// A function of the wizard's state and a theme, like the splash — it runs before there is anything
-/// else worth drawing, and it must be legible in whichever theme is being previewed.
+/// else worth drawing, and it must be legible in whichever theme is being previewed. `arrival` is
+/// [`welcome_arrival`]: the step's question and options fade and slide in; the mark and the way out
+/// at the bottom stay put, since they do not change between steps.
 pub fn draw_welcome(
     frame: &mut Frame,
     welcome: &crate::welcome::Welcome,
     typography: &Typography,
     bounds: Rect,
     scale: f32,
+    arrival: (f32, f32),
 ) {
     use crate::welcome::Step;
 
@@ -490,6 +764,9 @@ pub fn draw_welcome(
     });
 
     y += mark + px(48.0);
+
+    frame.set_opacity(arrival.0);
+    frame.set_zoom(Some(dacode_render::Zoom::shifted([px(arrival.1), 0.0])));
 
     // Which question, and where in the sequence — three steps is short enough to be worth saying.
     let mut heading = typography.spec(Role::Prose);
@@ -534,6 +811,8 @@ pub fn draw_welcome(
         Step::Import => draw_welcome_import(frame, &context),
         Step::Done => {}
     }
+    frame.set_opacity(1.0);
+    frame.set_zoom(None);
 
     // What the keys do, at the bottom. A wizard nobody can leave is a trap.
     frame.text(welcome_label(
@@ -975,7 +1254,7 @@ pub fn draw_panes(
             .results
             .as_ref()
             .map(|results| results.visible().0.len()),
-        state.sidebar_open(),
+        state.sidebar_fraction(),
     );
 
     draw_title(frame, state, regions.title, scale);
@@ -1050,7 +1329,7 @@ pub fn draw_panes(
     let code = focused_code;
     if let Some(sidebar) = regions.sidebar {
         let visible = state.visible_rows(code.height, row_height);
-        draw_sidebar(frame, state, sidebar, visible, scale);
+        draw_sidebar(frame, state, sidebar, regions.sidebar_width, visible, scale);
     }
     if let (Some(results), Some(area)) = (&state.results, regions.results) {
         draw_results(frame, state, results, area, scale);
@@ -1061,26 +1340,47 @@ pub fn draw_panes(
     // modal. The layer is what makes them opaque — within one layer, later text still shows through
     // an earlier panel, because all of a layer's rectangles are drawn before any of its glyphs.
     frame.set_layer(Layer::Panel);
-    draw_info(frame, state, code, row_height, scale);
-    draw_completion(frame, state, code, row_height, scale);
+    // Neither of these fades out, so each is drawn as if open and returns early when it is not —
+    // which spares asking here whether the caret is on a diagnostic, a walk over all of them.
+    let (fade, travel) = arrival(state, Key::Info, true);
+    overlay(frame, fade, |frame| {
+        draw_info(frame, state, code, row_height, travel, scale)
+    });
+    let (fade, travel) = arrival(state, Key::Completion, true);
+    overlay(frame, fade, |frame| {
+        draw_completion(frame, state, code, row_height, travel, scale)
+    });
 
     // The which-key hint sits with the info boxes: it is contextual, it appears beside what you are
     // doing, and a scrim over the document would be absurd for something that lasts one keystroke.
     draw_which_key(frame, state, code, scale);
-    if state.chrome.show_notifications {
-        draw_notifications(frame, state, regions.title, bounds, scale);
-    }
+    // The log outlives the panel, so it fades out on its own with nothing kept aside for it.
+    let (fade, travel) = arrival(state, Key::Notifications, state.chrome.show_notifications);
+    overlay(frame, fade, |frame| {
+        draw_notifications(frame, state, regions.title, bounds, travel, scale)
+    });
 
-    // Last, so they cover everything: these are modal overlays.
+    // Last, so they cover everything: these are modal overlays. Each is drawn from its live state
+    // when open and from what it left behind while it fades out — never both.
     frame.set_layer(Layer::Modal);
-    if let Some(palette) = &state.palette {
-        draw_palette(frame, state, palette, bounds, scale);
+    let leaving = &state.chrome.leaving;
+    let (fade, travel) = arrival(state, Key::Palette, state.palette.is_some());
+    if let Some(palette) = state.palette.as_ref().or(leaving.palette.as_deref()) {
+        overlay(frame, fade, |frame| {
+            draw_palette(frame, state, palette, bounds, travel, scale)
+        });
     }
-    if let Some(help) = &state.help {
-        draw_help(frame, state, help, bounds, scale);
+    let (fade, travel) = arrival(state, Key::Help, state.help.is_some());
+    if let Some(help) = state.help.as_ref().or(leaving.help.as_ref()) {
+        overlay(frame, fade, |frame| {
+            draw_help(frame, state, help, bounds, travel, scale)
+        });
     }
-    if let Some(menu) = &state.menu {
-        draw_menu(frame, state, menu, bounds, scale);
+    let (fade, travel) = arrival(state, Key::Menu, state.menu.is_some());
+    if let Some(menu) = state.menu.as_ref().or(leaving.menu.as_ref()) {
+        overlay(frame, fade, |frame| {
+            draw_menu(frame, state, menu, bounds, travel, scale)
+        });
     }
     // A control's name and key, under the pointer. On top of everything, and only when nothing
     // modal is open — a tooltip over the palette would be describing a button you cannot reach.
@@ -1090,12 +1390,25 @@ pub fn draw_panes(
     frame.set_layer(Layer::Base);
 }
 
+/// How far an overlay has faded in, and how far it has travelled (grown), at the frame's instant.
+/// The two differ only under reduced motion, where it fades and does not move.
+fn arrival(state: &EditorState, key: Key, open: bool) -> (f32, f32) {
+    let expected = if open { 1.0 } else { 0.0 };
+    let now = state.now();
+    let motion = &state.chrome.motion;
+    (
+        motion.fade(key, expected, now),
+        motion.movement(key, expected, now),
+    )
+}
+
 /// The completion popup, anchored under the word being completed.
 fn draw_completion(
     frame: &mut Frame,
     state: &EditorState,
     code: Rect,
     row_height: f32,
+    travel: f32,
     scale: f32,
 ) {
     let Some(completion) = &state.completion else {
@@ -1142,6 +1455,13 @@ fn draw_completion(
     };
 
     let popup = Rect::new(x, y, width, height);
+    // It grows from the edge nearest the word it completes.
+    let anchor = if y >= below {
+        Anchor::Top
+    } else {
+        Anchor::Bottom
+    };
+    frame.set_zoom(Some(appear_zoom(popup, travel, anchor)));
     frame.fill(popup, theme.bg_panel);
     frame.rule_top(popup, theme.rule, border::BORDER);
     frame.rule_bottom(popup, theme.rule, border::BORDER);
@@ -1295,7 +1615,14 @@ fn row_grid(
 ///
 /// Hover wins when both apply: it was asked for explicitly, while the diagnostic message appears
 /// merely because the cursor is on the line.
-fn draw_info(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32, scale: f32) {
+fn draw_info(
+    frame: &mut Frame,
+    state: &EditorState,
+    code: Rect,
+    row_height: f32,
+    travel: f32,
+    scale: f32,
+) {
     let theme = &state.theme;
 
     let (text, accent) = match (&state.hover, diagnostic_at_cursor(state)) {
@@ -1362,6 +1689,12 @@ fn draw_info(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32
     };
 
     let box_rect = Rect::new(code.x + space::SM * scale, y, width, height);
+    let anchor = if y >= below {
+        Anchor::Top
+    } else {
+        Anchor::Bottom
+    };
+    frame.set_zoom(Some(appear_zoom(box_rect, travel, anchor)));
     frame.fill(box_rect, theme.bg_panel);
     frame.rule_top(box_rect, theme.rule, border::BORDER);
     frame.rule_bottom(box_rect, theme.rule, border::BORDER);
@@ -1531,6 +1864,7 @@ fn draw_palette(
     state: &EditorState,
     palette: &Palette,
     bounds: Rect,
+    travel: f32,
     scale: f32,
 ) {
     let theme = &state.theme;
@@ -1559,6 +1893,8 @@ fn draw_palette(
         width,
         card_height,
     );
+    // It drops from the top, where the command centre that opens it is.
+    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
 
     // One shadow in the whole design, and this is it. Approximated by a slightly larger dark rect
     // behind the card, since the renderer draws only rectangles.
@@ -1879,6 +2215,7 @@ fn draw_help(
     state: &EditorState,
     help: &crate::help::Help,
     bounds: Rect,
+    travel: f32,
     scale: f32,
 ) {
     use crate::help::Line;
@@ -1896,6 +2233,7 @@ fn draw_help(
         width,
         (bounds.height - 160.0 * scale).max(row_height * 6.0),
     );
+    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Centre)));
 
     frame.fill(card, theme.bg_panel);
     frame.rule_top(card, theme.rule, border::BORDER);
@@ -2026,6 +2364,7 @@ fn draw_menu(
     state: &EditorState,
     menu: &crate::menu::Menu,
     bounds: Rect,
+    travel: f32,
     scale: f32,
 ) {
     let theme = &state.theme;
@@ -2059,6 +2398,8 @@ fn draw_menu(
         ));
     }
 
+    // The card hangs from its title, or from the pointer that opened it.
+    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
     frame.fill(
         Rect::new(
             card.x - 2.0 * scale,
@@ -3025,15 +3366,29 @@ fn icon_button(
     color: Oklch,
     scale: f32,
 ) {
+    icon_button_turned(frame, state, rect, icon, color, 0.0, scale);
+}
+
+/// [`icon_button`] with the icon turned about its centre.
+fn icon_button_turned(
+    frame: &mut Frame,
+    state: &EditorState,
+    rect: Rect,
+    icon: Icon,
+    color: Oklch,
+    radians: f32,
+    scale: f32,
+) {
     let theme = &state.theme;
     let over = hovered(state, rect);
     if over {
         frame.fill_rounded(rect, theme.row_active, 6.0 * scale);
     }
-    frame.icon(
+    frame.icon_rotated(
         icon,
         centred(rect, crate::layout::size::ICON * scale),
         if over { theme.ink } else { color },
+        radians,
     );
 }
 
@@ -3170,7 +3525,21 @@ fn draw_title(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     }
 
     icon_button(frame, state, bar.account, Icon::User, theme.ink_dim, scale);
-    icon_button(frame, state, bar.bell, Icon::Bell, theme.ink_dim, scale);
+    // The bell swings when a message arrives, and rings down in under a second.
+    let swing = state
+        .chrome
+        .motion
+        .movement(Key::Bell, 0.0, state.now())
+        .clamp(-1.5, 1.5);
+    icon_button_turned(
+        frame,
+        state,
+        bar.bell,
+        Icon::Bell,
+        theme.ink_dim,
+        swing * 12f32.to_radians(),
+        scale,
+    );
     // Unread messages: a dot on the bell, the way every desktop says "something happened".
     if state.chrome.unread > 0 {
         frame.disc(
@@ -3208,15 +3577,36 @@ fn draw_activity(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32)
     );
 
     let active = state.active_activity();
-    for (item, cell) in crate::layout::activity_items(rect, scale) {
-        let lit = active == Some(item.activity);
-        let over = hovered(state, cell);
-        if lit {
-            // The bar on the open view's edge, as both editors mark it.
+    let items = crate::layout::activity_items(rect, scale);
+    let now = state.now();
+    let motion = &state.chrome.motion;
+    let index_of = |activity: crate::layout::Activity| {
+        crate::layout::ACTIVITIES
+            .iter()
+            .position(|item| item.activity == activity)
+    };
+
+    // The bar on the open view's edge, as both editors mark it. It slides between icons rather than
+    // jumping, through the cells it passes: placed by the activity's position in the table, so the
+    // way from the explorer down to settings, pinned at the bottom, follows the column.
+    if let Some(lit) = active.and_then(index_of) {
+        let at = motion.movement(Key::ActivityIndicator, lit as f32, now);
+        let y_of = |index: usize| {
+            items
+                .iter()
+                .find(|(item, _)| index_of(item.activity) == Some(index))
+                .map(|(_, cell)| cell.y)
+        };
+        let (low, high) = (at.floor().max(0.0) as usize, at.ceil().max(0.0) as usize);
+        let y = match (y_of(low), y_of(high)) {
+            (Some(a), Some(b)) => a + (b - a) * (at - low as f32),
+            _ => y_of(lit).unwrap_or(rect.y),
+        };
+        if let Some((_, cell)) = items.first() {
             frame.fill_rounded(
                 Rect::new(
                     rect.x,
-                    cell.y + cell.height * 0.22,
+                    y + cell.height * 0.22,
                     2.5 * scale,
                     cell.height * 0.56,
                 ),
@@ -3224,9 +3614,19 @@ fn draw_activity(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32)
                 1.25 * scale,
             );
         }
+    }
+
+    for (item, cell) in items.iter().copied() {
+        let lit = active == Some(item.activity);
+        let over = hovered(state, cell);
+        // Under the pointer an icon rises a little, the way a key gives under a finger.
+        let lift = index_of(item.activity).map_or(0.0, |index| {
+            motion.movement(Key::Hover(index as u32), if over { 1.0 } else { 0.0 }, now)
+        });
+        let icon = centred(cell, 22.0 * scale);
         frame.icon(
             item.icon,
-            centred(cell, 22.0 * scale),
+            Rect::new(icon.x, icon.y - 2.0 * scale * lift, icon.width, icon.height),
             if lit {
                 theme.ink
             } else if over {
@@ -3371,6 +3771,7 @@ fn draw_notifications(
     state: &EditorState,
     title: Rect,
     bounds: Rect,
+    travel: f32,
     scale: f32,
 ) {
     let theme = &state.theme;
@@ -3385,6 +3786,7 @@ fn draw_notifications(
         width,
         line * (rows as f32 + 1.6),
     );
+    frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
     frame.fill_rounded(card, theme.bg_panel, 8.0 * scale);
     frame.outline_rounded(card, theme.rule, 8.0 * scale, border::BORDER * scale);
     let inner = card.inset(12.0 * scale);
@@ -3476,6 +3878,41 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     icon_button(frame, state, bar.split, Icon::Split, theme.ink_dim, scale);
     icon_button(frame, state, bar.run, Icon::Play, theme.ink, scale);
 
+    // The active tab's background glides from the tab that was active to the one that is, by way of
+    // the tabs between. Placed from the tabs' own rectangles, so it always ends exactly on one.
+    let now = state.now();
+    let motion = &state.chrome.motion;
+    let at = motion.movement(Key::TabIndicator, state.active_buffer as f32, now);
+    let rect_of = |index: usize| {
+        bar.tabs
+            .iter()
+            .find(|tab| tab.index == index)
+            .map(|tab| tab.rect)
+    };
+    let (low, high) = (at.floor().max(0.0) as usize, at.ceil().max(0.0) as usize);
+    let glide = match (rect_of(low), rect_of(high)) {
+        (Some(a), Some(b)) => {
+            let t = at - low as f32;
+            Some(Rect::new(
+                a.x + (b.x - a.x) * t,
+                a.y,
+                a.width + (b.width - a.width) * t,
+                a.height,
+            ))
+        }
+        // One end is scrolled out of the strip: there is no path to draw, so it is simply there.
+        _ => rect_of(state.active_buffer),
+    };
+    if let Some(glide) = glide {
+        frame.fill_rounded(glide, theme.bg, 6.0 * scale);
+    }
+    // A tab just opened grows in. Only the active one: opening a file is what makes a tab, and the
+    // file opened is the one shown.
+    let grow = (
+        motion.fade(Key::TabGrow, 1.0, now),
+        motion.movement(Key::TabGrow, 1.0, now),
+    );
+
     // One tab per open file, from the same function the mouse hit-tests.
     for tab in &bar.tabs {
         let name = &names[tab.index];
@@ -3487,9 +3924,12 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         let active = tab.index == state.active_buffer;
         let over = hovered(state, tab.rect);
 
-        if active {
-            frame.fill_rounded(tab.rect, theme.bg, 6.0 * scale);
-        } else if over {
+        let growing = active && grow.0 < 1.0;
+        if growing {
+            frame.set_opacity(grow.0);
+            frame.set_zoom(Some(appear_zoom(tab.rect, grow.1, Anchor::Centre)));
+        }
+        if !active && over {
             frame.fill_rounded(tab.rect, theme.rule_soft, 6.0 * scale);
         }
         frame.icon(Icon::File, tab.icon, file_color(theme, name));
@@ -3520,6 +3960,10 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
             );
         } else if dirty {
             frame.icon(Icon::Dot, centred(tab.close, 12.0 * scale), theme.ink_dim);
+        }
+        if growing {
+            frame.set_opacity(1.0);
+            frame.set_zoom(None);
         }
     }
 }
@@ -4146,22 +4590,51 @@ fn expand_tabs<'a>(state: &EditorState, line: &'a str) -> std::borrow::Cow<'a, s
 fn draw_sidebar(
     frame: &mut Frame,
     state: &EditorState,
-    rect: Rect,
+    slot: Rect,
+    open_width: f32,
     visible_rows: usize,
     scale: f32,
 ) {
     let theme = &state.theme;
-    frame.fill_backdrop(rect, theme.bg_panel);
+    frame.fill_backdrop(slot, theme.bg_panel);
     frame.fill(
         Rect::new(
-            rect.right() - border::BORDER * scale,
-            rect.y,
+            slot.right() - border::BORDER * scale,
+            slot.y,
             border::BORDER * scale,
-            rect.height,
+            slot.height,
         ),
         theme.rule_soft,
     );
 
+    // Sliding, the view is laid out at its open width with its right edge on the slot's, and only
+    // the part that has arrived shows: it comes out from behind the activity bar rather than being
+    // squeezed, and its rows do not reflow on every frame. The rows keep their heights, so the mouse
+    // — which measures against the slot — lands on the row it is over. Closing has nothing to slide:
+    // the view's state is already gone, so the empty panel folds away.
+    let sliding = slot.width < open_width;
+    let rect = if sliding {
+        Rect::new(slot.right() - open_width, slot.y, open_width, slot.height)
+    } else {
+        slot
+    };
+    if sliding {
+        frame.set_clip(Some(slot));
+    }
+    draw_sidebar_view(frame, state, rect, visible_rows, scale);
+    if sliding {
+        frame.set_clip(None);
+    }
+}
+
+/// Whichever view the sidebar is showing, laid out in `rect`.
+fn draw_sidebar_view(
+    frame: &mut Frame,
+    state: &EditorState,
+    rect: Rect,
+    visible_rows: usize,
+    scale: f32,
+) {
     if let Some(tree) = &state.tree {
         draw_explorer(frame, state, tree, rect, scale);
     } else if state.show_diagnostics {
@@ -4729,6 +5202,32 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
             Align::Right,
             scale,
         ));
+    }
+}
+
+#[cfg(test)]
+mod appear_tests {
+    use super::*;
+
+    #[test]
+    fn an_overlay_grows_from_its_anchor_to_exactly_its_own_rectangle() {
+        let card = Rect::new(100.0, 200.0, 400.0, 300.0);
+        assert_eq!(appear(card, 1.0, Anchor::Top), card, "arrived is untouched");
+
+        let top = appear(card, 0.0, Anchor::Top);
+        assert_eq!(top.y, card.y, "hangs from its top edge");
+        assert!((top.width - card.width * 0.96).abs() < 1e-3);
+        assert!((top.x + top.width / 2.0 - (card.x + card.width / 2.0)).abs() < 1e-3);
+
+        let bottom = appear(card, 0.0, Anchor::Bottom);
+        assert!(
+            (bottom.bottom() - card.bottom()).abs() < 1e-3,
+            "rises from its foot"
+        );
+
+        let centre = appear(card, 0.5, Anchor::Centre);
+        assert!((centre.y + centre.height / 2.0 - (card.y + card.height / 2.0)).abs() < 1e-3);
+        assert!(centre.width > top.width && centre.width < card.width);
     }
 }
 

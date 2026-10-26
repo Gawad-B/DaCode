@@ -73,6 +73,14 @@ impl Spring {
         stiffness: 400.0,
         damping_ratio: 1.0,
     };
+    /// The bell's wobble: loose and quick, so a kick rings a few times and is gone in under a second.
+    /// Only ever kicked, never retargeted — a wobble is motion about where the value rests.
+    pub const WOBBLE: Spring = Spring {
+        stiffness: 400.0,
+        damping_ratio: 0.2,
+    };
+    /// The push that swings a [`Spring::WOBBLE`] about one unit out before it rings down.
+    pub const WOBBLE_KICK: f32 = 26.0;
     /// Scrolling. Critically damped on purpose: text that bounces past where it was scrolled to
     /// reads as the page being loose, not as polish.
     pub const SCROLL: Spring = Spring {
@@ -104,6 +112,8 @@ pub enum Key {
     Welcome,
     SettingsCategory,
     Glow(u32),
+    /// A tab that has just been opened, growing in.
+    TabGrow,
 }
 
 /// One animated quantity. `position` and `velocity` are what they were at `since`; the present is
@@ -348,6 +358,72 @@ impl Motion {
         }
     }
 
+    /// Where `key` is at `now` if it is heading for `expected`, and `expected` if it is not.
+    ///
+    /// For drawing, which knows from the state where a value ought to be going. A value that was
+    /// never set, or whose target is stale because nothing has retargeted it since the state changed,
+    /// must not draw an open view as closed: the state wins, and the view is drawn where it belongs.
+    pub fn fade(&self, key: Key, expected: f32, now: Instant) -> f32 {
+        match self.values.get(&key) {
+            Some(value) if value.target == f64::from(expected) => self.get(key, now),
+            _ => expected,
+        }
+    }
+
+    /// [`Motion::fade`] for a value that moves something on screen — a width, a slide, a scale, a
+    /// lift. Under [`Animations::Reduced`] it is already where it is going: that setting promises
+    /// fades only, and a sidebar that slid, however gently, would break it.
+    pub fn movement(&self, key: Key, expected: f32, now: Instant) -> f32 {
+        if self.animations == Animations::Reduced {
+            expected
+        } else {
+            self.fade(key, expected, now)
+        }
+    }
+
+    /// Pushes `key` with `velocity` units per second at `now`, leaving its target where it is: a
+    /// wobble about where the value rests, rather than a move to somewhere else.
+    ///
+    /// Does nothing unless motion is [`Animations::Full`]. A kick is all movement, which Reduced
+    /// promises not to show, and asking for frames to draw nothing would only keep the loop awake.
+    pub fn kick(&mut self, key: Key, velocity: f32, spring: Spring, now: Instant) {
+        if self.animations != Animations::Full || !velocity.is_finite() {
+            return;
+        }
+        let spring = Spring {
+            stiffness: spring.stiffness.max(1.0),
+            damping_ratio: spring.damping_ratio.max(0.05),
+        };
+        let (position, moving, target, since) = match self.values.get(&key) {
+            Some(value) => {
+                let (position, moving) = value.sample(now);
+                (
+                    position,
+                    moving,
+                    value.target,
+                    value.since.map_or(now, |s| now.max(s)),
+                )
+            }
+            None => (0.0, 0.0, 0.0, now),
+        };
+        let velocity = moving + f64::from(velocity);
+        let omega = f64::from(spring.stiffness).sqrt();
+        let (position_tolerance, velocity_tolerance) =
+            tolerances((target - position).abs().max(velocity.abs() / omega));
+        self.values.insert(
+            key,
+            Value {
+                position,
+                velocity,
+                target,
+                spring,
+                since: Some(since),
+                position_tolerance,
+                velocity_tolerance,
+            },
+        );
+    }
+
     /// Where `key` is heading, if it has ever been set.
     pub fn target(&self, key: Key) -> Option<f32> {
         self.values.get(&key).map(|value| value.target as f32)
@@ -376,6 +452,74 @@ mod tests {
         (0..400)
             .map(|step| motion.get(key, at(start, step * 5)))
             .fold(f32::MIN, f32::max)
+    }
+
+    #[test]
+    fn a_value_whose_target_is_stale_reads_as_the_state_it_should_follow() {
+        // Drawing asks "where is the palette, given that it is open?". A motion store nobody has
+        // synced since the palette opened — a test that sets a field and draws, the first frame
+        // after start-up — must answer "open", or the view would be drawn as if it were closed.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        assert_eq!(motion.fade(Key::Palette, 1.0, start), 1.0, "never set");
+        motion.to(Key::Palette, 0.0, Spring::POPUP, start);
+        assert_eq!(
+            motion.fade(Key::Palette, 1.0, start),
+            1.0,
+            "heading elsewhere"
+        );
+        motion.to(Key::Palette, 1.0, Spring::POPUP, start);
+        let mid = motion.fade(Key::Palette, 1.0, at(start, 60));
+        assert!(mid > 0.0 && mid < 1.0, "in flight: {mid}");
+    }
+
+    #[test]
+    fn reduced_motion_fades_but_never_moves() {
+        // The setting promises fades only. A value read as a fade still travels; one read as
+        // movement is already where it is going.
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Reduced);
+        motion.to(Key::Sidebar, 1.0, Spring::PANEL, start);
+        let mid = at(start, 80);
+        assert_eq!(motion.movement(Key::Sidebar, 1.0, mid), 1.0);
+        let fade = motion.fade(Key::Sidebar, 1.0, mid);
+        assert!(fade > 0.0 && fade < 1.0, "{fade}");
+
+        let mut full = Motion::new(Animations::Full);
+        full.to(Key::Sidebar, 1.0, Spring::PANEL, start);
+        assert!(full.movement(Key::Sidebar, 1.0, mid) < 1.0);
+    }
+
+    #[test]
+    fn a_kick_wobbles_about_where_a_value_rests_and_dies_away() {
+        let start = Instant::now();
+        let mut motion = Motion::new(Animations::Full);
+        motion.kick(Key::Bell, Spring::WOBBLE_KICK, Spring::WOBBLE, start);
+        assert!(motion.busy(at(start, 16)));
+        let samples: Vec<f32> = (0..200)
+            .map(|ms| motion.get(Key::Bell, at(start, ms * 5)))
+            .collect();
+        let high = samples.iter().copied().fold(f32::MIN, f32::max);
+        let low = samples.iter().copied().fold(f32::MAX, f32::min);
+        assert!(
+            high > 0.8 && high < 1.2,
+            "swings out about one unit: {high}"
+        );
+        assert!(low < -0.2, "and back past where it rests: {low}");
+        assert_eq!(motion.target(Key::Bell), Some(0.0));
+        assert!(!motion.busy(at(start, 3000)), "and then it stops");
+    }
+
+    #[test]
+    fn a_kick_moves_nothing_when_motion_is_reduced_or_off() {
+        // A wobble is all movement and no fade, so there is nothing of it left to show.
+        let start = Instant::now();
+        for animations in [Animations::Reduced, Animations::Off] {
+            let mut motion = Motion::new(animations);
+            motion.kick(Key::Bell, Spring::WOBBLE_KICK, Spring::WOBBLE, start);
+            assert_eq!(motion.get(Key::Bell, at(start, 40)), 0.0);
+            assert!(!motion.busy(at(start, 16)));
+        }
     }
 
     #[test]

@@ -18,7 +18,9 @@ mod shape;
 mod text;
 mod timer;
 
-pub use frame::{Align, Frame, Layer, MARK_INK_LEFT, Mark, Quad, Rect, Shape, ShapeKind, TextRun};
+pub use frame::{
+    Align, Frame, Layer, MARK_INK_LEFT, Mark, Quad, Rect, Shape, ShapeKind, TextRun, Zoom,
+};
 pub use headless::Headless;
 pub use icon::Icon;
 pub use timer::FrameTimer;

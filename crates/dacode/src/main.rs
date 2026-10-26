@@ -1008,11 +1008,9 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     // is what makes a frame 90 ms into a sidebar sliding open reproducible: every animated value is a
     // pure function of the instant it is read at, so only `state.chrome.now` has to be moved.
     //
-    // Nothing animates yet. When the views start to (the sidebar, the overlays, the menus), the
-    // requested view's animations are started at `t0` by retargeting `state.chrome.motion` with `t0`
-    // as the time. That has to happen once the view's own state exists, which is inside the `if
-    // flag(...)` branches below or after them but before the frame is drawn, so that `--at-ms 0` is
-    // the first instant of the transition and not its end.
+    // The requested view's animations are started at `t0` by `start` below, once the view's own
+    // state exists and just before the frame is drawn, so that `--at-ms 0` is the first instant of the
+    // transition and not its end.
     //
     // Without `--at-ms` the capture is the *settled* view: every existing capture is of a finished
     // screen, and drawn a few milliseconds after `t0` an overlay would be at progress zero, which is
@@ -1034,6 +1032,10 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     eprintln!("dacode: font — {}", headless.resolved_face());
 
     let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
+    // The requested view's transitions start at `t0`, from closed: everything the flags opened is
+    // retargeted through the same function the event loop calls, so a capture at `--at-ms 80` is the
+    // frame a person would see 80 ms after opening it.
+    let start = |state: &mut EditorState| state.sync_motion(bounds, 1.0, t0);
     let mut frame = Frame::default();
     if flag("--splash") {
         chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
@@ -1051,6 +1053,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             state.document.version(),
         );
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--folded") {
         // Fold every top-level block, so the marker and the hidden-line count are inspectable.
@@ -1067,10 +1070,12 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             }
         }
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--diagnostics-list") {
         state.show_diagnostics = true;
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(step) = value("--welcome") {
         let mut welcome = dacode::welcome::Welcome::new();
@@ -1085,23 +1090,43 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             // Highlight something other than the first, which is what makes the preview visible.
             welcome.move_selection(2);
         }
-        chrome::draw_welcome(&mut frame, &welcome, &state.typography, bounds, 1.0);
+        // Arriving from the step before, as it would after answering that one.
+        state.chrome.motion.snap(
+            dacode::motion::Key::Welcome,
+            welcome.step.number() as f32 - 1.0,
+        );
+        state.welcome = Some(welcome);
+        start(&mut state);
+        let welcome = state.welcome.take().expect("set just above");
+        let arrival = chrome::welcome_arrival(&state.chrome.motion, &welcome, state.now());
+        chrome::draw_welcome(
+            &mut frame,
+            &welcome,
+            &state.typography,
+            bounds,
+            1.0,
+            arrival,
+        );
     } else if flag("--help-panel") {
         state.help = Some(dacode::help::Help::new(state.modal));
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--menu") {
         state.menu = Some(dacode::menu::Menu::bar(state.modal));
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--context-menu") {
         state.menu = Some(dacode::menu::Menu::context((420.0, 300.0), state.modal));
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(prefix) = value("--which-key") {
         // The popup is driven by the pending display, exactly as a half-typed chord drives it.
         state.pending = prefix;
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(query) = value("--symbols") {
         // A canned outline, so the palette's indenting and its kind column are inspectable without
@@ -1136,12 +1161,14 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         palette.refresh_symbols(&symbols, true);
         state.palette = Some(palette);
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--commands") {
         let mut palette = dacode::palette::Palette::new(dacode::palette::PaletteKind::Commands);
         palette.refresh_commands(state.modal);
         state.palette = Some(palette);
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--settings") {
         let mut settings = dacode::settings_ui::Settings::new();
@@ -1166,6 +1193,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             .setting_sources
             .insert("soft_wrap".into(), dacode::settings_ui::Source::Imported);
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--tree") {
         // The tree needs a file list; the screenshot path has no background walk, so index inline.
@@ -1184,9 +1212,11 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         tree.reveal("crates/dacode-text/src/anchor.rs");
         state.tree = Some(tree);
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if let Some(split) = value("--split") {
         refit(&mut state);
+        start(&mut state);
         // `--split N[h]` renders N panes on one buffer, so the layout is inspectable without a
         // window. The panes look at different places in the file, which is the case worth seeing:
         // identical panes would hide a scroll bug.
@@ -1225,6 +1255,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         );
     } else {
         refit(&mut state);
+        start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
     }
 
@@ -1266,7 +1297,9 @@ fn fit_wrap_columns(state: &mut EditorState, window_width: f32, scale: f32) {
         Rect::new(0.0, 0.0, window_width, 1000.0 * scale),
         scale,
         None,
-        state.sidebar_open(),
+        // Where the sidebar is going, not where its slide has got to: the text is wrapped once for
+        // the width it will have, rather than rewrapped on every frame of the slide.
+        if state.sidebar_open() { 1.0 } else { 0.0 },
     );
     let grid = dacode::layout::CodeGrid::new(
         regions.pane(0, 1, true, scale).code,
@@ -1466,6 +1499,9 @@ struct App {
     /// Whether the last idle step found something moving, so the step after the motion ends can ask for
     /// one more frame: the last one drawn was a hair short of the target, and the loop is about to sleep.
     was_animating: bool,
+    /// The instant the last frame was drawn for, so the mouse measures against the geometry that
+    /// frame showed while something slides. `None` before the first.
+    last_frame: Option<std::time::Instant>,
     /// Whether the window is hidden behind another or minimised, as winit last said. Nothing is
     /// presented then, so asking for frames only makes the loop spin.
     occluded: bool,
@@ -1649,6 +1685,9 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         // moves; the control flow below stays `Wait`, and it is not a timer.
         let now = std::time::Instant::now();
         self.settle_scroll_input();
+        // Before asking whether anything moves: whatever this batch of events opened or closed has to
+        // have started moving for the answer to include it.
+        self.sync_motion(now);
         if self.advance_glide(now) {
             changed = true;
             self.sync_syntax();
@@ -1943,6 +1982,7 @@ impl App {
             last_edit: None,
             wakes: 0,
             was_animating: false,
+            last_frame: None,
             occluded: false,
             gestures: Gestures::default(),
             waker,
@@ -1961,6 +2001,14 @@ impl App {
             .as_ref()
             .map(|window| window.scale_factor() as f32)
             .unwrap_or(1.0)
+    }
+
+    /// Points every animated value at what the state now says, at `now`. See
+    /// [`EditorState::sync_motion`]: called after each batch of events and before each frame, which
+    /// is often enough that no site that opens or closes something needs to remember to.
+    fn sync_motion(&mut self, now: std::time::Instant) {
+        let (bounds, scale) = (self.window_bounds(), self.scale());
+        self.state.sync_motion(bounds, scale, now);
     }
 
     /// Whether anything is still moving at `now`. The one thing the event loop needs from the motion
@@ -2650,7 +2698,7 @@ impl App {
         match key.code {
             // The key that opened it closes it. Only escape did, which is fine if you know that and
             // a trap if you pressed f10 to find out what it was.
-            KeyCode::Escape | KeyCode::Function(10) => self.state.menu = None,
+            KeyCode::Escape | KeyCode::Function(10) => self.state.close_menu(),
             KeyCode::Enter => {
                 let action = self
                     .state
@@ -2659,7 +2707,7 @@ impl App {
                     .and_then(|menu| menu.selection().map(|item| item.action.clone()));
                 // Closed before running: a command that opens something of its own — the palette, a
                 // prompt — must not find the menu still sitting on top of it.
-                self.state.menu = None;
+                self.state.close_menu();
                 if let Some(action) = action {
                     return self.run(action);
                 }
@@ -2684,7 +2732,7 @@ impl App {
     fn handle_help_key(&mut self, key: Key) -> bool {
         let rows = self.code_rows();
         match key.code {
-            KeyCode::Escape | KeyCode::Function(1) => self.state.help = None,
+            KeyCode::Escape | KeyCode::Function(1) => self.state.close_help(),
             code => {
                 if let Some(help) = &mut self.state.help {
                     match code {
@@ -4923,7 +4971,7 @@ impl App {
             // key that opened it is the key someone presses again to get rid of it.
             Action::ToggleCommandPalette => {
                 if self.state.palette.is_some() {
-                    self.state.palette = None;
+                    self.state.close_palette();
                 } else {
                     self.open_palette(PaletteKind::Commands);
                 }
@@ -6309,10 +6357,10 @@ impl App {
         };
 
         match key.code {
-            KeyCode::Escape => self.state.palette = None,
+            KeyCode::Escape => self.state.close_palette(),
             KeyCode::Enter => {
                 let chosen = palette.selection().map(|row| row.target.clone());
-                self.state.palette = None;
+                self.state.close_palette();
                 if let Some(target) = chosen {
                     self.activate(target);
                 }
@@ -6924,7 +6972,10 @@ impl App {
         }
     }
 
-    /// The chrome's geometry for the current window.
+    /// The chrome's geometry for the current window, as the last frame drew it.
+    ///
+    /// The sidebar is read at that frame's instant rather than the clock's: while it slides, the
+    /// mouse has to agree with what is on screen, and the clock has moved on since it was drawn.
     fn layout(&self) -> dacode::layout::Layout {
         let (width, height) = self
             .renderer
@@ -6938,7 +6989,8 @@ impl App {
                 .results
                 .as_ref()
                 .map(|results| results.visible().0.len()),
-            self.state.sidebar_open(),
+            self.state
+                .sidebar_fraction_at(self.last_frame.unwrap_or_else(std::time::Instant::now)),
         )
     }
 
@@ -7366,7 +7418,7 @@ impl App {
             return;
         }
 
-        self.state.menu = None;
+        self.state.close_menu();
         if let Some(action) = chosen {
             let _ = self.run(action);
         }
@@ -7938,6 +7990,9 @@ impl App {
         // Also here, so the index and any server replies land without waiting for a keystroke.
         self.poll_walk();
         self.sync_lsp();
+        // And the targets, for a redraw delivered before the idle step: a frame must never draw a view
+        // that has opened at the place it was closed.
+        self.sync_motion(std::time::Instant::now());
 
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -7950,7 +8005,9 @@ impl App {
 
         // Every animated value this frame draws is read at this one instant, so two things that move
         // together cannot be sampled a few microseconds apart.
-        self.state.chrome.now = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.state.chrome.now = Some(now);
+        self.last_frame = Some(now);
 
         // The clock starts here, not inside `render`: building the frame is the half of the work
         // this project has optimised hardest, and it was not in the number the statusline showed.
@@ -7991,6 +8048,7 @@ impl App {
                 &self.state.typography,
                 Rect::new(0.0, 0.0, width as f32, height as f32),
                 scale,
+                chrome::welcome_arrival(&self.state.chrome.motion, welcome, now),
             );
             if let Err(err) = renderer.render(&self.frame, welcome.preview_theme().bg) {
                 eprintln!("dacode: frame dropped: {err:#}");
@@ -8594,6 +8652,238 @@ mod wiring_tests {
         let mut app = editor(dir, name, contents);
         app.waker = Some(Arc::new(|| {}));
         app
+    }
+
+    /// The window every chrome test here draws into.
+    const WINDOW: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1400.0,
+        height: 900.0,
+    };
+
+    fn ms(start: std::time::Instant, ms: u64) -> std::time::Instant {
+        start + std::time::Duration::from_millis(ms)
+    }
+
+    /// Draws the editor as it is at `now`, the way a frame does.
+    fn draw_at(app: &mut App, now: std::time::Instant) -> Frame {
+        app.state.chrome.now = Some(now);
+        let mut frame = Frame::default();
+        chrome::draw(&mut frame, &app.state, WINDOW, 1.0);
+        frame
+    }
+
+    fn commands(app: &App) -> Palette {
+        let mut palette = Palette::new(PaletteKind::Commands);
+        palette.refresh_commands(app.state.modal);
+        palette
+    }
+
+    /// The largest alpha among everything drawn on `layer`, or `None` if nothing is.
+    fn strongest(frame: &Frame, layer: dacode_render::Layer) -> Option<f32> {
+        frame
+            .quads_on(layer)
+            .map(|quad| quad.color[3])
+            .chain(frame.texts_on(layer).map(|run| run.color.alpha))
+            .chain(frame.shapes_on(layer).map(|shape| shape.color[3]))
+            .reduce(f32::max)
+    }
+
+    #[test]
+    fn a_palette_at_the_first_instant_of_opening_draws_nothing_and_arrives_soon_after() {
+        // Progress zero is invisible, scrim and all — a scrim drawn at full strength under a card
+        // that has not yet appeared would flash the window dark for a frame.
+        let dir = scratch("palette-arrives");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.palette = Some(commands(&app));
+        app.state.sync_motion(WINDOW, 1.0, t0);
+
+        let first = draw_at(&mut app, t0);
+        assert!(
+            strongest(&first, dacode_render::Layer::Modal).is_none_or(|alpha| alpha <= 0.0),
+            "something on the modal layer is visible at progress zero"
+        );
+
+        let settled = draw_at(&mut app, ms(t0, 1500));
+        assert_eq!(
+            strongest(&settled, dacode_render::Layer::Modal),
+            Some(1.0),
+            "settled, the card is opaque"
+        );
+    }
+
+    #[test]
+    fn sync_sets_every_overlays_target_from_the_state() {
+        // The one place targets are set: open each view, sync, and each is heading for open; close
+        // them, sync, and each is heading for closed. No site that opens a view starts its motion.
+        use dacode::motion::Key as MotionKey;
+        let dir = scratch("sync-targets");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let now = std::time::Instant::now();
+        let targets = |app: &App| {
+            [
+                MotionKey::Sidebar,
+                MotionKey::Palette,
+                MotionKey::Menu,
+                MotionKey::Help,
+                MotionKey::Completion,
+                MotionKey::Info,
+                MotionKey::Notifications,
+            ]
+            .map(|key| app.state.chrome.motion.target(key))
+        };
+
+        app.state.sync_motion(WINDOW, 1.0, now);
+        assert_eq!(
+            targets(&app),
+            [Some(0.0); 7],
+            "a fresh editor has nothing open"
+        );
+
+        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.palette = Some(commands(&app));
+        app.state.menu = Some(dacode::menu::Menu::bar(app.state.modal));
+        app.state.help = Some(dacode::help::Help::new(app.state.modal));
+        app.state.completion = Some(dacode::completion::Completion::new(
+            app.state.document.text(),
+            app.state.cursor(),
+            app.state.document.version(),
+        ));
+        app.state.hover = Some("a hover".into());
+        app.state.chrome.show_notifications = true;
+        app.state.sync_motion(WINDOW, 1.0, now);
+        assert_eq!(targets(&app), [Some(1.0); 7]);
+
+        app.state.close_sidebar();
+        app.state.close_palette();
+        app.state.close_menu();
+        app.state.close_help();
+        app.state.completion = None;
+        app.state.hover = None;
+        app.state.chrome.show_notifications = false;
+        app.state.sync_motion(WINDOW, 1.0, ms(now, 16));
+        assert_eq!(targets(&app), [Some(0.0); 7]);
+    }
+
+    #[test]
+    fn reduced_motion_slides_nothing_but_still_fades() {
+        // Reduced promises fades only. Half-way through opening, the sidebar is already at its full
+        // width — for drawing and for the mouse alike — while the palette is part-faded.
+        let dir = scratch("reduced");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        app.state
+            .chrome
+            .motion
+            .set_animations(dacode::motion::Animations::Reduced);
+        let t0 = std::time::Instant::now();
+        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.palette = Some(commands(&app));
+        app.state.sync_motion(WINDOW, 1.0, t0);
+
+        let mid = ms(t0, 60);
+        let layout =
+            dacode::layout::Layout::of(WINDOW, 1.0, None, app.state.sidebar_fraction_at(mid));
+        let sidebar = layout.sidebar.expect("open");
+        assert_eq!(sidebar.width, layout.sidebar_width, "no slide");
+
+        let frame = draw_at(&mut app, mid);
+        let alpha = strongest(&frame, dacode_render::Layer::Modal).expect("fading in");
+        assert!(alpha > 0.0 && alpha < 1.0, "part-faded: {alpha}");
+        // And it is not growing either: the card is where it will settle.
+        let settled = draw_at(&mut app, ms(t0, 2000));
+        let card = |frame: &Frame| {
+            frame
+                .quads_on(dacode_render::Layer::Modal)
+                .map(|quad| quad.rect.width)
+                .fold(0.0, f32::max)
+        };
+        assert_eq!(card(&frame), card(&settled));
+    }
+
+    #[test]
+    fn full_motion_slides_the_sidebar_and_the_mouse_follows_the_drawn_frame() {
+        let dir = scratch("slide");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        let mid = ms(t0, 40);
+        let fraction = app.state.sidebar_fraction_at(mid);
+        assert!(fraction > 0.0 && fraction < 1.0, "part-way: {fraction}");
+        // The click handler reads the geometry of the last frame drawn, not of the clock.
+        app.last_frame = Some(mid);
+        let drawn = dacode::layout::Layout::of(app.window_bounds(), 1.0, None, fraction);
+        assert_eq!(app.layout().sidebar, drawn.sidebar);
+    }
+
+    #[test]
+    fn a_closed_palette_fades_out_without_taking_keys_and_is_then_forgotten() {
+        let dir = scratch("palette-leaves");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.palette = Some(commands(&app));
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        let open = ms(t0, 1500);
+
+        app.state.close_palette();
+        assert!(app.state.palette.is_none(), "closed means closed for input");
+        app.state.sync_motion(WINDOW, 1.0, open);
+        let frame = draw_at(&mut app, ms(t0, 1560));
+        let alpha = strongest(&frame, dacode_render::Layer::Modal).expect("still fading out");
+        assert!(alpha > 0.0 && alpha < 1.0, "{alpha}");
+
+        app.state.sync_motion(WINDOW, 1.0, ms(t0, 4000));
+        assert!(
+            app.state.chrome.leaving.palette.is_none(),
+            "nothing is kept once it has gone"
+        );
+        let frame = draw_at(&mut app, ms(t0, 4000));
+        assert!(strongest(&frame, dacode_render::Layer::Modal).is_none());
+    }
+
+    #[test]
+    fn a_message_swings_the_bell() {
+        let dir = scratch("bell");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.chrome.now = Some(t0);
+        app.state.chrome.notify("saved");
+        let swing = app
+            .state
+            .chrome
+            .motion
+            .get(dacode::motion::Key::Bell, ms(t0, 70));
+        assert!(swing.abs() > 0.5, "swinging: {swing}");
+        assert!(
+            !app.animating(ms(t0, 3000)),
+            "and still again within seconds"
+        );
+    }
+
+    #[test]
+    fn a_tab_opened_grows_in_and_the_active_background_glides_to_it() {
+        use dacode::motion::Key as MotionKey;
+        let dir = scratch("tabs");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let t0 = std::time::Instant::now();
+        app.state.buffer_count = 1;
+        app.state.active_buffer = 0;
+        app.state.sync_motion(WINDOW, 1.0, t0);
+        assert_eq!(
+            app.state.chrome.motion.get(MotionKey::TabIndicator, t0),
+            0.0
+        );
+
+        app.state.buffer_count = 2;
+        app.state.active_buffer = 1;
+        app.state.sync_motion(WINDOW, 1.0, ms(t0, 16));
+        let motion = &app.state.chrome.motion;
+        let glide = motion.get(MotionKey::TabIndicator, ms(t0, 60));
+        assert!(glide > 0.0 && glide < 1.0, "between the two tabs: {glide}");
+        let grow = motion.get(MotionKey::TabGrow, ms(t0, 40));
+        assert!(grow > 0.0 && grow < 1.0, "growing: {grow}");
     }
 
     #[test]

@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn a_click_decides_where_the_keys_go() {
-        let layout = Layout::of(Rect::new(0.0, 0.0, 1400.0, 900.0), 1.0, Some(4), true);
+        let layout = Layout::of(Rect::new(0.0, 0.0, 1400.0, 900.0), 1.0, Some(4), 1.0);
         let sidebar = layout.sidebar.expect("asked for one");
         assert_eq!(
             focus_for(&layout, sidebar.x + 5.0, sidebar.y + 50.0),

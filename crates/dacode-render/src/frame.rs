@@ -222,6 +222,52 @@ pub struct TextRun {
     pub clip: Option<Rect>,
 }
 
+/// A scale about a point and then a shift, applied to everything drawn while it is set: how an
+/// overlay grows from its anchor as it arrives, or a page slides in, without each of its rectangles
+/// being worked out a second time.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Zoom {
+    pub origin: [f32; 2],
+    pub factor: f32,
+    pub shift: [f32; 2],
+}
+
+impl Zoom {
+    pub fn about(origin: [f32; 2], factor: f32) -> Self {
+        Self {
+            origin,
+            factor,
+            shift: [0.0, 0.0],
+        }
+    }
+
+    /// A move by `shift` and nothing else.
+    pub fn shifted(shift: [f32; 2]) -> Self {
+        Self {
+            origin: [0.0, 0.0],
+            factor: 1.0,
+            shift,
+        }
+    }
+
+    /// Whether this changes nothing, so drawing under it can skip the arithmetic.
+    pub fn is_identity(&self) -> bool {
+        self.factor == 1.0 && self.shift == [0.0, 0.0]
+    }
+
+    pub fn point(&self, [x, y]: [f32; 2]) -> [f32; 2] {
+        [
+            self.origin[0] + (x - self.origin[0]) * self.factor + self.shift[0],
+            self.origin[1] + (y - self.origin[1]) * self.factor + self.shift[1],
+        ]
+    }
+
+    pub fn rect(&self, rect: Rect) -> Rect {
+        let [x, y] = self.point([rect.x, rect.y]);
+        Rect::new(x, y, rect.width * self.factor, rect.height * self.factor)
+    }
+}
+
 /// A complete description of one frame. Cleared and rebuilt each time.
 #[derive(Debug, Default, Clone)]
 pub struct Frame {
@@ -236,6 +282,11 @@ pub struct Frame {
     /// How see-through the window's backgrounds are: 0 is opaque. Kept across [`Frame::clear`],
     /// because it belongs to the window rather than to any one frame.
     transparency: f32,
+    /// How opaque subsequent drawing is, as a factor on every colour's alpha. `None` is fully
+    /// opaque; kept as an option so the derived default is the opaque one.
+    opacity: Option<f32>,
+    /// A scale applied to subsequent drawing. See [`Frame::set_zoom`].
+    zoom: Option<Zoom>,
 }
 
 impl Frame {
@@ -246,6 +297,129 @@ impl Frame {
         self.shapes.clear();
         self.layer = Layer::Base;
         self.clip = None;
+        self.opacity = None;
+        self.zoom = None;
+    }
+
+    /// Multiplies the alpha of everything drawn from here on by `opacity`, until it is set again.
+    ///
+    /// How an overlay fades: one factor applied where colours enter the frame, rather than each of
+    /// the dozens of colours in a card being faded by hand — the card that missed one would leave
+    /// its scrim or its border behind on screen. At zero nothing is pushed at all.
+    pub fn set_opacity(&mut self, opacity: f32) {
+        let opacity = if opacity.is_finite() {
+            opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        self.opacity = (opacity < 1.0).then_some(opacity);
+    }
+
+    pub fn opacity(&self) -> f32 {
+        self.opacity.unwrap_or(1.0)
+    }
+
+    /// Scales everything drawn from here on about a point, until it is set again; `None` lifts it.
+    ///
+    /// Text is scaled too, size and box together, so a run does not overflow a card that has shrunk
+    /// around it. The clip is not: it is in the window's coordinates, not the card's.
+    pub fn set_zoom(&mut self, zoom: Option<Zoom>) {
+        self.zoom = zoom.filter(|zoom| {
+            zoom.factor.is_finite()
+                && zoom.shift.iter().all(|v| v.is_finite())
+                && !zoom.is_identity()
+        });
+    }
+
+    fn zoomed(&self, rect: Rect) -> Rect {
+        self.zoom.map_or(rect, |zoom| zoom.rect(rect))
+    }
+
+    /// `color` with the frame's opacity applied, or `None` when that leaves nothing to see.
+    fn faded(&self, mut color: [f32; 4]) -> Option<[f32; 4]> {
+        color[3] *= self.opacity();
+        (color[3] > 0.0 || self.opacity.is_none()).then_some(color)
+    }
+
+    /// Whether a shape's extent lies inside the clip. A shape cannot be cut the way a rectangle can,
+    /// so one that pokes out is left out whole: a sliding panel's icons pop at its edge rather than
+    /// being painted over the bar beside it.
+    fn inside_clip(&self, kind: &ShapeKind) -> bool {
+        let Some(clip) = self.clip else {
+            return true;
+        };
+        let (min, max) = match *kind {
+            ShapeKind::Segment { from, to } => (
+                [from[0].min(to[0]), from[1].min(to[1])],
+                [from[0].max(to[0]), from[1].max(to[1])],
+            ),
+            ShapeKind::Ring { centre, radius }
+            | ShapeKind::Arc { centre, radius, .. }
+            | ShapeKind::Disc { centre, radius } => (
+                [centre[0] - radius, centre[1] - radius],
+                [centre[0] + radius, centre[1] + radius],
+            ),
+            ShapeKind::Triangle { a, b, c } => (
+                [a[0].min(b[0]).min(c[0]), a[1].min(b[1]).min(c[1])],
+                [a[0].max(b[0]).max(c[0]), a[1].max(b[1]).max(c[1])],
+            ),
+        };
+        const SLACK: f32 = 0.5;
+        min[0] >= clip.x - SLACK
+            && min[1] >= clip.y - SLACK
+            && max[0] <= clip.right() + SLACK
+            && max[1] <= clip.bottom() + SLACK
+    }
+
+    fn push_shape(&mut self, kind: ShapeKind, width: f32, color: [f32; 4]) {
+        let (kind, width) = match self.zoom {
+            Some(zoom) => (
+                match kind {
+                    ShapeKind::Segment { from, to } => ShapeKind::Segment {
+                        from: zoom.point(from),
+                        to: zoom.point(to),
+                    },
+                    ShapeKind::Ring { centre, radius } => ShapeKind::Ring {
+                        centre: zoom.point(centre),
+                        radius: radius * zoom.factor,
+                    },
+                    ShapeKind::Arc {
+                        centre,
+                        radius,
+                        start,
+                        end,
+                    } => ShapeKind::Arc {
+                        centre: zoom.point(centre),
+                        radius: radius * zoom.factor,
+                        start,
+                        end,
+                    },
+                    ShapeKind::Disc { centre, radius } => ShapeKind::Disc {
+                        centre: zoom.point(centre),
+                        radius: radius * zoom.factor,
+                    },
+                    ShapeKind::Triangle { a, b, c } => ShapeKind::Triangle {
+                        a: zoom.point(a),
+                        b: zoom.point(b),
+                        c: zoom.point(c),
+                    },
+                },
+                width * zoom.factor,
+            ),
+            None => (kind, width),
+        };
+        let Some(color) = self.faded(color) else {
+            return;
+        };
+        if !self.inside_clip(&kind) {
+            return;
+        }
+        self.shapes.push(Shape {
+            kind,
+            width,
+            color,
+            layer: self.layer,
+        });
     }
 
     /// Confines subsequent rectangles and text to `clip`, until it is set again; `None` lifts it.
@@ -254,7 +428,7 @@ impl Frame {
     /// code are placed from the scroll position, and the top one is partly above the code area while
     /// a touchpad has it part-scrolled: without a clip its line-number band and its glyphs would paint
     /// over the tab bar. Rectangles are cut to the clip; a run keeps its layout box and is clipped at
-    /// draw time. Icons, shapes and marks are not affected — nothing positioned that way needs it.
+    /// draw time. An icon or shape is kept only if it lies wholly inside; marks are not affected.
     pub fn set_clip(&mut self, clip: Option<Rect>) {
         self.clip = clip;
     }
@@ -306,11 +480,17 @@ impl Frame {
             size,
             size,
         );
+        let (Some(ink), Some(accent)) =
+            (self.faded(ink.to_linear()), self.faded(accent.to_linear()))
+        else {
+            return;
+        };
+        let box_rect = self.zoomed(box_rect);
         self.marks.push(Mark {
             rect: box_rect,
-            ink: ink.to_linear(),
-            accent: accent.to_linear(),
-            small: size < SMALL_BELOW,
+            ink,
+            accent,
+            small: box_rect.width < SMALL_BELOW,
             layer: self.layer,
         });
     }
@@ -348,6 +528,11 @@ impl Frame {
     }
 
     fn push_quad(&mut self, rect: Rect, color: [f32; 4], radius: f32, border: f32) {
+        let Some(color) = self.faded(color) else {
+            return;
+        };
+        let factor = self.zoom.map_or(1.0, |zoom| zoom.factor);
+        let (rect, radius, border) = (self.zoomed(rect), radius * factor, border * factor);
         let rect = match self.clip {
             Some(clip) => rect.intersect(clip),
             None => rect,
@@ -368,6 +553,14 @@ impl Frame {
     /// The stroke thins with the icon but never below a pixel and a quarter: thinner than that and
     /// antialiasing turns a line into a grey smudge.
     pub fn icon(&mut self, icon: Icon, rect: Rect, color: Oklch) {
+        self.icon_rotated(icon, rect, color, 0.0);
+    }
+
+    /// [`Frame::icon`], turned `radians` clockwise about the centre of the square it is drawn in.
+    ///
+    /// For the bell's wobble. The geometry is turned, not the pixels: a stroke stays a stroke at any
+    /// angle, and an arc's angles turn with its centre so the bell's dome stays on the bell.
+    pub fn icon_rotated(&mut self, icon: Icon, rect: Rect, color: Oklch, radians: f32) {
         let size = rect.width.min(rect.height);
         if size <= 0.0 {
             return;
@@ -377,7 +570,18 @@ impl Frame {
             rect.x + (rect.width - size) / 2.0,
             rect.y + (rect.height - size) / 2.0,
         ];
-        let at = |x: f32, y: f32| [origin[0] + x * unit, origin[1] + y * unit];
+        let (sin, cos) = if radians == 0.0 {
+            (0.0, 1.0)
+        } else {
+            radians.sin_cos()
+        };
+        // About the grid's centre, (12, 12). Exactly the unrotated arithmetic at zero, so an icon
+        // that is not turning is not moved by rounding either.
+        let at = |x: f32, y: f32| {
+            let (dx, dy) = (x - 12.0, y - 12.0);
+            let (x, y) = (12.0 + dx * cos - dy * sin, 12.0 + dx * sin + dy * cos);
+            [origin[0] + x * unit, origin[1] + y * unit]
+        };
         let width = (1.8 * unit).max(1.25);
         let color = color.to_linear();
 
@@ -394,8 +598,8 @@ impl Frame {
                 Stroke::Arc(x, y, r, start, end) => ShapeKind::Arc {
                     centre: at(x, y),
                     radius: r * unit,
-                    start: start.to_radians(),
-                    end: end.to_radians(),
+                    start: start.to_radians() + radians,
+                    end: end.to_radians() + radians,
                 },
                 Stroke::Disc(x, y, r) => ShapeKind::Disc {
                     centre: at(x, y),
@@ -407,23 +611,13 @@ impl Frame {
                     c: at(x3, y3),
                 },
             };
-            self.shapes.push(Shape {
-                kind,
-                width,
-                color,
-                layer: self.layer,
-            });
+            self.push_shape(kind, width, color);
         }
     }
 
     /// A filled circle — an avatar, a badge, a status dot.
     pub fn disc(&mut self, centre: [f32; 2], radius: f32, color: Oklch) {
-        self.shapes.push(Shape {
-            kind: ShapeKind::Disc { centre, radius },
-            width: 0.0,
-            color: color.to_linear(),
-            layer: self.layer,
-        });
+        self.push_shape(ShapeKind::Disc { centre, radius }, 0.0, color.to_linear());
     }
 
     /// A horizontal gradient approximated by vertical strips. Used only for the gutter's mode
@@ -481,6 +675,17 @@ impl Frame {
 
     pub fn text(&mut self, mut run: TextRun) {
         run.layer = self.layer;
+        if let Some(opacity) = self.opacity {
+            run.color.alpha *= opacity;
+            if run.color.alpha <= 0.0 {
+                return;
+            }
+        }
+        if let Some(zoom) = self.zoom {
+            run.rect = zoom.rect(run.rect);
+            run.clip = run.clip.map(|clip| zoom.rect(clip));
+            run.spec.size_px *= zoom.factor;
+        }
         if let Some(clip) = self.clip {
             let clip = run.clip.map_or(clip, |own| own.intersect(clip));
             // Wholly outside: there is nothing to shape, and nothing to draw.
@@ -497,5 +702,131 @@ impl Frame {
         if run.rect.is_visible() && !run.text.is_empty() {
             self.texts.push(run);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ink() -> Oklch {
+        Oklch::new(0.5, 0.1, 30.0)
+    }
+
+    fn points(shape: &Shape) -> Vec<[f32; 2]> {
+        match shape.kind {
+            ShapeKind::Segment { from, to } => vec![from, to],
+            ShapeKind::Ring { centre, .. }
+            | ShapeKind::Arc { centre, .. }
+            | ShapeKind::Disc { centre, .. } => vec![centre],
+            ShapeKind::Triangle { a, b, c } => vec![a, b, c],
+        }
+    }
+
+    fn close(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
+    }
+
+    #[test]
+    fn an_icon_turned_by_nothing_is_the_icon() {
+        let rect = Rect::new(10.0, 20.0, 24.0, 24.0);
+        let mut plain = Frame::default();
+        plain.icon(Icon::Bell, rect, ink());
+        let mut turned = Frame::default();
+        turned.icon_rotated(Icon::Bell, rect, ink(), 0.0);
+        assert_eq!(plain.shapes, turned.shapes);
+    }
+
+    #[test]
+    fn a_rotated_icon_turns_about_its_centre() {
+        // A half turn sends every point to its mirror through the centre. Rotating about a corner
+        // instead — the easy mistake, since the grid's origin is the corner — would swing the bell
+        // out of its button.
+        let rect = Rect::new(10.0, 20.0, 24.0, 24.0);
+        let centre = [22.0, 32.0];
+        let mut plain = Frame::default();
+        plain.icon(Icon::Close, rect, ink());
+        let mut turned = Frame::default();
+        turned.icon_rotated(Icon::Close, rect, ink(), std::f32::consts::PI);
+        for (a, b) in plain.shapes.iter().zip(&turned.shapes) {
+            for (p, q) in points(a).into_iter().zip(points(b)) {
+                let mirrored = [2.0 * centre[0] - p[0], 2.0 * centre[1] - p[1]];
+                assert!(close(mirrored, q), "{p:?} turned to {q:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_arc_turns_with_the_rest_of_its_icon() {
+        let rect = Rect::new(0.0, 0.0, 24.0, 24.0);
+        let mut plain = Frame::default();
+        plain.icon(Icon::Bell, rect, ink());
+        let mut turned = Frame::default();
+        turned.icon_rotated(Icon::Bell, rect, ink(), 0.25);
+        let arcs = |frame: &Frame| -> Vec<(f32, f32)> {
+            frame
+                .shapes
+                .iter()
+                .filter_map(|shape| match shape.kind {
+                    ShapeKind::Arc { start, end, .. } => Some((start, end)),
+                    _ => None,
+                })
+                .collect()
+        };
+        for ((s0, e0), (s1, e1)) in arcs(&plain).into_iter().zip(arcs(&turned)) {
+            assert!((s1 - s0 - 0.25).abs() < 1e-5 && (e1 - e0 - 0.25).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn opacity_scales_every_alpha_and_zero_draws_nothing() {
+        let mut frame = Frame::default();
+        frame.set_opacity(0.5);
+        frame.fill(Rect::new(0.0, 0.0, 10.0, 10.0), ink());
+        frame.icon(Icon::Close, Rect::new(0.0, 0.0, 24.0, 24.0), ink());
+        frame.text(TextRun {
+            text: "x".into(),
+            spec: dacode_theme::Typography::default().spec(dacode_theme::Role::Ui),
+            color: ink(),
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            align: Align::Left,
+            center_vertically: false,
+            wrap: false,
+            layer: Layer::Base,
+            clip: None,
+        });
+        assert!((frame.quads[0].color[3] - 0.5).abs() < 1e-6);
+        assert!(frame.shapes.iter().all(|s| (s.color[3] - 0.5).abs() < 1e-6));
+        assert!((frame.texts[0].color.alpha - 0.5).abs() < 1e-6);
+
+        // Fully faded is not drawn at all: a transparent quad still costs an instance.
+        let mut frame = Frame::default();
+        frame.set_opacity(0.0);
+        frame.fill(Rect::new(0.0, 0.0, 10.0, 10.0), ink());
+        frame.icon(Icon::Close, Rect::new(0.0, 0.0, 24.0, 24.0), ink());
+        assert!(frame.quads.is_empty() && frame.shapes.is_empty());
+    }
+
+    #[test]
+    fn a_zoom_scales_what_is_drawn_about_its_origin_and_clear_forgets_it() {
+        let mut frame = Frame::default();
+        frame.set_zoom(Some(Zoom::about([100.0, 100.0], 0.5)));
+        frame.fill(Rect::new(100.0, 100.0, 40.0, 20.0), ink());
+        assert_eq!(frame.quads[0].rect, Rect::new(100.0, 100.0, 20.0, 10.0));
+        frame.clear();
+        frame.fill(Rect::new(100.0, 100.0, 40.0, 20.0), ink());
+        assert_eq!(frame.quads[0].rect, Rect::new(100.0, 100.0, 40.0, 20.0));
+    }
+
+    #[test]
+    fn a_clip_keeps_icons_inside_it() {
+        // The sidebar slides in under a clip; an icon that was not clipped would be drawn over the
+        // activity bar beside it.
+        let mut frame = Frame::default();
+        frame.set_clip(Some(Rect::new(50.0, 0.0, 100.0, 100.0)));
+        frame.icon(Icon::Close, Rect::new(0.0, 0.0, 24.0, 24.0), ink());
+        assert!(frame.shapes.is_empty(), "wholly outside");
+        frame.icon(Icon::Close, Rect::new(60.0, 10.0, 24.0, 24.0), ink());
+        assert!(!frame.shapes.is_empty(), "wholly inside");
     }
 }

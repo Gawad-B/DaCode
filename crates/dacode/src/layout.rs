@@ -21,6 +21,10 @@ pub struct Layout {
     /// The sidebar, when one is open. Closed, the editor takes its width — as it does in both
     /// editors this one is shaped after.
     pub sidebar: Option<Rect>,
+    /// How wide the sidebar is when it is fully open, whether or not it is now. A sidebar sliding
+    /// in lays its contents out at this width and shows the part that has arrived, so the rows do
+    /// not reflow on every frame of the slide.
+    pub sidebar_width: f32,
     pub tabs: Rect,
     pub status: Rect,
     /// The editor area, before it is divided into panes.
@@ -491,13 +495,25 @@ impl Layout {
     ///
     /// The sidebar gives way first when the window is narrow: past a third of the width it would
     /// leave the code too little room to be worth editing in.
-    pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>, sidebar: bool) -> Self {
+    ///
+    /// `sidebar` is how far open the sidebar is, from 0 (closed) to 1 (open), and a little past 1
+    /// while a spring overshoots. Drawing passes where the slide has got to and so does the mouse, so
+    /// a click lands on what is on screen even mid-slide; soft wrap passes where it is going, so the
+    /// text does not rewrap on every frame of it.
+    pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>, sidebar: f32) -> Self {
         let px = |v: f32| v * scale;
 
         let (title, rest) = bounds.split_top(px(size::TITLE).min(bounds.height));
         let (activity, rest) = rest.split_left(px(size::ACTIVITY).min(rest.width));
-        let (sidebar, column) = if sidebar {
-            let width = px(size::SIDEBAR).min(rest.width * 0.34).floor();
+        let sidebar_width = px(size::SIDEBAR).min(rest.width * 0.34).floor();
+        let fraction = if sidebar.is_finite() {
+            sidebar.max(0.0)
+        } else {
+            1.0
+        };
+        // Whole pixels, so the hairline on its edge stays one crisp column while it moves.
+        let width = (sidebar_width * fraction).round();
+        let (sidebar, column) = if width >= 1.0 {
             let (sidebar, column) = rest.split_left(width);
             (Some(sidebar), column)
         } else {
@@ -520,6 +536,7 @@ impl Layout {
             title,
             activity,
             sidebar,
+            sidebar_width,
             tabs,
             status,
             editor,
@@ -633,8 +650,24 @@ mod tests {
 
     #[test]
     fn the_regions_partition_the_window_exactly() {
-        for sidebar in [true, false] {
+        // At every point of the sidebar sliding open, not only at its ends: a frame half-way through
+        // is still a frame the mouse has to agree with.
+        let full = Layout::of(bounds(), 1.0, None, 1.0)
+            .sidebar
+            .expect("open")
+            .width;
+        for sidebar in [0.0, 0.5, 1.0] {
             let layout = Layout::of(bounds(), 1.0, None, sidebar);
+            if sidebar == 0.0 {
+                assert!(layout.sidebar.is_none(), "closed is no sidebar at all");
+            } else {
+                let width = layout.sidebar.expect("open part-way").width;
+                assert_eq!(width, (full * sidebar).round(), "at {sidebar}");
+                assert_eq!(
+                    layout.sidebar_width, full,
+                    "the open width is known throughout"
+                );
+            }
 
             assert_eq!(layout.title.y, 0.0);
             assert_eq!(layout.activity.y, layout.title.bottom());
@@ -668,8 +701,8 @@ mod tests {
 
     #[test]
     fn closing_the_sidebar_gives_its_width_to_the_editor() {
-        let open = Layout::of(bounds(), 1.0, None, true);
-        let closed = Layout::of(bounds(), 1.0, None, false);
+        let open = Layout::of(bounds(), 1.0, None, 1.0);
+        let closed = Layout::of(bounds(), 1.0, None, 0.0);
         let sidebar = open.sidebar.expect("asked for one").width;
         assert_eq!(closed.editor.width, open.editor.width + sidebar);
     }
@@ -865,7 +898,7 @@ mod tests {
 
     #[test]
     fn panes_tile_the_editor_area_without_gaps_or_overlap() {
-        let layout = Layout::of(bounds(), 1.0, None, true);
+        let layout = Layout::of(bounds(), 1.0, None, 1.0);
 
         for count in 1..=4 {
             let mut covered = 0.0;
@@ -889,7 +922,7 @@ mod tests {
 
     #[test]
     fn a_point_maps_back_to_the_pane_it_is_in() {
-        let layout = Layout::of(bounds(), 1.0, None, true);
+        let layout = Layout::of(bounds(), 1.0, None, 1.0);
 
         for count in 1..=3 {
             for index in 0..count {
@@ -907,8 +940,8 @@ mod tests {
 
     #[test]
     fn the_results_panel_takes_space_from_the_editor_not_the_statusline() {
-        let plain = Layout::of(bounds(), 1.0, None, true);
-        let with_panel = Layout::of(bounds(), 1.0, Some(6), true);
+        let plain = Layout::of(bounds(), 1.0, None, 1.0);
+        let with_panel = Layout::of(bounds(), 1.0, Some(6), 1.0);
 
         assert!(with_panel.results.is_some());
         assert!(with_panel.editor.height < plain.editor.height);
@@ -920,7 +953,7 @@ mod tests {
 
     #[test]
     fn only_a_split_reserves_a_footer() {
-        let layout = Layout::of(bounds(), 1.0, None, true);
+        let layout = Layout::of(bounds(), 1.0, None, 1.0);
         assert!(layout.pane(0, 1, true, 1.0).footer.is_none());
         assert!(layout.pane(0, 2, true, 1.0).footer.is_some());
     }
