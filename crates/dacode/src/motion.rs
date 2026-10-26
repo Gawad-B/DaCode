@@ -115,7 +115,10 @@ struct Value {
     target: f64,
     /// Already clamped for `Animations::Reduced` when it was stored.
     spring: Spring,
-    since: Instant,
+    /// When `position` and `velocity` were taken. `None` for a value at rest after a `snap`: it has
+    /// no timeline to anchor, and giving it a clock reading would make a later `to` from an earlier
+    /// instant (a capture at a chosen time) start late.
+    since: Option<Instant>,
     /// How close counts as arrived. Fixed at the retarget, from how far the value has to go, and not
     /// from where the target happens to sit: a scroll offset of a hundred thousand pixels moved by a
     /// wheel notch must still animate, and a large move must not keep asking for frames while it
@@ -127,7 +130,10 @@ struct Value {
 impl Value {
     /// Position and velocity at `now`. Asking about an instant before `since` answers as of `since`.
     fn sample(&self, now: Instant) -> (f64, f64) {
-        let t = now.saturating_duration_since(self.since).as_secs_f64();
+        let Some(since) = self.since else {
+            return (self.position, self.velocity);
+        };
+        let t = now.saturating_duration_since(since).as_secs_f64();
         let (d, v) = evaluate(self.position - self.target, self.velocity, self.spring, t);
         (self.target + d, v)
     }
@@ -140,7 +146,7 @@ impl Value {
             velocity: 0.0,
             target,
             spring: Spring::HOVER,
-            since: Instant::now(),
+            since: None,
             position_tolerance,
             velocity_tolerance,
         }
@@ -240,7 +246,8 @@ impl Motion {
         }
     }
 
-    /// Send `key` towards `target`, keeping whatever velocity it has at `now`. Momentum is the point
+    /// Send `key` towards `target`, keeping whatever velocity it has at `now`. Asking for the target
+    /// it already has changes nothing. Momentum is the point
     /// of using a spring: a sidebar toggled twice in quick succession reverses smoothly instead of
     /// restarting from where a timeline says it should be.
     pub fn to(&mut self, key: Key, target: f32, spring: Spring, now: Instant) {
@@ -267,10 +274,21 @@ impl Motion {
             damping_ratio: spring.damping_ratio.max(0.05),
         };
         let target = f64::from(target);
+        // Drawing code can say where something should be every frame. Asking for where it is already
+        // heading must leave the trajectory alone, not restart it from the current instant (which would
+        // also forget the tolerance it was given at the start of the move). Exact equality is the
+        // test: a target that differs at all is a retarget. The spring passed is ignored here too.
+        if self
+            .values
+            .get(&key)
+            .is_some_and(|value| value.target == target)
+        {
+            return;
+        }
         let ((position, mut velocity), since) = match self.values.get(&key) {
             // An earlier `now` than the value's own clock must not rewind it: the timeline would then
             // replay motion that never happened.
-            Some(value) => (value.sample(now), now.max(value.since)),
+            Some(value) => (value.sample(now), value.since.map_or(now, |s| now.max(s))),
             None => ((0.0, 0.0), now),
         };
         let omega = f64::from(spring.stiffness).sqrt();
@@ -295,7 +313,7 @@ impl Motion {
                 velocity,
                 target,
                 spring,
-                since,
+                since: Some(since),
                 position_tolerance,
                 velocity_tolerance,
             },
@@ -307,8 +325,7 @@ impl Motion {
         if !value.is_finite() {
             return;
         }
-        // A value at rest on its target evaluates to its target at every instant, so `since` is
-        // irrelevant and the caller does not need to supply one.
+        // At rest there is no timeline, so the caller does not need to supply a clock.
         self.values.insert(key, Value::at_rest(f64::from(value)));
     }
 
@@ -629,6 +646,38 @@ mod tests {
         motion.to(Key::Sidebar, 1.0, Spring::PANEL, at(start, 100));
         motion.to(Key::Sidebar, 1.0, Spring::PANEL, start);
         assert_eq!(motion.get(Key::Sidebar, at(start, 100)), 0.0);
+    }
+
+    #[test]
+    fn asking_for_the_same_target_every_frame_changes_nothing() {
+        // Draw code says where a panel should be on every frame. Restarting the spring each time
+        // would re-anchor it at the current instant and slow or stall the move.
+        let start = Instant::now();
+        let mut once = Motion::new(Animations::Full);
+        let mut every_frame = Motion::new(Animations::Full);
+        once.to(Key::Sidebar, 1.0, Spring::PANEL, start);
+        for frame in 0..200 {
+            let now = at(start, frame * 16);
+            every_frame.to(Key::Sidebar, 1.0, Spring::PANEL, now);
+            assert_eq!(
+                every_frame.get(Key::Sidebar, now),
+                once.get(Key::Sidebar, now),
+                "frame {frame}"
+            );
+            assert_eq!(every_frame.busy(now), once.busy(now), "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn snapping_then_animating_from_an_earlier_clock_starts_at_that_clock() {
+        // A capture renders "150 ms into the transition" from a time chosen by the caller, which can
+        // precede the wall-clock instant of an earlier snap. The snap must not push the start later.
+        let t0 = Instant::now() - Duration::from_secs(1);
+        let mut motion = Motion::new(Animations::Full);
+        motion.snap(Key::Sidebar, 0.0);
+        motion.to(Key::Sidebar, 1.0, Spring::PANEL, t0);
+        let mid = motion.get(Key::Sidebar, at(t0, 150));
+        assert!(mid > 0.0 && mid < 1.0, "mid-flight {mid}");
     }
 
     const SPRINGS: [Spring; 4] = [Spring::PANEL, Spring::POPUP, Spring::HOVER, Spring::SCROLL];
