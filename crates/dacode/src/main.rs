@@ -1521,6 +1521,13 @@ struct App {
     /// 1, 2 or 3: caret, word, line. Kept for the whole gesture so a drag after a double-click is
     /// still a word-wise drag.
     click_count: u8,
+    /// Whether the last press chose a row of an overlay — the palette, the help panel, a menu.
+    ///
+    /// That press closes the overlay, so the second press of a double-click (the habit of every
+    /// file picker) arrives with nothing in front of the text: it selected a word in the file just
+    /// opened, moved the caret off where the file was restored to, and took the keys to the editor.
+    /// The rest of the series, and a drag from it, are swallowed; the next single press clears it.
+    chosen_by_overlay: bool,
     /// When the document was last changed, so autosave can wait for a pause in typing rather than
     /// writing a half-typed word to disk every few seconds.
     last_edit: Option<std::time::Instant>,
@@ -2017,6 +2024,7 @@ impl App {
             block_origin: None,
             last_click: None,
             click_count: 1,
+            chosen_by_overlay: false,
             last_edit: None,
             wakes: 0,
             was_animating: false,
@@ -7051,7 +7059,7 @@ impl App {
             self.state
                 .results
                 .as_ref()
-                .map(|results| results.visible().0.len()),
+                .map(|results| results.wanted_rows()),
             self.state
                 .sidebar_fraction_at(self.last_frame.unwrap_or_else(std::time::Instant::now)),
         )
@@ -7062,6 +7070,12 @@ impl App {
     /// Reads the same geometry the chrome draws from, so a click lands where it looks like it should
     /// even in a three-way split.
     fn click(&mut self, extend: bool) {
+        if self.chosen_by_overlay {
+            if extend || self.click_count > 1 {
+                return;
+            }
+            self.chosen_by_overlay = false;
+        }
         let (x, y) = self.pointer;
         let scale = self.scale();
         let layout = self.layout();
@@ -7131,7 +7145,7 @@ impl App {
 
         if let Some(panel) = layout.results {
             if dacode::layout::contains(panel, x, y) && !extend {
-                self.click_results(panel, y, scale);
+                self.click_results(panel, x, y, scale);
                 return;
             }
         }
@@ -7530,13 +7544,20 @@ impl App {
             if let Some(palette) = &mut self.state.palette {
                 palette.selected = index;
             }
+            self.chosen_by_overlay = true;
             // Exactly what Enter does, through the same function — so a click cannot differ from
             // the key in anything but how it was asked for.
             self.handle_palette_key(Key::named(KeyCode::Enter));
             return true;
         }
-        // The query field, a heading, the padding: part of the card, and nothing to do.
-        if dacode::layout::contains(geometry.card, x, y) {
+        // The query field, a heading, the padding: part of the card, and nothing to do. So is the
+        // command centre it hangs from: a click there fell through to the box's own button, which
+        // opened a fresh command palette over whatever was being searched and threw the query away.
+        let anchor =
+            dacode::palette::anchor(self.window_bounds(), self.scale(), &self.state.typography);
+        if dacode::layout::contains(geometry.card, x, y)
+            || anchor.is_some_and(|anchor| dacode::layout::contains(anchor, x, y))
+        {
             return true;
         }
         self.state.close_palette();
@@ -7556,6 +7577,7 @@ impl App {
             // A heading is a row too, and runs nothing.
             if help.command_on(line).is_some() {
                 help.selected = line;
+                self.chosen_by_overlay = true;
                 self.handle_help_key(Key::named(KeyCode::Enter));
             }
             return;
@@ -7627,6 +7649,7 @@ impl App {
 
         self.state.close_menu();
         if let Some(action) = chosen {
+            self.chosen_by_overlay = true;
             let _ = self.run(action);
         }
     }
@@ -7796,23 +7819,15 @@ impl App {
     }
 
     /// A click in the results panel selects and opens that hit.
-    fn click_results(&mut self, panel: Rect, y: f32, scale: f32) {
-        let row = ((y - panel.y - 22.0 * scale) / (22.0 * scale)).floor();
-        if row < 0.0 {
-            return;
-        }
+    fn click_results(&mut self, panel: Rect, x: f32, y: f32, scale: f32) {
         let Some(results) = &mut self.state.results else {
             return;
         };
-        let (rows, _) = results.visible();
-        if let Some(hit) = rows.get(row as usize).cloned() {
-            results.selected = results
-                .hits
-                .iter()
-                .position(|candidate| {
-                    candidate.path == hit.path && candidate.line_number == hit.line_number
-                })
-                .unwrap_or(results.selected);
+        // The rows the panel drew, from the function that drew them: this used to redo the header
+        // and row arithmetic here, a second copy that had to agree with the drawing by luck.
+        let geometry = results.geometry(panel, scale);
+        if let Some(index) = dacode::results::Results::hit_at(&geometry, x, y) {
+            results.selected = index;
             self.open_hit();
         }
     }
@@ -8881,6 +8896,70 @@ mod wiring_tests {
         (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
     }
 
+    /// At 640x480 the results panel has room for fewer rows than its window used to hold, and
+    /// stepping down moved the selection onto rows cut off below the panel. Every step, by key
+    /// and by wheel, must leave the selection on a row that is drawn — and a click on a drawn row
+    /// must open that row.
+    #[test]
+    fn at_640_pixels_the_results_selection_is_always_on_a_drawn_row() {
+        let dir = scratch("results-640");
+        let text: String = (0..50).map(|line| format!("needle {line}\n")).collect();
+        let mut app = editor(&dir, "a.rs", &text);
+        app.headless_size = (640, 480);
+        let hits = (0..40)
+            .map(|line| dacode_project::SearchHit {
+                path: dir.join("a.rs"),
+                line_number: line + 1,
+                line: format!("needle {line}"),
+                range: 0..6,
+            })
+            .collect();
+        app.state
+            .show_results(dacode::results::Results::from_hits(&dir, "needle", hits));
+
+        let drawn = |app: &App| {
+            let panel = app.layout().results.expect("the panel is open");
+            let results = app.state.results.as_ref().unwrap();
+            let geometry = results.geometry(panel, app.scale());
+            assert!(
+                geometry
+                    .rows
+                    .iter()
+                    .all(|row| row.bottom() <= panel.bottom() + 0.01)
+            );
+            (geometry, results.selected)
+        };
+        let (geometry, _) = drawn(&app);
+        assert!(
+            geometry.rows.len() < dacode::results::VISIBLE_ROWS,
+            "the window is short enough here to test anything"
+        );
+        for step in 0..15 {
+            if step % 2 == 0 {
+                app.press(Key::named(KeyCode::Down));
+            } else {
+                app.pointer = middle(app.layout().results.unwrap());
+                app.wheel(1);
+            }
+            let (geometry, selected) = drawn(&app);
+            assert!(
+                (geometry.first..geometry.first + geometry.rows.len()).contains(&selected),
+                "after step {step}, hit {selected} is selected and rows {}..{} are drawn",
+                geometry.first,
+                geometry.first + geometry.rows.len()
+            );
+        }
+
+        let (geometry, _) = drawn(&app);
+        app.pointer = middle(geometry.rows[1]);
+        app.click(false);
+        assert_eq!(
+            app.state.cursor_point().line,
+            geometry.first + 1,
+            "the click opened the hit drawn under it"
+        );
+    }
+
     /// The gap `CLAUDE.md` listed: the palette's rows could only be reached by the keyboard. A
     /// click on row `n` must run row `n` — not its neighbour, and not the one that is selected.
     #[test]
@@ -8955,6 +9034,46 @@ mod wiring_tests {
         );
     }
 
+    /// The second press of a double-click on a palette row lands on the file the first one opened.
+    /// It must select nothing there and leave the keys where they were.
+    #[test]
+    fn a_double_click_on_a_palette_row_does_not_reach_the_text_behind_it() {
+        let dir = scratch("palette-double");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        std::fs::write(dir.join("b.rs"), "alpha beta gamma\n").unwrap();
+        app.activate(Target::File(dir.join("b.rs")));
+        app.state.tree = Some(dacode::tree::FileTree::new(dir.clone(), &[]));
+        app.state.focus = dacode::focus::Focus::Sidebar;
+        app.open_palette(PaletteKind::Buffers);
+        let geometry = app.palette_geometry().unwrap();
+        let row = geometry
+            .items
+            .iter()
+            .position(|item| app.state.palette.as_ref().unwrap().rows[*item].name == "a.rs")
+            .expect("a.rs is listed");
+        app.pointer = middle(geometry.rows[row]);
+        app.click_count = 1;
+        app.click(false);
+        assert!(app.state.palette.is_none());
+        let before = app.state.document.selections().clone();
+
+        // The second press of the series, at the same place, and a jitter of the held button.
+        app.click_count = 2;
+        app.click(false);
+        app.click(true);
+        assert_eq!(
+            app.state.document.selections(),
+            &before,
+            "no word was selected"
+        );
+        assert_eq!(app.state.focus, dacode::focus::Focus::Sidebar);
+
+        // A fresh press is an ordinary click again.
+        app.click_count = 1;
+        app.click(false);
+        assert_eq!(app.state.focus, dacode::focus::Focus::Editor);
+    }
+
     /// A click outside the card closes the palette — including just under it, where its shadow is:
     /// the shadow is drawing, not a target. A click on the query field leaves it open.
     #[test]
@@ -8973,6 +9092,54 @@ mod wiring_tests {
         app.click(false);
         assert!(app.state.palette.is_none(), "the shadow takes no clicks");
         assert_eq!(app.state.document.text().to_string(), before);
+    }
+
+    /// A query too long for the field gives way to "N of M" rather than being drawn under it.
+    #[test]
+    fn a_long_query_does_not_run_under_the_match_count() {
+        let dir = scratch("palette-count");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.headless_size = (640, 480);
+        app.open_palette(PaletteKind::Commands);
+        for c in "a query typed far longer than the field has any room to show".chars() {
+            app.press(Key::char(c));
+        }
+        let mut frame = Frame::default();
+        let bounds = app.window_bounds();
+        chrome::draw(&mut frame, &app.state, bounds, app.scale());
+        let runs: Vec<_> = frame.texts_on(dacode_render::Layer::Modal).collect();
+        let count = runs
+            .iter()
+            .find(|run| run.text.contains(" of "))
+            .expect("the count is drawn");
+        let query = runs
+            .iter()
+            .find(|run| run.text.ends_with("room to show"))
+            .expect("the query is drawn, losing its start");
+        assert!(
+            query.rect.right() <= count.rect.x + 0.5,
+            "the query's box {:?} runs under the count's {:?}",
+            query.rect,
+            count.rect
+        );
+    }
+
+    /// The command centre opened the palette, so a click on it while the palette is open must not
+    /// replace the palette with a new one and lose what was typed.
+    #[test]
+    fn a_click_on_the_command_centre_keeps_the_open_palette_and_its_query() {
+        let dir = scratch("palette-anchor");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        app.open_palette(PaletteKind::Files);
+        app.press(Key::char('a'));
+        let anchor =
+            dacode::palette::anchor(app.window_bounds(), app.scale(), &app.state.typography)
+                .expect("the command centre is on the bar at this size");
+        app.pointer = middle(anchor);
+        app.click(false);
+        let palette = app.state.palette.as_ref().expect("still open");
+        assert_eq!(palette.kind, PaletteKind::Files);
+        assert_eq!(palette.query, "a");
     }
 
     #[test]
@@ -8998,6 +9165,10 @@ mod wiring_tests {
         app.state.tree = Some(dacode::tree::FileTree::new(dir.clone(), &[]));
         app.state.focus = dacode::focus::Focus::Sidebar;
         app.open_palette(PaletteKind::Commands);
+        // Typed, so the row is on screen whatever the table's order puts on the first page.
+        for c in "wrap long".chars() {
+            app.press(Key::char(c));
+        }
         let geometry = app.palette_geometry().unwrap();
         let row = geometry
             .items
@@ -9006,7 +9177,7 @@ mod wiring_tests {
                 app.state.palette.as_ref().unwrap().rows[*item].target
                     == Target::Command("toggle_soft_wrap")
             })
-            .unwrap_or(0);
+            .expect("the soft-wrap row is on screen");
         app.pointer = middle(geometry.rows[row]);
         app.click(false);
         assert!(app.state.palette.is_none());
@@ -9033,6 +9204,18 @@ mod wiring_tests {
             geometry.capacity,
             "and the page is full"
         );
+        let on_page = |app: &App| {
+            let geometry = app.help_geometry().unwrap();
+            let help = app.state.help.as_ref().unwrap();
+            (geometry.first..geometry.first + geometry.rows.len()).contains(&help.selected)
+                && help.selection().is_some()
+        };
+        assert!(
+            on_page(&app),
+            "the highlight came onto the page the wheel scrolled to"
+        );
+        app.press(Key::named(KeyCode::PageUp));
+        assert!(on_page(&app), "and onto the one PageUp scrolled to");
     }
 
     /// A title clicked with the palette open used to open a menu the keyboard could not drive —

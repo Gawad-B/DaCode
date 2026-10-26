@@ -68,10 +68,22 @@ impl Command {
 /// that grammar reads it fluently. Someone who did not has never seen `<c-s-p>`, and a tooltip that
 /// teaches a key in a notation they cannot read teaches nothing. A chord followed by another key —
 /// `<c-k>o` — keeps the gap between them, since that is two presses.
+///
+/// Alternatives stay two spaces apart, as the table writes them: `<c-y>  <c-s-z>` becomes
+/// `Ctrl+Y  Ctrl+Shift+Z`, two keys that each do it, while `<c-k>o` is `Ctrl+K O`, one key after
+/// another. Collapsing both to a single space made "Ctrl+K O" and "Ctrl+Y Ctrl+Shift+Z" read alike,
+/// and a reader could take the `O` for a key of its own.
 pub fn pretty(keys: &str) -> String {
     let mut out = String::new();
     let mut rest = keys;
+    let mut alternative = false;
     while let Some(first) = rest.chars().next() {
+        if first == ' ' {
+            let run = rest.len() - rest.trim_start_matches(' ').len();
+            alternative |= run >= 2;
+            rest = &rest[run..];
+            continue;
+        }
         let group = (first == '<')
             .then(|| rest[1..].find('>').map(|end| &rest[1..1 + end]))
             .flatten()
@@ -83,15 +95,13 @@ pub fn pretty(keys: &str) -> String {
             }
             None => {
                 rest = &rest[first.len_utf8()..];
-                match first {
-                    ' ' => continue,
-                    other => other.to_uppercase().to_string(),
-                }
+                first.to_uppercase().to_string()
             }
         };
-        if !out.is_empty() && !out.ends_with(' ') {
-            out.push(' ');
+        if !out.is_empty() {
+            out.push_str(if alternative { "  " } else { " " });
         }
+        alternative = false;
         out.push_str(&piece);
     }
     out
@@ -154,6 +164,12 @@ mod pretty_tests {
     fn a_sequence_keeps_its_presses_apart() {
         assert_eq!(pretty("<c-k>o"), "Ctrl+K O");
         assert_eq!(pretty("gD"), "G D");
+    }
+
+    #[test]
+    fn alternatives_stay_apart_from_the_presses_of_one_key() {
+        assert_eq!(pretty("<c-y>  <c-s-z>"), "Ctrl+Y  Ctrl+Shift+Z");
+        assert_eq!(pretty("<c-k>o"), "Ctrl+K O");
     }
 
     #[test]

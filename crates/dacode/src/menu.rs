@@ -328,12 +328,11 @@ impl Menu {
         let note_height = NOTE_HEIGHT * scale;
         let pad = space::MD * scale;
 
-        // Text is measured at the same nominal advance the chrome draws menu text with. Exact
-        // shaping would need the font; this is a menu, and being a few pixels wide is invisible.
-        let label_width = self.widest(|item| item.label.chars().count()) * 8.0 * scale;
-        // The keys are chips, measured by the function that sizes them for drawing. In desktop
-        // notation, which splits a string into at least as many chips as Vim's does, so the column
-        // is never narrower than what is drawn in it.
+        // Measured the way the drawing elides: with the face's real advance, so a label that this
+        // says fits is not cut by an ellipsis when drawn.
+        let label_width = self.widest(|item| item.label.chars().count())
+            * crate::layout::measured_advance(typography, dacode_theme::Role::Ui, scale);
+        // The keys are chips, measured by the function that sizes them for drawing.
         let keys_width = self
             .items
             .iter()
@@ -421,7 +420,6 @@ impl Menu {
             header,
             card,
             rows,
-            label_width,
             pad,
         }
     }
@@ -561,8 +559,6 @@ pub struct Geometry {
     pub card: Rect,
     /// One rectangle per item, in order.
     pub rows: Vec<Rect>,
-    /// Width of the label column, so the drawing code does not measure twice.
-    pub label_width: f32,
     pub pad: f32,
 }
 

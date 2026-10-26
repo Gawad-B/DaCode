@@ -5,14 +5,33 @@
 //! walk finishes, which is why the panel renders whatever has arrived instead of waiting.
 
 use dacode_project::{ProjectSearch, SearchHit, SearchQuery};
+use dacode_render::Rect;
 use std::path::PathBuf;
 
 /// How many hits the panel keeps. Past this the search is stopped: a query matching most of the
 /// project is a query to refine, not a list to scroll.
 pub const MAX_HITS: usize = 500;
 
-/// Rows shown at once.
+/// Rows shown at once, at most. Fewer on a window too short to give the panel room for them.
 pub const VISIBLE_ROWS: usize = 10;
+
+/// The height of the header and of each row, at scale 1. [`crate::layout::Layout::of`] sizes the
+/// panel in these, and [`Results::geometry`] divides it back into them.
+pub const ROW: f32 = 22.0;
+
+/// Where the panel's header and its visible rows are, as data: drawing, the mouse, the keys and the
+/// wheel all read this, so the rows the selection moves through are the rows that are drawn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Geometry {
+    pub header: Rect,
+    /// Everything under the header: where "no matches" goes when there are no rows.
+    pub list: Rect,
+    /// One rectangle per visible hit: `rows[i]` is hit `first + i`.
+    pub rows: Vec<Rect>,
+    pub first: usize,
+    /// How many rows the panel has room for.
+    pub capacity: usize,
+}
 
 pub struct Results {
     pub query: String,
@@ -107,19 +126,63 @@ impl Results {
         };
     }
 
-    /// The window of hits to draw, and the selection's index within it.
-    pub fn visible(&self) -> (&[SearchHit], usize) {
-        if self.hits.len() <= VISIBLE_ROWS {
-            return (&self.hits, self.selected);
+    /// How many rows the panel asks the layout for: all the hits, up to [`VISIBLE_ROWS`].
+    pub fn wanted_rows(&self) -> usize {
+        self.hits.len().min(VISIBLE_ROWS)
+    }
+
+    /// The hits on screen given room for `capacity` rows: a window holding the selection, which
+    /// moves only when the selection would leave it.
+    pub fn window(&self, capacity: usize) -> std::ops::Range<usize> {
+        let capacity = capacity.min(self.hits.len());
+        if capacity == 0 {
+            return 0..0;
         }
         let start = self
             .selected
-            .saturating_sub(VISIBLE_ROWS - 1)
-            .min(self.hits.len() - VISIBLE_ROWS);
-        (
-            &self.hits[start..start + VISIBLE_ROWS],
-            self.selected - start,
-        )
+            .saturating_sub(capacity - 1)
+            .min(self.hits.len() - capacity);
+        start..start + capacity
+    }
+
+    /// Where the header and the visible rows are inside `panel`, the rectangle the layout gave it.
+    ///
+    /// The capacity is the panel's own: the layout asks for up to ten rows and is capped at half
+    /// the editor's height, which on a short window is fewer. The window used to be a fixed ten
+    /// whatever was drawn, so stepping down a 640x480 panel moved the selection onto rows that were
+    /// cut off the bottom and kept it there — Enter opened a hit nobody could see.
+    pub fn geometry(&self, panel: Rect, scale: f32) -> Geometry {
+        let row = ROW * scale;
+        let (header, list) = panel.split_top(row.min(panel.height));
+        let capacity = ((list.height / row).floor().max(0.0) as usize).min(VISIBLE_ROWS);
+        let window = self.window(capacity);
+        let rows = window
+            .clone()
+            .map(|index| {
+                Rect::new(
+                    list.x,
+                    list.y + (index - window.start) as f32 * row,
+                    list.width,
+                    row,
+                )
+            })
+            .collect();
+        Geometry {
+            header,
+            list,
+            rows,
+            first: window.start,
+            capacity,
+        }
+    }
+
+    /// Which hit a point is over, by its index in [`Results::hits`].
+    pub fn hit_at(geometry: &Geometry, x: f32, y: f32) -> Option<usize> {
+        geometry
+            .rows
+            .iter()
+            .position(|row| crate::layout::contains(*row, x, y))
+            .map(|at| geometry.first + at)
     }
 
     /// A path shown relative to the project root, since the absolute one is mostly noise.
@@ -214,18 +277,32 @@ mod tests {
         let hits: Vec<SearchHit> = (0..30).map(|i| hit("f.rs", i)).collect();
         let mut results = panel(hits);
 
-        let (rows, cursor) = results.visible();
-        assert_eq!(rows.len(), VISIBLE_ROWS);
-        assert_eq!(cursor, 0);
-
+        assert_eq!(results.window(VISIBLE_ROWS), 0..VISIBLE_ROWS);
         results.move_selection(VISIBLE_ROWS as isize + 2);
-        let (rows, cursor) = results.visible();
-        assert_eq!(rows.len(), VISIBLE_ROWS);
-        assert!(cursor < VISIBLE_ROWS);
-        assert_eq!(
-            rows[cursor].line_number,
-            results.hits[results.selected].line_number
-        );
+        let window = results.window(VISIBLE_ROWS);
+        assert_eq!(window.len(), VISIBLE_ROWS);
+        assert!(window.contains(&results.selected));
+    }
+
+    #[test]
+    fn a_short_panel_keeps_the_selection_on_a_drawn_row() {
+        // Seven rows of room, as a 640x480 window gives it: every step down must land on one of
+        // the seven, never on the three a fixed window of ten would have held below the cut.
+        let hits: Vec<SearchHit> = (0..40).map(|i| hit("f.rs", i)).collect();
+        let mut results = panel(hits);
+        let panel_rect = Rect::new(0.0, 300.0, 600.0, ROW * 8.0);
+        for _ in 0..15 {
+            results.move_selection(1);
+            let geometry = results.geometry(panel_rect, 1.0);
+            assert_eq!(geometry.rows.len(), 7);
+            let at = results.selected - geometry.first;
+            assert!(
+                at < geometry.rows.len(),
+                "selection {} is not drawn",
+                results.selected
+            );
+            assert!(geometry.rows[at].bottom() <= panel_rect.bottom());
+        }
     }
 
     #[test]

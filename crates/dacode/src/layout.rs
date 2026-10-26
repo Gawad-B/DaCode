@@ -634,7 +634,7 @@ impl Layout {
 
         let (editor, results) = match results_rows {
             Some(rows) => {
-                let height = (rows.max(1) as f32 + 2.0) * 22.0 * scale;
+                let height = (rows.max(1) as f32 + 2.0) * crate::results::ROW * scale;
                 let (panel, rest) = body.split_bottom(height.min(body.height * 0.5));
                 (rest, Some(panel))
             }
@@ -749,13 +749,19 @@ pub fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
 }
 
-/// The presses a key string is drawn as, one chip each, split at spaces.
+/// The chips a key string is drawn as: one per *alternative*, each holding every press of its key.
 ///
-/// Both notations agree on that much: desktop notation (`Ctrl+K O`, from `commands::pretty`)
-/// separates the presses of a chord with a space, and Vim's table separates alternatives with two
-/// (`:w  <c-s>`) and writes a space key as `<space>`, never as a bare one.
+/// Both notations separate alternatives with two spaces — Vim's table writes `:w  <c-s>`, and
+/// `commands::pretty` keeps that gap — while a single space separates the presses of one key
+/// (`Ctrl+K O`). So a chord is one chip with its strokes inside it, and two chips side by side
+/// always mean "either of these". Splitting at every space drew `Ctrl+K O` as two equal chips,
+/// identical to the two of redo's `Ctrl+Y` `Ctrl+Shift+Z`, and a reader could take the `O` for a
+/// key that opens a folder by itself.
 pub fn key_presses(keys: &str) -> Vec<&str> {
-    keys.split_whitespace().collect()
+    keys.split("  ")
+        .map(str::trim)
+        .filter(|alternative| !alternative.is_empty())
+        .collect()
 }
 
 /// How much wider the bundled face really sets a character than the type scale's estimate.
@@ -766,7 +772,10 @@ pub fn key_presses(keys: &str) -> Vec<&str> {
 /// cut mid-word by the renderer's clip, which is the one thing [`crate::chrome`]'s `elide` exists to
 /// prevent. Measurements that decide whether text *fits* go through [`measured_advance`]; the code
 /// grid does not, since moving it is a change to where every glyph of code is drawn.
-pub const FACE_ADVANCE: f32 = 1200.0 / 1950.0 / 0.60;
+pub const FACE_ADVANCE: f32 = FACE_EM / 0.60;
+
+/// The bundled face's advance, in ems: 1200 units of 1950.
+pub const FACE_EM: f32 = 1200.0 / 1950.0;
 
 /// The width one character of `role` really takes, for deciding what fits.
 pub fn measured_advance(
@@ -777,12 +786,18 @@ pub fn measured_advance(
     typography.advance(role) * scale * FACE_ADVANCE
 }
 
+/// [`measured_advance`] for text set at a size of its own rather than a role's — the wizard sets
+/// some of its text off the type scale. Untracked, as every role but the labels is.
+pub fn measured_advance_at(size_px: f32) -> f32 {
+    size_px * FACE_EM
+}
+
 /// Padding either side of a key chip's text, and the gap between two chips, at scale 1.
 pub const CHIP_PAD: f32 = 5.0;
 pub const CHIP_GAP: f32 = 4.0;
 
-/// How wide `keys` is when drawn as chips. Measured, like every other width here, with the type
-/// scale's advance, so a menu sized by this is the width the chips are drawn at.
+/// How wide `keys` is when drawn as chips, measured with [`measured_advance`] like the chips
+/// themselves, so a menu sized by this is the width the chips are drawn at.
 pub fn chips_width(typography: &dacode_theme::Typography, keys: &str, scale: f32) -> f32 {
     let advance = measured_advance(typography, dacode_theme::Role::Value, scale);
     let presses = key_presses(keys);
@@ -798,18 +813,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keys_split_into_presses_by_their_own_notation() {
-        // A chord's presses are a chip each, or "Ctrl+K O" reads as one key with a space in it.
-        assert_eq!(key_presses("Ctrl+K O"), vec!["Ctrl+K", "O"]);
-        assert_eq!(key_presses("Ctrl+Shift+P"), vec!["Ctrl+Shift+P"]);
-        // Vim's alternatives are two spaces apart; a key is never split inside itself.
+    fn a_chord_is_one_chip_and_alternatives_are_several() {
+        // One chip holds every stroke of one key; chips side by side are alternatives.
+        assert_eq!(key_presses("Ctrl+K O"), vec!["Ctrl+K O"]);
+        assert_eq!(
+            key_presses("Ctrl+Y  Ctrl+Shift+Z"),
+            vec!["Ctrl+Y", "Ctrl+Shift+Z"]
+        );
         assert_eq!(key_presses(":w  <c-s>"), vec![":w", "<c-s>"]);
         assert_eq!(key_presses("gD"), vec!["gD"]);
         assert!(key_presses("").is_empty());
         let typography = dacode_theme::Typography::default();
         assert_eq!(chips_width(&typography, "", 1.0), 0.0);
         assert!(
-            chips_width(&typography, "Ctrl+K O", 1.0) > chips_width(&typography, "Ctrl+KO", 1.0),
+            chips_width(&typography, "Ctrl+Y  Ctrl+Z", 1.0)
+                > chips_width(&typography, "Ctrl+YCtrl+Z", 1.0),
             "two chips take their padding and the gap between them"
         );
     }

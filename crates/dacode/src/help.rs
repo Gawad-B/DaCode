@@ -100,13 +100,33 @@ impl Help {
     }
 
     /// Scrolls, clamped to the end of the list.
+    ///
+    /// The highlight comes along onto the page: left where it was, Enter would run a key nobody can
+    /// see, and the next arrow would jump the page back to it. It moves to the nearest binding on
+    /// the page — the first when it fell off the top, the last when it fell off the bottom.
     pub fn scroll_by(&mut self, delta: isize, rows: usize) {
-        let total = self.lines().len();
-        let last = total.saturating_sub(rows);
+        let lines = self.lines();
+        let last = lines.len().saturating_sub(rows);
         self.scroll = match delta {
             d if d < 0 => self.scroll.saturating_sub(d.unsigned_abs()),
             d => (self.scroll + d as usize).min(last),
         };
+
+        let page = self.scroll..(self.scroll + rows.max(1)).min(lines.len());
+        if page.contains(&self.selected) {
+            return;
+        }
+        let mut bindings = page
+            .clone()
+            .filter(|index| matches!(lines[*index], Line::Binding { .. }));
+        let nearest = if self.selected < page.start {
+            bindings.next()
+        } else {
+            bindings.next_back()
+        };
+        if let Some(index) = nearest {
+            self.selected = index;
+        }
     }
 
     /// Moves the highlight to the next binding `delta` away, skipping headings, and scrolls just
@@ -425,5 +445,31 @@ mod tests {
             help.type_char(c);
         }
         assert_eq!(help.selection(), Some("command_palette"));
+    }
+
+    #[test]
+    fn scrolling_a_page_brings_the_highlight_onto_it() {
+        // Enter runs the highlighted key, so a highlight left above a page scrolled away from it
+        // would run something off screen — and the next arrow would yank the page back.
+        let mut help = Help::new(false);
+        let rows = 8;
+        for delta in [3, 8, 100, -5, -100] {
+            help.scroll_by(delta, rows);
+            assert!(
+                (help.scroll..help.scroll + rows).contains(&help.selected),
+                "after scrolling by {delta}, line {} is highlighted and the page starts at {}",
+                help.selected,
+                help.scroll
+            );
+            assert!(help.selection().is_some(), "and it is a key, not a heading");
+            // An arrow moves the page a line at most, at its edge — never back to where the
+            // highlight was before the scroll.
+            let scroll = help.scroll;
+            help.move_selection(1, rows);
+            assert!(help.scroll.abs_diff(scroll) <= 1, "Down jumped the page");
+            let scroll = help.scroll;
+            help.move_selection(-1, rows);
+            assert!(help.scroll.abs_diff(scroll) <= 1, "Up jumped the page");
+        }
     }
 }

@@ -433,12 +433,17 @@ fn row_wash(frame: &mut Frame, state: &EditorState, row: Rect, selected: bool, s
 }
 
 /// A card's text field: the query, or a placeholder saying what to type, with a caret.
+///
+/// `reserve` is room kept free at the right for something the caller draws there — the palette's
+/// "4 of 1284" — so a long query gives way to it rather than running underneath it. Returns that
+/// strip.
 fn draw_field(
     frame: &mut Frame,
     state: &EditorState,
     field: Rect,
     query: &str,
     placeholder: &str,
+    reserve: f32,
     scale: f32,
 ) -> Rect {
     let theme = &state.theme;
@@ -452,12 +457,13 @@ fn draw_field(
     );
     let icon = Rect::new(field.x + 10.0 * scale, field.y, 14.0 * scale, field.height);
     frame.icon(Icon::Search, centred(icon, 14.0 * scale), theme.ink_faint);
-    let text = Rect::new(
+    let whole = Rect::new(
         icon.right() + 8.0 * scale,
         field.y,
         (field.right() - 10.0 * scale - (icon.right() + 8.0 * scale)).max(0.0),
         field.height,
     );
+    let (reserved, text) = whole.split_right(reserve.min(whole.width));
     let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
     let typed = if query.is_empty() {
         frame.text(ui(
@@ -498,7 +504,7 @@ fn draw_field(
         ),
         accent,
     );
-    text
+    reserved
 }
 
 impl EditorState {
@@ -1167,12 +1173,8 @@ fn draw_welcome_keys(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         let mut body = typography.spec(Role::Value);
         body.size_px = px(13.0);
         let width = card.width - px(48.0);
-        let advance = body.size_px * 0.6 * crate::layout::FACE_ADVANCE;
-        let mut lines = wrap_at(description, width, advance);
-        if lines.len() > 2 {
-            let rest = lines.split_off(1).join(" ");
-            lines.push(elide_to(&rest, width, advance));
-        }
+        let advance = crate::layout::measured_advance_at(body.size_px);
+        let lines = wrap_lines(description, width, advance, 2);
         for (row, line) in lines.iter().enumerate() {
             frame.text(TextRun {
                 text: line.clone(),
@@ -1376,7 +1378,7 @@ fn draw_welcome_import(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         text: elide_to(
             &words,
             row.width - px(32.0),
-            body.size_px * 0.6 * crate::layout::FACE_ADVANCE,
+            crate::layout::measured_advance_at(body.size_px),
         ),
         spec: body,
         color: if selected {
@@ -1525,10 +1527,7 @@ pub fn draw_panes(
     let regions = crate::layout::Layout::of(
         bounds,
         scale,
-        state
-            .results
-            .as_ref()
-            .map(|results| results.visible().0.len()),
+        state.results.as_ref().map(|results| results.wanted_rows()),
         state.sidebar_fraction(),
     );
 
@@ -1828,7 +1827,9 @@ fn draw_completion(
         ));
 
         // The typed prefix, in the mode color, over the label's own glyphs.
-        let prefix_advance = advance_for(state.typography.spec(Role::Value).size_px * scale);
+        // At the face's real advance, as the palette's are: the type scale's 0.60 put a highlight
+        // a little further left of its letter with every character along a long label.
+        let prefix_advance = crate::layout::measured_advance(&state.typography, Role::Value, scale);
         for position in &item.highlights {
             let Some(c) = label.chars().nth(*position as usize) else {
                 continue;
@@ -2036,8 +2037,9 @@ fn draw_results(
     frame.rule_top(rect, theme.rule, border::BORDER);
 
     let pad = space::XL * scale;
-    let row_height = 22.0 * scale;
-    let (header, rows_area) = rect.split_top(row_height);
+    let row_height = crate::results::ROW * scale;
+    let geometry = results.geometry(rect, scale);
+    let (header, rows_area) = (geometry.header, geometry.list);
 
     // What was searched for, and how much was found: the one heading this panel needs, since a
     // panel of hits with no query over it does not say what they are hits *for*. In the interface's
@@ -2076,20 +2078,17 @@ fn draw_results(
         scale,
     ));
 
-    let (visible, cursor) = results.visible();
     let inner = (rows_area.width - pad * 2.0).max(0.0);
     let location_width = (320.0 * scale).min(inner * 0.4);
     let line_x = rows_area.x + pad + location_width + space::MD * scale;
     let line_room = (rows_area.right() - pad - line_x).max(0.0);
-    for (index, hit) in visible.iter().enumerate() {
-        let y = rows_area.y + index as f32 * row_height;
-        let row = Rect::new(rows_area.x, y, rows_area.width, row_height);
-        // The panel is capped at half the editor's height, which on a short window is fewer rows
-        // than the list's window holds; the rest would be drawn over the statusline.
-        if row.bottom() > rect.bottom() + 0.5 {
-            break;
-        }
-        let selected = index == cursor;
+    for (offset, row) in geometry.rows.iter().enumerate() {
+        let index = geometry.first + offset;
+        let Some(hit) = results.hits.get(index) else {
+            continue;
+        };
+        let (row, y) = (*row, row.y);
+        let selected = index == results.selected;
         row_wash(
             frame,
             state,
@@ -2168,21 +2167,29 @@ fn draw_palette(
     frame.set_zoom(Some(appear_zoom(geometry.card, travel, Anchor::Top)));
     card(frame, theme, geometry.card, scale, 1.0);
 
-    let text = draw_field(
+    // How much the query has narrowed, once there is something to narrow: "4 of 1284".
+    let count = (!palette.query.is_empty() && palette.total > 0)
+        .then(|| format!("{} of {}", palette.rows.len(), palette.total));
+    let reserve = count.as_ref().map_or(0.0, |count| {
+        count.chars().count() as f32
+            * crate::layout::measured_advance(&state.typography, Role::Value, scale)
+            + 12.0 * scale
+    });
+    let strip = draw_field(
         frame,
         state,
         geometry.input,
         &palette.query,
         &placeholder(palette.kind),
+        reserve,
         scale,
     );
-    // How much the query has narrowed, once there is something to narrow: "4 of 1284".
-    if !palette.query.is_empty() && palette.total > 0 {
+    if let Some(count) = count {
         frame.text(run(
             state,
             Role::Value,
-            format!("{} of {}", palette.rows.len(), palette.total),
-            text,
+            count,
+            strip,
             theme.ink_faint,
             Align::Right,
             scale,
@@ -2191,19 +2198,7 @@ fn draw_palette(
 
     let pad = 10.0 * scale;
     for (rect, title) in &geometry.headings {
-        frame.text(label(
-            state,
-            *title,
-            Rect::new(
-                rect.x + pad,
-                rect.y + 4.0 * scale,
-                rect.width - pad * 2.0,
-                rect.height - 4.0 * scale,
-            ),
-            theme.ink_faint,
-            Align::Left,
-            scale,
-        ));
+        draw_heading(frame, state, title, *rect, scale);
     }
 
     // The face's real advance, so a highlight lands on its letter all the way along a long name.
@@ -2433,6 +2428,7 @@ fn draw_help(
         } else {
             "Filter the keys"
         },
+        0.0,
         scale,
     );
 
@@ -2441,21 +2437,7 @@ fn draw_help(
     for (offset, rect) in geometry.rows.iter().enumerate() {
         let index = geometry.first + offset;
         match lines.get(index) {
-            Some(Line::Heading(title)) => {
-                frame.text(label(
-                    state,
-                    *title,
-                    Rect::new(
-                        rect.x + pad,
-                        rect.y + 4.0 * scale,
-                        rect.width - pad * 2.0,
-                        rect.height - 4.0 * scale,
-                    ),
-                    theme.ink_faint,
-                    Align::Left,
-                    scale,
-                ));
-            }
+            Some(Line::Heading(title)) => draw_heading(frame, state, title, *rect, scale),
             Some(Line::Binding { name, what, .. }) => {
                 let selected = index == help.selected;
                 row_wash(frame, state, *rect, selected, scale);
@@ -2695,6 +2677,39 @@ fn wrap_to(typography: &Typography, role: Role, text: &str, width: f32, scale: f
         width,
         crate::layout::measured_advance(typography, role, scale),
     )
+}
+
+/// `text` wrapped to at most `max` lines, the last ending in an ellipsis when there was more.
+///
+/// The one way a paragraph is fitted into a fixed number of rows. There were two, and one of them
+/// put a lone "…" on its second row whenever a message's first line fitted on the first.
+fn wrap_lines(text: &str, width: f32, advance: f32, max: usize) -> Vec<String> {
+    let mut lines = wrap_at(text, width, advance);
+    if lines.len() > max.max(1) {
+        // Greedy wrapping means what follows the kept lines is more than one line's worth, so the
+        // elision always ends in an ellipsis.
+        let rest = lines.split_off(max.max(1) - 1).join(" ");
+        lines.push(elide_to(&rest, width, advance));
+    }
+    lines
+}
+
+/// A group's heading inside a card's list: the palette's command groups, the help panel's sections.
+fn draw_heading(frame: &mut Frame, state: &EditorState, title: &str, rect: Rect, scale: f32) {
+    let pad = 10.0 * scale;
+    frame.text(label(
+        state,
+        elide(state, Role::Label, title, rect.width - pad * 2.0, scale),
+        Rect::new(
+            rect.x + pad,
+            rect.y + 4.0 * scale,
+            rect.width - pad * 2.0,
+            rect.height - 4.0 * scale,
+        ),
+        state.theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
 }
 
 /// [`wrap_to`] at an advance of the caller's, for text set off the type scale.
@@ -3307,13 +3322,8 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
         // second row with nothing to say it went on. Two lines, and the second ends in an ellipsis
         // when there was more.
         let room = (width - 40.0 * scale).max(0.0);
-        let first_line = problem.message.lines().next().unwrap_or_default();
-        let mut lines = wrap_to(&state.typography, Role::Value, first_line, room, scale);
-        if lines.len() > 2 || problem.message.lines().nth(1).is_some() {
-            let rest = lines.split_off(1.min(lines.len())).join(" ");
-            lines.push(elide(state, Role::Value, &format!("{rest} …"), room, scale));
-            lines.truncate(2);
-        }
+        let advance = crate::layout::measured_advance(&state.typography, Role::Value, scale);
+        let lines = wrap_lines(&problem.message, room, advance, 2);
         for (offset, text) in lines.iter().enumerate() {
             frame.text(run(
                 state,
@@ -5594,6 +5604,30 @@ mod wrap_tests {
             lines.concat(),
             path,
             "the path came back changed: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_kept_to_two_lines_ends_in_an_ellipsis_and_never_in_a_lone_one() {
+        // The problems list's old version showed a bare "…" on its second row when a message's
+        // first line fitted the first.
+        let advance = 8.0;
+        let short = wrap_lines("unused variable\nhelp: prefix it", 400.0, advance, 2);
+        assert_eq!(short, vec!["unused variable help: prefix it".to_string()]);
+
+        let long = "the quick brown fox jumps over the lazy dog and keeps going for a while yet";
+        let lines = wrap_lines(long, 120.0, advance, 2);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].ends_with('…'), "{lines:?}");
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.trim_end_matches('…').trim().is_empty())
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.chars().count() as f32 * advance <= 120.0)
         );
     }
 

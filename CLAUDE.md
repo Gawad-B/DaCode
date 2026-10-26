@@ -479,9 +479,13 @@ the help panel's rows are clickable now, through `Palette::geometry` and `Help::
 drawing reads too; a click runs the row through the same function Enter does, so it leaves focus
 where Enter would.
 
-Every overlay is drawn on `chrome::card`, and anything that decides whether text *fits* measures with
+Every overlay is drawn on `chrome::card`. `chrome::elide`, `elide_start` and `wrap_to` measure with
 `layout::measured_advance` — the face's real 0.615 em rather than the type scale's 0.60, which let a
-line measured to fit exactly run past its box and be cut mid-word. The code grid still uses 0.60.
+line measured to fit exactly run past its box and be cut mid-word — and they are used everywhere, so
+tabs, the tree, the statusline and the settings rows elide a little sooner than they did. So do the
+key chips, the menu's columns and the palette's and completion's match highlights. Not yet: the
+title bar's own measurements, which pad the type scale by hand (1.1x, 1.15x), and the code grid,
+which stays at 0.60 on purpose — moving it moves every glyph of code and every click into it.
 
 Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{` is more than four
 or five hundred lines above it is left where it was typed. It used to walk to the start of the

@@ -478,3 +478,37 @@ fn a_touchpad_burst_costs_the_same_in_a_huge_file_as_in_a_small_one() {
         Duration::from_millis(5),
     );
 }
+
+/// Where the palette's card and visible rows are, for a list of `rows` symbols with the selection
+/// half-way down. Drawing asks for this every frame and the pointer twice per move.
+fn palette_geometry(rows: usize) -> Duration {
+    use dacode::palette::{Palette, PaletteKind, Row, Target};
+    let mut palette = Palette::new(PaletteKind::Symbols);
+    palette.rows = (0..rows)
+        .map(|index| Row {
+            name: format!("symbol_{index}"),
+            context: "fn".into(),
+            score: 0,
+            highlights: Vec::new(),
+            target: Target::Symbol(index),
+            heading: None,
+        })
+        .collect();
+    palette.selected = rows / 2;
+    let bounds = Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1);
+    median(2_000, || {
+        let geometry = palette.geometry(bounds, None, 1.0);
+        std::hint::black_box(geometry.rows.len());
+    })
+}
+
+/// A file's outline can run to thousands of symbols, and the palette's geometry once laid out every
+/// one of them to find the dozen on screen — per frame, and twice per pointer move.
+#[test]
+fn the_palette_lays_out_the_rows_on_screen_and_not_the_whole_list() {
+    assert_flat(
+        "laying out the palette",
+        palette_geometry(SMALL),
+        palette_geometry(LARGE),
+    );
+}

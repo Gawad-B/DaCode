@@ -312,24 +312,6 @@ impl Palette {
             d => (self.selected + d as usize).min(last),
         };
     }
-
-    /// The window of rows to draw, and the selection's index within it.
-    ///
-    /// Scrolls only when the selection would leave the window, so the list stays still while you
-    /// move within it.
-    pub fn visible(&self) -> (&[Row], usize) {
-        if self.rows.len() <= VISIBLE_ROWS {
-            return (&self.rows, self.selected);
-        }
-        let start = self
-            .selected
-            .saturating_sub(VISIBLE_ROWS - 1)
-            .min(self.rows.len() - VISIBLE_ROWS);
-        (
-            &self.rows[start..start + VISIBLE_ROWS],
-            self.selected - start,
-        )
-    }
 }
 
 impl Palette {
@@ -347,20 +329,37 @@ impl Palette {
         lines
     }
 
-    /// Which of the lines are on screen, given room for `capacity` of them: a window that holds the
-    /// selection. Like [`Palette::visible`] it keeps no scroll position of its own, so the list moves
-    /// only when the selection would leave it.
-    pub fn window(&self, lines: &[Line], capacity: usize) -> std::ops::Range<usize> {
+    /// The lines on screen, given room for `capacity` of them: a window that holds the selection.
+    /// It keeps no scroll position of its own, so the list moves only when the selection would
+    /// leave it.
+    ///
+    /// **Bounded by the window, not the list**, because drawing and every pointer move ask for it.
+    /// An ungrouped list — files, buffers, a file's outline, a project's symbols — is windowed over
+    /// its rows by arithmetic and never walked; an outline of a large file runs to thousands of
+    /// rows. Only a grouped list has to be laid out in full to know where its headings fall, and
+    /// the only grouped list is the command table, browsed with nothing typed: a fixed size,
+    /// whatever document is open.
+    pub fn visible_lines(&self, capacity: usize) -> Vec<Line> {
         let capacity = capacity.max(1);
+        let grouped = self.rows.first().is_some_and(|row| row.heading.is_some());
+        if !grouped {
+            let count = capacity.min(self.rows.len());
+            let start = self
+                .selected
+                .saturating_sub(count.saturating_sub(1))
+                .min(self.rows.len() - count);
+            return (start..start + count).map(Line::Item).collect();
+        }
+        let lines = self.lines();
         if lines.len() <= capacity {
-            return 0..lines.len();
+            return lines;
         }
         let at = lines
             .iter()
             .position(|line| *line == Line::Item(self.selected))
             .unwrap_or(0);
         let start = at.saturating_sub(capacity - 1).min(lines.len() - capacity);
-        start..start + capacity
+        lines[start..start + capacity].to_vec()
     }
 
     /// Where the card, its input and its visible rows are. See [`Geometry`].
@@ -394,17 +393,16 @@ impl Palette {
         // room for a single row is not one anybody could use, and a window that short has worse
         // problems than the palette's.
         let room = bounds.bottom() - px(8.0) - top - pad * 2.0 - input_height - gap;
-        let lines = self.lines();
         let mut capacity = LINES;
-        let window = loop {
-            let window = self.window(&lines, capacity);
-            let height: f32 = lines[window.clone()].iter().map(height_of).sum();
+        let lines = loop {
+            let lines = self.visible_lines(capacity);
+            let height: f32 = lines.iter().map(height_of).sum();
             if height <= room || capacity == 1 {
-                break window;
+                break lines;
             }
             capacity -= 1;
         };
-        let list_height = match lines[window.clone()].iter().map(height_of).sum::<f32>() {
+        let list_height = match lines.iter().map(height_of).sum::<f32>() {
             // An empty list still has a row: "no matches" needs somewhere to go.
             0.0 => row_height,
             height => height,
@@ -421,7 +419,7 @@ impl Palette {
 
         let (mut rows, mut items, mut headings) = (Vec::new(), Vec::new(), Vec::new());
         let mut y = list.y;
-        for line in &lines[window] {
+        for line in &lines {
             let rect = Rect::new(list.x, y, list.width, height_of(line));
             match *line {
                 Line::Heading(title) => headings.push((rect, title)),
@@ -651,18 +649,17 @@ mod tests {
         let mut palette = Palette::new(PaletteKind::Files);
         palette.refresh_files(&mut index);
 
-        let (rows, cursor) = palette.visible();
-        assert_eq!(rows.len(), VISIBLE_ROWS);
-        assert_eq!(cursor, 0);
+        let first = palette.visible_lines(VISIBLE_ROWS);
+        assert_eq!(first.len(), VISIBLE_ROWS);
+        assert_eq!(first[0], Line::Item(0));
 
         // Moving beyond the window scrolls it, keeping the selection inside.
         palette.move_selection(VISIBLE_ROWS as isize + 3);
-        let (rows, cursor) = palette.visible();
-        assert_eq!(rows.len(), VISIBLE_ROWS);
-        assert!(cursor < VISIBLE_ROWS, "selection must stay in the window");
-        assert_eq!(
-            rows[cursor].name, palette.rows[palette.selected].name,
-            "the highlighted row must be the selected one"
+        let lines = palette.visible_lines(VISIBLE_ROWS);
+        assert_eq!(lines.len(), VISIBLE_ROWS);
+        assert!(
+            lines.contains(&Line::Item(palette.selected)),
+            "selection must stay in the window"
         );
     }
 
@@ -886,9 +883,12 @@ mod tests {
             })
             .collect();
         assert!(headings.contains(&"files"), "{headings:?}");
-        let mut unique = headings.clone();
-        unique.dedup();
-        assert_eq!(unique, headings, "each group is headed once");
+        let unique: std::collections::HashSet<&str> = headings.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            headings.len(),
+            "each group is headed once: {headings:?}"
+        );
 
         palette.query.push_str("comment");
         palette.refresh_commands(false);
