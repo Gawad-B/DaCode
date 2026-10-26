@@ -388,7 +388,7 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --settings-search Q --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
---help-panel --menu --context-menu --commands --which-key PREFIX --symbols QUERY
+--help-panel --menu --menu-title TITLE --context-menu --commands --which-key PREFIX --symbols QUERY
 --block LINE:COLUMN`.
 
 `--row N` selects a row of the settings tab, which is the only way to see a section below the fold —

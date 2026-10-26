@@ -290,6 +290,14 @@ impl Menu {
             return;
         }
         let count = self.titles.len() as isize;
+        // The overflow's list sits *at* the first hidden title (`open` names it), not before it, so
+        // a step right from the list lands on that title rather than the one after. Left needs no
+        // such care: one title back from the first hidden one is the last visible one.
+        let delta = if self.listing && delta > 0 {
+            delta - 1
+        } else {
+            delta
+        };
         // Wraps: a menu bar you cannot walk off the end of is one where the last menu is two
         // presses away from the first for no reason.
         self.open = (((self.open as isize + delta) % count + count) % count) as usize;
@@ -663,6 +671,23 @@ mod tests {
         );
         menu.move_menu(1, true);
         assert_eq!(menu.open, 0);
+    }
+
+    #[test]
+    fn right_from_the_overflow_list_opens_the_first_hidden_menu() {
+        // The list stands for the hidden titles and `open` already names the first of them, so a
+        // plain step right skipped it: from "…" the arrows went straight to the second hidden menu.
+        let shown = 5;
+        let mut menu = Menu::from_title(shown, shown, false);
+        assert!(menu.listing);
+        menu.move_menu(1, false);
+        assert!(!menu.listing, "a menu is open, not the list");
+        assert_eq!(menu.open, shown, "the first hidden title");
+        assert!(!menu.items.is_empty());
+
+        let mut menu = Menu::from_title(shown, shown, false);
+        menu.move_menu(-1, false);
+        assert_eq!(menu.open, shown - 1, "left is still the last visible title");
     }
 
     #[test]

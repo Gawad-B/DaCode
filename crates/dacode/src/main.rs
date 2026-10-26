@@ -678,6 +678,29 @@ fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
 /// How long after the start of a capture its default frame is drawn: past where every spring settles.
 const SETTLED: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// The menu `--menu-title` names, for a bar that shows `shown` of its titles.
+///
+/// `None` is "open nothing": `…` was asked for at a width where every title fits, so there is no
+/// overflow to list. It used to open a list holding only the last title, which photographed
+/// something the editor never shows at that width. An unknown title is an error rather than File,
+/// because a typo that quietly captures a different menu looks exactly like a menu that is broken.
+fn menu_for_title(title: &str, shown: usize, modal: bool) -> Result<Option<dacode::menu::Menu>> {
+    use dacode::menu::{Menu, TITLES};
+    if title == dacode::layout::OVERFLOW || title == "..." {
+        return Ok((shown < TITLES.len()).then(|| Menu::from_title(shown, shown, modal)));
+    }
+    let index = TITLES
+        .iter()
+        .position(|name| name.eq_ignore_ascii_case(title))
+        .with_context(|| {
+            format!(
+                "--menu-title {title:?} is not a menu; the titles are {} (or … for the overflow)",
+                TITLES.join(", ")
+            )
+        })?;
+    Ok(Some(Menu::bar_at(index, modal)))
+}
+
 fn screenshot(args: &[String], output: &str) -> Result<()> {
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     let value = |name: &str| {
@@ -1177,16 +1200,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             1.0,
             &state.typography,
         );
-        let shown = bar.menus.len();
-        state.menu = Some(if title == dacode::layout::OVERFLOW || title == "..." {
-            dacode::menu::Menu::from_title(shown, shown, state.modal)
-        } else {
-            let index = dacode::menu::TITLES
-                .iter()
-                .position(|name| name.eq_ignore_ascii_case(&title))
-                .unwrap_or(0);
-            dacode::menu::Menu::bar_at(index, state.modal)
-        });
+        state.menu = menu_for_title(&title, bar.menus.len(), state.modal)?;
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
@@ -2354,7 +2368,10 @@ impl App {
         // largest in one gesture.
         if self.modifiers.control_key() {
             let lines = if pixels { dy / row_height } else { dy };
-            let steps = self.gestures.zoom_input.add_pixels(lines, 1.0);
+            let steps = self
+                .gestures
+                .zoom_input
+                .add_restarting_on_reversal(lines, 1.0);
             self.zoom(steps);
             return;
         }
@@ -4236,10 +4253,6 @@ impl App {
         self.reveal_cursor();
     }
 
-    /// Writes a recovery copy of the active buffer if it is dirty.
-    ///
-    /// Throttled by `recovery::INTERVAL`, so this is safe to call on every keystroke; `force` is for
-    /// the moments where losing anything is unacceptable.
     /// When autosave will next be due, if it is waiting on the clock.
     ///
     /// The only thing in the idle step that is a *time* rather than an event: nothing happens at
@@ -4371,6 +4384,10 @@ impl App {
         self.held = Some(now);
     }
 
+    /// Writes a recovery copy of the active buffer if it is dirty.
+    ///
+    /// Throttled by `recovery::INTERVAL`, so this is safe to call on every keystroke; `force` is for
+    /// the moments where losing anything is unacceptable.
     fn persist_recovery(&mut self, force: bool) {
         // The active buffer, on the throttle: it is the one being typed into, and the timer exists
         // so a keystroke does not cost a file write.
@@ -11199,6 +11216,31 @@ mod wiring_tests {
     }
 
     #[test]
+    fn the_overflow_with_nothing_hidden_opens_nothing_and_an_unknown_title_is_an_error() {
+        // `--menu-title …` at a width where every title fits used to list only the last one, and a
+        // misspelt title quietly opened File: both captured a menu the editor would never show.
+        use dacode::menu::TITLES;
+        assert!(menu_for_title("…", TITLES.len(), false).unwrap().is_none());
+        assert!(
+            menu_for_title("...", TITLES.len(), false)
+                .unwrap()
+                .is_none()
+        );
+        let list = menu_for_title("…", TITLES.len() - 2, false)
+            .unwrap()
+            .expect("two are hidden, so there is a list");
+        assert!(list.listing);
+        assert_eq!(list.items.len(), 2);
+
+        let edit = menu_for_title("edit", TITLES.len(), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(TITLES[edit.open], TITLES[1]);
+        let error = menu_for_title("Flie", TITLES.len(), false).expect_err("not a title");
+        assert!(format!("{error:#}").contains("Flie"), "{error:#}");
+    }
+
+    #[test]
     fn a_bad_at_ms_is_an_error_not_a_silent_default() {
         // Someone reproducing a mid-transition frame who typo'd the number would otherwise get a
         // different frame and no hint why. Reached before any GPU is touched, so this needs no device.
@@ -12402,6 +12444,23 @@ mod scroll_tests {
         assert_eq!(
             app.state.typography.code_size, size,
             "exactly one step, not several"
+        );
+    }
+
+    #[test]
+    fn a_ctrl_notch_the_other_way_is_not_swallowed_by_a_leftover_fraction() {
+        // A touchpad flick up leaves part of a step behind; the next notch down must still be a
+        // whole step, not a step minus that leftover.
+        let mut app = editor("zoom reverse");
+        app.modifiers = ModifiersState::CONTROL;
+        for _ in 0..12 {
+            app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, 0.05));
+        }
+        let size = app.state.typography.code_size;
+        app.mouse_wheel(MouseScrollDelta::LineDelta(0.0, -1.0));
+        assert!(
+            app.state.typography.code_size < size,
+            "a whole notch down shrinks the type"
         );
     }
 

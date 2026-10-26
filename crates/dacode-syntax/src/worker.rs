@@ -211,10 +211,13 @@ impl SyntaxWorker {
         self.latest.as_ref()
     }
 
-    /// Whether an answer to the newest request has not been collected yet.
+    /// Whether the newest request's version is different from the version of the newest result
+    /// collected so far.
     ///
     /// Compares versions rather than counting messages, because the worker coalesces: forty queued
-    /// edits produce one result, for the last of them.
+    /// edits produce one result, for the last of them. The consequence is that a request made
+    /// again at a version that has already been answered reports *not* pending, though a second
+    /// answer for it is still on its way; callers must not read this as "the worker is idle".
     pub fn pending(&self) -> bool {
         self.requested
             .is_some_and(|wanted| self.latest.as_ref().map(|result| result.version) != Some(wanted))

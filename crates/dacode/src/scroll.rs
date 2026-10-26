@@ -47,6 +47,19 @@ impl ScrollInput {
         rows as isize
     }
 
+    /// Like [`add_pixels`](Self::add_pixels), but a reversal forgets the remainder first.
+    ///
+    /// For a count of steps rather than a position: scrolling spends what was left over before it
+    /// moves the other way because the remainder is drawn on screen, but a zoom fraction is never
+    /// drawn, and 0.6 of a step left by one flick swallowed the whole-notch the other way (-1 + 0.6
+    /// is -0.4, which is nothing).
+    pub fn add_restarting_on_reversal(&mut self, px: f32, row_height: f32) -> isize {
+        if px.is_finite() && px != 0.0 && self.pending_px * px < 0.0 {
+            self.clear();
+        }
+        self.add_pixels(px, row_height)
+    }
+
     /// What has not yet made a whole row, in pixels.
     pub fn remainder(&self) -> f32 {
         self.pending_px
@@ -157,6 +170,24 @@ mod tests {
             "-10 px net is less than a row"
         );
         assert!((input.remainder() + 10.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn reversing_a_step_count_drops_the_leftover_fraction() {
+        // A zoom fraction is never drawn, so unlike a scroll offset there is nothing for the leftover
+        // to be spent against: kept, 0.6 of a step up turned one notch down into -0.4, which is no
+        // step at all and read as the wheel being dead.
+        let mut input = ScrollInput::default();
+        assert_eq!(input.add_restarting_on_reversal(0.6, 1.0), 0);
+        assert_eq!(
+            input.add_restarting_on_reversal(-1.0, 1.0),
+            -1,
+            "a whole notch back is a whole step back"
+        );
+        assert_eq!(input.remainder(), 0.0);
+        // The same direction still accumulates, which is what a flick of small deltas relies on.
+        assert_eq!(input.add_restarting_on_reversal(-0.6, 1.0), 0);
+        assert_eq!(input.add_restarting_on_reversal(-0.6, 1.0), -1);
     }
 
     #[test]

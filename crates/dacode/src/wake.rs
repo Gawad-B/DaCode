@@ -5,6 +5,9 @@
 //! after a click.
 
 /// Called from a worker thread when a result is ready. Cheap and non-blocking.
+///
+/// Keep in sync: `dacode-syntax`, `dacode-project` and `dacode-lsp` sit below this crate and each
+/// keep a private copy of this alias, which must stay identical to it.
 pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// The user event the waker sends.

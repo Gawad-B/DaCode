@@ -661,11 +661,13 @@ impl EditorState {
         self.focus = crate::focus::Focus::Editor;
     }
 
-    /// How far open the sidebar is drawn at the frame's instant: 0 closed, 1 open. Drawing and the mouse read this; soft wrap reads [`Self::sidebar_open`].
+    /// How far open the sidebar is drawn at the frame's instant: 0 closed, 1 open. Drawing and the
+    /// mouse read this; soft wrap reads [`Self::sidebar_open`].
     pub fn sidebar_fraction(&self) -> f32 {
         self.sidebar_fraction_at(self.now())
     }
 
+    /// How far open the sidebar is drawn at `now`.
     ///
     /// Clamped to `[0, 1]`: the panel spring's overshoot would widen the slot past the width its view
     /// is laid out at, and the view would reflow every frame of it. Past 1 there is nothing to show
@@ -3708,8 +3710,8 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
             scale,
         ));
 
-        // The first line of the message, wrapped across the two rows this entry has. Server messages
-        // run to paragraphs; the box that appears when the cursor reaches the diagnostic is where the
+        // The whole message, with its lines joined by spaces, wrapped across the two rows this entry
+        // has. Server messages run to paragraphs; the box that appears when the cursor reaches the diagnostic is where the
         // whole text belongs, and a list is for deciding where to go.
         //
         // Wrapped here rather than by the renderer: it wrapped the whole paragraph into a box two
@@ -5759,10 +5761,13 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     } else {
         format!("{count} selections · 1 primary")
     };
+    // Both are measured against their boxes: at a narrow width the left half has little left after
+    // the counts and the mode, and the run is clipped to its rectangle, so "1 selection" stopped at
+    // "1 select" with nothing to say it was cut.
     frame.text(run(
         state,
         Role::Value,
-        selection_text,
+        elide(state, Role::Value, &selection_text, selections.width, scale),
         selections,
         theme.ink_dim,
         Align::Left,
@@ -5772,7 +5777,7 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     frame.text(run(
         state,
         Role::Value,
-        state.pending.clone(),
+        elide(state, Role::Value, &state.pending, pending.width, scale),
         pending,
         accent,
         Align::Left,

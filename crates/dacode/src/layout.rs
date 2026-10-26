@@ -604,10 +604,12 @@ impl Layout {
     /// The sidebar gives way first when the window is narrow: past a third of the width it would
     /// leave the code too little room to be worth editing in.
     ///
-    /// `sidebar` is how far open the sidebar is, from 0 (closed) to 1 (open), and a little past 1
-    /// while a spring overshoots. Drawing passes where the slide has got to and so does the mouse, so
-    /// a click lands on what is on screen even mid-slide; soft wrap passes where it is going, so the
-    /// text does not rewrap on every frame of it.
+    /// `sidebar` is how far open the sidebar is, from 0 (closed) to 1 (open). The callers' value is
+    /// already clamped to that range, because the spring's overshoot would only reflow the view
+    /// beside it; this does not clamp the top itself, so a value past 1 would widen the sidebar.
+    /// Drawing passes where the slide has got to and so does the mouse, so a click lands on what is
+    /// on screen even mid-slide; soft wrap passes where it is going, so the text does not rewrap on
+    /// every frame of it.
     pub fn of(bounds: Rect, scale: f32, results_rows: Option<usize>, sidebar: f32) -> Self {
         let px = |v: f32| v * scale;
 
