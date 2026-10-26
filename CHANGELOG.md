@@ -124,8 +124,10 @@ release, where one exists, lives in `packaging/notes/`.
   language-server reader — now wakes the editor when it has an answer.
 - An idle editor really sleeps. While a language server was running the loop woke every 100 ms to
   ask whether anything had happened, which is a core never quite asleep and, on a laptop, a battery
-  never quite untouched. Nothing is polled on a timer now: what has a deadline, such as an autosave,
-  sleeps until it, and the rest wakes the loop itself. The loop also stops asking for frames while
+  never quite untouched. An idle editor polls nothing on a timer now: what has a deadline, such as an
+  autosave, sleeps until it, and the workers wake the loop themselves. Two producers still tick it
+  every 100 ms while they run, because neither has a waker yet: the file walk and a project search
+  that is still streaming hits. The loop also stops asking for frames while
   the window is minimised.
 - Keys no longer go to a panel that is merely open: with the file tree showing, ↓ moved through
   files instead of lines, and an open search took Enter and the arrows whatever you had clicked.

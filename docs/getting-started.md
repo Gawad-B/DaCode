@@ -91,7 +91,7 @@ already know: typing inserts, <kbd>ctrl</kbd>+<kbd>C</kbd> copies, and there are
 gives you the modal grammar. Neither is a subset of the other, and you can change your mind later
 from the settings tab — nothing about this decision is permanent.
 
-**Which theme?** Five cards, each rendering the same code in its own theme, rather than five names.
+**Which theme?** Six cards, each rendering the same code in its own theme, rather than six names.
 
 **Anything to bring over from VSCode?** A checklist, with nothing ticked. Skip it for now; you can
 import at any time, and [migrating from VSCode](guides/migrating-from-vscode.md) covers what comes
@@ -155,8 +155,10 @@ to save, because the change is written to `init.lua` a moment later.
 
 The title bar holds a menu bar — File, Edit, Selection, View, Go, Run, Terminal, Help — that you
 can click at any time or open with <kbd>F10</kbd>; once one menu is open, moving along the bar opens
-the others. A link to the line you are on is File ▸ Copy link to line. There is also a toolbar under
-the tabs and a right-click menu. Every one of them prints the shortcut for what it does, so using the
+the others. A link to the line you are on is File ▸ Copy link to line. The column of icons down the left
+opens the explorer, project search, source control, run and debug, the problems list and the
+settings; the row with the tabs has buttons to open a folder, go back and forward, split and run;
+and there is a right-click menu. Every one of them prints the shortcut for what it does, so using the
 mouse teaches you the keyboard.
 
 ## Where to go next

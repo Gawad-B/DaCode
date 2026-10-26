@@ -4,11 +4,12 @@ For someone who wants different colours or a different text size. By the end you
 theme, know how to bring one over from somewhere else, and know which of your two `theme` settings
 wins when they disagree.
 
-## The five that ship
+## The six that ship
 
 | Name | |
 |---|---|
-| `dark` | the default |
+| `dacode` | the default: a cool charcoal, the palette the interface is designed in |
+| `dark` | the warmer dark theme that was the default before it |
 | `light` | |
 | `rose-pine` | |
 | `rose-pine-moon` | |
@@ -121,7 +122,7 @@ One thing is corrected rather than copied. If the imported text colour and backg
 close in lightness, the text is re-lightened and the correction is reported — a theme that leaves
 text illegible against its own background is worse than no import at all.
 
-**A theme loaded from a file cannot be changed by the settings tab.** The tab cycles the five built-ins
+**A theme loaded from a file cannot be changed by the settings tab.** The tab cycles the six built-ins
 by name, and a file's colours have no name it could write, so that row shows `from a file` and writes
 nothing. Otherwise changing the font size would quietly throw away an imported theme.
 

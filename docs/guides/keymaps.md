@@ -138,8 +138,8 @@ and always comes to rest on a whole line. With soft wrap off, a sideways swipe â
 
 <kbd>ctrl</kbd> with the wheel or a two-finger scroll changes the font size a step at a time, and so
 does pinching where the window system reports a pinch: macOS today. winit, which DaCode's window is
-built on, does not deliver the gesture on Wayland or X11, so on Linux <kbd>ctrl</kbd>-scroll is the
-way to zoom.
+built on, does not deliver the gesture on Wayland, X11 or Windows, so on Linux and Windows
+<kbd>ctrl</kbd>-scroll is the way to zoom.
 
 ## Rebinding
 

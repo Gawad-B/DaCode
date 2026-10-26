@@ -22,13 +22,13 @@ dacode.set {
   -- reformat is a round trip, and it writes again when it comes back.
   format_on_save = false,
 
-  -- One of the five built-in themes: dark, light, rose-pine, rose-pine-moon, amoled.
+  -- One of the six built-in themes: dacode, dark, light, rose-pine, rose-pine-moon, amoled.
   -- Or the name of a file in ~/.config/dacode/themes/ — which is what `dacode import --theme` writes,
   -- slugified, so "One Dark Pro" finds one-dark-pro.toml.
   --
   -- The *file* is tried first, so putting dark.toml in themes/ replaces the built-in dark rather
   -- than being ignored by it. That is what makes a built-in name editable at all.
-  theme = "dark",
+  theme = "dacode",
 
   -- Light or dark, where a theme has not settled it. "dark" or "light".
   -- appearance = "dark",
@@ -48,6 +48,16 @@ dacode.set {
   -- Write the file a moment after you stop typing, rather than waiting for ctrl-s. It waits for a
   -- pause rather than running on a timer, so what lands on disk is a state you stopped at.
   autosave = false,
+
+  -- How much of the desktop shows through the window, in percent, from 0 to 90. Backgrounds go
+  -- see-through; text and popups stay solid. Needs a compositor, and turning it on from 0 takes
+  -- effect at the next start.
+  transparency = 0,
+
+  -- How much the interface moves: "full" (springs that settle with a little overshoot), "reduced"
+  -- (short fades, nothing that travels) or "off". A string, so `animations = false` is an error
+  -- rather than a quiet "full".
+  animations = "full",
 
   -- What <leader> means in the bindings below.
   leader = "<space>",

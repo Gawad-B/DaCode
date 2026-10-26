@@ -13,7 +13,7 @@ dacode --help | --version
 `--version` / `-V` and `--help` / `-h` are checked at the top of `main()` — after the `import`
 subcommand is dispatched, so `dacode import --help` still reaches the importer's own help, and before
 anything that could open a window. Each prints and exits.
-`--help` renders the `FLAGS` table (37 entries of flag, value placeholder, description) rather than
+`--help` renders the `FLAGS` table (43 entries of flag, value placeholder, description) rather than
 carrying its own prose, so the help text and the flag list cannot disagree — the same one-table
 discipline `dacode_input::commands::COMMANDS` follows. **That table is the source of truth for this
 document**; everything under "Normal use" and "Headless rendering" below is the same set with the
@@ -109,7 +109,7 @@ Column widths are computed from the longest entry, so adding a flag cannot leave
 version comes from `CARGO_PKG_VERSION` and a test asserts the help text carries it, because
 `dacode --version` is what a bug report is asked for.
 
-`FLAGS` is split at `PLAIN_FLAGS` (5) into the two groups above. The headless group is long because
+`FLAGS` is split at `PLAIN_FLAGS` (4) into the two groups above. The headless group is long because
 it is the whole visual test surface, and someone reaching for it is reproducing a capture from CI
 rather than editing a file.
 
@@ -131,15 +131,16 @@ directory the launcher happened to point at, which on Windows is where the progr
 Naming a file explicitly wins over the session: asking for one file and getting the last three back
 would be surprising.
 
-`--help` lists `--no-vim` in this group, described as "start with Vim keys off, whatever the config
-says". It is only read inside `screenshot()`, so outside `--screenshot` it does nothing — the
-editor's starting mode comes from `Settings::modal`. The guard below checks that a listed flag is
-read *somewhere*, not that it is read in the group it is listed under.
+`--no-vim` used to be listed in this group, described as "start with Vim keys off, whatever the
+config says". It was only ever read inside `screenshot()`, so outside `--screenshot` it did nothing —
+the editor's starting mode comes from `Settings::modal`. It is a headless flag now, and the guard
+`a_flag_offered_for_ordinary_use_works_without_screenshot` fails the build if a flag listed for
+ordinary use is read only by the renderer again.
 
 ### `VALUE_FLAGS`
 
 A flag that consumes the argument after it must be named in `VALUE_FLAGS`, or `positional()` takes
-that argument as the file to open. The list holds eighteen names.
+that argument as the file to open. The list holds twenty-four names.
 
 It has been wrong twice. `--columns 60` once tried to open a file called `60`, which is what the
 list was added for; then `--row`, `--symbols` and `--block` were added to the renderer over the
@@ -148,16 +149,18 @@ the settings panel it was meant to be scrolling. Nothing failed — the panel st
 why rendering every overlay in CI could not see it either.
 
 `command_line_tests` in `main.rs` now derives the flag set from the source instead of trusting
-anyone to remember, and checks three things:
+anyone to remember, and checks:
 
 - every flag whose value is consumed is in `VALUE_FLAGS`
 - every flag `FLAGS` offers is really read by the binary
 - every flag really read by the binary is in `FLAGS`
+- every flag `FLAGS` lists for ordinary use is read outside `screenshot`
+- every flag `FLAGS` lists carries a description
 
 It strips comment lines first and matches only the three shapes a flag is actually read in — an
 equality against an argument, and the two closures `screenshot` builds over its argument list —
-because a doc comment naming a flag is not the binary reading one. All three were verified by
-injecting violations, and a fourth test asserts the scan still finds three flags read three
+because a doc comment naming a flag is not the binary reading one. The first three were verified by
+injecting violations, and another test asserts the scan still finds three flags read three
 different ways, so a scan that silently stopped matching would fail rather than pass vacuously.
 
 ## Headless rendering
@@ -229,9 +232,9 @@ order.
 | 10 | `--symbols` | `QUERY` | The symbol palette over a canned ten-entry outline, so its indenting and kind column are inspectable without a language server. |
 | 11 | `--commands` | — | The command palette listing every command. |
 | 12 | `--settings` | — | The settings tab, with the Languages page's servers and formatters detected against this machine — the page is a report, and a screenshot of a report with invented contents verifies nothing. |
-| 12a | `--settings-page` | `NAME` | The page the tab opens at, by its name in the tree: `appearance`, `editor`, `files`, `keys`, `languages`, `import`. Only meaningful with `--settings`. |
-| 12b | `--settings-search` | `QUERY` | A search typed into the tab, so its results from every page can be captured. Only meaningful with `--settings`. |
-| 12c | `--row` | `N` | Which entry of the page is selected, headings counted, as ↓ would select it. Only meaningful with `--settings`; the page scrolls to its selection, which is the only way to capture a row below the fold. |
+| 12a | `--settings-page` | `NAME` | The page the tab opens at, by its name in the tree: `appearance`, `editor`, `files`, `keys`, `languages`, `import`. Implies `--settings`. |
+| 12b | `--settings-search` | `QUERY` | A search typed into the tab, so its results from every page can be captured. Implies `--settings`. |
+| 12c | `--row` | `N` | Which entry of the page is selected, headings counted, as ↓ would select it. Implies `--settings`; the page scrolls to its selection, which is the only way to capture a row below the fold. |
 | 13 | `--tree` | — | The file tree, revealing `crates/dacode-text/src/anchor.rs`. Indexes inline, waiting up to two seconds. |
 | 14 | `--split` | `N[h]` | N panes on one buffer, clamped to 1–4, defaulting to 2 if unparseable. A trailing `h` stacks them horizontally; anything else is vertical. Each pane looks at a different place in the file, because identical panes would hide a scroll bug. |
 

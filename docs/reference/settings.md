@@ -47,7 +47,7 @@ than logged.
 | `tab_width` | integer | `4` | Columns a tab stands for. Clamped to 1–16. |
 | `soft_wrap` | boolean | `true` | Wrap long lines rather than scrolling sideways. |
 | `format_on_save` | boolean | `false` | Reformat after every save, through the language server or an external formatter. |
-| `theme` | string | `"dark"` | A file in `themes/`, or one of the five built-ins. File first. |
+| `theme` | string | `"dacode"` | A file in `themes/`, or one of the six built-ins. File first. |
 | `appearance` | `"dark"` \| `"light"` | unset | Flips the built-in theme. Ignored entirely when `theme` is set. |
 | `line_numbers` | `"absolute"` \| `"relative"` \| `"off"` | follows `vim_keys` | What the gutter counts. |
 | `sticky_scroll` | boolean | `true` | Pin enclosing block heads above the viewport. |
@@ -98,7 +98,8 @@ clamps again. Never zero, which would divide by it.
 and falls back to `Theme::by_name`. A `themes/dark.toml` you wrote therefore shadows the built-in
 called `dark` — the more specific answer wins, and silently preferring the compiled-in one would
 leave you editing a file that never loads. The name is slugified, so `theme = "One Dark Pro"` finds
-`one-dark-pro.toml`. The built-ins are `dark`, `light`, `rose-pine`, `rose-pine-moon`, `amoled`.
+`one-dark-pro.toml`. The built-ins are `dacode`, `dark`, `light`, `rose-pine`, `rose-pine-moon` and
+`amoled`.
 A name that matches neither a file nor a built-in is reported with both the list and the path that
 was tried.
 
@@ -109,7 +110,7 @@ only in the `else` branch of "was a theme named?". Setting both means `appearanc
 without being asked is not a decision to make on their behalf, and it is the kind of default that
 loses trust the first time it fires.
 
-**A theme loaded from a file cannot be changed by the page.** The page cycles the five built-ins by
+**A theme loaded from a file cannot be changed by the page.** The page cycles the six built-ins by
 name; a file's colours have no name it could write, so the row shows `from a file` and writes nothing
 for it — otherwise changing the font size would throw away an imported theme.
 
@@ -172,10 +173,10 @@ dacode.server("zig", { command = "zls", args = { "--stdio" }, extensions = { "zi
 | `extensions` | list of strings | conditionally | Without the dot; a leading dot is stripped and the value lowercased. |
 
 The language is positional because it is what the entry is *about*. It is matched against DaCode's own
-table — `rust`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — case-insensitively. For one of
-those, `extensions` may be omitted and DaCode fills in the list it already knows. For any other name,
-`extensions` is required, because otherwise nothing would ever reach the server; the error message
-says so and shows the shape.
+table — `rust`, `javascript`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — case-insensitively.
+For one of those, `extensions` may be omitted and DaCode fills in the list it already knows. For any
+other name, `extensions` is required, because otherwise nothing would ever reach the server; the error
+message says so and shows the shape.
 
 A configured entry goes **ahead** of the built-ins rather than replacing them, so naming a venv's
 server does not also throw away the fallback.

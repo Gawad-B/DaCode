@@ -113,10 +113,10 @@ windowed editor that directory is wherever the desktop launched it from, and nev
 also throw away the fallback for when that venv is not there. The statusline names whichever one
 actually started, so the order is visible rather than a guess.
 
-A language DaCode already knows — `rust`, `typescript`, `python`, `cpp`, `go`, `lua`, `dart` — fills in
-the extension list for you. Any other name must list its own, because a server that can never match
-a file is a line of config that silently does nothing, which is the worst outcome available. On
-Windows the lookup honours `PATHEXT`, so the `.cmd` shims that npm installs are found.
+A language DaCode already knows — `rust`, `javascript`, `typescript`, `python`, `cpp`, `go`, `lua`,
+`dart` — fills in the extension list for you. Any other name must list its own, because a server that
+can never match a file is a line of config that silently does nothing, which is the worst outcome
+available. On Windows the lookup honours `PATHEXT`, so the `.cmd` shims that npm installs are found.
 
 The full field list is in the [settings reference](../reference/settings.md#vexserverlanguage-spec).
 

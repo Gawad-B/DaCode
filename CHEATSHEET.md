@@ -4,18 +4,21 @@ Vim's grammar, so the usual composition works: `[count] ["register] operator [co
 `3dw`, `d2f)`, `ci"`, `"ayy`, `.` to repeat. Everything below is the vocabulary that composes.
 
 Every entry here is checked against the real grammar by
-`cargo run -p dacode-input --example cheatsheet`, which feeds all 113 of them through it and fails if
+`cargo run -p dacode-input --example cheatsheet`, which feeds all 120 of them through it and fails if
 one stops resolving. That check found `ctrl-p` falling through to `p` and pasting.
 
 ---
 
 ## If you never want to learn any of this
 
-**You do not have to touch the keyboard at all.** Along the top right there are buttons — *open,
-files, find, save, settings, commands, keys* — and every one of them does what the shortcut does.
-**Right-click** anywhere in the text for cut, copy, paste, go-to-definition and the rest. The
-**menus** are in the title bar, and **F10** opens them from the keyboard. The settings tab changes
-with a click.
+**You do not have to touch the keyboard at all.** The **menus** — File, Edit, Selection, View, Go
+and the rest — are in the title bar along the top, and **F10** opens them from the keyboard; the
+search box in the middle of that bar is every command. The **column of icons on the left** opens the
+explorer, project search, source control, run and debug and the problems list, with the settings gear
+at its foot. The **row with the tabs** has a home button that opens a folder, back and forward, split
+and run. The **bell** at the top right is your notifications. **Right-click** anywhere in the text for
+cut, copy, paste, go-to-definition and the rest. Every button does what its shortcut does, and the
+settings tab changes with a click.
 
 When you want the keys: press **F1** for the ones that work right now, in the grammar you are
 actually using, filterable by typing. **ctrl-shift-P** is every command, searchable, each with its
@@ -172,7 +175,7 @@ which is the thing returning to the origin exists to prevent.
 | `ctrl-k o` · `ctrl-k ctrl-o` | open a folder — the desktop's folder chooser |
 | `ctrl-p` | file palette (fuzzy) |
 | `ctrl-b` | buffer palette |
-| `ctrl-e` | file tree — click it or press `ctrl-shift-e` to give it the keys: `j`/`k` move, `enter` opens, `esc` hands the keys back to the text |
+| `ctrl-e` | file tree, shown or hidden — opening it gives it the keys: `j`/`k` move, `enter` opens, `esc` hands the keys back to the text; a click in it or `ctrl-shift-e` gives them to it again |
 | `ctrl-shift-e` · `ctrl-1` | keys to the file tree (opening it if closed) · keys back to the text |
 
 **Right-click a row in the tree** for new file, rename and delete. They also live in the command
@@ -323,9 +326,10 @@ dacode.formatter("python", { command = ".venv/bin/black", args = { "-" } })
 
 Yours is tried before DaCode's own list, which stays behind it as the fallback. A command with a slash
 in it is a path — resolved against the project root — rather than a name to look up on `PATH`, and
-`~/` is your home directory. A language DaCode already knows (`rust`, `typescript`, `python`, `cpp`,
-`go`, `lua`, `dart`) fills in the extensions for you; any other language has to list them, because a
-server that can never match a file would otherwise be a line of config that silently does nothing.
+`~/` is your home directory. A language DaCode already knows (`rust`, `javascript`, `typescript`,
+`python`, `cpp`, `go`, `lua`, `dart`) fills in the extensions for you; any other language has to list
+them, because a server that can never match a file would otherwise be a line of config that silently
+does nothing.
 The settings tab's **Languages** page says what was found and where.
 
 In insert mode only modified and named keys can be bound: a letter binding would have to hold the

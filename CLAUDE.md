@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~68,000 lines,
-994 tests, clippy clean.
+1010 tests, clippy clean.
 
 ## Commands
 
@@ -163,7 +163,7 @@ modifier is held and leaves `shift` on the key for bindings that mean it. Never 
 platform event any other way.
 
 **Every mouse-reachable thing is geometry data plus a click handler that reads it.** `layout.rs` for
-the chrome's bars and buttons, `menu::geometry`, `welcome::geometry`, `settings_ui::Page::geometry_at`,
+the chrome's bars and buttons, `Menu::geometry`, `welcome::geometry`, `settings_ui::Page::geometry_at`,
 `tree::panel`, `layout::CodeArea`, `palette::Palette::geometry`, `help::Help::geometry`. The drawing code reads the same function. A rectangle computed
 twice is a click that lands somewhere other than where it looks.
 
@@ -479,7 +479,7 @@ anything platform-shaped:
 | Where something is | `crates/dacode/src/layout.rs` |
 | A config option | `dacode-lua/src/lib.rs`, `dacode/src/config.rs`, `dacode/src/settings_ui.rs` (all three) |
 | What the title, activity and tab bars offer | `crates/dacode/src/layout.rs` — `title_bar`, `ACTIVITIES`, `TAB_BAR_COMMANDS`, read by drawing and by the mouse |
-| The menu bar's titles and what hangs under them | `layout::title_bar` for where the titles are, `crates/dacode/src/menu.rs` for what is in them; `menu::geometry` reads the first rather than measuring titles itself |
+| The menu bar's titles and what hangs under them | `layout::title_bar` for where the titles are, `crates/dacode/src/menu.rs` for what is in them; `Menu::geometry` reads the first rather than measuring titles itself |
 | Something that moves | `crates/dacode/src/motion.rs` for the springs; `EditorState::sync_motion` in `chrome.rs` is where every target is set, and drawing only reads |
 | Scrolling | `crates/dacode/src/scroll.rs` — `ScrollInput` and `by_pixels`; the remainder lives on `state.chrome`, and `layout::CodeGrid::with_sub_row` is the only place it enters pixel arithmetic |
 | Which surface has the keys | `crates/dacode/src/focus.rs` — `Focus` and `focus_for`; a click sets it, and the key router asks it rather than which panel is open |
