@@ -2573,7 +2573,7 @@ mod tests {
             soft_wrap: true,
             format_on_save: false,
             modal: true,
-            theme: Some("dark"),
+            theme: Some("walnut"),
             line_numbers: crate::config::LineNumbers::Absolute,
             transparency: 0,
             animations: crate::motion::Animations::Full,
@@ -2648,7 +2648,7 @@ mod tests {
             tab_width: 4,
             soft_wrap: true,
             format_on_save: false,
-            theme: Some("dark"),
+            theme: Some("walnut"),
             line_numbers: crate::config::LineNumbers::Relative,
             transparency: 0,
             animations: crate::motion::Animations::Full,
@@ -2735,7 +2735,7 @@ mod tests {
     #[test]
     fn the_theme_cycles_through_every_built_in_both_ways() {
         let mut values = values();
-        // By slug: two themes share a display name, so the shown value cannot count them.
+        // By slug, the name config knows each by.
         let mut seen = vec![values.theme.unwrap()];
 
         for _ in 1..Theme::BUILT_IN.len() {
@@ -2747,7 +2747,7 @@ mod tests {
         distinct.dedup();
         assert_eq!(distinct.len(), Theme::BUILT_IN.len());
         assert!(seen.contains(&"rose-pine"));
-        assert!(seen.contains(&"amoled"));
+        assert!(seen.contains(&"true-black"));
 
         // Wherever it started, one more step comes back to it, and one back from there is the last
         // one seen — the wrap, in both directions, without the test knowing the list's order.
@@ -2779,7 +2779,7 @@ mod tests {
         let written = write_back("", &values());
         assert!(written.starts_with(MARKER));
         assert!(written.contains("tab_width = 4"));
-        assert!(written.contains("theme = \"dark\""));
+        assert!(written.contains("theme = \"walnut\""));
         assert!(written.ends_with("}\n"));
     }
 
@@ -2878,7 +2878,7 @@ mod tests {
         assert_eq!(config.soft_wrap, Some(original.soft_wrap));
         // The step lands wherever the grouped order puts the next theme; what matters is that the
         // name written is the name read.
-        assert_ne!(original.theme, Some("dark"), "the theme did move");
+        assert_ne!(original.theme, Some("walnut"), "the theme did move");
         assert_eq!(config.theme_name.as_deref(), original.theme);
         assert_eq!(
             config.font_size.map(|size| format!("{size:.1}")),
@@ -2914,7 +2914,7 @@ mod click_tests {
             tab_width: 4,
             soft_wrap: true,
             format_on_save: false,
-            theme: Some("dark"),
+            theme: Some("walnut"),
             line_numbers: crate::config::LineNumbers::Relative,
             transparency: 0,
             animations: crate::motion::Animations::Full,
@@ -4084,26 +4084,20 @@ mod dropdown_tests {
 
     #[test]
     fn opening_the_dropdown_highlights_the_theme_in_use() {
-        assert_eq!(
-            opened(Some("sky-light")).dropdown_choice(),
-            Some("sky-light")
-        );
-        assert_eq!(
-            opened(Some("amoled-black")).dropdown_choice(),
-            Some("amoled-black")
-        );
+        assert_eq!(opened(Some("snow")).dropdown_choice(), Some("snow"));
+        assert_eq!(opened(Some("abyss")).dropdown_choice(), Some("abyss"));
         // A theme from a file is on no list; the highlight starts on the first theme, not a heading.
         assert_eq!(opened(None).dropdown_choice(), Some(Theme::grouped()[0]));
     }
 
     #[test]
     fn the_highlight_steps_over_the_headings_and_stops_at_the_ends() {
-        let mut page = opened(Some("amoled-black"));
+        let mut page = opened(Some("abyss"));
         // The last dark theme, then across the "Light" heading to the first light one.
         page.move_dropdown(1);
-        assert_eq!(page.dropdown_choice(), Some("light"));
+        assert_eq!(page.dropdown_choice(), Some("linen"));
         page.move_dropdown(-1);
-        assert_eq!(page.dropdown_choice(), Some("amoled-black"));
+        assert_eq!(page.dropdown_choice(), Some("abyss"));
 
         page.move_dropdown(isize::MIN / 2);
         assert_eq!(page.dropdown_choice(), Some(Theme::grouped()[0]));
@@ -4118,9 +4112,9 @@ mod dropdown_tests {
     #[test]
     fn the_dropdown_hangs_under_the_theme_control_and_stays_inside_the_window() {
         for (editor, scale, at) in editors() {
-            let page = opened(Some("dacode"));
+            let page = opened(Some("slate"));
             let typography = Typography::default();
-            let rows = page.geometry(editor, scale, &values(Some("dacode")), true, &typography);
+            let rows = page.geometry(editor, scale, &values(Some("slate")), true, &typography);
             let control = rows
                 .rows
                 .iter()
@@ -4165,7 +4159,7 @@ mod dropdown_tests {
     #[test]
     fn a_heading_is_not_a_target_and_a_theme_row_is() {
         let (editor, scale) = (Rect::new(0.0, 0.0, 1400.0, 900.0), 1.0);
-        let page = opened(Some("dacode"));
+        let page = opened(Some("slate"));
         let dropdown = geometry(&page, editor, scale);
         for row in &dropdown.rows {
             let (x, y) = (
@@ -4187,14 +4181,14 @@ mod dropdown_tests {
         let window = Rect::new(0.0, 0.0, 640.0, 480.0);
         let editor = crate::layout::Layout::of(window, 1.0, None, 0.0).editor;
         let typography = Typography::default();
-        let mut page = opened(Some("dacode"));
+        let mut page = opened(Some("slate"));
         assert!(
             geometry(&page, editor, 1.0).max_scroll > 0.0,
             "it has to scroll here"
         );
         for step in 0..Theme::BUILT_IN.len() {
             page.move_dropdown(1);
-            let rows = page.geometry(editor, 1.0, &values(Some("dacode")), true, &typography);
+            let rows = page.geometry(editor, 1.0, &values(Some("slate")), true, &typography);
             page.reveal_dropdown(&rows, editor, 1.0, &typography);
             let dropdown = geometry(&page, editor, 1.0);
             let selected = page.dropdown().unwrap().selected();

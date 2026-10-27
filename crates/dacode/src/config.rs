@@ -192,7 +192,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             typography: Typography::default(),
-            theme: Theme::dacode(),
+            theme: Theme::slate(),
             tab_width: 4,
             soft_wrap: true,
             // Off by default: a formatter reflowing a file you did not ask it to is worse than no
@@ -280,7 +280,7 @@ pub fn load_from(dir: &Path) -> Settings {
         }
         if !named_theme {
             if let Some("light") = config.string("theme.appearance") {
-                settings.theme = Theme::light();
+                settings.theme = Theme::linen();
             }
         }
     }
@@ -583,7 +583,7 @@ mod tests {
         );
         assert_eq!(
             theme.syntax.keyword.to_hex(),
-            Theme::dark().syntax.keyword.to_hex(),
+            Theme::walnut().syntax.keyword.to_hex(),
             "unset colors keep the built-in value"
         );
 
@@ -742,14 +742,37 @@ mod tests {
                 settings.problems
             );
             assert_eq!(settings.theme.bg.to_hex(), build().bg.to_hex(), "{name}");
-            // By name too: `amoled` and `amoled-black` share a #000000 canvas, so the colour alone
-            // could not tell a lookup that returned the wrong one of the two.
+            // By name too: the colour alone could not tell a lookup that returned a different theme
+            // on the same canvas.
             assert_eq!(settings.theme.name(), Some(name), "{name}");
             assert!(
                 settings.theme_source.is_none(),
                 "{name} is compiled in, not a file"
             );
 
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn an_old_theme_name_in_init_lua_still_starts_the_theme_it_was_renamed_to() {
+        // The themes were renamed for their palettes, and the settings tab had been writing the old
+        // names into init.lua for a release. Through the real reader, because it is the reader that
+        // would have reported "no such theme" and started the fallback.
+        for (old, new) in Theme::ALIASES {
+            let dir = scratch(&format!("old-theme-{old}"));
+            std::fs::write(
+                dir.join("init.lua"),
+                format!("dacode.set {{ theme = \"{old}\" }}\n"),
+            )
+            .unwrap();
+            let settings = load_from(&dir);
+            assert!(
+                settings.problems.is_empty(),
+                "{old}: {:?}",
+                settings.problems
+            );
+            assert_eq!(settings.theme.name(), Some(new), "{old}");
             std::fs::remove_dir_all(&dir).ok();
         }
     }
@@ -773,7 +796,7 @@ mod tests {
         assert_eq!(paper.appearance, Appearance::Light);
         assert_eq!(
             paper.ink.to_hex(),
-            Theme::light().ink.to_hex(),
+            Theme::linen().ink.to_hex(),
             "the tokens it leaves out come from the light base"
         );
         let ink = load_theme(&dir.join("themes/ink.toml")).unwrap();
@@ -801,7 +824,7 @@ mod tests {
         let settings = load_from(&dir);
         assert!(settings.problems.is_empty(), "{:?}", settings.problems);
         assert!(settings.theme_source.is_some(), "the file won");
-        assert_ne!(settings.theme.bg.to_hex(), Theme::dark().bg.to_hex());
+        assert_ne!(settings.theme.bg.to_hex(), Theme::walnut().bg.to_hex());
 
         std::fs::remove_dir_all(&dir).ok();
     }

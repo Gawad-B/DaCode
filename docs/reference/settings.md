@@ -47,7 +47,7 @@ than logged.
 | `tab_width` | integer | `4` | Columns a tab stands for. Clamped to 1–16. |
 | `soft_wrap` | boolean | `true` | Wrap long lines rather than scrolling sideways. |
 | `format_on_save` | boolean | `false` | Reformat after every save, through the language server or an external formatter. |
-| `theme` | string | `"dacode"` | A file in `themes/`, or one of the thirteen built-ins. File first. |
+| `theme` | string | `"slate"` | A file in `themes/`, or one of the twelve built-ins. File first. |
 | `appearance` | `"dark"` \| `"light"` | unset | Flips the built-in theme. Ignored entirely when `theme` is set. |
 | `line_numbers` | `"absolute"` \| `"relative"` \| `"off"` | follows `vim_keys` | What the gutter counts. |
 | `sticky_scroll` | boolean | `true` | Pin enclosing block heads above the viewport. |
@@ -95,12 +95,14 @@ to 11.
 clamps again. Never zero, which would divide by it.
 
 **`theme` prefers a file over a built-in.** `config::resolve_theme` tries `themes/<slug>.toml` first
-and falls back to `Theme::by_name`. A `themes/dark.toml` you wrote therefore shadows the built-in
-called `dark` — the more specific answer wins, and silently preferring the compiled-in one would
+and falls back to `Theme::by_name`. A `themes/walnut.toml` you wrote therefore shadows the built-in
+called `walnut` — the more specific answer wins, and silently preferring the compiled-in one would
 leave you editing a file that never loads. The name is slugified, so `theme = "One Dark Pro"` finds
-`one-dark-pro.toml`. The built-ins are, dark: `dacode`, `dark`, `rose-pine`, `rose-pine-moon`,
-`amoled`, `quizzy-dark`, `coral-dark`, `sky-dark`, `amoled-black`; light: `light`, `quizzy-light`,
-`coral-light`, `sky-light`. A theme file with no `appearance` line is dark or light by its `bg`.
+`one-dark-pro.toml`. The built-ins are, dark: `slate`, `walnut`, `rose-pine`, `rose-pine-moon`,
+`true-black`, `espresso`, `charcoal-coral`, `abyss`; light: `linen`, `cream`, `mist-coral`, `snow`.
+The names they had before they were named for their palettes (`dacode`, `dark`, `light`, `amoled`,
+`amoled-black`, `quizzy-dark`, `quizzy-light`, `coral-dark`, `coral-light`, `sky-dark`, `sky-light`)
+still find them. A theme file with no `appearance` line is dark or light by its `bg`.
 A name that matches neither a file nor a built-in is reported with both the list and the path that
 was tried.
 
@@ -112,12 +114,12 @@ without being asked is not a decision to make on their behalf, and it is the kin
 loses trust the first time it fires.
 
 **The theme row opens a list.** A click on its control, or enter or space on the row, opens a card
-under the control listing the built-ins under **Dark** and **Light** by their display names (*Quizzy*, *Charcoal coral*,
-*Rosé Pine* — both halves of a pair share one, and the heading says which); ↑ ↓ move, enter or a click picks
+under the control listing the built-ins under **Dark** and **Light** by their display names (*Slate*, *Espresso*,
+*Mist coral* — each its own); ↑ ↓ move, enter or a click picks
 (applied live and written like any other change), esc or a click outside closes. ← → on the row step
 through the same order without opening it.
 
-**A theme loaded from a file cannot be changed by the page.** The page offers the thirteen built-ins by
+**A theme loaded from a file cannot be changed by the page.** The page offers the twelve built-ins by
 name; a file's colours have no name it could write, so the row shows `from a file` and writes nothing
 for it — otherwise changing the font size would throw away an imported theme.
 

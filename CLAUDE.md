@@ -7,7 +7,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 ## What this is
 
 A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~68,000 lines,
-1010 tests, clippy clean.
+1039 tests, clippy clean.
 
 ## Commands
 
@@ -57,7 +57,7 @@ and one added to `InsertText` fails it at 111x. `cargo bench` still measures; th
 
 ```
 dacode-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, SelectionSet
-dacode-theme    Oklch, thirteen themes, type roles (one face: Fira Code), mode accents
+dacode-theme    Oklch, twelve themes, type roles (one face: Fira Code), mode accents
 dacode-display  soft wrap, ScrollAnchor, Folds, sticky scroll
 dacode-buffer   Document = text + undo history + pending changes + pairing
 dacode-input    Action, Grammar, Keymap, JumpList, Macros, the command table

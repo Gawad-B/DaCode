@@ -270,7 +270,7 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
                     Some(color) => {
                         // Validated here rather than at paint time, so an unknown token is reported
                         // with the name the user typed instead of vanishing.
-                        if Theme::dark().set_token(&token, color) {
+                        if Theme::walnut().set_token(&token, color) {
                             config.colors.push((token, color));
                         } else {
                             config.problems.push(match nearest(&token, &Theme::TOKENS) {
@@ -610,7 +610,7 @@ mod tests {
         "##);
 
         assert!(config.problems.is_empty(), "{:?}", config.problems);
-        let mut theme = Theme::dark();
+        let mut theme = Theme::walnut();
         config.paint(&mut theme);
         assert_eq!(theme.bg.to_hex(), "#101418");
         assert!((theme.syntax.keyword.h - 318.0).abs() < 0.5);

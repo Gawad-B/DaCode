@@ -65,7 +65,7 @@ fn state(lines: usize) -> EditorState {
 
     EditorState {
         mode: Mode::Insert,
-        theme: Theme::dark(),
+        theme: Theme::walnut(),
         theme_toggled_from: None,
         typography: Typography::default(),
         document,

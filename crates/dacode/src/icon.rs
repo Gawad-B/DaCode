@@ -107,7 +107,10 @@ mod tests {
         );
         assert_eq!(alpha_at(4, 128), 255);
         // The letter's left stroke, where the bowl turns, is around 20%,67% of the box.
-        assert!(alpha_at(50, 172) > 200, "the tile is opaque under the letter");
+        assert!(
+            alpha_at(50, 172) > 200,
+            "the tile is opaque under the letter"
+        );
     }
 
     #[test]

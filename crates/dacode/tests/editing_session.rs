@@ -25,7 +25,7 @@ impl Session {
         Self {
             state: EditorState {
                 mode: Mode::Normal,
-                theme: Theme::dark(),
+                theme: Theme::walnut(),
                 theme_toggled_from: None,
                 typography: Typography::default(),
                 document: Document::from_str(contents),

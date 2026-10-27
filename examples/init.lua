@@ -22,14 +22,14 @@ dacode.set {
   -- reformat is a round trip, and it writes again when it comes back.
   format_on_save = false,
 
-  -- One of the thirteen built-in themes. Dark: dacode, dark, rose-pine, rose-pine-moon, amoled,
-  -- quizzy-dark, coral-dark, sky-dark, amoled-black. Light: light, quizzy-light, coral-light, sky-light.
+  -- One of the twelve built-in themes. Dark: slate, walnut, rose-pine, rose-pine-moon, true-black,
+  -- espresso, charcoal-coral, abyss. Light: linen, cream, mist-coral, snow.
   -- Or the name of a file in ~/.config/dacode/themes/ — which is what `dacode import --theme` writes,
   -- slugified, so "One Dark Pro" finds one-dark-pro.toml.
   --
-  -- The *file* is tried first, so putting dark.toml in themes/ replaces the built-in dark rather
+  -- The *file* is tried first, so putting walnut.toml in themes/ replaces the built-in walnut rather
   -- than being ignored by it. That is what makes a built-in name editable at all.
-  theme = "dacode",
+  theme = "slate",
 
   -- Light or dark, where a theme has not settled it. "dark" or "light".
   -- appearance = "dark",

@@ -102,23 +102,22 @@ pub struct Theme {
 
 /// A built-in theme: the slug config knows it by, the name it is shown under, and how to build it.
 ///
-/// Two names because they answer different questions. The slug is public API — `theme = "coral-dark"`
-/// in someone's init.lua — and must say which half of a pair it is. The display name is for lists
-/// that already say so: under the dropdown's "Light" heading, "Charcoal coral" is the light one, and
-/// "coral-light" would only repeat the heading.
+/// Two names because they answer different questions. The slug is public API —
+/// `theme = "charcoal-coral"` in someone's init.lua — and has to survive being typed into a file. The
+/// display name is for people, and says what the palette looks like.
 pub type BuiltIn = (&'static str, &'static str, fn() -> Theme);
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::dacode()
+        Self::slate()
     }
 }
 
 impl Theme {
-    /// The default: the palette of the DaCode interface design — a cool charcoal with the chrome a
+    /// Slate, the default: the palette of the DaCode interface design — a cool charcoal with the chrome a
     /// shade darker than the code, and syntax colours in the family most editors' dark themes share,
     /// so nobody arriving from VSCode or Zed has to relearn what a string looks like.
-    pub const fn dacode() -> Self {
+    pub const fn slate() -> Self {
         Self {
             primary: Oklch::new(0.6467, 0.1912, 256.2),
             appearance: Appearance::Dark,
@@ -148,7 +147,8 @@ impl Theme {
         }
     }
 
-    pub const fn dark() -> Self {
+    /// Walnut: a warm brown-black with cream ink, the plain dark theme the toggle falls back to.
+    pub const fn walnut() -> Self {
         Self {
             primary: Oklch::new(0.6600, 0.1600, 255.0),
             appearance: Appearance::Dark,
@@ -178,7 +178,9 @@ impl Theme {
         }
     }
 
-    pub const fn light() -> Self {
+    /// Linen: warm off-white paper with brown-black ink, the plain light theme the toggle falls
+    /// back to.
+    pub const fn linen() -> Self {
         Self {
             primary: Oklch::new(0.5500, 0.1700, 255.0),
             appearance: Appearance::Light,
@@ -210,8 +212,8 @@ impl Theme {
 
     pub fn for_appearance(appearance: Appearance) -> Self {
         match appearance {
-            Appearance::Dark => Self::dark(),
-            Appearance::Light => Self::light(),
+            Appearance::Dark => Self::walnut(),
+            Appearance::Light => Self::linen(),
         }
     }
 
@@ -341,11 +343,12 @@ impl Theme {
         }
     }
 
-    /// True black, with high-chroma accents.
+    /// True black, with high-chroma accents. Once two themes — the editor's AMOLED and Quizzy's AMOLED
+    /// black, the same black with a different accent — and now the first, under the name of what it is.
     ///
     /// `bg` is exactly #000000, which on an OLED panel means those pixels are *off* — the point of the
     /// theme. The accents carry more chroma than the other themes to hold their own against it.
-    pub const fn amoled() -> Self {
+    pub const fn true_black() -> Self {
         Self {
             primary: Oklch::new(0.7000, 0.1800, 250.0),
             appearance: Appearance::Dark,
@@ -375,14 +378,14 @@ impl Theme {
         }
     }
 
-    /// Quizzy, dark: an espresso room with cream ink and a teal accent — Quizzy's default palette.
+    /// Espresso: an espresso room with cream ink and a teal accent — Quizzy's default palette.
     ///
     /// The surfaces, text, hairlines and accent are Quizzy's tokens exactly (`quizzy.css`). Quizzy
     /// has no syntax colours, so these are derived: one lightness band and one chroma, with hues
     /// from the palette — teal keywords (the accent), amber types (its "support"), green strings
     /// (its "progress"), orange numbers (its "attention"). The mode accents take the lightness and
     /// chroma of Quizzy's four status colours, whose hues already sit on the mode hues.
-    pub const fn quizzy_dark() -> Self {
+    pub const fn espresso() -> Self {
         Self {
             primary: Oklch::new(0.7038, 0.1230, 182.5),
             appearance: Appearance::Dark,
@@ -412,9 +415,9 @@ impl Theme {
         }
     }
 
-    /// Quizzy, light: a cream page with espresso ink and a deep teal accent. The light side of
-    /// [`Theme::quizzy_dark`], with the same derived syntax hues set dark enough for 4.5:1 on paper.
-    pub const fn quizzy_light() -> Self {
+    /// Cream: a cream page with espresso ink and a deep teal accent. The light side of
+    /// [`Theme::espresso`], with the same derived syntax hues set dark enough for 4.5:1 on paper.
+    pub const fn cream() -> Self {
         Self {
             primary: Oklch::new(0.5109, 0.0861, 186.4),
             appearance: Appearance::Light,
@@ -444,9 +447,9 @@ impl Theme {
         }
     }
 
-    /// Charcoal coral, dark: a charcoal room, slate panels, coral for the brand and indigo beside
+    /// Charcoal coral: a charcoal room, slate panels, coral for the brand and indigo beside
     /// it (`coral.css`). Keywords take the coral, functions the indigo, types the gold.
-    pub const fn coral_dark() -> Self {
+    pub const fn charcoal_coral() -> Self {
         Self {
             primary: Oklch::new(0.6846, 0.2042, 24.3),
             appearance: Appearance::Dark,
@@ -476,8 +479,8 @@ impl Theme {
         }
     }
 
-    /// Charcoal coral, light: slate-white with near-black ink and a deeper coral.
-    pub const fn coral_light() -> Self {
+    /// Mist coral, Charcoal coral's light side: slate-white with near-black ink and a deeper coral.
+    pub const fn mist_coral() -> Self {
         Self {
             primary: Oklch::new(0.5891, 0.1960, 25.6),
             appearance: Appearance::Light,
@@ -507,9 +510,9 @@ impl Theme {
         }
     }
 
-    /// Abyss sky, dark: an abyss-teal room with deep teal panels and sky-blue actions (`sky.css`).
+    /// Abyss: an abyss-teal room with deep teal panels and sky-blue actions (`sky.css`).
     /// Keywords take the sky blue and functions the teal of its focus ring.
-    pub const fn sky_dark() -> Self {
+    pub const fn abyss() -> Self {
         Self {
             primary: Oklch::new(0.7535, 0.1390, 232.7),
             appearance: Appearance::Dark,
@@ -539,8 +542,8 @@ impl Theme {
         }
     }
 
-    /// Abyss sky, light: snow, with the deeper sky Quizzy uses so white on it still passes AA.
-    pub const fn sky_light() -> Self {
+    /// Snow, Abyss's light side: with the deeper sky Quizzy uses so white on it still passes AA.
+    pub const fn snow() -> Self {
         Self {
             primary: Oklch::new(0.5000, 0.1193, 242.7),
             appearance: Appearance::Light,
@@ -570,55 +573,48 @@ impl Theme {
         }
     }
 
-    /// Quizzy's AMOLED black: a true #000000 canvas with near-black panels, warm off-white text and
-    /// teal. Not [`Theme::amoled`], which is the editor's own and stays under its name: this is the
-    /// one from Quizzy, dark only by design — Quizzy gives it Quizzy light as its light side.
-    pub const fn amoled_black() -> Self {
-        Self {
-            primary: Oklch::new(0.7038, 0.1230, 182.5),
-            appearance: Appearance::Dark,
-            bg: Oklch::new(0.0000, 0.0000, 0.0),
-            bg_alt: Oklch::new(0.0748, 0.0000, 89.9),
-            bg_panel: Oklch::new(0.1496, 0.0000, 89.9),
-            row_active: Oklch::new(0.2070, 0.0001, 106.4),
-            rule: Oklch::new(0.2850, 0.0000, 89.9),
-            rule_soft: Oklch::new(0.2264, 0.0000, 89.9),
-            ink: Oklch::new(0.9699, 0.0013, 106.4),
-            ink_dim: Oklch::new(0.7161, 0.0091, 56.3),
-            ink_faint: Oklch::new(0.6168, 0.0115, 67.6),
-            scrim: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.75),
-            shadow: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.8),
-            syntax: SyntaxPalette {
-                keyword: Oklch::new(0.77, 0.12, 178.0),
-                type_: Oklch::new(0.84, 0.12, 75.0),
-                function: Oklch::new(0.79, 0.12, 245.0),
-                attribute: Oklch::new(0.71, 0.12, 305.0),
-                comment: Oklch::new(0.62, 0.02, 56.0),
-                string: Oklch::new(0.81, 0.12, 130.0),
-                number: Oklch::new(0.79, 0.12, 45.0),
-                constant: Oklch::new(0.75, 0.12, 10.0),
-            },
-            mode_l: 0.76,
-            mode_c: 0.17,
-        }
-    }
-
     /// Every theme that ships in the binary, by the name config and the settings panel use.
-    pub const BUILT_IN: [BuiltIn; 13] = [
-        ("dacode", "DaCode", Self::dacode),
-        ("dark", "Dark", Self::dark),
-        ("light", "Light", Self::light),
+    pub const BUILT_IN: [BuiltIn; 12] = [
+        // Each named for its palette rather than for where it came from, and no two alike: a list
+        // that said "Quizzy" twice and "AMOLED" beside "AMOLED black" read as a list of duplicates.
+        ("slate", "Slate", Self::slate),
+        ("walnut", "Walnut", Self::walnut),
+        ("linen", "Linen", Self::linen),
         ("rose-pine", "Rosé Pine", Self::rose_pine),
         ("rose-pine-moon", "Rosé Pine Moon", Self::rose_pine_moon),
-        ("amoled", "AMOLED", Self::amoled),
-        // The names Quizzy's own theme picker uses.
-        ("quizzy-dark", "Quizzy", Self::quizzy_dark),
-        ("quizzy-light", "Quizzy", Self::quizzy_light),
-        ("coral-dark", "Charcoal coral", Self::coral_dark),
-        ("coral-light", "Charcoal coral", Self::coral_light),
-        ("sky-dark", "Abyss sky", Self::sky_dark),
-        ("sky-light", "Abyss sky", Self::sky_light),
-        ("amoled-black", "AMOLED black", Self::amoled_black),
+        ("true-black", "True black", Self::true_black),
+        ("espresso", "Espresso", Self::espresso),
+        ("cream", "Cream", Self::cream),
+        ("charcoal-coral", "Charcoal coral", Self::charcoal_coral),
+        ("mist-coral", "Mist coral", Self::mist_coral),
+        ("abyss", "Abyss", Self::abyss),
+        ("snow", "Snow", Self::snow),
+    ];
+
+    /// Names the built-ins went by before they were named for their palettes, and the slug each now
+    /// is. A theme name in someone's init.lua is public API, and the settings tab wrote the old ones
+    /// for a release: a rename that dropped them would start those editors in the fallback theme.
+    /// `amoled-black` was a second true-black theme and is now the one.
+    pub const ALIASES: [(&'static str, &'static str); 11] = [
+        ("dacode", "slate"),
+        ("dark", "walnut"),
+        ("light", "linen"),
+        ("amoled", "true-black"),
+        ("amoled-black", "true-black"),
+        ("quizzy-dark", "espresso"),
+        ("quizzy-light", "cream"),
+        ("coral-dark", "charcoal-coral"),
+        ("coral-light", "mist-coral"),
+        ("sky-dark", "abyss"),
+        ("sky-light", "snow"),
+    ];
+
+    /// The dark and light halves of one palette, which `toggle_theme` swaps between.
+    const PAIRS: [(&'static str, &'static str); 4] = [
+        ("walnut", "linen"),
+        ("espresso", "cream"),
+        ("charcoal-coral", "mist-coral"),
+        ("abyss", "snow"),
     ];
 
     /// The built-ins of one appearance, in the order [`Theme::BUILT_IN`] lists them.
@@ -655,32 +651,36 @@ impl Theme {
 
     /// The same theme in the other appearance, for `toggle_theme`.
     ///
-    /// A `-dark` theme with a `-light` twin swaps to it and back, so toggling Charcoal coral stays
-    /// Charcoal coral. AMOLED black has no light side; Quizzy gives it Quizzy light, and so does this.
-    /// Anything else goes to the plain [`Theme::dark`] or [`Theme::light`], which is what the toggle
-    /// always did.
+    /// A theme with a twin in [`Theme::PAIRS`] swaps to it and back, so toggling Charcoal coral gives
+    /// Mist coral. Anything else goes to the plain [`Theme::walnut`] or [`Theme::linen`] — Walnut and
+    /// Linen — which is what the toggle always did.
     ///
-    /// Not symmetric for those last two: Quizzy light's counterpart is Quizzy dark, not AMOLED black,
-    /// and Light's is Dark, not DaCode. `toggle_theme` remembers the theme it left so a second toggle
-    /// goes back to it; this function has no memory and does not try to.
+    /// Not symmetric for those: Linen's counterpart is Walnut, not Slate. `toggle_theme` remembers
+    /// the theme it left so a second toggle goes back to it; this function has no memory and does
+    /// not try to.
     pub fn counterpart(&self) -> Theme {
-        let twin = self.name().and_then(|name| match name {
-            "amoled-black" => Some("quizzy-light".to_string()),
-            _ => name
-                .strip_suffix("-dark")
-                .map(|stem| format!("{stem}-light"))
-                .or_else(|| {
-                    name.strip_suffix("-light")
-                        .map(|stem| format!("{stem}-dark"))
-                }),
+        let twin = self.name().and_then(|name| {
+            Self::PAIRS.iter().find_map(|&(dark, light)| {
+                if name == dark {
+                    Some(light)
+                } else if name == light {
+                    Some(dark)
+                } else {
+                    None
+                }
+            })
         });
-        twin.and_then(|name| Self::by_name(&name))
+        twin.and_then(Self::by_name)
             .unwrap_or_else(|| Self::for_appearance(self.appearance.opposite()))
     }
 
     /// Looks a built-in theme up by name. Names are slugs, as they are written in config.
     pub fn by_name(name: &str) -> Option<Self> {
         let wanted = name.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+        let wanted = Self::ALIASES
+            .iter()
+            .find(|(old, _)| *old == wanted)
+            .map_or(wanted.as_str(), |(_, new)| new);
         Self::BUILT_IN
             .iter()
             .find(|(known, _, _)| *known == wanted)

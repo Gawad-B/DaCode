@@ -39,9 +39,9 @@ pub struct PaneView<'a> {
 pub struct EditorState {
     pub mode: Mode,
     pub theme: Theme,
-    /// The theme `toggle_theme` last left, when its counterpart does not lead back to it: AMOLED
-    /// black toggles to Quizzy light, whose own other half is Quizzy dark, and DaCode to Light, whose
-    /// other half is Dark. A second toggle goes back to this instead.
+    /// The theme `toggle_theme` last left, when its counterpart does not lead back to it: True black
+    /// and Slate toggle to Linen, whose own other half is Walnut. A second toggle goes back to this
+    /// instead.
     pub theme_toggled_from: Option<Theme>,
     pub typography: Typography,
 
@@ -179,6 +179,13 @@ pub struct Leaving {
 /// State belonging to the window's chrome rather than to any document.
 #[derive(Debug, Default)]
 pub struct Chrome {
+    /// The card of an overlay open over the page, where the pointer belongs to the overlay.
+    ///
+    /// Drawing reads `pointer` for every wash, and the theme dropdown is drawn after the page it
+    /// covers, so a row behind the list lit up as the pointer crossed the list — two highlights at
+    /// once, one of them on a row a click could not reach. Set by the event loop beside the motion
+    /// targets, from the same geometry the click reads.
+    pub covered: Option<Rect>,
     /// The sidebar view chosen from the activity bar, for the views that keep no state of their own.
     /// The explorer, problems and settings are open when their own state is, as they always were.
     pub activity: Option<crate::layout::Activity>,
@@ -445,6 +452,17 @@ fn row_wash(frame: &mut Frame, state: &EditorState, row: Rect, selected: bool, s
         let accent = theme.accent(state.mode);
         frame.fill_rounded(row, accent.with_alpha(0.16), 5.0 * scale);
     } else if hovered(state, row) {
+        frame.fill_rounded(row, theme.ink.with_alpha(0.06), 5.0 * scale);
+    }
+}
+
+/// [`row_wash`] for a row of the overlay that is itself the covering card, which [`hovered`] would
+/// refuse.
+fn overlay_row_wash(frame: &mut Frame, state: &EditorState, row: Rect, selected: bool, scale: f32) {
+    let theme = &state.theme;
+    if selected {
+        frame.fill_rounded(row, theme.accent(state.mode).with_alpha(0.16), 5.0 * scale);
+    } else if pointer_in(state, row) {
         frame.fill_rounded(row, theme.ink.with_alpha(0.06), 5.0 * scale);
     }
 }
@@ -1746,18 +1764,24 @@ pub fn draw_panes(
     frame.set_layer(Layer::Panel);
     // Neither of these fades out, so each is drawn as if open and returns early when it is not —
     // which spares asking here whether the caret is on a diagnostic, a walk over all of them.
-    let (fade, travel) = arrival(state, Key::Info, true);
-    overlay(frame, fade, |frame| {
-        draw_info(frame, state, code, row_height, travel, scale)
-    });
-    let (fade, travel) = arrival(state, Key::Completion, true);
-    overlay(frame, fade, |frame| {
-        draw_completion(frame, state, code, row_height, travel, scale)
-    });
+    //
+    // All three describe the code, so none is drawn while the settings tab covers it. `code` is then
+    // the bare editor region, and the message under a caret nobody could see sat on the page.
+    if settings.is_none() {
+        let (fade, travel) = arrival(state, Key::Info, true);
+        overlay(frame, fade, |frame| {
+            draw_info(frame, state, code, row_height, travel, scale)
+        });
+        let (fade, travel) = arrival(state, Key::Completion, true);
+        overlay(frame, fade, |frame| {
+            draw_completion(frame, state, code, row_height, travel, scale)
+        });
 
-    // The which-key hint sits with the info boxes: it is contextual, it appears beside what you are
-    // doing, and a scrim over the document would be absurd for something that lasts one keystroke.
-    draw_which_key(frame, state, code, scale);
+        // The which-key hint sits with the info boxes: it is contextual, it appears beside what
+        // you are doing, and a scrim over the document would be absurd for something that lasts
+        // one keystroke.
+        draw_which_key(frame, state, code, scale);
+    }
     // The log outlives the panel, so it fades out on its own with nothing kept aside for it.
     let (fade, travel) = arrival(state, Key::Notifications, state.chrome.show_notifications);
     overlay(frame, fade, |frame| {
@@ -2039,14 +2063,15 @@ fn draw_info(
 
     let (text, accent) = match (&state.hover, diagnostic_at_cursor(state)) {
         (Some(hover), _) => (hover.clone(), theme.accent(state.mode)),
-        (None, Some((message, is_error))) => (
-            message,
-            if is_error {
+        (None, Some((message, is_error))) => {
+            let colour = if is_error {
                 theme.over_budget()
             } else {
                 theme.stale()
-            },
-        ),
+            };
+            draw_inline_diagnostic(frame, state, code, row_height, scale, &message, colour);
+            return;
+        }
         (None, None) => return,
     };
 
@@ -2138,6 +2163,77 @@ fn draw_info(
             scale,
         ));
     }
+}
+
+/// The message of the diagnostic under the caret, written after the end of the caret's line.
+///
+/// It was a card on the row below the caret, which hid that row — the line under an unused import
+/// is usually the next import, and it vanished while the caret sat there. On the line's own row,
+/// past its last character, it covers nothing. The cost is length: a message longer than the room
+/// left on the row is elided, and the whole of it is in the problems list and in a hover.
+fn draw_inline_diagnostic(
+    frame: &mut Frame,
+    state: &EditorState,
+    code: Rect,
+    row_height: f32,
+    scale: f32,
+    message: &str,
+    colour: Oklch,
+) {
+    let text = state.document.text();
+    let line = text.char_to_line(state.cursor());
+    let Some(end) = state.display.display_point(
+        text,
+        state.scroll,
+        state.visible_rows(code.height, row_height),
+        text.line_range(line).end,
+    ) else {
+        return;
+    };
+    let offset = if state.display.mode == WrapMode::None {
+        state.scroll.column
+    } else {
+        0
+    };
+    let grid = crate::layout::CodeGrid::new(
+        code,
+        column_advance(state, scale),
+        row_height,
+        offset,
+        scale,
+    )
+    .with_sub_row(state.sub_row_px(row_height));
+    // The grid steps 0.60 em and the shaper draws Fira Code at 0.615, so a long line's last glyph
+    // ends to the right of where the grid places its column. Without the drift the gap closed up
+    // and the message ran on from the code as if it were part of the line.
+    let drift = end.column.saturating_sub(offset) as f32
+        * (crate::layout::measured_advance(&state.typography, Role::Code, scale) - grid.advance())
+            .max(0.0);
+    let x = (grid.x_of(end.column) + drift + grid.advance() * 3.0).max(code.x + space::SM * scale);
+    let width = code.right() - x - space::SM * scale;
+    // Fewer than a dozen columns is a word and an ellipsis, which says less than nothing.
+    if width < grid.advance() * 12.0 {
+        return;
+    }
+    let first = message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    // Base, under every panel: within one layer glyphs draw after every quad, so on the panel
+    // layer this would show through the completion list whenever the two met.
+    let layer = frame.layer();
+    frame.set_layer(Layer::Base);
+    frame.text(run(
+        state,
+        Role::Code,
+        elide(state, Role::Code, first, width, scale),
+        Rect::new(x, grid.y_of(end.row), width, row_height),
+        colour,
+        Align::Left,
+        scale,
+    ));
+    frame.set_layer(layer);
 }
 
 /// The message of the diagnostic covering the cursor, and whether it is an error.
@@ -3671,8 +3767,8 @@ fn draw_theme_dropdown(
                 let selected = row.index == dropdown.selected();
                 // `row_wash` asks whether the pointer is over the row, which must be the part on
                 // screen: a row scrolled half out of the list is not hovered by a pointer below it.
-                if selected || hovered(state, row.clip) {
-                    row_wash(frame, state, wash, selected, scale);
+                if selected || pointer_in(state, row.clip) {
+                    overlay_row_wash(frame, state, wash, selected, scale);
                 }
                 if let Some(swatch) = row.swatch {
                     draw_swatch(frame, theme, Some(name), swatch, scale);
@@ -4148,8 +4244,17 @@ fn ui(
     run(state, Role::Ui, text, rect, color, align, scale)
 }
 
-/// Whether the pointer is over a rectangle.
+/// Whether the pointer is over a rectangle and not over an overlay covering it.
 fn hovered(state: &EditorState, rect: Rect) -> bool {
+    pointer_in(state, rect)
+        && !state
+            .chrome
+            .covered
+            .is_some_and(|card| crate::layout::contains(card, state.pointer.0, state.pointer.1))
+}
+
+/// Whether the pointer is over a rectangle, covered or not: for drawing the covering overlay.
+fn pointer_in(state: &EditorState, rect: Rect) -> bool {
     crate::layout::contains(rect, state.pointer.0, state.pointer.1)
 }
 
@@ -6076,7 +6181,7 @@ mod card_tests {
     fn a_fading_card_fades_its_shadow_surface_and_outline_together() {
         // Faded one part at a time, a closing card leaves its shadow behind for a frame or its
         // outline floating over nothing — the kind of thing that reads as a rendering glitch.
-        for theme in [Theme::dark(), Theme::light()] {
+        for theme in [Theme::walnut(), Theme::linen()] {
             let whole = drawn(&theme, 1.0);
             let half = drawn(&theme, 0.5);
             assert_eq!(whole.len(), 4, "two shadows, a surface, an outline");
@@ -6092,7 +6197,7 @@ mod card_tests {
     #[test]
     fn the_shadow_is_fainter_than_the_theme_shadow_and_the_surface_is_the_card() {
         // Subtle in both themes: a fraction of `shadow`, never the full scrim-dark of it.
-        for theme in [Theme::dark(), Theme::light(), Theme::amoled()] {
+        for theme in [Theme::walnut(), Theme::linen(), Theme::true_black()] {
             let quads = drawn(&theme, 1.0);
             let full = theme.shadow.to_linear()[3];
             for shadow in &quads[..2] {

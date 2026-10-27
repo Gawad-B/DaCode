@@ -31,7 +31,7 @@ mod tests {
     fn mode_accents_differ_only_in_hue() {
         // The identity claim: one instrument changing state, not four themes. If a future edit
         // gives one mode its own lightness or chroma, this fails.
-        let theme = Theme::dark();
+        let theme = Theme::walnut();
         let accents: Vec<_> = Mode::ALL.iter().map(|&m| theme.accent(m)).collect();
 
         for accent in &accents {
@@ -49,8 +49,8 @@ mod tests {
     fn light_theme_darkens_accents() {
         // Accents must stay legible on paper: same hue, lower lightness.
         for mode in Mode::ALL {
-            let dark = Theme::dark().accent(mode);
-            let light = Theme::light().accent(mode);
+            let dark = Theme::walnut().accent(mode);
+            let light = Theme::linen().accent(mode);
             assert_eq!(dark.h, light.h);
             assert!(light.l < dark.l, "{mode:?} must darken in the light theme");
         }
@@ -62,13 +62,13 @@ mod tests {
         assert_eq!(Oklch::new(1.0, 0.0, 0.0).to_hex(), "#ffffff");
         assert_eq!(Oklch::new(0.0, 0.0, 0.0).to_hex(), "#000000");
 
-        let bg = Theme::dark().bg.to_srgb8();
+        let bg = Theme::walnut().bg.to_srgb8();
         assert!(
             bg[0] < 60 && bg[1] < 60 && bg[2] < 60,
             "dark canvas must be dark: {bg:?}"
         );
 
-        let ink = Theme::dark().ink.to_srgb8();
+        let ink = Theme::walnut().ink.to_srgb8();
         assert!(ink[0] > 200, "primary text must be bright: {ink:?}");
     }
 
@@ -76,7 +76,7 @@ mod tests {
     fn tints_resolve_to_opaque_colors_near_the_canvas() {
         // Tints are specified at 6% alpha; resolved they must be visibly distinct from the
         // canvas but nowhere near the accent itself.
-        let theme = Theme::dark();
+        let theme = Theme::walnut();
         let bg = theme.bg.to_linear();
         let tint = theme.line_tint(Mode::Normal);
 
@@ -181,7 +181,7 @@ mod tests {
     fn syntax_colors_are_one_family_and_all_distinct() {
         // Two roles sharing a color makes them indistinguishable; a role outside the family's
         // chroma range makes the code area look like two themes fighting.
-        let theme = Theme::dark();
+        let theme = Theme::walnut();
         let syntax = theme.syntax;
         let colors = [
             syntax.keyword,
@@ -254,13 +254,13 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
 
         for name in Theme::TOKENS {
-            let mut theme = Theme::dark();
+            let mut theme = Theme::walnut();
             assert!(theme.set_token(name, marker), "`{name}` was rejected");
 
             let changed: Vec<String> = Theme::TOKENS
                 .iter()
                 .filter(|other| {
-                    let mut probe = Theme::dark();
+                    let mut probe = Theme::walnut();
                     probe.set_token(other, marker);
                     // Compare the whole theme: if setting `name` moved the same field as `other`,
                     // the two probes are identical.
@@ -273,14 +273,14 @@ mod tests {
             assert!(seen.insert(name), "`{name}` appears twice");
         }
 
-        assert!(!Theme::dark().set_token("bakcground", marker));
+        assert!(!Theme::walnut().set_token("bakcground", marker));
     }
 
     #[test]
     fn syntax_tokens_are_reachable_bare_and_qualified() {
         let color = Oklch::new(0.7, 0.16, 318.0);
-        let mut bare = Theme::dark();
-        let mut qualified = Theme::dark();
+        let mut bare = Theme::walnut();
+        let mut qualified = Theme::walnut();
 
         assert!(bare.set_token("keyword", color));
         assert!(qualified.set_token("syntax.keyword", color));
@@ -290,7 +290,7 @@ mod tests {
         );
 
         // `theme.` prefixed names come from the TOML reader's flattened keys.
-        let mut prefixed = Theme::dark();
+        let mut prefixed = Theme::walnut();
         assert!(prefixed.set_token("theme.surfaces.bg", color));
         assert_eq!(prefixed.bg.to_hex(), color.to_hex());
     }
@@ -375,16 +375,15 @@ mod tests {
         }
     }
 
-    /// The names the seven themes taken from Quizzy go by. A list, because a test that only iterated
-    /// `BUILT_IN` would pass with any of them missing.
-    const QUIZZY: [&str; 7] = [
-        "quizzy-dark",
-        "quizzy-light",
-        "coral-dark",
-        "coral-light",
-        "sky-dark",
-        "sky-light",
-        "amoled-black",
+    /// The six themes whose surfaces and accents are taken from Quizzy's palettes. A list, because a
+    /// test that only iterated `BUILT_IN` would pass with any of them missing.
+    const QUIZZY: [&str; 6] = [
+        "espresso",
+        "cream",
+        "charcoal-coral",
+        "mist-coral",
+        "abyss",
+        "snow",
     ];
 
     #[test]
@@ -448,11 +447,26 @@ mod tests {
         for name in QUIZZY {
             assert!(Theme::by_name(name).is_some(), "{name} is not built in");
         }
-        // The old one stays: `theme = "amoled"` is in people's init.lua.
-        assert!(Theme::by_name("amoled").is_some());
-        assert_ne!(
-            Theme::by_name("amoled").unwrap(),
-            Theme::by_name("amoled-black").unwrap()
+    }
+
+    #[test]
+    fn every_old_theme_name_still_finds_its_theme() {
+        // `theme = "dacode"` and the rest are in people's init.lua, and the settings tab wrote them
+        // for a release. A name that stopped resolving would start the editor in the fallback with
+        // nothing said, so each one must land on the theme it was renamed to.
+        for (old, new) in Theme::ALIASES {
+            let found = Theme::by_name(old).unwrap_or_else(|| panic!("{old} no longer resolves"));
+            assert_eq!(found.name(), Some(new), "{old}");
+            assert!(
+                Theme::BUILT_IN.iter().all(|(name, _, _)| *name != old),
+                "{old} is both an alias and a theme"
+            );
+        }
+        // The two true blacks were one theme too many, and both old names now mean the one left.
+        assert_eq!(Theme::by_name("amoled"), Theme::by_name("amoled-black"));
+        assert_eq!(
+            Theme::by_name("AMOLED Black").unwrap().name(),
+            Some("true-black")
         );
     }
 
@@ -464,52 +478,45 @@ mod tests {
         // Quizzy, so an edit to any one of them is caught, not only to the four most visible.
         let expect = [
             (
-                "quizzy-dark",
+                "espresso",
                 [
                     "#1c1917", "#292524", "#fafaf9", "#a8a29e", "#78716c", "#44403c", "#3a3532",
                     "#14b8a6",
                 ],
             ),
             (
-                "quizzy-light",
+                "cream",
                 [
                     "#fafaf9", "#ffffff", "#1c1917", "#57534e", "#a8a29e", "#d6d3d1", "#e7e5e4",
                     "#0f766e",
                 ],
             ),
             (
-                "coral-dark",
+                "charcoal-coral",
                 [
                     "#090d16", "#1e293b", "#f1f5f9", "#94a3b8", "#8391a7", "#334155", "#263247",
                     "#ff5757",
                 ],
             ),
             (
-                "coral-light",
+                "mist-coral",
                 [
                     "#f1f5f9", "#ffffff", "#090d16", "#475569", "#64748b", "#cbd5e1", "#e2e8f0",
                     "#d93a3a",
                 ],
             ),
             (
-                "sky-dark",
+                "abyss",
                 [
                     "#05151a", "#072e33", "#e6f1f3", "#9dbac4", "#7c9aa4", "#1d5258", "#123f45",
                     "#38bdf8",
                 ],
             ),
             (
-                "sky-light",
+                "snow",
                 [
                     "#f8fafc", "#ffffff", "#05151a", "#3f5a63", "#5b7781", "#bfd2d7", "#dce7ea",
                     "#0369a1",
-                ],
-            ),
-            (
-                "amoled-black",
-                [
-                    "#000000", "#0b0b0b", "#f5f5f4", "#a8a29e", "#8a847e", "#2a2a2a", "#1c1c1c",
-                    "#14b8a6",
                 ],
             ),
         ];
@@ -600,9 +607,9 @@ mod tests {
     #[test]
     fn a_light_quizzy_theme_darkens_the_accents_of_its_dark_one() {
         for (dark, light) in [
-            ("quizzy-dark", "quizzy-light"),
-            ("coral-dark", "coral-light"),
-            ("sky-dark", "sky-light"),
+            ("espresso", "cream"),
+            ("charcoal-coral", "mist-coral"),
+            ("abyss", "snow"),
         ] {
             let (dark, light) = (
                 Theme::by_name(dark).unwrap(),
@@ -617,19 +624,20 @@ mod tests {
     #[test]
     fn toggling_a_theme_lands_on_its_own_other_half() {
         // `toggle_theme` used to jump to `light` or `dark` from anything, so toggling a coral theme
-        // threw coral away. A pair swaps within itself; AMOLED black has no light side, and Quizzy
-        // gives it Quizzy light; anything else goes to the plain theme of the other appearance.
+        // threw coral away. A pair swaps within itself; anything else goes to the plain theme of
+        // the other appearance.
         let pairs = [
-            ("quizzy-dark", "quizzy-light"),
-            ("quizzy-light", "quizzy-dark"),
-            ("coral-dark", "coral-light"),
-            ("coral-light", "coral-dark"),
-            ("sky-dark", "sky-light"),
-            ("sky-light", "sky-dark"),
-            ("amoled-black", "quizzy-light"),
-            ("dark", "light"),
-            ("light", "dark"),
-            ("rose-pine", "light"),
+            ("espresso", "cream"),
+            ("cream", "espresso"),
+            ("charcoal-coral", "mist-coral"),
+            ("mist-coral", "charcoal-coral"),
+            ("abyss", "snow"),
+            ("snow", "abyss"),
+            ("true-black", "linen"),
+            ("walnut", "linen"),
+            ("linen", "walnut"),
+            ("rose-pine", "linen"),
+            ("slate", "linen"),
         ];
         for (from, to) in pairs {
             let flipped = Theme::by_name(from).unwrap().counterpart();
@@ -645,10 +653,12 @@ mod tests {
     }
 
     #[test]
-    fn every_built_in_has_a_display_name_and_a_pair_shares_one() {
-        // The dropdown files themes under "Dark" and "Light", so a name that repeats the heading
-        // ("quizzy-dark" under Dark) is noise: the two halves of a pair go by one name, and the heading
-        // or the card's own colours say which half it is. Config keeps the slugs.
+    fn every_built_in_has_a_display_name_of_its_own() {
+        // The dropdown files themes under "Dark" and "Light", so a name that repeats the heading is
+        // noise. And no two share a name, in either list: the two halves of a pair once went by one
+        // name, and a list showing "Quizzy" twice and "AMOLED" beside "AMOLED black" was reported as
+        // a list of duplicates.
+        let mut titles = Vec::new();
         for (name, title, build) in Theme::BUILT_IN {
             assert!(!title.is_empty(), "{name}");
             assert_eq!(Theme::display_name_of(name), Some(title));
@@ -658,40 +668,35 @@ mod tests {
                     && !title.to_lowercase().ends_with(" light"),
                 "{name}: `{title}` repeats its heading"
             );
+            titles.push(title.to_lowercase());
         }
-        for (pair, title) in [
-            (["quizzy-dark", "quizzy-light"], "Quizzy"),
-            (["coral-dark", "coral-light"], "Charcoal coral"),
-            (["sky-dark", "sky-light"], "Abyss sky"),
-        ] {
-            for name in pair {
-                assert_eq!(Theme::display_name_of(name), Some(title), "{name}");
-            }
-        }
-        assert_eq!(Theme::display_name_of("amoled-black"), Some("AMOLED black"));
+        let count = titles.len();
+        titles.sort_unstable();
+        titles.dedup();
+        assert_eq!(titles.len(), count, "{titles:?}");
+        // Nor two that are the same theme under different names.
+        let mut canvases: Vec<(String, String)> = Theme::BUILT_IN
+            .iter()
+            .map(|(_, _, build)| (build().bg.to_hex(), build().primary.to_hex()))
+            .collect();
+        canvases.sort_unstable();
+        canvases.dedup();
+        assert_eq!(
+            canvases.len(),
+            count,
+            "two built-ins share a canvas and an accent"
+        );
         assert_eq!(
             Theme::display_name_of("rose-pine-moon"),
             Some("Rosé Pine Moon")
         );
-        assert_eq!(Theme::display_name_of("dacode"), Some("DaCode"));
-        // Within one appearance no two share a name, or the list would show the same row twice.
-        for appearance in Appearance::ALL {
-            let mut titles: Vec<&str> = Theme::built_ins(appearance)
-                .map(|name| Theme::display_name_of(name).unwrap())
-                .collect();
-            let count = titles.len();
-            titles.sort_unstable();
-            titles.dedup();
-            assert_eq!(titles.len(), count, "{appearance:?}: {titles:?}");
-        }
-        // A display name is not a config name.
-        assert!(Theme::by_name("Charcoal coral").is_none());
+        assert_eq!(Theme::display_name_of("slate"), Some("Slate"));
     }
 
     #[test]
-    fn amoled_is_actually_black() {
+    fn true_black_is_actually_black() {
         // The point of the theme: those pixels are off on an OLED panel. A near-black would not be.
-        assert_eq!(Theme::amoled().bg.to_hex(), "#000000");
+        assert_eq!(Theme::true_black().bg.to_hex(), "#000000");
     }
 
     #[test]

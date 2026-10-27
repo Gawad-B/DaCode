@@ -724,9 +724,9 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     };
     // The screenshot path renders a requested appearance, so it overrides config.
     let theme = if flag("--light") {
-        Some(Theme::light())
+        Some(Theme::linen())
     } else if flag("--dark") {
-        Some(Theme::dark())
+        Some(Theme::walnut())
     } else {
         value("--theme").and_then(|name| Theme::by_name(&name))
     };
@@ -2196,6 +2196,12 @@ impl App {
     fn sync_motion(&mut self, now: std::time::Instant) {
         let (bounds, scale) = (self.window_bounds(), self.scale());
         self.state.sync_motion(bounds, scale, now);
+        self.state.chrome.covered = if self.dropdown_showing() {
+            self.settings_dropdown_geometry()
+                .map(|geometry| geometry.card)
+        } else {
+            None
+        };
     }
 
     /// Whether anything is still moving at `now`. The one thing the event loop needs from the motion
@@ -10747,19 +10753,19 @@ mod wiring_tests {
         let dir = scratch("theme-dropdown-click");
         let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
         let start = app.state.theme.name();
-        assert_ne!(start, Some("coral-light"));
+        assert_ne!(start, Some("mist-coral"));
 
         app.pointer = middle(page_row(&app, Field::Theme).control.expect("a control"));
         app.click(false);
         assert!(dropdown_open(&app), "a click on the control opens the list");
         assert_eq!(app.state.theme.name(), start, "opening changes nothing");
 
-        let row = dropdown_row(&app, "coral-light");
+        let row = dropdown_row(&app, "mist-coral");
         assert_eq!(row.clip, row.rect, "on screen whole at this size");
         app.pointer = middle(row.clip);
         app.click(false);
 
-        assert_eq!(app.state.theme.name(), Some("coral-light"), "applied live");
+        assert_eq!(app.state.theme.name(), Some("mist-coral"), "applied live");
         assert!(!dropdown_open(&app), "choosing closes it");
         assert!(app.settings_touched.contains(&Field::Theme), "touched");
         assert!(app.settings_changed_at.is_some(), "and a write is waiting");
@@ -10931,11 +10937,11 @@ mod wiring_tests {
 
     #[test]
     fn toggling_twice_comes_back_to_the_theme_it_started_from() {
-        // AMOLED black has no light side; its toggle lands on Quizzy light, whose own other half is
-        // Quizzy dark. The toggle remembers where it came from, so a second press goes back.
+        // True black has no light side; its toggle lands on Linen, whose own other half is Walnut.
+        // The toggle remembers where it came from, so a second press goes back.
         let dir = scratch("toggle-back");
         let mut app = editor(&dir, "a.rs", "one\n");
-        for start in ["amoled-black", "dacode", "rose-pine", "coral-dark"] {
+        for start in ["true-black", "slate", "rose-pine", "charcoal-coral"] {
             app.state.theme = dacode_theme::Theme::by_name(start).unwrap();
             let _ = app.run(Action::ToggleTheme);
             assert_ne!(
@@ -10945,6 +10951,52 @@ mod wiring_tests {
             let _ = app.run(Action::ToggleTheme);
             assert_eq!(app.state.theme.name(), Some(start), "back to {start}");
         }
+    }
+
+    #[test]
+    fn a_row_behind_the_open_theme_list_does_not_light_under_the_pointer() {
+        use dacode::settings_ui::Field;
+        // The list is drawn after the page, and every wash read the pointer, so the row under the
+        // list lit up as the pointer crossed it: two highlights at once, one on a row a click there
+        // could never reach. Drawn both ways through the same pointer, so the test can see a wash
+        // at all before it asserts there is none.
+        let dir = scratch("theme-dropdown-hover");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        app.pointer = middle(page_row(&app, Field::Theme).control.expect("a control"));
+        app.click(false);
+        let card = app.settings_dropdown_geometry().expect("open").card;
+        let behind = app
+            .settings_page_geometry()
+            .expect("the page is showing")
+            .rows
+            .into_iter()
+            .find(|row| {
+                row.field().is_some_and(|field| field != Field::Theme)
+                    && row.clip.intersect(card).height > 4.0
+            })
+            .expect("a setting's row runs under the list");
+        let over = behind.clip.intersect(card);
+        let point = (over.x + over.width / 2.0, over.y + over.height / 2.0);
+        let washed = |frame: &Frame| {
+            frame
+                .quads_on(dacode_render::Layer::Base)
+                .any(|quad| quad.rect == behind.rect)
+        };
+
+        let now = std::time::Instant::now();
+        app.pointer = point;
+        app.state.pointer = point;
+        app.sync_motion(now);
+        assert!(!washed(&draw_at(&mut app, now)), "covered by the list");
+
+        let _ = app.press(Key::named(KeyCode::Escape));
+        app.state.pointer = point;
+        app.sync_motion(now);
+        assert!(!dropdown_open(&app));
+        assert!(
+            washed(&draw_at(&mut app, now)),
+            "lit once the list is closed"
+        );
     }
 
     #[test]

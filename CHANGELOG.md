@@ -24,13 +24,20 @@ release, where one exists, lives in `packaging/notes/`.
   theme the letter turns dark while the amber stays.
 - One font: everything is set in Fira Code. The serif headings and sans labels, and the two fonts
   they came from, are gone.
-- A new default theme, `dacode`, with the chrome a shade darker than the code. The other five are
-  still there.
-- Switching between light and dark keeps the theme's family where it has one: `coral-dark` and
-  `coral-light` swap with each other rather than with the plain `light` and `dark`, and switching
-  back returns to the theme you started from.
+- A new default theme, Slate (`slate`), with the chrome a shade darker than the code.
+- **Every theme is named for its palette**, and no two share a name: Slate, Walnut, Linen, Rosé Pine,
+  Rosé Pine Moon, True black, Espresso, Cream, Charcoal coral, Mist coral, Abyss and Snow. AMOLED and
+  AMOLED black were two true-black themes and are now one, True black. The old names (`dacode`,
+  `dark`, `light`, `amoled`, `amoled-black`, `quizzy-dark` and the rest) still work in `init.lua`.
+- Switching between light and dark keeps the palette where it has two sides: Charcoal coral and Mist
+  coral swap with each other rather than with the plain Walnut and Linen, and switching back
+  returns to the theme you started from.
+- A diagnostic's message is written at the end of the caret's line rather than in a box over the line
+  below, which it hid; and it no longer stays on screen over the settings tab. A message too long for
+  the room left on the line is cut with an ellipsis; the problems list has all of it.
+- In the theme list, the row of the settings page behind it no longer lights up under the pointer.
 - The welcome screen's theme cards wrap into rows, dark themes first, are as wide as the longest name
-  where the window allows, and shrink to fit a short window; ↑ ↓ move a row. Thirteen cards in one
+  where the window allows, and shrink to fit a short window; ↑ ↓ move a row. A dozen cards in one
   row left each too narrow for its name.
 - A theme file that does not say whether it is dark or light is classified by its background, and
   the colours it leaves out come from the matching built-in rather than always from the dark one.
@@ -93,11 +100,9 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Added
 
-- Seven themes from Quizzy: `quizzy-dark` and `quizzy-light`, `coral-dark` and `coral-light`
-  (Charcoal coral), `sky-dark` and `sky-light` (Abyss sky), and `amoled-black`. Their surfaces, text
-  and accent are Quizzy's own colours; their syntax colours, which Quizzy does not have, are derived
-  from each palette and read at 4.5:1 or better against the background. `amoled` is still there,
-  under its own name.
+- Six themes from Quizzy's palettes: Espresso and Cream, Charcoal coral and Mist coral, Abyss and
+  Snow. Their surfaces, text and accent are Quizzy's own colours; their syntax colours, which Quizzy
+  does not have, are derived from each palette and read at 4.5:1 or better against the background.
 - The settings tab's theme row opens a list instead of stepping to the next theme: every theme, under
   **Dark** and **Light**, with its colours beside its name and the one in use marked. Click or press
   enter or space to open it, ↑ ↓ to move, enter or a click to pick, esc or a click outside to close.
