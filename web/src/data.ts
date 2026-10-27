@@ -177,7 +177,7 @@ export const OVERHAUL: { title: string; body: string }[] = [
   },
   {
     title: "Thirteen themes",
-    body: "The six built-ins — a new default, dacode, beside dark, light, rose-pine, rose-pine-moon and amoled — and seven derived from Quizzy: quizzy, coral and sky, each dark and light, and amoled-black. The settings tab picks one from a dropdown grouped Dark and Light.",
+    body: "The six built-ins — a new default, dacode, beside dark, light, rose-pine, rose-pine-moon and amoled — and seven derived from Quizzy: Quizzy, Charcoal coral and Abyss sky, each dark and light, and AMOLED black. The settings tab picks one from a dropdown grouped Dark and Light, each row with its swatch.",
   },
 ];
 
