@@ -63,18 +63,29 @@ impl Results {
 
     /// Starts a search. Literal, matching `/` in a buffer; `:grep` is where regex would go.
     pub fn start(root: &std::path::Path, query: &str) -> Self {
-        let search = ProjectSearch::start(
+        Self::start_with(
             root,
             SearchQuery {
                 pattern: query.to_string(),
                 literal: true,
-                limit: MAX_HITS,
                 ..Default::default()
+            },
+        )
+    }
+
+    /// Starts a search with its options chosen: what the search panel's toggles set.
+    pub fn start_with(root: &std::path::Path, query: SearchQuery) -> Self {
+        let pattern = query.pattern.clone();
+        let search = ProjectSearch::start(
+            root,
+            SearchQuery {
+                limit: MAX_HITS,
+                ..query
             },
         );
 
         Self {
-            query: query.to_string(),
+            query: pattern,
             hits: Vec::new(),
             selected: 0,
             search: Some(search),

@@ -199,7 +199,9 @@ impl Default for Settings {
             // formatter, and it is the kind of default that loses trust the first time it fires.
             format_on_save: false,
             modal: true,
-            sticky_scroll: true,
+            // Off by default: the pinned block heads read as a highlighted band at the top of the
+            // code that followed the scroll, which looked like a selection nobody had made.
+            sticky_scroll: false,
             inlay_hints: false,
             // Off by default for the same reason `format_on_save` is: writing someone's file
             // without being asked is not a decision to make on their behalf. It is one switch away

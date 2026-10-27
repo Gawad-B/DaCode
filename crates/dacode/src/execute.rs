@@ -9,7 +9,6 @@
 
 use crate::chrome::EditorState;
 use crate::prompt::{Prompt, PromptKind};
-use crate::results::Results;
 use dacode_buffer::EditKind;
 use dacode_input::{
     Action, InsertPosition, Motion, Operator, Registers, Target, line_range, operator_range,
@@ -281,12 +280,8 @@ pub fn execute(
             // Either way the list takes no keys, so the keys are the text's.
             state.settle_focus();
         }
-        Action::ShowSourceControl | Action::ShowRunAndDebug => {
-            let view = if *action == Action::ShowSourceControl {
-                crate::layout::Activity::SourceControl
-            } else {
-                crate::layout::Activity::Debug
-            };
+        Action::ShowSourceControl => {
+            let view = crate::layout::Activity::SourceControl;
             // A second press closes it, as the activity icons do in every editor that has them.
             if state.chrome.activity == Some(view) {
                 state.chrome.activity = None;
@@ -386,16 +381,22 @@ pub fn execute(
         }
 
         Action::SearchProject => {
-            // The word under the cursor is the query people actually want from a bare invocation.
-            let query = word_under_cursor(state);
-            if query.is_empty() {
-                state.prompt = Some(Prompt::new(PromptKind::Command, state.cursor()));
-                if let Some(prompt) = &mut state.prompt {
-                    prompt.input.push_str("grep ");
-                }
-            } else {
-                state.show_results(Results::start(&state.project_root, &query));
+            // The search view in the sidebar, with the word under the cursor as its query — what
+            // people want from a bare invocation, and what VSCode puts there too. A search already
+            // open keeps its query when the cursor is on nothing.
+            let word = word_under_cursor(state);
+            let root = state.project_root.clone();
+            state.close_sidebar();
+            state.chrome.activity = Some(crate::layout::Activity::Search);
+            let panel = state
+                .search
+                .get_or_insert_with(|| crate::search_panel::SearchPanel::new(""));
+            if !word.is_empty() && word != panel.query {
+                panel.query = word;
+                panel.restart(&root);
             }
+            panel.field = crate::search_panel::Field::Query;
+            state.focus = crate::focus::Focus::Sidebar;
         }
     }
 
@@ -410,19 +411,35 @@ pub fn execute(
 fn move_selections(state: &mut EditorState, motion: Motion, count: usize, extend: bool) {
     let text = state.document.text().clone();
     let display = state.display.clone();
+    let vertical = matches!(motion, Motion::Up | Motion::Down);
 
+    // The goals of the run these carets are part of, or new ones from where they are now. Without
+    // a goal the column was recomputed from wherever the last move had clamped to, so a short line
+    // on the way pulled the caret left for good.
+    let heads: Vec<CharOffset> = state.document.selections().iter().map(|s| s.head).collect();
+    let goals: Vec<usize> = match state.vertical_goal.take() {
+        Some((at, goals)) if vertical && at == heads => goals,
+        _ => heads
+            .iter()
+            .map(|head| display.goal_column(&text, *head))
+            .collect(),
+    };
+
+    let mut index = 0;
     let selections = state.document.selections().map(|selection| {
         let head = match motion {
             Motion::Up | Motion::Down => {
                 let delta = if motion == Motion::Down { 1 } else { -1 };
+                let goal = goals.get(index).copied();
                 let mut at = selection.head;
                 for _ in 0..count.max(1) {
-                    at = display.move_vertically(&text, at, delta, None);
+                    at = display.move_vertically(&text, at, delta, goal);
                 }
                 at
             }
             _ => resolve_motion(&text, selection.head, motion, count),
         };
+        index += 1;
 
         if extend {
             selection.extend_to(head)
@@ -432,6 +449,10 @@ fn move_selections(state: &mut EditorState, motion: Motion, count: usize, extend
     });
 
     state.document.set_selections(selections);
+    if vertical {
+        let heads = state.document.selections().iter().map(|s| s.head).collect();
+        state.vertical_goal = Some((heads, goals));
+    }
 }
 
 /// The ranges an operator acts on, one per selection: sorted, disjoint and in bounds, so they

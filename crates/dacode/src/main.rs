@@ -256,6 +256,9 @@ fn new_state(
 
     let tab_name = path.last().cloned().unwrap_or_else(|| "untitled".into());
 
+    // The file it starts on is opened here rather than through `after_buffer_change`.
+    let mut problems = dacode::problems::Store::default();
+    problems.set_current(file_path.as_deref().map(std::path::Path::new));
     let state = EditorState {
         mode,
         theme: theme_override.unwrap_or(settings.theme),
@@ -295,11 +298,13 @@ fn new_state(
         active_buffer: 0,
         modal: settings.modal,
         sticky_scroll: settings.sticky_scroll,
+        vertical_goal: None,
+        search: None,
         recording: None,
         diff: dacode::git::Diff::default(),
         show_diagnostics: false,
         focus: Default::default(),
-        problems: Default::default(),
+        problems,
         inlay_hints: Vec::new(),
         show_inlay_hints: settings.inlay_hints,
         welcome: None,
@@ -467,7 +472,7 @@ const FLAGS: [(&str, &str, &str); 44] = [
     ("--palette", "QUERY", "the file palette, filtered"),
     ("--commands", "", "the command palette"),
     ("--search", "QUERY", "the find box"),
-    ("--grep", "QUERY", "project-wide search results"),
+    ("--grep", "QUERY", "the search view, with its results"),
     ("--symbols", "QUERY", "the symbol picker"),
     ("--complete", "PREFIX", "the completion popup"),
     ("--diagnostic", "L:C:MSG", "one diagnostic, inline"),
@@ -841,17 +846,19 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.prompt = Some(prompt);
     }
     if let Some(query) = value("--grep") {
-        let mut results = dacode::results::Results::start(&state.project_root, &query);
+        let mut panel = dacode::search_panel::SearchPanel::new(&query);
+        panel.restart(&state.project_root);
         // A one-shot render can wait for the search; the editor never does.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            results.poll();
-            if results.finished {
-                break;
-            }
+        while std::time::Instant::now() < deadline && panel.searching() {
+            panel.poll();
             std::thread::yield_now();
         }
-        state.results = Some(results);
+        panel.poll();
+        state.close_sidebar();
+        state.chrome.activity = Some(dacode::layout::Activity::Search);
+        state.search = Some(panel);
+        state.focus = dacode::focus::Focus::Sidebar;
     }
 
     // `--diagnostic LINE:COL:MESSAGE` injects a diagnostic so the underline and message box can be
@@ -1001,20 +1008,16 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 },
             )
             .collect();
-        // The project store as well as the active file's, and a second file so the capture shows
-        // what the panel is actually for: problems somewhere other than where you are looking.
+        // The project store as well as the active file's. The panel shows only the file on
+        // screen, so that is the one made current.
         if let Some(path) = state.file_path.clone() {
             state
                 .problems
                 .publish(std::path::Path::new(&path), &items, None);
+            state
+                .problems
+                .set_current(Some(std::path::Path::new(&path)));
         }
-        state.problems.publish(
-            &state
-                .project_root
-                .join("crates/dacode-buffer/src/document.rs"),
-            &items[..2],
-            None,
-        );
         state
             .diagnostics
             .apply(items, None, state.document.version());
@@ -1847,6 +1850,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         if let Some(results) = &mut self.state.results {
             changed |= results.poll();
         }
+        changed |= self.poll_search_panel();
 
         // Motion is the one thing that needs frames with neither input nor a worker to cause them.
         // Redraws are paced to vsync by winit, so the loop turns once per frame only while something
@@ -2904,6 +2908,9 @@ impl App {
                 self.state.focus = Focus::Editor;
                 return false;
             }
+            if self.handle_search_key(key) {
+                return false;
+            }
             if self.handle_tree_key(key) {
                 return false;
             }
@@ -3068,7 +3075,7 @@ impl App {
         {
             if self.state.menu.is_none() {
                 // Select the row first, so the menu acts on what was clicked.
-                self.click_sidebar(sidebar, self.pointer.1, self.scale());
+                self.click_sidebar(sidebar, self.pointer.0, self.pointer.1, self.scale());
             }
             self.state
                 .open_menu(dacode::menu::Menu::tree(self.pointer, self.state.modal));
@@ -4124,6 +4131,14 @@ impl App {
         }
         // A streaming search must keep being polled or its hits never appear.
         if self.state.results.as_ref().is_some_and(|r| !r.finished) {
+            return true;
+        }
+        if self
+            .state
+            .search
+            .as_ref()
+            .is_some_and(|panel| panel.searching())
+        {
             return true;
         }
         // Every worker below announces its own result through the waker, so an editor with a loop
@@ -5198,6 +5213,14 @@ struct Held {
     path: Option<String>,
 }
 
+/// Whether a stored buffer is the empty scratch buffer the editor starts with and nothing more:
+/// no file, no text, nothing to lose by dropping it.
+fn is_placeholder(buffer: &Buffer) -> bool {
+    buffer.file_path.is_none()
+        && !buffer.document.is_dirty()
+        && buffer.document.text().len_chars() == dacode_text::CharOffset(0)
+}
+
 fn buffer_key(file_path: Option<&str>) -> Option<std::path::PathBuf> {
     file_path.map(|path| dacode_project::canonical(std::path::Path::new(path)))
 }
@@ -5332,7 +5355,6 @@ impl App {
                             start,
                             self.waker.clone(),
                         ));
-                        self.state.hover = Some("choose a folder…".into());
                     }
                 } else {
                     let mut prompt =
@@ -6716,6 +6738,174 @@ impl App {
         true
     }
 
+    /// A click in the search view: a box takes the keys, a toggle flips, All replaces, a hit opens.
+    fn click_search_panel(&mut self, sidebar: Rect, x: f32, y: f32, scale: f32) {
+        use dacode::layout::contains;
+        let root = self.state.project_root.clone();
+        let Some(panel) = &mut self.state.search else {
+            return;
+        };
+        let geometry = panel.geometry(sidebar, scale);
+        self.state.focus = dacode::focus::Focus::Sidebar;
+        if let Some((toggle, _)) = geometry
+            .toggles
+            .iter()
+            .find(|(_, cell)| contains(*cell, x, y))
+        {
+            panel.flip(*toggle, &root);
+        } else if contains(geometry.query, x, y) {
+            panel.field = dacode::search_panel::Field::Query;
+        } else if contains(geometry.replace, x, y) {
+            panel.field = dacode::search_panel::Field::Replace;
+        } else if contains(geometry.replace_all, x, y) {
+            self.press_replace_all();
+        } else if let Some(row) = geometry.row_at(x, y)
+            && panel.select_row(row)
+        {
+            self.open_search_hit();
+        }
+    }
+
+    /// Keys for the search view while it has focus. Returns true if the key was consumed.
+    ///
+    /// Printable keys type into the focused box, as they would into any search box; the arrows walk
+    /// the hits and Enter opens one. Ctrl and alt combinations go on to the bindings, except the
+    /// toggles' own — alt-c, alt-w and alt-r, VSCode's — and ctrl-alt-enter, replace all.
+    fn handle_search_key(&mut self, key: Key) -> bool {
+        use dacode::search_panel::Toggle;
+        if !self.state.search_showing() {
+            return false;
+        }
+        let root = self.state.project_root.clone();
+        let capacity = self.search_capacity();
+        let Some(panel) = &mut self.state.search else {
+            return false;
+        };
+        if key.alt && !key.ctrl {
+            let toggle = match key.code {
+                KeyCode::Char('c') => Toggle::Case,
+                KeyCode::Char('w') => Toggle::Word,
+                KeyCode::Char('r') => Toggle::Regex,
+                _ => return false,
+            };
+            panel.flip(toggle, &root);
+            return true;
+        }
+        if key.ctrl && key.alt && key.code == KeyCode::Enter {
+            self.press_replace_all();
+            return true;
+        }
+        if key.ctrl || key.alt {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char(c) => {
+                let mut buffer = [0u8; 4];
+                panel.type_text(c.encode_utf8(&mut buffer), &root);
+            }
+            KeyCode::Backspace => panel.backspace(&root),
+            KeyCode::Tab => panel.other_field(),
+            KeyCode::Down => panel.move_selection(1, capacity),
+            KeyCode::Up => panel.move_selection(-1, capacity),
+            KeyCode::Enter => self.open_search_hit(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// How many result rows the search view has room for, from the same geometry it draws with.
+    fn search_capacity(&self) -> usize {
+        let (Some(sidebar), Some(panel)) = (self.layout().sidebar, &self.state.search) else {
+            return 1;
+        };
+        panel.geometry(sidebar, self.scale()).capacity
+    }
+
+    /// Opens the selected hit at its line and column, and gives the keys to the text.
+    fn open_search_hit(&mut self) {
+        let Some((path, line, byte)) = self
+            .state
+            .search
+            .as_ref()
+            .and_then(|panel| panel.selection())
+            .map(|hit| (hit.path.clone(), hit.line_number, hit.range.start))
+        else {
+            return;
+        };
+        let here = self.here();
+        if Some(path.to_string_lossy().as_ref()) != self.state.file_path.as_deref() {
+            self.activate(Target::File(path.clone()));
+        }
+        // Only if it opened: a refused file leaves the buffer that was there, and moving its caret
+        // to another file's line would be a jump to nowhere.
+        if buffer_key(self.state.file_path.as_deref()) != Some(dacode_project::canonical(&path)) {
+            return;
+        }
+        let text = self.state.document.text();
+        let target = (line.saturating_sub(1) as usize).min(text.last_line());
+        // The hit's range is in bytes of the line, and the rope counts characters.
+        let column = text
+            .line(target)
+            .to_string()
+            .get(..byte)
+            .map_or(0, |prefix| prefix.chars().count());
+        let offset = text.point_to_char(dacode_text::Point::new(target, column));
+        self.state.document.set_primary_caret(offset);
+        self.jumps.push(here);
+        self.state.focus = dacode::focus::Focus::Editor;
+        self.reveal_cursor();
+    }
+
+    /// Replace all, which asks to be pressed twice: it rewrites files and cannot be undone.
+    fn press_replace_all(&mut self) {
+        let skip = self.dirty_buffer_keys();
+        let root = self.state.project_root.clone();
+        let waker = self.waker.clone();
+        let Some(panel) = &mut self.state.search else {
+            return;
+        };
+        if panel.query.is_empty() || panel.hits().is_empty() || panel.replacing() {
+            return;
+        }
+        if !panel.confirming {
+            panel.confirming = true;
+            return;
+        }
+        panel.start_replace(&root, skip, waker);
+    }
+
+    /// The canonical paths of every buffer with unsaved changes.
+    fn dirty_buffer_keys(&self) -> Vec<std::path::PathBuf> {
+        let live = self
+            .state
+            .document
+            .is_dirty()
+            .then(|| buffer_key(self.state.file_path.as_deref()))
+            .flatten();
+        self.buffers
+            .iter()
+            .filter(|buffer| buffer.document.is_dirty())
+            .filter_map(|buffer| buffer_key(buffer.file_path.as_deref()))
+            .chain(live)
+            .collect()
+    }
+
+    /// Takes the search view's hits and a finished replace-all. Returns whether anything changed.
+    fn poll_search_panel(&mut self) -> bool {
+        let root = self.state.project_root.clone();
+        let Some(panel) = &mut self.state.search else {
+            return false;
+        };
+        let mut changed = panel.poll();
+        if let Some(report) = panel.poll_replace() {
+            // Searched again, so what is listed is what the files now hold.
+            panel.restart(&root);
+            self.state.hover = Some(report.describe());
+            changed = true;
+        }
+        changed
+    }
+
     /// Keys for the results panel. Returns true if the key was consumed.
     fn handle_results_key(&mut self, key: Key) -> bool {
         let Some(results) = &mut self.state.results else {
@@ -7187,7 +7377,13 @@ impl App {
             scroll: std::mem::take(&mut self.state.scroll),
             highlights: std::mem::take(&mut self.state.highlights),
         };
-        self.buffers.insert(self.state.active_buffer, previous);
+        // An untouched scratch buffer is a placeholder for "nothing open yet", not a document: kept,
+        // it sat in the tab strip as `untitled` beside every file opened after it.
+        if is_placeholder(&previous) {
+            self.panes.buffer_closed(self.state.active_buffer);
+        } else {
+            self.buffers.insert(self.state.active_buffer, previous);
+        }
         self.state.active_buffer = self.buffers.len();
         self.state.buffer_count = self.buffers.len() + 1;
 
@@ -7729,7 +7925,7 @@ impl App {
         if let Some(sidebar) = layout.sidebar {
             if dacode::layout::contains(sidebar, x, y) {
                 if !extend {
-                    self.click_sidebar(sidebar, y, scale);
+                    self.click_sidebar(sidebar, x, y, scale);
                 }
                 return;
             }
@@ -8309,7 +8505,7 @@ impl App {
     }
 
     /// A click in the sidebar: the tree, the problems list, or nothing.
-    fn click_sidebar(&mut self, sidebar: Rect, y: f32, scale: f32) {
+    fn click_sidebar(&mut self, sidebar: Rect, x: f32, y: f32, scale: f32) {
         // The row heights each panel draws with. Kept beside the drawing code's own constants; a
         // mismatch here shows up as clicking one row and selecting its neighbour.
         if let Some(tree) = &self.state.tree {
@@ -8340,6 +8536,11 @@ impl App {
             return;
         }
 
+        if self.state.search_showing() {
+            self.click_search_panel(sidebar, x, y, scale);
+            return;
+        }
+
         // The problems list. Choosing a row goes there — the panel exists to decide where to go
         // next, and one you can only read is half a panel.
         if self.state.show_diagnostics {
@@ -8347,11 +8548,7 @@ impl App {
             let line = 20.0 * scale;
             let top = sidebar.y + pad + line * 1.4 + line * 1.6;
 
-            let here = self.state.file_path.clone();
-            let problems = self
-                .state
-                .problems
-                .ordered(here.as_deref().map(std::path::Path::new));
+            let problems = self.state.problems.ordered().to_vec();
 
             // The same walk the drawing does: a heading each time the file changes, then two lines
             // per problem. Kept in step by shape rather than by a shared function because the panel
@@ -8966,8 +9163,38 @@ impl App {
         dacode::session::remember_project(&dacode::session::session_dir(), &root);
         self.state.project_root = root;
         self.state.results = None;
+        // The old folder's problems are about files that are no longer the project, and its search
+        // results are hits in them: the query stays, searched again in the new one.
+        self.state.problems.clear();
+        let root = self.state.project_root.clone();
+        if let Some(panel) = &mut self.state.search {
+            panel.restart(&root);
+        }
+        let kept = self.close_clean_buffers();
         self.show_tree();
-        self.state.hover = Some(format!("opened {}", folder.display()));
+        // Nothing to say when it simply worked: the tree changing is the answer, and a box over the
+        // code announcing it was one more thing to dismiss after every folder change.
+        if kept > 0 {
+            self.state.hover = Some(format!(
+                "{kept} file{} with unsaved changes kept open",
+                if kept == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    /// Closes every buffer with nothing unsaved in it, as a folder change does in any editor, and
+    /// says how many were kept. Unsaved ones stay: closing them would lose work, and a dialog for
+    /// each is more ceremony than reopening the old folder to save them.
+    fn close_clean_buffers(&mut self) -> usize {
+        // Highest first: closing one shifts only the numbers above it.
+        for index in (0..=self.buffers.len()).rev() {
+            if !self.buffer_is_dirty(index) {
+                self.close_buffer(index);
+            }
+        }
+        (0..=self.buffers.len())
+            .filter(|index| self.buffer_is_dirty(*index))
+            .count()
     }
 
     /// Points the tree at the file that just became active.
@@ -9021,6 +9248,11 @@ impl App {
                 Err(err) => eprintln!("dacode: syntax unavailable: {err}"),
             }
         }
+
+        // The problems shown are the new file's.
+        self.state
+            .problems
+            .set_current(self.state.file_path.as_deref().map(std::path::Path::new));
 
         // The diff describes the document that just left.
         self.state.diff = dacode::git::Diff::default();
@@ -10837,10 +11069,15 @@ mod wiring_tests {
         use dacode::settings_ui::Field;
         let page = app.settings_page_geometry().unwrap();
         let dropdown = app.settings_dropdown_geometry().unwrap();
+        // Never the theme already in use: picking it changes nothing, and which theme a fresh
+        // editor starts in is the machine's light-or-dark preference, so on CI the first row that
+        // covered another control was the current theme and the test asserted a change that could
+        // not happen.
+        let current = app.state.theme.name();
         for row in dropdown
             .rows
             .iter()
-            .filter(|row| row.pick.theme().is_some())
+            .filter(|row| row.pick.theme().is_some() && row.pick.theme() != current)
         {
             for under in &page.rows {
                 let (Some(field), Some(control)) = (under.field(), under.control) else {
@@ -11274,7 +11511,12 @@ mod wiring_tests {
         std::fs::create_dir_all(&app.config_dir).unwrap();
         std::fs::write(&init, contents).unwrap();
         app.activate(Target::File(init.clone()));
-        assert!(app.is_active_file(&dacode_project::canonical(&init)));
+        // By identity, not by spelling: Windows' temp directory is an 8.3 short name
+        // (`RUNNER~1`) that `canonical` expands, so the raw and resolved paths never compare equal.
+        assert_eq!(
+            buffer_key(app.state.file_path.as_deref()),
+            Some(dacode_project::canonical(&init))
+        );
         (app, init)
     }
 
@@ -11715,7 +11957,7 @@ mod wiring_tests {
             "a fresh editor has nothing open"
         );
 
-        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.chrome.activity = Some(dacode::layout::Activity::SourceControl);
         app.state.palette = Some(commands(&app));
         app.state.menu = Some(dacode::menu::Menu::bar(app.state.modal));
         app.state.help = Some(dacode::help::Help::new(app.state.modal));
@@ -11751,7 +11993,7 @@ mod wiring_tests {
             .motion
             .set_animations(dacode::motion::Animations::Reduced);
         let t0 = std::time::Instant::now();
-        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.chrome.activity = Some(dacode::layout::Activity::SourceControl);
         app.state.palette = Some(commands(&app));
         app.state.sync_motion(WINDOW, 1.0, t0);
 
@@ -11786,7 +12028,7 @@ mod wiring_tests {
             .set_animations(dacode::motion::Animations::Reduced);
         let t0 = std::time::Instant::now();
         app.state.pointer = (26.0, 80.0);
-        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.chrome.activity = Some(dacode::layout::Activity::SourceControl);
         app.state.sync_motion(WINDOW, 1.0, t0);
         assert!(!app.animating(ms(t0, 16)));
     }
@@ -11797,7 +12039,7 @@ mod wiring_tests {
         let dir = scratch("overshoot");
         let mut app = editor(&dir, "a.rs", "fn main() {}\n");
         let t0 = std::time::Instant::now();
-        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.chrome.activity = Some(dacode::layout::Activity::SourceControl);
         app.state.sync_motion(WINDOW, 1.0, t0);
         let widest = (0..200)
             .map(|step| app.state.sidebar_fraction_at(ms(t0, step * 5)))
@@ -11810,7 +12052,7 @@ mod wiring_tests {
         let dir = scratch("slide");
         let mut app = editor(&dir, "a.rs", "fn main() {}\n");
         let t0 = std::time::Instant::now();
-        app.state.chrome.activity = Some(dacode::layout::Activity::Debug);
+        app.state.chrome.activity = Some(dacode::layout::Activity::SourceControl);
         app.state.sync_motion(WINDOW, 1.0, t0);
         let mid = ms(t0, 40);
         let fraction = app.state.sidebar_fraction_at(mid);
@@ -12955,6 +13197,159 @@ mod buffer_tests {
             "a stored buffer still points at the deleted file"
         );
         assert_eq!(names(&app)[0], "untitled");
+    }
+
+    #[test]
+    fn a_file_opened_from_the_empty_editor_replaces_untitled() {
+        // The empty scratch buffer is "nothing open yet". Kept, it sat in the strip as `untitled`
+        // beside the first real file, and closing that file brought it back.
+        let dir = scratch("placeholder");
+        std::fs::write(dir.join("a.rs"), "fn a() {}\n").unwrap();
+        let (state, _) = new_state(
+            Text::from_str(""),
+            vec!["untitled".into()],
+            None,
+            Mode::Insert,
+            None,
+            dir.to_path_buf(),
+        );
+        let mut app = App::new(
+            dir.to_path_buf(),
+            state,
+            Grammar::new(),
+            &dacode::config::Settings::default(),
+            None,
+        );
+        assert!(app.state.tab_names().is_empty(), "no tab for nothing");
+
+        app.activate(Target::File(dir.join("a.rs")));
+        assert!(
+            app.buffers.is_empty(),
+            "the placeholder is gone, not stored"
+        );
+        assert_eq!(app.state.tab_names(), ["a.rs"]);
+    }
+
+    #[test]
+    fn changing_folder_closes_what_is_saved_and_keeps_what_is_not() {
+        // As VSCode does — but a buffer with unsaved work stays rather than being discarded.
+        let dir = scratch("folder-change");
+        let mut app = editor(&dir, &["a.rs", "b.rs", "c.rs"]);
+        app.switch_to(1);
+        app.state.document.mark_dirty();
+
+        let kept = app.close_clean_buffers();
+        assert_eq!(kept, 1);
+        assert_eq!(names(&app), ["b.rs"]);
+        assert_eq!(app.state.tab_names(), ["b.rs"]);
+    }
+
+    #[test]
+    fn the_problems_shown_follow_the_file_on_screen() {
+        // The panel and the counts are the live file's: the ones from a file left behind used to
+        // stay in the list, and in the badge, whatever was open.
+        use dacode_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+        let dir = scratch("problems-follow");
+        let mut app = editor(&dir, &["a.rs", "b.rs"]);
+        let error = |line| Diagnostic {
+            range: Range {
+                start: Position { line, character: 0 },
+                end: Position { line, character: 1 },
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "broken".into(),
+            ..Default::default()
+        };
+        app.state
+            .problems
+            .publish(&dir.join("a.rs"), &[error(0), error(1)], None);
+        app.state
+            .problems
+            .publish(&dir.join("b.rs"), &[error(0)], None);
+
+        assert_eq!(app.state.problems.counts(), (1, 0), "b.rs is live");
+        app.switch_to(0);
+        assert_eq!(app.state.problems.counts(), (2, 0), "and now a.rs is");
+        assert!(
+            app.state
+                .problems
+                .ordered()
+                .iter()
+                .all(|problem| problem.path.ends_with("a.rs"))
+        );
+    }
+
+    #[test]
+    fn up_and_down_keep_their_column_across_a_short_line() {
+        // Without a goal the column was recomputed from wherever the last move had clamped, so one
+        // blank line on the way left the caret in the first column for the rest of the walk.
+        let dir = scratch("goal-column");
+        let mut app = editor(&dir, &["a.rs"]);
+        let text = "let first = 1;\n\nlet third = 3;\n\nlet fifth;\n";
+        app.state.document = Document::from_str(text);
+        let line = |app: &App| app.state.cursor_point();
+
+        // From the end of a line: the end of every line reached.
+        app.state.document.set_primary_caret(CharOffset(14));
+        for _ in 0..2 {
+            app.press(Key::named(KeyCode::Down));
+        }
+        assert_eq!(
+            line(&app),
+            dacode_text::Point::new(2, 14),
+            "end of `let third = 3;`"
+        );
+        for _ in 0..2 {
+            app.press(Key::named(KeyCode::Down));
+        }
+        assert_eq!(
+            line(&app),
+            dacode_text::Point::new(4, 10),
+            "end of the shorter `let fifth;`"
+        );
+
+        // From the middle: that column, once the line is long enough again.
+        app.state.document.set_primary_caret(CharOffset(4));
+        for _ in 0..2 {
+            app.press(Key::named(KeyCode::Down));
+        }
+        assert_eq!(line(&app), dacode_text::Point::new(2, 4));
+    }
+
+    #[test]
+    fn ctrl_shift_f_opens_the_search_view_and_typing_goes_to_its_query() {
+        // `ctrl-f` is this file; `ctrl-shift-f` is the search view, which then has the keys, so
+        // the next letter is part of the query rather than an edit to the code.
+        let dir = scratch("search-view");
+        let mut app = editor(&dir, &["a.rs"]);
+        let before = app.state.document.text().to_string();
+        app.press(Key {
+            code: KeyCode::Char('f'),
+            ctrl: true,
+            alt: false,
+            shift: true,
+        });
+        assert!(app.state.search_showing());
+        assert_eq!(app.state.focus, dacode::focus::Focus::Sidebar);
+        let query = app.state.search.as_ref().unwrap().query.clone();
+
+        app.press(Key::char('x'));
+        assert_eq!(
+            app.state.search.as_ref().unwrap().query,
+            format!("{query}x")
+        );
+        assert_eq!(app.state.document.text().to_string(), before);
+
+        app.press(Key {
+            code: KeyCode::Char('r'),
+            ctrl: false,
+            alt: true,
+            shift: false,
+        });
+        assert!(
+            app.state.search.as_ref().unwrap().regex,
+            "alt-r is the regex toggle"
+        );
     }
 }
 

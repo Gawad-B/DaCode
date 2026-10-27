@@ -87,7 +87,7 @@ RENDERING WITHOUT A WINDOW
     --palette QUERY           the file palette, filtered
     --commands                the command palette
     --search QUERY            the find box
-    --grep QUERY              project-wide search results
+    --grep QUERY              the search view, with its results
     --symbols QUERY           the symbol picker
     --complete PREFIX         the completion popup
     --diagnostic L:C:MSG      one diagnostic, inline
@@ -210,7 +210,7 @@ gets captured small too.
 | `--diagnostics-list` | — | Fill the buffer with five diagnostics of both severities across two files, and open the diagnostics sidebar. |
 | `--complete` | `PREFIX` | Type ` PREFIX` at the end of the cursor's line and open the completion popup over a canned rust-analyzer-shaped list — kinds, types and a deprecation, because a fixture of bare labels cannot show whether the type column fits. |
 | `--search` | `QUERY` | Open the search prompt with live matches against the buffer. |
-| `--grep` | `QUERY` | Run a real project search and show the results panel. Waits up to ten seconds; a one-shot render can afford to, the editor never does. |
+| `--grep` | `QUERY` | Run a real project search and show it in the search view. Waits up to ten seconds; a one-shot render can afford to, the editor never does. |
 | `--palette` | `QUERY` | Open the file palette over a real index of this project. Waits up to ten seconds for the walk. |
 
 ### Which surface gets drawn

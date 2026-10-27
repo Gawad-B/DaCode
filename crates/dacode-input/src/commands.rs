@@ -581,7 +581,6 @@ pub const COMMANDS: &[Command] = &[
         "",
     ),
     command("source_control", "show source control", View, "", ""),
-    command("run_and_debug", "show run and debug", View, "", ""),
     command("notifications", "show recent messages", View, "", ""),
     command("share", "copy link to line", Files, "", ""),
     command("run", "copy the run command", Files, "", ""),

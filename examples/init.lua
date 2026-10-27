@@ -35,7 +35,7 @@ dacode.set {
   -- appearance = "dark",
 
   -- Pin the enclosing block heads above the viewport while scrolling.
-  sticky_scroll = true,
+  sticky_scroll = false,
 
   -- Ask the language server for inferred types and parameter names, shown inline.
   inlay_hints = false,

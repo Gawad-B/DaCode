@@ -14,7 +14,7 @@ one stops resolving. That check found `ctrl-p` falling through to `p` and pastin
 **You do not have to touch the keyboard at all.** The **menus** — File, Edit, Selection, View, Go
 and the rest — are in the title bar along the top, and **F10** opens them from the keyboard; the
 search box in the middle of that bar is every command. The **column of icons on the left** opens the
-explorer, project search, source control, run and debug and the problems list, with the settings gear
+explorer, project search, source control and the problems list, with the settings gear
 at its foot. The **row with the tabs** has a home button that opens a folder, back and forward, split
 and run. The **bell** at the top right is your notifications. **Right-click** anywhere in the text for
 cut, copy, paste, go-to-definition and the rest. Every button does what its shortcut does, and the

@@ -63,6 +63,9 @@ impl ScrollAnchor {
     }
 }
 
+/// A goal column meaning "the end of whichever line the caret reaches": every row clamps to it.
+pub const END_OF_LINE: usize = usize::MAX;
+
 /// One display row: a slice of one buffer line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -803,14 +806,7 @@ impl DisplayMap {
             .position(|row| offset >= row.range.start && offset <= row.range.end)
             .unwrap_or(0);
 
-        let column = goal_column.unwrap_or_else(|| {
-            self.columns_of(
-                &text
-                    .slice_to_string(rows[index].range.start..offset)
-                    .chars()
-                    .collect::<Vec<_>>(),
-            )
-        });
+        let column = goal_column.unwrap_or_else(|| self.row_column(text, &rows[index], offset));
 
         let target = index as isize + delta;
         let row = if target >= 0 && (target as usize) < rows.len() {
@@ -831,6 +827,33 @@ impl DisplayMap {
         };
 
         self.offset_at_column(text, &row, column)
+    }
+
+    /// The column a run of vertical moves starting at `offset` should keep aiming for.
+    ///
+    /// A caret at the end of its line aims for the end of every line it reaches — [`END_OF_LINE`] —
+    /// as Vim's `$` does: otherwise one blank line on the way dropped it to the first column and it
+    /// stayed there for the rest of the walk, which is most of the walk through any real code.
+    pub fn goal_column(&self, text: &Text, offset: CharOffset) -> usize {
+        let line = text.char_to_line(offset);
+        if offset == text.line_range(line).end {
+            return END_OF_LINE;
+        }
+        let rows = self.visible_rows(text, line);
+        let index = rows
+            .iter()
+            .position(|row| offset >= row.range.start && offset <= row.range.end)
+            .unwrap_or(0);
+        self.row_column(text, &rows[index], offset)
+    }
+
+    fn row_column(&self, text: &Text, row: &Row, offset: CharOffset) -> usize {
+        self.columns_of(
+            &text
+                .slice_to_string(row.range.start..offset)
+                .chars()
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// The offset on `row` closest to `column`, clamped to the row's end.

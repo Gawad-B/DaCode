@@ -105,6 +105,13 @@ pub struct EditorState {
     pub modal: bool,
     /// Whether to pin enclosing block heads above the viewport.
     pub sticky_scroll: bool,
+    /// The column each caret is keeping to through a run of up and down moves, beside the offsets
+    /// the run left the carets at. Valid only while the carets are still exactly there: any other
+    /// move, a click or an edit changes them, which ends the run without anything having to say so.
+    pub vertical_goal: Option<(Vec<dacode_text::CharOffset>, Vec<usize>)>,
+    /// The search view in the sidebar, kept while it is closed so reopening it finds the last
+    /// query and its results where they were.
+    pub search: Option<crate::search_panel::SearchPanel>,
     /// The macro register being recorded into, if any.
     pub recording: Option<char>,
     /// What changed since the last commit, per line.
@@ -554,11 +561,19 @@ impl EditorState {
         self.tree.is_some() || self.show_diagnostics || self.chrome.activity.is_some()
     }
 
-    /// Whether the sidebar is showing a view that takes keys of its own. Only the tree does; the
-    /// problems list and the activity placeholders are looked at, so giving them the keyboard would
-    /// only make it disappear.
+    /// Whether the sidebar is showing a view that takes keys of its own: the tree, or the search
+    /// view's boxes. The problems list and the placeholders are looked at, so giving them the
+    /// keyboard would only make it disappear.
     pub fn sidebar_takes_keys(&self) -> bool {
-        self.tree.is_some()
+        self.tree.is_some() || self.search_showing()
+    }
+
+    /// Whether the sidebar is showing the search view.
+    pub fn search_showing(&self) -> bool {
+        self.tree.is_none()
+            && !self.show_diagnostics
+            && self.chrome.activity == Some(crate::layout::Activity::Search)
+            && self.search.is_some()
     }
 
     /// Whether the editor area is showing the settings page rather than code.
@@ -570,9 +585,13 @@ impl EditorState {
     /// last buffer's number. A number the buffer list never hands out, so a tab carrying it cannot
     /// be mistaken for a file by anything that switches to or closes one.
     pub fn settings_tab(&self) -> Option<usize> {
-        self.settings_page
-            .as_ref()
-            .map(|_| self.buffer_count.max(1))
+        // After the files, which with nothing open is first.
+        let files = if self.nothing_open() {
+            0
+        } else {
+            self.buffer_count.max(1)
+        };
+        self.settings_page.as_ref().map(|_| files)
     }
 
     /// The tab the strip shows as active: the settings tab while it is showing, the live buffer
@@ -580,6 +599,8 @@ impl EditorState {
     pub fn active_tab(&self) -> usize {
         match self.settings_tab() {
             Some(tab) if self.settings_active => tab,
+            // No file's tab is drawn, so none is active; past the end marks none.
+            _ if self.nothing_open() => usize::MAX,
             _ => self.active_buffer,
         }
     }
@@ -590,7 +611,13 @@ impl EditorState {
     /// The buffers' own list can be shorter than the count in the single-pane drawing path, and a
     /// missing name is filled from the path.
     pub fn tab_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = (0..self.buffer_count.max(1))
+        // Nothing open is an empty strip, as in any editor, rather than one tab called `untitled`.
+        let tabs = if self.nothing_open() {
+            0
+        } else {
+            self.buffer_count.max(1)
+        };
+        let mut names: Vec<String> = (0..tabs)
             .map(|index| {
                 self.buffer_tabs
                     .get(index)
@@ -603,6 +630,15 @@ impl EditorState {
             names.push(SETTINGS_TAB.to_string());
         }
         names
+    }
+
+    /// Whether the one buffer is the empty scratch buffer the editor starts with: no file, no text,
+    /// no other buffer beside it. A file opened after it replaces it rather than sitting beside it.
+    pub fn nothing_open(&self) -> bool {
+        self.buffer_count <= 1
+            && self.file_path.is_none()
+            && !self.document.is_dirty()
+            && self.document.text().len_chars() == dacode_text::CharOffset(0)
     }
 
     /// Puts the settings page's scroll where its target is, with no glide: for a new page or a new
@@ -836,7 +872,8 @@ impl EditorState {
                 .position(|item| item.activity == active)
         });
         let tabs = self.buffer_count.max(1) + usize::from(self.settings_page.is_some());
-        let active_tab = self.active_tab() as f32;
+        // With no tab active the indicator stays where it is rather than gliding off past the end.
+        let active_tab = self.active_tab().min(tabs) as f32;
         let settings_scroll = self.settings_page.as_ref().map(|page| page.scroll());
         let step = self
             .welcome
@@ -1750,8 +1787,7 @@ pub fn draw_panes(
 
     let code = focused_code;
     if let Some(sidebar) = regions.sidebar {
-        let visible = state.visible_rows(code.height, row_height);
-        draw_sidebar(frame, state, sidebar, regions.sidebar_width, visible, scale);
+        draw_sidebar(frame, state, sidebar, regions.sidebar_width, scale);
     }
     if let (Some(results), Some(area)) = (&state.results, regions.results) {
         draw_results(frame, state, results, area, scale);
@@ -3912,8 +3948,7 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
     ));
     y += line * 1.6;
 
-    let here = state.file_path.as_deref().map(std::path::Path::new);
-    let problems = state.problems.ordered(here);
+    let problems = state.problems.ordered();
 
     if problems.is_empty() {
         frame.text(run(
@@ -3930,7 +3965,7 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
 
     let mut last_file: Option<&std::path::Path> = None;
 
-    for problem in &problems {
+    for problem in problems {
         if y + line * 2.0 > rect.bottom() - pad {
             break;
         }
@@ -3965,8 +4000,7 @@ fn draw_diagnostics_list(frame: &mut Frame, state: &EditorState, rect: Rect, sca
             _ => theme.ink_faint,
         };
 
-        let on_cursor_line =
-            here == Some(problem.path.as_path()) && problem.line == state.cursor_point().line;
+        let on_cursor_line = problem.line == state.cursor_point().line;
         if on_cursor_line {
             frame.fill_rounded(
                 Rect::new(
@@ -4139,6 +4173,284 @@ fn draw_explorer(
 ///
 /// Better than an icon that does nothing — which reads as broken — and better than a view that
 /// pretends: it names what will be here and what to use meanwhile.
+/// The search view: query and replacement boxes, the toggles, and the hits grouped by file. Every
+/// rectangle comes from [`crate::search_panel::SearchPanel::geometry`], which the mouse reads too.
+fn draw_search_panel(
+    frame: &mut Frame,
+    state: &EditorState,
+    panel: &crate::search_panel::SearchPanel,
+    rect: Rect,
+    scale: f32,
+) {
+    use crate::search_panel::{Field, Row};
+    let theme = &state.theme;
+    let geometry = panel.geometry(rect, scale);
+    let focused = state.focus == crate::focus::Focus::Sidebar;
+    let radius = 5.0 * scale;
+    let inner = 8.0 * scale;
+
+    frame.text(label(
+        state,
+        "SEARCH",
+        geometry.heading,
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+
+    // A box: its value, or what it is for in faint ink when empty, and an outline in the accent
+    // while the keys are typing into it.
+    let field =
+        |frame: &mut Frame, rect: Rect, value: &str, placeholder: &str, which: Field, room: f32| {
+            frame.fill_rounded(rect, theme.bg, radius);
+            let active = focused && panel.field == which;
+            frame.outline_rounded(
+                rect,
+                if active { theme.primary } else { theme.rule },
+                radius,
+                1.0 * scale,
+            );
+            let text_rect = Rect::new(rect.x + inner, rect.y, (room - inner).max(0.0), rect.height);
+            if value.is_empty() {
+                frame.text(ui(
+                    state,
+                    placeholder,
+                    text_rect,
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            } else {
+                // The end is what is being typed, so a long value keeps its end in view.
+                let shown = elide_start(state, Role::Ui, value, text_rect.width, scale);
+                frame.text(ui(state, shown, text_rect, theme.ink, Align::Left, scale));
+            }
+            if active {
+                let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+                let typed = value
+                    .chars()
+                    .count()
+                    .min((text_rect.width / advance) as usize);
+                let x = text_rect.x + typed as f32 * advance;
+                frame.fill(
+                    Rect::new(
+                        x,
+                        rect.y + 6.0 * scale,
+                        1.5 * scale,
+                        rect.height - 12.0 * scale,
+                    ),
+                    theme.primary,
+                );
+            }
+        };
+
+    let toggles_left = geometry.toggles[0].1.x;
+    field(
+        frame,
+        geometry.query,
+        &panel.query,
+        "Search",
+        Field::Query,
+        toggles_left - geometry.query.x - 4.0 * scale,
+    );
+    for (toggle, cell) in geometry.toggles {
+        let on = panel.is_on(toggle);
+        if on {
+            frame.fill_rounded(cell, theme.row_active, 4.0 * scale);
+            frame.outline_rounded(cell, theme.primary, 4.0 * scale, 1.0 * scale);
+        } else if hovered(state, cell) {
+            frame.fill_rounded(cell, theme.rule_soft, 4.0 * scale);
+        }
+        frame.text(ui(
+            state,
+            toggle.glyph(),
+            cell,
+            if on { theme.ink } else { theme.ink_dim },
+            Align::Center,
+            scale,
+        ));
+    }
+
+    field(
+        frame,
+        geometry.replace,
+        &panel.replace,
+        "Replace",
+        Field::Replace,
+        geometry.replace.width - inner,
+    );
+    let button = geometry.replace_all;
+    let ready = !panel.query.is_empty() && !panel.hits().is_empty();
+    if panel.confirming {
+        frame.fill_rounded(button, theme.primary, radius);
+    } else {
+        frame.fill_rounded(
+            button,
+            if hovered(state, button) && ready {
+                theme.row_active
+            } else {
+                theme.bg_alt
+            },
+            radius,
+        );
+        frame.outline_rounded(button, theme.rule, radius, 1.0 * scale);
+    }
+    frame.text(ui(
+        state,
+        "All",
+        button,
+        if panel.confirming {
+            theme.bg
+        } else if ready {
+            theme.ink
+        } else {
+            theme.ink_faint
+        },
+        Align::Center,
+        scale,
+    ));
+
+    let summary = if panel.replacing() {
+        "replacing…".to_string()
+    } else if panel.confirming {
+        "press All again to replace — not undoable".to_string()
+    } else {
+        panel.summary()
+    };
+    frame.text(label(
+        state,
+        elide(state, Role::Label, &summary, geometry.summary.width, scale),
+        geometry.summary,
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+
+    let pad = 12.0 * scale;
+    let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+    let hits = panel.hits();
+    for (index, row_rect) in &geometry.rows {
+        let row_rect = *row_rect;
+        match &panel.rows()[*index] {
+            Row::File { path, count } => {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let folder = path
+                    .parent()
+                    .and_then(|parent| parent.strip_prefix(&state.project_root).ok())
+                    .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                let count = count.to_string();
+                let count_width = (count.len() as f32 + 1.0) * advance;
+                let width = row_rect.width - pad * 2.0 - count_width;
+                let name_shown = elide(state, Role::Ui, &name, width, scale);
+                let name_width = name_shown.chars().count() as f32 * advance;
+                frame.text(ui(
+                    state,
+                    name_shown,
+                    Rect::new(row_rect.x + pad, row_rect.y, width, row_rect.height),
+                    theme.ink,
+                    Align::Left,
+                    scale,
+                ));
+                let folder_room = width - name_width - advance;
+                if !folder.is_empty() && folder_room > advance * 4.0 {
+                    frame.text(ui(
+                        state,
+                        elide_start(state, Role::Ui, &folder, folder_room, scale),
+                        Rect::new(
+                            row_rect.x + pad + name_width + advance,
+                            row_rect.y,
+                            folder_room,
+                            row_rect.height,
+                        ),
+                        theme.ink_faint,
+                        Align::Left,
+                        scale,
+                    ));
+                }
+                frame.text(ui(
+                    state,
+                    count,
+                    Rect::new(
+                        row_rect.right() - pad - count_width,
+                        row_rect.y,
+                        count_width,
+                        row_rect.height,
+                    ),
+                    theme.ink_dim,
+                    Align::Right,
+                    scale,
+                ));
+            }
+            Row::Hit(hit_index) => {
+                let Some(hit) = hits.get(*hit_index) else {
+                    continue;
+                };
+                let selected = *hit_index == panel.selected;
+                let highlight = Rect::new(
+                    row_rect.x + 4.0 * scale,
+                    row_rect.y + 1.0 * scale,
+                    row_rect.width - 8.0 * scale,
+                    row_rect.height - 2.0 * scale,
+                );
+                if selected {
+                    frame.fill_rounded(highlight, theme.row_active, radius);
+                    if focused {
+                        frame.outline_rounded(highlight, theme.primary, radius, 1.0 * scale);
+                    }
+                } else if hovered(state, row_rect) {
+                    frame.fill_rounded(highlight, theme.rule_soft, radius);
+                }
+                // The line from a little before the match, so a match far along a long line is
+                // still in view, with the match itself marked.
+                let indent = pad * 2.0;
+                let room = row_rect.width - indent - pad;
+                let columns = (room / advance).max(0.0) as usize;
+                let start = hit.range.start.min(hit.line.len());
+                let before: String = hit.line[..start].trim_start().to_string();
+                let lead = before.chars().count().saturating_sub(12);
+                let before: String = before.chars().skip(lead).collect();
+                let end = hit.range.end.clamp(start, hit.line.len());
+                let matched = &hit.line[start..end];
+                let after = &hit.line[end..];
+                let shown: String = format!("{before}{matched}{after}")
+                    .chars()
+                    .take(columns)
+                    .collect();
+                let x = row_rect.x + indent;
+                let mark_from = before.chars().count();
+                let mark_len = matched
+                    .chars()
+                    .count()
+                    .min(columns.saturating_sub(mark_from));
+                if mark_len > 0 {
+                    frame.fill_rounded(
+                        Rect::new(
+                            x + mark_from as f32 * advance,
+                            row_rect.y + 3.0 * scale,
+                            mark_len as f32 * advance,
+                            row_rect.height - 6.0 * scale,
+                        ),
+                        theme.primary.with_alpha(0.28),
+                        2.0 * scale,
+                    );
+                }
+                frame.text(ui(
+                    state,
+                    shown,
+                    Rect::new(x, row_rect.y, room, row_rect.height),
+                    if selected { theme.ink } else { theme.ink_dim },
+                    Align::Left,
+                    scale,
+                ));
+            }
+        }
+    }
+}
+
 fn draw_placeholder(
     frame: &mut Frame,
     state: &EditorState,
@@ -5516,14 +5828,7 @@ fn expand_tabs<'a>(state: &EditorState, line: &'a str) -> std::borrow::Cow<'a, s
 }
 
 /// The sidebar: whichever view the activity bar has open.
-fn draw_sidebar(
-    frame: &mut Frame,
-    state: &EditorState,
-    slot: Rect,
-    open_width: f32,
-    visible_rows: usize,
-    scale: f32,
-) {
+fn draw_sidebar(frame: &mut Frame, state: &EditorState, slot: Rect, open_width: f32, scale: f32) {
     let theme = &state.theme;
     frame.fill_backdrop(slot, theme.bg_panel);
     frame.fill(
@@ -5550,26 +5855,25 @@ fn draw_sidebar(
     if sliding {
         frame.set_clip(Some(slot));
     }
-    draw_sidebar_view(frame, state, rect, visible_rows, scale);
+    draw_sidebar_view(frame, state, rect, scale);
     if sliding {
         frame.set_clip(None);
     }
 }
 
 /// Whichever view the sidebar is showing, laid out in `rect`.
-fn draw_sidebar_view(
-    frame: &mut Frame,
-    state: &EditorState,
-    rect: Rect,
-    visible_rows: usize,
-    scale: f32,
-) {
+fn draw_sidebar_view(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     if let Some(tree) = &state.tree {
         draw_explorer(frame, state, tree, rect, scale);
     } else if state.show_diagnostics {
         draw_diagnostics_list(frame, state, rect, scale);
     } else {
         match state.chrome.activity {
+            Some(crate::layout::Activity::Search) => {
+                if let Some(panel) = &state.search {
+                    draw_search_panel(frame, state, panel, rect, scale);
+                }
+            }
             Some(crate::layout::Activity::SourceControl) => draw_placeholder(
                 frame,
                 state,
@@ -5579,295 +5883,8 @@ fn draw_sidebar_view(
                  gutter marks every change against HEAD, and ]c and [c step between them.",
                 scale,
             ),
-            Some(crate::layout::Activity::Debug) => {
-                draw_internals(frame, state, rect, visible_rows, scale)
-            }
             _ => {}
         }
-    }
-}
-
-/// What the editor is doing underneath, shown in the run-and-debug view until a debugger lives
-/// there: the cursor in all four coordinate spaces, the version every background result was
-/// computed against, and the frame time.
-fn draw_internals(
-    frame: &mut Frame,
-    state: &EditorState,
-    rect: Rect,
-    visible_rows: usize,
-    scale: f32,
-) {
-    let theme = &state.theme;
-    let accent = theme.accent(state.mode);
-
-    let pad = space::LG * scale;
-    let line = 20.0 * scale;
-    let width = rect.width - pad * 2.0;
-    let mut y = rect.y + pad;
-
-    let text = state.document.text();
-    let cursor = state.cursor();
-    let point = state.cursor_point();
-
-    // Heading.
-    frame.text(label(
-        state,
-        "run and debug",
-        Rect::new(rect.x + pad, y, width, line * 1.4),
-        theme.ink_faint,
-        Align::Left,
-        scale,
-    ));
-    y += line * 1.6;
-
-    // The panel is a fixed height and this list is not. In a short window the rows ran straight
-    // into the footer below and the two were painted over each other — the same defect the settings
-    // panel beside it had, and invisible for the same reason: the capture harness only ever
-    // rendered at 1600x1000, where everything fits.
-    //
-    // `y` still advances for a row that is not drawn, so the arithmetic is unchanged and only the
-    // painting is suppressed. The rows get the whole panel: the tagline below is decoration and
-    // gives way to them, rather than the other way round.
-    let limit = rect.bottom() - pad;
-
-    let section = |frame: &mut Frame, content: &str, y: &mut f32| {
-        if *y + line <= limit {
-            frame.text(label(
-                state,
-                content,
-                Rect::new(rect.x + pad, *y, width, line),
-                theme.ink_faint,
-                Align::Left,
-                scale,
-            ));
-        }
-        *y += line * 1.2;
-    };
-
-    let pair = |frame: &mut Frame, key: &str, value: &str, y: &mut f32, color: Oklch| {
-        if *y + line <= limit {
-            let row = Rect::new(rect.x + pad, *y, width, line);
-            frame.text(run(
-                state,
-                Role::Value,
-                elide(state, Role::Value, key, width * 0.6, scale),
-                row,
-                theme.ink_dim,
-                Align::Left,
-                scale,
-            ));
-            frame.text(run(
-                state,
-                Role::Value,
-                value,
-                row,
-                color,
-                Align::Right,
-                scale,
-            ));
-        }
-        *y += line;
-    };
-
-    // All four coordinate spaces for the primary cursor. Not a debug panel: this is the
-    // typed-coordinates decision made visible, and it is how conversion bugs get caught early.
-    section(frame, "coordinate spaces", &mut y);
-    let byte = text.char_to_byte(cursor);
-    let (lsp_line, lsp_column) = text.point_to_lsp(point);
-    let display_point = state
-        .display
-        // Bounded by the viewport, not by a generous guess: walking rows that are not on screen
-        // is the difference between a 0.2ms frame and a 1.1ms one.
-        .display_point(text, state.scroll, visible_rows, cursor)
-        .map(|p| format!("{} : {}", p.row, p.column))
-        .unwrap_or_else(|| "off screen".into());
-
-    pair(
-        frame,
-        "Point",
-        &format!("{} : {}", point.line, point.column),
-        &mut y,
-        theme.ink,
-    );
-    pair(frame, "DisplayPoint", &display_point, &mut y, theme.ink);
-    pair(
-        frame,
-        "CharOffset",
-        &cursor.get().to_string(),
-        &mut y,
-        theme.ink,
-    );
-    pair(
-        frame,
-        "ByteOffset",
-        &format!("0x{:x}", byte.get()),
-        &mut y,
-        theme.ink,
-    );
-    pair(
-        frame,
-        "UTF-16 (lsp)",
-        &format!("{lsp_line} : {}", lsp_column.get()),
-        &mut y,
-        theme.ink,
-    );
-    y += line * 0.8;
-
-    // The async ledger: every background producer reports the version it computed against.
-    // Behind the buffer means the result is discarded, never applied. This is the 60fps
-    // contract made visible, and it is how that contract gets debugged.
-    section(frame, "async ledger", &mut y);
-    let buffer = state.document.version();
-    pair(frame, "buffer", &buffer.to_string(), &mut y, theme.ink);
-    for (name, version) in [
-        ("syntax tree", state.syntax_version),
-        ("diagnostics", state.diagnostics_version),
-    ] {
-        let fresh = version.is_fresh_for(buffer);
-        pair(
-            frame,
-            name,
-            &format!("{version} {}", if fresh { "fresh" } else { "stale" }),
-            &mut y,
-            if fresh { theme.fresh() } else { theme.stale() },
-        );
-    }
-    y += line * 0.8;
-
-    // The tree-sitter ancestor chain at the cursor: the deepest node is the one a structural
-    // text object would act on.
-    if !state.node_path.is_empty() {
-        section(frame, "node path", &mut y);
-
-        // Outermost first, deepest last: the chain reads top-down the way the tree nests, and the
-        // deepest node — the one a structural text object would act on — is the accented leaf.
-        let depth = state.node_path.len();
-        let shown: Vec<&String> = state.node_path.iter().rev().take(4).rev().collect();
-
-        if depth > shown.len() {
-            frame.text(label(
-                state,
-                format!("+{} above", depth - shown.len()),
-                Rect::new(rect.x + pad, y, width, line),
-                theme.ink_faint,
-                Align::Left,
-                scale,
-            ));
-            y += line;
-        }
-
-        let last = shown.len().saturating_sub(1);
-        for (index, kind) in shown.into_iter().enumerate() {
-            let deepest = index == last;
-            let indent = index as f32 * 10.0 * scale;
-            frame.text(run(
-                state,
-                Role::Value,
-                if index == 0 {
-                    kind.clone()
-                } else {
-                    format!("└ {kind}")
-                },
-                Rect::new(rect.x + pad + indent, y, width - indent, line),
-                if deepest { accent } else { theme.ink_dim },
-                Align::Left,
-                scale,
-            ));
-            y += line;
-        }
-        y += line * 0.8;
-    }
-
-    section(frame, "document", &mut y);
-    pair(
-        frame,
-        "lines",
-        &(text.last_line() + 1).to_string(),
-        &mut y,
-        theme.ink_dim,
-    );
-    pair(
-        frame,
-        "undo depth",
-        &state.document.history().depth().to_string(),
-        &mut y,
-        theme.ink_dim,
-    );
-    pair(
-        frame,
-        "parse",
-        if state.syntax_error {
-            "has errors"
-        } else {
-            "clean"
-        },
-        &mut y,
-        if state.syntax_error {
-            theme.stale()
-        } else {
-            theme.ink_dim
-        },
-    );
-    let wrap = if state.display.mode == WrapMode::Word {
-        format!("{} cols", state.display.columns)
-    } else {
-        "off".to_string()
-    };
-    pair(frame, "soft wrap", &wrap, &mut y, theme.ink_dim);
-    y += line * 0.8;
-
-    section(frame, "frame", &mut y);
-    let over = state.frame_ms > dacode_theme::FRAME_BUDGET_MS;
-    pair(
-        frame,
-        "this frame",
-        &format!(
-            "{:.2} of {:.1} ms",
-            state.frame_ms,
-            dacode_theme::FRAME_BUDGET_MS
-        ),
-        &mut y,
-        if over {
-            theme.over_budget()
-        } else {
-            theme.fresh()
-        },
-    );
-    pair(
-        frame,
-        "worst recent",
-        &format!("{:.2} ms", state.worst_ms),
-        &mut y,
-        theme.ink_dim,
-    );
-
-    // The rule this editor is built around, in the panel that shows it being kept. Decorative, so
-    // it is the first thing to go when the panel is too short to hold both — in a small window the
-    // coordinate readouts are what someone is actually looking at.
-    let footer = Rect::new(rect.x + pad, rect.bottom() - line * 4.0, width, line * 3.0);
-    if y + line <= footer.y - line * 0.5 {
-        let mut spec = state.typography.spec(Role::Prose);
-        spec.size_px *= scale;
-        frame.text(TextRun {
-            text: "Nothing on the UI thread may ever be unbounded in cost.".into(),
-            spec,
-            color: theme.ink_dim,
-            rect: footer,
-            align: Align::Left,
-            center_vertically: false,
-            wrap: true,
-            layer: Layer::default(),
-            clip: None,
-        });
-        frame.fill(
-            Rect::new(
-                rect.x + pad,
-                footer.y - line * 0.5,
-                26.0 * scale,
-                2.0 * scale,
-            ),
-            accent,
-        );
     }
 }
 
@@ -5968,10 +5985,9 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
     let (left, right) = inner.split_left(inner.width * 0.5);
 
     // Problems first, with their icons, as both editors open the bar: the count that decides
-    // whether to stop and look is the one the eye should land on. Across the project, not just this
-    // file — a clean bar over a broken project is the misleading answer.
-    // The larger of the project's count and this file's: the project store is filled as servers
-    // report, and the file on screen may have been answered before the rest of it.
+    // whether to stop and look is the one the eye should land on. This file's, like the panel: the
+    // larger of the store's count and the live diagnostics', since either may have been answered
+    // first.
     let (project_errors, project_warnings) = state.problems.counts();
     let (file_errors, file_warnings) = state.diagnostics.counts();
     let (errors, warnings) = (

@@ -74,6 +74,9 @@ nucleo-matcher = "0.3"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
+# Replace-all in the search panel. The same engine `grep-regex` builds on, so a pattern that
+# matched in the results is a pattern the replacement understands.
+regex = "1"
 
 # Config. Lua rather than a data format, because config *is* code here: bindings map keys to the
 # same Action vocabulary the grammar emits, and a keymap is a list of statements, not a table of
@@ -94,6 +97,10 @@ criterion = { version = "0.8", features = ["html_reports"] }
 [profile.dev]
 # The editor must feel fast even in debug builds, otherwise dogfighting is painful.
 opt-level = 1
+# Full DWARF for twelve crates and their dependencies was most of a 43 GB `target/debug`. Line tables
+# still name the file and line in a backtrace and in a panicking test, which is all this workspace
+# ever reads debug info for; the variable inspection a debugger wants is what costs the gigabytes.
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3

@@ -677,6 +677,7 @@ dependencies = [
  "ignore",
  "notify",
  "nucleo-matcher",
+ "regex",
 ]
 
 [[package]]

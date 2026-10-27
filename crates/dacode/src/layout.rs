@@ -52,7 +52,6 @@ pub enum Activity {
     Explorer,
     Search,
     SourceControl,
-    Debug,
     Problems,
     Settings,
 }
@@ -70,7 +69,7 @@ pub struct ActivityItem {
 
 /// The activity bar, top to bottom. The last is pinned to the bottom of the column, apart from the
 /// others, as both editors place their settings.
-pub const ACTIVITIES: [ActivityItem; 6] = [
+pub const ACTIVITIES: [ActivityItem; 5] = [
     ActivityItem {
         activity: Activity::Explorer,
         icon: dacode_render::Icon::Explorer,
@@ -88,12 +87,6 @@ pub const ACTIVITIES: [ActivityItem; 6] = [
         icon: dacode_render::Icon::Branch,
         command: "source_control",
         label: "Source control",
-    },
-    ActivityItem {
-        activity: Activity::Debug,
-        icon: dacode_render::Icon::Bug,
-        command: "run_and_debug",
-        label: "Run and debug",
     },
     ActivityItem {
         activity: Activity::Problems,

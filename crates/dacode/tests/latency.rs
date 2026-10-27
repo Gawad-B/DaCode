@@ -98,6 +98,8 @@ fn state(lines: usize) -> EditorState {
         active_buffer: 0,
         modal: true,
         sticky_scroll: true,
+        vertical_goal: None,
+        search: None,
         recording: None,
         diff: dacode::git::Diff::default(),
         show_diagnostics: false,

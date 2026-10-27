@@ -15,7 +15,7 @@ release, where one exists, lives in `packaging/notes/`.
 
 - A new interface, shaped like VSCode and Zed: a title bar with the logo, a menu bar, a search box
   that opens the command palette and the notifications bell; an icon column down the left that
-  switches the sidebar between the explorer, search, source control, run and debug, and problems,
+  switches the sidebar between the explorer, search, source control and problems,
   with settings opening as a tab beside your files; the explorer on the left with file icons and a
   New button; tabs with icons, dots for unsaved files and close buttons, between back/forward and
   split/run buttons; and a status bar that counts errors, warnings and notes with their icons. Every
@@ -38,6 +38,28 @@ release, where one exists, lives in `packaging/notes/`.
   below, which it hid; and it no longer stays on screen over the settings tab. A message too long for
   the room left on the line is cut with an ellipsis; the problems list has all of it.
 - In the theme list, the row of the settings page behind it no longer lights up under the pointer.
+- **Search is a view in the sidebar**, as in VSCode: `ctrl-shift-f` or the magnifier opens a query
+  box with match-case, whole-word and regex toggles (`alt-c`, `alt-w`, `alt-r`), a replacement box,
+  and the results grouped by file as they stream in. **All** (or `ctrl-alt-enter`), pressed twice,
+  replaces every match in the project. It rewrites files and is not undoable; a file open with
+  unsaved changes is left alone and counted.
+- The problems list, its badge and the status bar count only the file you are in. They used to list
+  every file the language server had reported, including files from a folder you had since left.
+- Opening a folder closes the old folder's files, as VSCode does. A file with unsaved changes stays
+  open and the status line says so.
+- No `untitled` tab when nothing is open, and the first file opened replaces the empty buffer
+  rather than sitting beside it.
+- Up and down keep their column. A caret at the end of a line stays at the end of each line it
+  reaches; one in the middle keeps its column across short and blank lines, where it used to drop
+  to the first column and stay there.
+- Sticky scroll is off by default. The pinned block heads read as a highlighted band at the top of
+  the code. `sticky_scroll = true` brings it back.
+- Opening a folder no longer puts a message box over the code.
+
+### Removed
+
+- The run-and-debug view, which showed the editor's internals rather than anything to run, and the
+  `run_and_debug` command behind it.
 - The welcome screen's theme cards wrap into rows, dark themes first, are as wide as the longest name
   where the window allows, and shrink to fit a short window; ↑ ↓ move a row. A dozen cards in one
   row left each too narrow for its name.

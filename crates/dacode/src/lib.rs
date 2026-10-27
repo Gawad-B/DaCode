@@ -32,6 +32,7 @@ pub mod recovery;
 pub mod results;
 pub mod save;
 pub mod scroll;
+pub mod search_panel;
 pub mod session;
 pub mod settings_ui;
 pub mod share;

@@ -69,6 +69,72 @@ impl SearchQuery {
     }
 }
 
+impl SearchQuery {
+    /// Whether the pattern is matched ignoring case: as asked, or by smart case.
+    fn ignores_case(&self) -> bool {
+        match self.case_sensitive {
+            Some(sensitive) => !sensitive,
+            // Smart case: an uppercase letter in the pattern means the user meant it.
+            None => !self.pattern.chars().any(char::is_uppercase),
+        }
+    }
+}
+
+/// Every match of `query` in `text` replaced with `replacement`, and how many there were; `None`
+/// when there were none or the pattern does not compile.
+///
+/// The same rules the search used to find them: literal or regex, smart case, whole word. A regex
+/// replacement may name its groups (`$1`, `${name}`); a literal one is used exactly as typed, so a
+/// `$` in it is a dollar sign.
+pub fn replace_all(text: &str, query: &SearchQuery, replacement: &str) -> Option<(String, usize)> {
+    if query.pattern.is_empty() {
+        return None;
+    }
+    let pattern = if query.literal {
+        regex::escape(&query.pattern)
+    } else {
+        query.pattern.clone()
+    };
+    let pattern = if query.whole_word {
+        format!(r"\b(?:{pattern})\b")
+    } else {
+        pattern
+    };
+    let regex = regex::RegexBuilder::new(&pattern)
+        .case_insensitive(query.ignores_case())
+        // Per line, as the search reports them: `^` and `$` mean what they did in the results.
+        .multi_line(true)
+        .build()
+        .ok()?;
+
+    let count = regex.find_iter(text).count();
+    if count == 0 {
+        return None;
+    }
+    let replaced = if query.literal {
+        regex.replace_all(text, regex::NoExpand(replacement))
+    } else {
+        regex.replace_all(text, replacement)
+    };
+    Some((replaced.into_owned(), count))
+}
+
+/// Every file a project search looks in, in walk order: hidden files and anything ignored are left
+/// out, as they are from the results. Lazy, so a caller on a worker can stop part-way.
+pub fn project_files(root: &Path) -> impl Iterator<Item = PathBuf> {
+    WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .parents(true)
+        // As in `files`: ignore files apply whether or not this is a git repository.
+        .require_git(false)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
+        .map(ignore::DirEntry::into_path)
+}
+
 /// Searches one file, appending hits. Exposed because it is the unit the tests exercise and the
 /// background search is built from.
 pub fn search_file(path: &Path, query: &SearchQuery, hits: &mut Vec<SearchHit>) -> Result<()> {
@@ -78,11 +144,7 @@ pub fn search_file(path: &Path, query: &SearchQuery, hits: &mut Vec<SearchHit>) 
         query.pattern.clone()
     };
 
-    let case_insensitive = match query.case_sensitive {
-        Some(sensitive) => !sensitive,
-        // Smart case: an uppercase letter in the pattern means the user meant it.
-        None => !query.pattern.chars().any(char::is_uppercase),
-    };
+    let case_insensitive = query.ignores_case();
 
     let matcher = RegexMatcherBuilder::new()
         .case_insensitive(case_insensitive)
@@ -204,28 +266,15 @@ impl Drop for ProjectSearch {
 }
 
 fn run(root: &Path, query: &SearchQuery, sender: &Sender<Vec<SearchHit>>, cancelled: &AtomicBool) {
-    let walker = WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .parents(true)
-        // As in `files`: ignore files apply whether or not this is a git repository.
-        .require_git(false)
-        .build();
-
     let mut total = 0usize;
 
-    for entry in walker {
+    for path in project_files(root) {
         if cancelled.load(Ordering::Relaxed) || total >= query.limit {
             return;
         }
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
 
         let mut hits = Vec::new();
-        if search_file(entry.path(), query, &mut hits).is_err() {
+        if search_file(&path, query, &mut hits).is_err() {
             // An unreadable or non-UTF-8 file is skipped, not fatal: one bad file must not end the
             // search.
             continue;
@@ -239,5 +288,53 @@ fn run(root: &Path, query: &SearchQuery, sender: &Sender<Vec<SearchHit>>, cancel
         if sender.send(hits).is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_literal_replacement_means_what_it_says() {
+        // `.` in the pattern and `$1` in the replacement are both just characters: someone typing
+        // into a box that has the regex toggle off did not write either as syntax.
+        let query = SearchQuery::literal("a.b");
+        let (text, count) = replace_all("a.b axb a.b", &query, "$1").unwrap();
+        assert_eq!(text, "$1 axb $1");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn a_regex_replacement_can_name_its_groups() {
+        let query = SearchQuery::regex(r"(\w+)=(\w+)");
+        let (text, count) = replace_all("a=b\nc=d\n", &query, "$2=$1").unwrap();
+        assert_eq!(text, "b=a\nd=c\n");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn the_replacement_follows_the_rules_the_search_found_them_by() {
+        // Replacing what was not in the results would change text nobody was shown.
+        let mut query = SearchQuery::literal("cat");
+        query.whole_word = true;
+        let (text, count) = replace_all("cat concat Cat", &query, "dog").unwrap();
+        assert_eq!(
+            text, "dog concat dog",
+            "smart case: a lowercase pattern ignores case"
+        );
+        assert_eq!(count, 2);
+
+        query.case_sensitive = Some(true);
+        let (text, _) = replace_all("cat Cat", &query, "dog").unwrap();
+        assert_eq!(text, "dog Cat");
+    }
+
+    #[test]
+    fn nothing_to_replace_is_none_rather_than_an_unchanged_copy() {
+        // `None` is how the worker knows to leave the file alone instead of rewriting it as it was.
+        assert!(replace_all("abc", &SearchQuery::literal("x"), "y").is_none());
+        assert!(replace_all("abc", &SearchQuery::literal(""), "y").is_none());
+        assert!(replace_all("abc", &SearchQuery::regex("("), "y").is_none());
     }
 }

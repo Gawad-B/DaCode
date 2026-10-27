@@ -1,26 +1,23 @@
-//! Every problem in the project, not just in the file on screen.
+//! The problems in the file on screen.
 //!
-//! A language server publishes diagnostics for the whole workspace as it indexes, and DaCode threw away
-//! everything that was not the active buffer. So the question people actually ask — "did my change
-//! break anything?" — could not be answered inside an editor that also has no terminal to ask it
-//! from. This keeps them.
+//! A language server publishes diagnostics for the whole workspace as it indexes, and all of them
+//! are kept, so switching to a file shows its problems at once rather than after the server answers
+//! again. What the panel, the activity badge and the statusline show is only the **current** file's:
+//! a list of every file's problems read as a wall of errors that had nothing to do with the file
+//! being worked on, and it carried on showing them after the folder they came from was closed.
 //!
 //! **Staleness works differently here.** The active buffer's diagnostics are version-tagged and a
 //! reply computed against a superseded version is refused, because they are drawn *on* text whose
-//! offsets must still be valid. A diagnostic for a file that is not open has no such constraint: it
-//! is a path, a line and a message, and the worst that a slightly old one costs is a jump to a line
-//! that has since moved. Refusing them would mean refusing nearly all of them, since the version a
-//! server quotes is the version of *that* file and the editor is holding a different one.
+//! offsets must still be valid. A diagnostic held for a file that is not open has no such constraint:
+//! it is a line and a message, and the worst a slightly old one costs is a jump to a line that has
+//! since moved.
 //!
 //! What is bounded, and where:
 //!
-//! - `MAX_PER_FILE` stops one file with a broken macro from consuming the whole budget and hiding
-//!   every other file's problems.
-//! - `MAX_TOTAL` bounds what is *held*, which is what bounds the sort — the only part of this that
-//!   is more than linear.
-//!
-//! Both are reported rather than applied silently: a panel that truncates without saying so reads
-//! as a panel that has told you everything.
+//! - `MAX_PER_FILE` stops one file with a broken macro from producing an unreadable list, and the
+//!   panel says how many it left out.
+//! - `MAX_TOTAL` bounds what is *held* across every file, by forgetting whole files other than the
+//!   current one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -80,8 +77,10 @@ pub struct Problem {
 #[derive(Debug, Default)]
 pub struct Store {
     files: BTreeMap<PathBuf, Vec<Problem>>,
-    /// How many were dropped by the caps, so the panel can say so.
-    dropped: usize,
+    /// How many each file had beyond `MAX_PER_FILE`, so the panel can say so.
+    dropped: BTreeMap<PathBuf, usize>,
+    /// The file on screen, canonical: the one whose problems are shown.
+    current: Option<PathBuf>,
 }
 
 impl Store {
@@ -96,6 +95,7 @@ impl Store {
 
         if diagnostics.is_empty() {
             self.files.remove(&key);
+            self.dropped.remove(&key);
             return;
         }
 
@@ -118,45 +118,75 @@ impl Store {
             })
             .collect();
 
-        self.dropped += diagnostics.len().saturating_sub(items.len());
+        let over = diagnostics.len().saturating_sub(items.len());
+        if over > 0 {
+            self.dropped.insert(key.clone(), over);
+        } else {
+            self.dropped.remove(&key);
+        }
         items.sort_by_key(|problem| (problem.line, problem.column, problem.severity));
         self.files.insert(key, items);
 
-        // The total cap is applied by dropping whole files from the end, so what remains is always
-        // a complete answer for the files it covers rather than a truncated one for all of them.
+        // The total cap forgets whole files, never the one on screen: a held file is only a head
+        // start for when it is opened, and the server republishes it then anyway.
         while self.total() > MAX_TOTAL {
-            let Some(last) = self.files.keys().next_back().cloned() else {
+            let Some(last) = self
+                .files
+                .keys()
+                .rev()
+                .find(|path| Some(*path) != self.current.as_ref())
+                .cloned()
+            else {
                 break;
             };
-            if let Some(removed) = self.files.remove(&last) {
-                self.dropped += removed.len();
-            }
+            self.files.remove(&last);
+            self.dropped.remove(&last);
         }
+    }
+
+    /// Makes `path` the file whose problems are shown. Called when the buffer on screen changes;
+    /// canonicalised once here rather than on every frame that draws the counts.
+    pub fn set_current(&mut self, path: Option<&Path>) {
+        self.current = path.map(dacode_project::canonical);
+    }
+
+    fn current_problems(&self) -> &[Problem] {
+        self.current
+            .as_ref()
+            .and_then(|path| self.files.get(path))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Forgets a file — it was closed by the server, or the project changed.
     pub fn forget(&mut self, path: &Path) {
-        self.files.remove(&dacode_project::canonical(path));
+        let key = dacode_project::canonical(path);
+        self.files.remove(&key);
+        self.dropped.remove(&key);
     }
 
     pub fn clear(&mut self) {
         self.files.clear();
-        self.dropped = 0;
+        self.dropped.clear();
     }
 
     pub fn total(&self) -> usize {
         self.files.values().map(Vec::len).sum()
     }
 
+    /// How many of the current file's problems are not shown.
     pub fn dropped(&self) -> usize {
-        self.dropped
+        self.current
+            .as_ref()
+            .and_then(|path| self.dropped.get(path))
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// Errors and warnings across the whole project.
+    /// Errors and warnings in the current file.
     pub fn counts(&self) -> (usize, usize) {
         let mut errors = 0;
         let mut warnings = 0;
-        for problem in self.files.values().flatten() {
+        for problem in self.current_problems() {
             match problem.severity {
                 Severity::Error => errors += 1,
                 Severity::Warning => warnings += 1,
@@ -166,29 +196,9 @@ impl Store {
         (errors, warnings)
     }
 
-    /// Every problem, ordered for reading.
-    ///
-    /// **The file you are in comes first**, then files containing an error, then the rest by path.
-    /// Within a file, by line. The panel is read to decide where to go next, and going somewhere
-    /// means opening a *file* — so grouping by file is what makes it scannable, and severity is
-    /// carried by colour and by the tie-break rather than by the top-level order. A list sorted by
-    /// severity across the project interleaves twelve files and is unreadable.
-    pub fn ordered(&self, current: Option<&Path>) -> Vec<Problem> {
-        let current = current.map(dacode_project::canonical);
-
-        let mut keys: Vec<&PathBuf> = self.files.keys().collect();
-        keys.sort_by_key(|path| {
-            let is_current = current.as_ref() == Some(*path);
-            let has_error = self.files[*path]
-                .iter()
-                .any(|problem| problem.severity == Severity::Error);
-            // false sorts before true, so the negations put "current" and "has an error" first.
-            (!is_current, !has_error, (*path).clone())
-        });
-
-        keys.into_iter()
-            .flat_map(|path| self.files[path].iter().cloned())
-            .collect()
+    /// The current file's problems, by line.
+    pub fn ordered(&self) -> &[Problem] {
+        self.current_problems()
     }
 }
 
@@ -210,10 +220,9 @@ mod tests {
     }
 
     #[test]
-    fn problems_from_files_that_are_not_open_are_kept() {
-        // The whole point: a server reports the project as it indexes, and DaCode discarded everything
-        // that was not the active buffer — so "did my change break anything?" had no answer inside
-        // the editor.
+    fn problems_from_files_that_are_not_open_are_kept_but_not_shown() {
+        // Kept, so opening the file shows them at once; not shown, because a list of every file's
+        // problems buried the file being worked on under ones it had nothing to do with.
         let mut store = Store::default();
         store.publish(
             Path::new("/project/src/other.rs"),
@@ -222,7 +231,12 @@ mod tests {
         );
 
         assert_eq!(store.total(), 1);
+        assert_eq!(store.counts(), (0, 0));
+        assert!(store.ordered().is_empty());
+
+        store.set_current(Some(Path::new("/project/src/other.rs")));
         assert_eq!(store.counts(), (1, 0));
+        assert_eq!(store.ordered()[0].message, "mismatched types");
     }
 
     #[test]
@@ -253,9 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn the_file_you_are_in_is_listed_first() {
-        // The panel is read to decide where to go next, and the answer is most often "the thing I
-        // just broke".
+    fn only_the_file_you_are_in_is_listed() {
+        // Switching files switches the list: the problems of the file left behind are not the ones
+        // anyone is looking at.
         let mut store = Store::default();
         store.publish(
             Path::new("/project/zzz.rs"),
@@ -268,12 +282,16 @@ mod tests {
             None,
         );
 
-        let ordered = store.ordered(Some(Path::new("/project/zzz.rs")));
-        assert_eq!(ordered[0].message, "in zzz");
+        store.set_current(Some(Path::new("/project/zzz.rs")));
+        let messages: Vec<&str> = store.ordered().iter().map(|p| p.message.as_str()).collect();
+        assert_eq!(messages, ["in zzz"]);
 
-        // With no file open, a file with an error outranks one with only a warning.
-        let ordered = store.ordered(None);
-        assert_eq!(ordered[0].message, "in zzz");
+        store.set_current(Some(Path::new("/project/aaa.rs")));
+        assert_eq!(store.counts(), (0, 1));
+
+        // With no file open, nothing.
+        store.set_current(None);
+        assert!(store.ordered().is_empty());
     }
 
     #[test]
@@ -285,6 +303,7 @@ mod tests {
             .map(|line| diagnostic(line as u32, DiagnosticSeverity::ERROR, "flood"))
             .collect();
 
+        store.set_current(Some(Path::new("/project/broken.rs")));
         store.publish(Path::new("/project/broken.rs"), &flood, None);
         assert_eq!(store.total(), MAX_PER_FILE);
         assert_eq!(

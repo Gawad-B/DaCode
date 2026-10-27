@@ -15,4 +15,5 @@ nucleo-matcher.workspace = true
 grep-searcher.workspace = true
 grep-regex.workspace = true
 grep-matcher.workspace = true
+regex.workspace = true
 anyhow.workspace = true

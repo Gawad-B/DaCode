@@ -302,8 +302,6 @@ pub enum Action {
     ToggleDiagnosticsList,
     /// The source-control view in the sidebar.
     ShowSourceControl,
-    /// The run-and-debug view in the sidebar.
-    ShowRunAndDebug,
     /// Every message the editor has shown, newest first — so one that vanished at the next
     /// keystroke can still be read.
     ToggleNotifications,
@@ -494,7 +492,6 @@ impl Action {
         "toggle_inlay_hints",
         "toggle_diagnostics",
         "source_control",
-        "run_and_debug",
         "notifications",
         "share",
         "run",
@@ -653,7 +650,6 @@ impl Action {
             "toggle_inlay_hints" => Action::ToggleInlayHints,
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
             "source_control" => Action::ShowSourceControl,
-            "run_and_debug" => Action::ShowRunAndDebug,
             "notifications" => Action::ToggleNotifications,
             "share" => Action::Share,
             "run" => Action::Run,
