@@ -19,6 +19,13 @@
 
 ---
 
+> **A vibe-coded project**
+>
+> - I don't know Rust: the code was written with AI.
+> - I chose the architecture and the design system.
+> - I designed the editor and its landing page.
+> - Built for my own use, published so anyone can try it.
+
 Rust, `winit` + `wgpu` + `glyphon` — drawn straight onto the GPU, with no GUI framework and no web
 view. Tree-sitter highlighting, language servers over LSP, splits, a file tree, a git gutter and a
 command palette. Vim's grammar if you want it, a conventional editor if you don't.
