@@ -5,6 +5,21 @@
   whole identity — four states of one instrument, never four themes.
 */
 
+/*
+  The editor's own copy of the face, imported from the crate that bundles it
+  rather than copied here, and emitted by Vite as a hashed asset. Regular is the
+  only weight shipped, so nothing on the page asks for another: a browser asked
+  for a bold or an italic it does not have fakes one by smearing or slanting,
+  which is the substitution the editor refuses to make.
+*/
+@font-face {
+  font-family: "Fira Code";
+  src: url("../../crates/dacode-render/fonts/FiraCode-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --bg: oklch(0.165 0.008 70);
   --bg-alt: oklch(0.19 0.009 70);
@@ -24,9 +39,15 @@
   --mode-c: 0.13;
   --mode-h: 250;
 
-  --serif: "Instrument Serif", Georgia, "Times New Roman", serif;
-  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  /* One face, as in the editor. The three roles stay named so the rules below
+     still say which part of the hierarchy they are; they no longer differ. */
+  --face: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --serif: var(--face);
+  --mono: var(--face);
+  --sans: var(--face);
+
+  /* The logo's amber, from `Theme::brand()` in dacode-theme: "Da" in the wordmark. */
+  --brand: oklch(0.8134 0.1404 80.2);
 
   --pad-x: 56px;
 
@@ -51,6 +72,9 @@
 
   /* Accents darken on paper so they stay legible at the same chroma. */
   --mode-l: 0.52;
+
+  /* The bright amber reads as yellow on white; the logo sheet gives a deeper one. */
+  --brand: oklch(0.6212 0.129 72.8);
 }
 
 /* Every mode-derived colour comes from the three variables above and nothing else. */
@@ -97,6 +121,8 @@ html {
 body {
   color: var(--ink);
   font-family: var(--mono);
+  font-weight: 400;
+  font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   transition:
     background-color var(--tint),
@@ -119,6 +145,19 @@ button {
   border: none;
   padding: 0;
   cursor: pointer;
+}
+
+/* Headings take their rank from size, case, tracking and colour — never weight. */
+h1,
+h2,
+h3,
+strong,
+b {
+  font-weight: 400;
+}
+
+em {
+  font-style: normal;
 }
 
 /* No border radius anywhere. Every corner is square. */
@@ -193,10 +232,15 @@ button {
 }
 
 .wordmark {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 27px;
+  font-family: var(--face);
+  font-size: 24px;
   line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.wordmark .da {
+  color: var(--brand);
 }
 
 .caret {
@@ -270,21 +314,28 @@ button {
   gap: 34px;
 }
 
+/*
+  A monospaced headline is about two thirds wider than the serif one was at the
+  same size, so it is set smaller and allowed to wrap where it falls. The word
+  the serif italicised takes the mode's colour instead.
+*/
 .headline {
+  margin: 0;
   font-family: var(--serif);
-  font-size: clamp(50px, 6.2vw, 92px);
-  line-height: 0.96;
-  letter-spacing: -0.02em;
-  text-wrap: pretty;
+  font-size: clamp(30px, 3.7vw, 54px);
+  line-height: 1.08;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
 }
 
 .headline em {
-  font-style: italic;
+  color: var(--mode);
+  transition: color var(--tint);
 }
 
 .hero-blurb {
-  font-size: 17px;
-  max-width: 46ch;
+  font-size: 15px;
+  max-width: 52ch;
 }
 
 .specs {
@@ -450,8 +501,7 @@ button {
 
 .mode-name {
   font-family: var(--serif);
-  font-style: italic;
-  font-size: 20px;
+  font-size: 18px;
   color: var(--mode);
   transition: color var(--tint);
 }
@@ -587,16 +637,18 @@ button {
 
 .numeral {
   font-family: var(--serif);
-  font-size: 44px;
+  font-size: 40px;
   line-height: 1;
+  letter-spacing: -0.03em;
 }
 
 .principle h3 {
   font-family: var(--serif);
-  font-size: 25px;
+  font-size: 19px;
   font-weight: 400;
   margin: 0;
-  line-height: 1.15;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .principle p {
@@ -620,7 +672,8 @@ button {
 
 .split-left h2 {
   font-family: var(--serif);
-  font-size: 40px;
+  font-size: clamp(26px, 2.6vw, 34px);
+  letter-spacing: -0.03em;
   font-weight: 400;
   line-height: 1.05;
   margin: 0;
@@ -703,7 +756,8 @@ button {
 
 .shots-head h2 {
   font-family: var(--serif);
-  font-size: 40px;
+  font-size: clamp(26px, 2.6vw, 34px);
+  letter-spacing: -0.03em;
   font-weight: 400;
   margin: 0;
 }
@@ -774,12 +828,13 @@ button {
   color: var(--ink-dim);
   max-width: 68ch;
   /* Captions differ in length; without a floor the page jumps on every tab. */
-  min-height: 4.7em;
+  min-height: 10.9em;
 }
 
 /* ── Releases ────────────────────────────────────────────────────────────── */
 
-.releases {
+.releases,
+.overhaul {
   padding: 62px var(--pad-x) 68px;
 }
 
@@ -793,13 +848,14 @@ button {
 
 .releases-head h2 {
   font-family: var(--serif);
-  font-size: 40px;
+  font-size: clamp(26px, 2.6vw, 34px);
+  letter-spacing: -0.03em;
   font-weight: 400;
   margin: 0;
 }
 
 /* The 1px gap on a ruled background *is* the grid line. */
-.grid-9 {
+.ruled-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 1px;
@@ -821,17 +877,27 @@ button {
 }
 
 .card .name {
+  margin: 0;
   font-family: var(--serif);
-  font-size: 22px;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
   color: var(--mode-insert);
   transition: color var(--tint);
 }
 
 .card .body {
+  margin: 0;
   font-family: var(--sans);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: var(--ink-dim);
+}
+
+/* A feature is not a release: its title is ink, so the green keeps meaning "shipped". */
+.card.feature .name {
+  color: var(--ink);
 }
 
 .card.current {
@@ -851,6 +917,17 @@ button {
   color: var(--ink);
 }
 
+/* On main, not in a download: marked, but not with the outline the current release wears. */
+.card.unreleased {
+  outline: 1px dashed var(--mode);
+  outline-offset: -1px;
+  transition: outline-color var(--tint);
+}
+
+.card.unreleased .name {
+  color: var(--mode);
+}
+
 .card.next .name {
   color: var(--ink-faint);
 }
@@ -865,7 +942,8 @@ button {
 
 .identity h2 {
   font-family: var(--serif);
-  font-size: 40px;
+  font-size: clamp(26px, 2.6vw, 34px);
+  letter-spacing: -0.03em;
   font-weight: 400;
   margin: 0 0 36px;
 }
@@ -934,7 +1012,8 @@ button {
 
 .scope h2 {
   font-family: var(--serif);
-  font-size: 34px;
+  font-size: clamp(24px, 2.3vw, 30px);
+  letter-spacing: -0.03em;
   font-weight: 400;
   margin: 0;
 }
@@ -1029,7 +1108,7 @@ button {
   }
 
   .triple,
-  .grid-9,
+  .ruled-grid,
   .quad {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1055,9 +1134,28 @@ button {
   }
 
   .triple,
-  .grid-9,
+  .ruled-grid,
   .quad {
     grid-template-columns: 1fr;
+  }
+
+  /* One column: a filler would be an empty card, not a closed row. */
+  .ruled-grid .filler {
+    display: none;
+  }
+
+  .shot-caption {
+    min-height: 0;
+  }
+
+  /* The tabs wrap here, and a wrapped row that stops short shows the rule
+     colour behind it as a slab. Letting the buttons grow closes each row. */
+  .shot-tabs {
+    width: 100%;
+  }
+
+  .shot-tabs button {
+    flex: 1 1 auto;
   }
 
   .keyrow {

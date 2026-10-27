@@ -7,6 +7,7 @@ import {
   MODAL_KEYS,
   MODES,
   MODE_HUE,
+  OVERHAUL,
   PRINCIPLES,
   RELEASES,
   SCOPE,
@@ -15,12 +16,15 @@ import { useMode, usePrefersReducedMotion, useReveal, useScrolled, useTheme } fr
 import { MiniEditor } from "./components/MiniEditor";
 import { Download } from "./components/Download";
 import { Screens } from "./components/Screens";
+import { useRelease } from "./useRelease";
 
 export default function App() {
   const reduced = usePrefersReducedMotion();
   const { mode, setMode } = useMode(reduced);
   const { theme, toggle } = useTheme();
   const scrolled = useScrolled();
+  // Read rather than written in, so the release table stays the only place a version lives.
+  const release = useRelease();
   const [grammar, setGrammar] = useState<"modal" | "flat">("modal");
 
   useReveal(reduced);
@@ -29,18 +33,18 @@ export default function App() {
 
   // Counted from the table rather than written out, so that adding a release cannot
   // leave the sentence above the grid claiming a number that is no longer true.
-  const shipped = RELEASES.filter((r) => r.state !== "next").length;
-  const fillers = (6 - (RELEASES.length % 6)) % 6;
+  const shipped = RELEASES.filter((r) => r.state === "shipped" || r.state === "current").length;
 
   return (
     <div className="page">
       <header className={`nav ${scrolled ? "condensed" : ""}`}>
-        <span className="wordmark">dacode</span>
+        <Wordmark />
         <span className="caret" />
         <span style={{ flex: 1 }} />
         {/* One link per section that exists, in the order they appear. */}
         <nav className="nav-links label">
           <a href="#why">why</a>
+          <a href="#new">new</a>
           <a href="#editor">editor</a>
           <a href="#keys">keys</a>
           <a href="#releases">releases</a>
@@ -55,10 +59,8 @@ export default function App() {
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="section hero">
         <div className="hero-left rule-v">
-          <h1 className="headline reveal" style={{ margin: 0, fontWeight: 400 }}>
-            A code editor that never
-            <br />
-            <em>stalls</em> on your keystroke.
+          <h1 className="headline reveal">
+            A code editor that never <em>stalls</em> on your keystroke.
           </h1>
           <p className="prose hero-blurb reveal" style={{ "--delay": "80ms" } as React.CSSProperties}>
             {HERO.blurb}
@@ -127,6 +129,28 @@ export default function App() {
         ))}
       </section>
 
+      {/* ── What the next release changes ────────────────────────────────── */}
+      <section className="section overhaul" id="new">
+        <div className="releases-head reveal">
+          <h2>The interface, rebuilt</h2>
+          <span className="prose" style={{ fontSize: 13, color: "var(--ink-faint)" }}>
+            unreleased · on main now, in the next release; the download above is still {release.version}
+          </span>
+        </div>
+        <RuledGrid>
+          {OVERHAUL.map((f, i) => (
+            <div
+              className="card feature reveal"
+              key={f.title}
+              style={{ "--delay": `${(i % 3) * 70}ms` } as React.CSSProperties}
+            >
+              <h3 className="name">{f.title}</h3>
+              <p className="body">{f.body}</p>
+            </div>
+          ))}
+        </RuledGrid>
+      </section>
+
       <Screens />
 
       {/* ── Grammar ──────────────────────────────────────────────────────── */}
@@ -146,7 +170,7 @@ export default function App() {
           </p>
           <p className="prose reveal" style={{ fontSize: 13, maxWidth: "42ch", margin: 0 }}>
             Both columns come from one table in the source, which is also what the command
-            palette, the F1 help panel and the menus read. A test presses every key in it through
+            palette, the F1 help panel and the menu bar read. A test presses every key in it through
             the real grammar, so a shortcut this page claims that did nothing would fail the
             build.
           </p>
@@ -184,12 +208,10 @@ export default function App() {
             {shipped} releases in four days, then real use finding what review could not
           </span>
         </div>
-        <div className="grid-9">
+        <RuledGrid>
           {RELEASES.map((r, i) => (
             <div
-              className={`card reveal ${r.state === "current" ? "current" : ""} ${
-                r.state === "next" ? "next" : ""
-              }`}
+              className={`card reveal ${r.state === "shipped" ? "" : r.state}`}
               key={r.name}
               style={{ "--delay": `${(i % 3) * 70}ms` } as React.CSSProperties}
             >
@@ -197,16 +219,7 @@ export default function App() {
               <span className="body">{r.body}</span>
             </div>
           ))}
-          {/* The grid draws its rules as 1px gaps over a background, so a row that
-              stops short shows that background as a slab of rule colour rather than
-              as nothing. It was exactly nine cards when it was written, which is what
-              the name says; the tenth broke it. Filling the row keeps it whole at any
-              count, and to a multiple of six because the layout drops to two columns
-              on a narrow window. */}
-          {Array.from({ length: fillers }, (_, i) => (
-            <div className="card filler" key={`filler-${i}`} aria-hidden="true" />
-          ))}
-        </div>
+        </RuledGrid>
       </section>
 
       {/* ── Identity ─────────────────────────────────────────────────────── */}
@@ -219,12 +232,7 @@ export default function App() {
               className="spec-box"
               style={{ alignItems: "center", justifyContent: "center", gap: 4 }}
             >
-              <span
-                className="wordmark"
-                style={{ fontSize: 58 }}
-              >
-                dacode
-              </span>
+              <Wordmark style={{ fontSize: 44 }} />
               <span style={{ width: 9, height: 40, background: "var(--mode)" }} />
             </div>
             <span className="spec-caption">{IDENTITY_CAPTIONS.mark}</span>
@@ -280,12 +288,10 @@ export default function App() {
               className="spec-box"
               style={{ flexDirection: "column", justifyContent: "center", gap: 6, padding: "0 18px" }}
             >
-              <span className="serif" style={{ fontSize: 27 }}>
-                Instrument Serif
-              </span>
-              <span style={{ fontSize: 14, color: "var(--ink-dim)" }}>Fira Code</span>
-              <span className="label" style={{ fontSize: 12, letterSpacing: "0.14em" }}>
-                Plex Sans · labels
+              <span style={{ fontSize: 27, letterSpacing: "-0.02em" }}>Fira Code</span>
+              <span style={{ fontSize: 14, color: "var(--ink-dim)" }}>code, prose, headings</span>
+              <span className="label" style={{ fontSize: 11, letterSpacing: "0.18em" }}>
+                labels · regular only
               </span>
             </div>
             <span className="spec-caption">{IDENTITY_CAPTIONS.type}</span>
@@ -310,17 +316,43 @@ export default function App() {
       </section>
 
       <footer className="footer">
-        <span className="wordmark" style={{ fontSize: 20 }}>
-          dacode
-        </span>
+        <Wordmark style={{ fontSize: 20 }} />
         <span className="caret" style={{ height: 14, width: 6 }} />
         <span style={{ flex: 1 }} />
         {/* Everything that used to live here pointed into the repository,
             which is private — five links that rendered fine and 404'd. */}
         <a href="#releases">download</a>
         <a href="#keys">keys</a>
-        <span>mit licence</span>
+        <span className="label">mit licence · fira code under the ofl</span>
       </footer>
+    </div>
+  );
+}
+
+/** "Da" in the logo's amber, as the editor's title bar draws it. */
+function Wordmark({ style }: { style?: React.CSSProperties }) {
+  return (
+    <span className="wordmark" style={style}>
+      <span className="da">Da</span>Code
+    </span>
+  );
+}
+
+/*
+ * The grid draws its rules as 1px gaps over a background, so a row that stops
+ * short shows that background as a slab of rule colour rather than as nothing.
+ * Filling the last row keeps it whole at any count — to a multiple of six,
+ * because the layout drops to two columns on a narrow window and to one on a
+ * phone.
+ */
+function RuledGrid({ children }: { children: React.ReactNode[] }) {
+  const fillers = (6 - (children.length % 6)) % 6;
+  return (
+    <div className="ruled-grid">
+      {children}
+      {Array.from({ length: fillers }, (_, i) => (
+        <div className="card filler" key={`filler-${i}`} aria-hidden="true" />
+      ))}
     </div>
   );
 }

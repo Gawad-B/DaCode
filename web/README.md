@@ -59,6 +59,14 @@ gap).
 
 The screenshots are imported from `../docs/images`, not copied — two copies of a screenshot drift
 the moment one of them is regenerated. `vite.config.ts` allows the parent directory for that reason.
+The same goes for the face and the logo: `styles.css` declares Fira Code with `@font-face` from the
+editor's own `crates/dacode-render/fonts/FiraCode-Regular.ttf` (OFL, licence beside it, credited in
+the footer), and `main.tsx` sets the favicon from `logo/dacode/`. There are no font links.
+
+**One face, one weight.** As in the editor, everything is Fira Code Regular. Headings rank by size,
+case, tracking and colour; `font-synthesis: none` and the `h1`–`h3` reset keep the browser from
+faking a bold or an italic that is not bundled. The wordmark is "DaCode" with "Da" in `--brand`,
+the values of `Theme::brand()` in `dacode-theme`.
 
 ## The download button
 
@@ -67,11 +75,10 @@ exists, the userAgent where it does not. A phone is deliberately "unknown" — t
 it, and pretending otherwise hands someone a 9 MB file they cannot run. Whatever it decides, three
 buttons underneath let the visitor say otherwise.
 
-The version and the asset URLs come from `api.github.com/repos/Gawad-B/Vex/releases/latest`, so the
-page cannot go stale behind a release. It ships knowing 0.4.1 anyway, because that API is rate
-limited per IP without a token and a download button that fails closed on the sixty-first visitor of
-the hour is worse than one link out of date. **When the fallback moves, update it in that file** —
-it is the only hard-coded version on the page.
+The version and the asset URLs are a table in that file, not a request to the GitHub API: the
+reasons are in its comments, and `crates/dacode/tests/conventions.rs` fails the build if the table
+names a version the crate is not. **When a release ships, update it there** — it is the only
+hard-coded version on the page; the "what changed" section reads it too.
 
 macOS gets no download button. There is no macOS build and nobody has ever run DaCode there; the
 button says "Build from source" and the note says why. That is the honest button, and it should stay

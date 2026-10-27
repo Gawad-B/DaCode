@@ -16,6 +16,18 @@
  *     *known gap* — the grammar rows below are keys the cheatsheet test presses
  *     through the real grammar on every build.
  *   - The M0–M8 roadmap is pre-history. What shipped is the changelog.
+ *
+ * Brought up to date with the changelog's Unreleased section (the interface
+ * overhaul), which is on main but not yet in a release:
+ *
+ *   - vex is DaCode now, and its wordmark is "DaCode" with "Da" in the logo's
+ *     amber. The command stays `dacode`, lowercase, as a command does.
+ *   - One face. The editor dropped its serif headings and sans labels for Fira
+ *     Code everywhere, and so did this page.
+ *   - The settings captions that said which source set a value are gone, so the
+ *     settings shot no longer claims them.
+ *   - Thirteen themes, not five: the six built-ins (`dacode` is the new
+ *     default) and seven derived from Quizzy, which land in the same release.
  */
 
 export const REPO = "Gawad-B/Vex";
@@ -46,7 +58,7 @@ export const BLURBS: Record<Mode, string> = {
 export const HERO = {
   blurb:
     "One rule is enforced above every other: nothing unbounded ever runs on the UI thread. Parsing, language servers, project search and git run against cheap snapshots tagged with the document version they saw — an answer computed against an older version is discarded, never applied.",
-  specs: ["Rust · edition 2024", "Linux & Windows", "wgpu + tree-sitter", "744 tests"],
+  specs: ["Rust · edition 2024", "Linux & Windows", "wgpu + tree-sitter", "1,010 tests"],
 };
 
 export const PRINCIPLES = [
@@ -79,10 +91,10 @@ export const MODAL_KEYS = [
 ];
 
 export const FLAT_KEYS = [
-  { keys: "ctrl-d", gloss: "select the word, then the next copy of it" },
-  { keys: "alt-↑ ↓", gloss: "move these lines — Vim composes ddp; there is nothing to compose with" },
-  { keys: "ctrl-/", gloss: "comment or uncomment" },
-  { keys: "alt-drag", gloss: "select a rectangle: one cursor per line, same columns" },
+  { keys: "Ctrl+D", gloss: "select the word, then the next copy of it" },
+  { keys: "Alt+↑ ↓", gloss: "move these lines — Vim composes ddp; there is nothing to compose with" },
+  { keys: "Ctrl+/", gloss: "comment or uncomment" },
+  { keys: "Alt+drag", gloss: "select a rectangle: one cursor per line, same columns" },
   { keys: "F1", gloss: "every key that works right now, in the grammar you chose" },
 ];
 
@@ -93,38 +105,86 @@ export const SHOTS: { id: ShotId; label: string; caption: string }[] = [
     id: "editor",
     label: "editing",
     caption:
-      "Tree-sitter highlighting on a worker thread, a git diff gutter, sticky scroll and inlay hints from the language server. Every capture on this page is rendered offscreen by the editor itself — dacode --screenshot out.png renders any state and exits, which is how the visual work gets verified in a repository whose author cannot take a screen capture at all.",
+      "A Rust file in the default theme, dacode, with the chrome a shade darker than the code. The menu bar sits in the title bar beside the wordmark, then the search box that opens the palette and the bell; the icon column switches the sidebar, and the status bar counts errors, warnings and notes beside the mode. Every capture on this page is rendered offscreen by the editor itself — dacode --screenshot out.png renders any state and exits.",
   },
   {
     id: "commands",
     label: "commands",
     caption:
-      "Every command, searchable, each with its key beside it. The palette, the help panel on F1, the menu bar and the which-key popup all read one table in the source, so they cannot drift apart — and a test presses every non-modal key in it through the real grammar.",
+      "The palette drops from the search box in the title bar, its commands grouped under headings until you type, each key drawn as a chip — and every row can be clicked. The palette, the F1 help panel, the menu bar in the title bar and the which-key popup all read one table in the source, so they cannot drift apart, and a test presses every non-modal key in it through the real grammar.",
   },
   {
     id: "settings",
     label: "settings",
     caption:
-      "Settings you change by clicking, including which of the default, your init.lua or a VSCode import last set each one. There is a Lua config with hot reload underneath, but you never have to open it.",
+      "Settings are a tab beside your files: a category tree down the left, rows on the right with a sentence under each one whose name does not say everything, and one search box across every page. A ● marks a setting you changed and ⟲ puts it back. There is no save button — a change applies at once and is written to init.lua 600 ms later.",
   },
   {
     id: "tree",
     label: "file tree",
     caption:
-      "A file tree, splits, project-wide search and replace, and a file watcher on the buffer you are looking at. Create, rename and delete without leaving the editor.",
+      "The explorer, with file icons and a New button; create, rename and delete without leaving the editor. Click the tree and the arrow keys walk the files; open one and the keys go back to the text. Splits, project-wide search and replace, and a file watcher on the buffer you are looking at.",
   },
   {
     id: "light",
     label: "light theme",
     caption:
-      "Five built-in themes, and importers for VSCode colour schemes in four formats. Colours are authored in Oklch, which is why the four mode accents share one lightness and one chroma and read as one instrument changing state.",
+      "The light theme, where the logo's amber deepens so it does not read as yellow on white. Thirteen themes are built in, with importers for VSCode colour schemes in four formats. Colours are authored in Oklch, which is why the four mode accents share one lightness and one chroma and read as one instrument changing state.",
+  },
+];
+
+/*
+ * What the next release changes, from the changelog's Unreleased section. Each
+ * entry is a claim about the editor on main, not about a download: the hero's
+ * button still offers the latest release.
+ */
+export const OVERHAUL: { title: string; body: string }[] = [
+  {
+    title: "A menu bar in the title bar",
+    body: "File, Edit, Selection, View, Go, Run, Terminal and Help sit after the wordmark all the time. A narrow window drops titles from the end behind a “…” that lists them. The account icon and the Share button are gone; Share is File → Copy link to line.",
+  },
+  {
+    title: "Settings, as a tab",
+    body: "A category tree down the left, as in JetBrains, and rows on the right, as in VSCode, each with an explanation where its name is not enough. One search filters every page at once and lights the letters that matched. ● marks a changed setting; ⟲ puts it back.",
+  },
+  {
+    title: "Settings save themselves",
+    body: "A change applies at once and is written to init.lua 600 ms after the last one. Only what you changed on the page is written — zooming or importing pins nothing — and if you edit the same setting by hand while it waits, your edit wins.",
+  },
+  {
+    title: "Motion, with a little overshoot",
+    body: "Popups grow in from 0.96, the sidebar slides, the active tab glides, the bell swings: springs, about 300 ms for a panel. Typing, the cursor and selections never animate. The animations setting is full, reduced — fades, nothing that travels — or off.",
+  },
+  {
+    title: "Scrolling by the pixel",
+    body: "A touchpad scrolls now, one to one with your fingers, the top row sliding partly out of sight; a wheel notch glides three rows. Pinch zooms where the window system delivers a pinch, which is macOS today, and ctrl-scroll zooms everywhere else.",
+  },
+  {
+    title: "One card for every overlay",
+    body: "The palette, menus, completion, hover, which-key, the help panel and the bell's log share one rounded card with a soft shadow, and keys are drawn as chips. Rows in the palette and the help panel can be clicked.",
+  },
+  {
+    title: "Keys go where you clicked",
+    body: "Focus is the text, the sidebar or the results panel, and a click sets it — so ↑ and ↓ move the caret with the file tree open. Ctrl+Shift+E hands the keys to the tree, and Ctrl+1 or Esc gives them back.",
+  },
+  {
+    title: "Colours without a keypress",
+    body: "Every background worker wakes the editor when it has an answer, so syntax colours arrive on their own instead of at the next key. An idle editor polls nothing on a timer: it sleeps, language server and all.",
+  },
+  {
+    title: "One face: Fira Code",
+    body: "Code, menus, labels and headings are all Fira Code; the serif and sans faces are gone. Hierarchy comes from size, case, spacing and colour instead — which is how this page is set, too.",
+  },
+  {
+    title: "Thirteen themes",
+    body: "The six built-ins — a new default, dacode, beside dark, light, rose-pine, rose-pine-moon and amoled — and seven derived from Quizzy: quizzy, coral and sky, each dark and light, and amoled-black. The settings tab picks one from a dropdown grouped Dark and Light.",
   },
 ];
 
 export type ReleaseCard = {
   name: string;
   body: string;
-  state: "shipped" | "current" | "next";
+  state: "shipped" | "current" | "unreleased" | "next";
 };
 
 export const RELEASES: ReleaseCard[] = [
@@ -169,6 +229,11 @@ export const RELEASES: ReleaseCard[] = [
     state: "current",
   },
   {
+    name: "unreleased · the overhaul",
+    body: "vex becomes DaCode, with a new interface: the menu bar in the title bar, settings as a tab that saves itself, springs, touchpad scrolling, one card for every overlay, keys that follow the click, an idle editor that sleeps, one face and thirteen themes.",
+    state: "unreleased",
+  },
+  {
     name: "next · search off-thread",
     body: "Buffer search is still linear in the document. The fix is the shape syntax and git already use: a worker with a version tag.",
     state: "next",
@@ -180,24 +245,24 @@ export const RELEASES: ReleaseCard[] = [
   },
   {
     name: "next · macOS",
-    body: "No packaging, and nobody has ever run dacode there. Stated rather than hidden — the Linux and Windows builds are the ones in real use.",
+    body: "No packaging, and nobody has ever run DaCode there. Stated rather than hidden — the Linux and Windows builds are the ones in real use.",
     state: "next",
   },
 ];
 
 export const IDENTITY_CAPTIONS = {
-  mark: "Italic serif wordmark, lowercase always, with the cursor block set as a fourth letter.",
+  mark: "DaCode, with “Da” in the logo's amber — bright on dark, deeper on light, where the bright one reads as yellow — and the cursor block after it in the mode's hue.",
   palette:
     "One lightness, one chroma, four hues. Modes read as states of one instrument, not four themes.",
   cursors: "Shape says what the next keystroke will do. Colour only confirms it.",
-  type: "Prose is typeset, not printed. Code and comments both stay mono — a comment is code, and a proportional face cannot hold the column. Labels stay small and spaced.",
+  type: "One face, as in the editor: Fira Code Regular for code, prose, headings and labels. A heading is larger, a label is small capitals spaced out — never a second family, never a heavier weight.",
 };
 
 export const SCOPE = {
-  notTitle: "What dacode will not do",
-  not: "No plugin system and no extension runtime — extension *code* is never run, because a JavaScript runtime is most of what makes VSCode heavy. Extension *data* imports fine: themes, snippets, keybindings, language configuration, .vsix files. No integrated terminal, no git blame, no remote editing, no collaboration, no macOS packaging. Deferring the extension API is what keeps the rest honest; it constrains every internal API the moment it exists.",
+  notTitle: "What DaCode will not do",
+  not: "No plugin system and no extension runtime — extension code is never run, because a JavaScript runtime is most of what makes VSCode heavy. Extension data imports fine: themes, snippets, keybindings, language configuration, .vsix files. No integrated terminal, no git blame, no remote editing, no collaboration, no macOS packaging. Deferring the extension API is what keeps the rest honest; it constrains every internal API the moment it exists.",
   successTitle: "Success has one criterion",
   success:
-    "Not feature parity — daily use. dacode is written inside dacode, and its own bug tracker is the friction of using it. That is where 0.4.1 came from: an afternoon of real use, which found more than two rounds of adversarial review had.",
+    "Not feature parity — daily use. DaCode is written inside DaCode, and its own bug tracker is the friction of using it. That is where 0.4.1 came from: an afternoon of real use, which found more than two rounds of adversarial review had.",
   stamp: "used daily by its author · windows since 0.3.0",
 };

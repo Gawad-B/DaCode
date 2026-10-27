@@ -159,7 +159,7 @@ export function platformFor(os: Os, release: Release): Platform {
         },
         pending: null,
         alternatives: [],
-        note: "Per-user, under %LOCALAPPDATA%\\Programs\\dacode — no admin prompt. Adds a Start Menu entry, dacode on your PATH, “Open with dacode” on a folder, and an uninstaller.",
+        note: "Per-user, under %LOCALAPPDATA%\\Programs\\dacode — no admin prompt. Adds a Start Menu entry, dacode on your PATH, “Open with DaCode” on a folder, and an uninstaller.",
         prompt: ">",
         command: ".\\dacode-setup.exe",
       };
@@ -191,7 +191,7 @@ export function platformFor(os: Os, release: Release): Platform {
         primary: null,
         pending: "macOS build coming soon",
         alternatives: [],
-        note: "There is no macOS build yet, and nobody has ever run dacode on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
+        note: "There is no macOS build yet, and nobody has ever run DaCode on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
         prompt: "#",
         command: "no macOS build yet",
       };
@@ -208,7 +208,7 @@ export function platformFor(os: Os, release: Release): Platform {
           rpm && { label: "Linux — .rpm", detail: rpm.name, url: rpm.url, size: rpm.size },
           tar && { label: "Linux — .tar.gz", detail: tar.name, url: tar.url, size: tar.size },
         ]),
-        note: "dacode is a desktop editor for x86-64 Linux and Windows. Pick the artifact for the machine you will run it on.",
+        note: "DaCode is a desktop editor for x86-64 Linux and Windows. Pick the artifact for the machine you will run it on.",
         prompt: "#",
         command: "pick the artifact for your machine",
       };
