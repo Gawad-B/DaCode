@@ -57,7 +57,7 @@ and one added to `InsertText` fails it at 111x. `cargo bench` still measures; th
 
 ```
 dacode-text     rope (ropey), typed coordinates, Edit/Transaction, Anchor, SelectionSet
-dacode-theme    Oklch, six themes, type roles (one face: Fira Code), mode accents
+dacode-theme    Oklch, thirteen themes, type roles (one face: Fira Code), mode accents
 dacode-display  soft wrap, ScrollAnchor, Folds, sticky scroll
 dacode-buffer   Document = text + undo history + pending changes + pairing
 dacode-input    Action, Grammar, Keymap, JumpList, Macros, the command table
@@ -402,7 +402,7 @@ came out as an X, clipped diagnostic messages, and a lockup misaligned by 2px. S
 work on Wayland here, so this is the only way — and it is better anyway, being reproducible.
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --settings-page NAME
---settings-search Q --welcome STEP --folded
+--settings-search Q --theme-dropdown --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
 --transparency PERCENT --help-panel --menu --menu-title TITLE --context-menu --commands

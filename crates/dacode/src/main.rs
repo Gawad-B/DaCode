@@ -398,7 +398,7 @@ const VALUE_FLAGS: [&str; 24] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 43] = [
+const FLAGS: [(&str, &str, &str); 44] = [
     // Opening.
     (
         "--no-session",
@@ -455,6 +455,11 @@ const FLAGS: [(&str, &str, &str); 43] = [
         "type a search into the settings tab",
     ),
     ("--row", "N", "select a settings row, scrolling to it"),
+    (
+        "--theme-dropdown",
+        "",
+        "the settings tab with its theme list open",
+    ),
     ("--welcome", "STEP", "the first-run wizard at one step"),
     ("--folded", "", "with a block folded"),
     ("--git", "", "the diff gutter"),
@@ -1264,8 +1269,9 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         || value("--settings-page").is_some()
         || value("--settings-search").is_some()
         || value("--row").is_some()
+        || flag("--theme-dropdown")
     {
-        use dacode::settings_ui::Category;
+        use dacode::settings_ui::{Category, Entry};
         let modal = state.modal;
         let mut page = dacode::settings_ui::Page::new();
         // The real detection, against this machine — the Languages page is a report, and a
@@ -1297,6 +1303,23 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         if let Some(row) = value("--row").and_then(|at| at.parse::<usize>().ok()) {
             page.select(row, modal);
             page.reveal(editor, 1.0, modal, &state.typography);
+        }
+        // The theme row's list, opened as a click on its control opens it: on the theme in use and
+        // scrolled to it, which at a small size is the only way to see that the list scrolls.
+        if flag("--theme-dropdown") {
+            page.set_category(Category::Appearance, modal);
+            if let Some(at) = page
+                .entries(modal)
+                .iter()
+                .position(|entry| *entry == Entry::Field(dacode::settings_ui::Field::Theme))
+            {
+                page.select(at, modal);
+            }
+            page.reveal(editor, 1.0, modal, &state.typography);
+            page.open_dropdown(state.setting_values().theme);
+            let values = state.setting_values();
+            let rows = page.geometry(editor, 1.0, &values, modal, &state.typography);
+            page.reveal_dropdown(&rows, editor, 1.0, &state.typography);
         }
         state.settings_page = Some(page);
         state.settings_active = true;
@@ -2308,6 +2331,11 @@ impl App {
         if self.state.menu.is_some() || self.state.welcome.is_some() {
             return true;
         }
+        // The theme dropdown scrolls its own list, and the page behind it stays where it is.
+        if self.dropdown_showing() {
+            self.scroll_dropdown(lines as f32 * self.row_height_px());
+            return true;
+        }
 
         let layout = self.layout();
         let (x, y) = self.pointer;
@@ -2418,6 +2446,10 @@ impl App {
             || self.state.help.is_some()
             || self.state.menu.is_some()
             || self.state.welcome.is_some();
+        if !modal_open && self.dropdown_showing() {
+            self.scroll_dropdown(down_px);
+            return;
+        }
         if !modal_open
             && self.state.settings_showing()
             && dacode::layout::contains(layout.editor, self.pointer.0, self.pointer.1)
@@ -2825,6 +2857,11 @@ impl App {
         }
         // The wizard owns the whole window while it is up.
         if self.handle_welcome_key(key) {
+            return false;
+        }
+        // The theme dropdown is an overlay on the settings tab, so it is asked before anything the
+        // page or the text would do with the key.
+        if self.dropdown_showing() && self.handle_dropdown_key(key) {
             return false;
         }
 
@@ -5863,7 +5900,7 @@ impl App {
             welcome.selected = index;
             // On the theme row the highlight *is* the answer, so a click has to preview it too.
             if welcome.step == dacode::welcome::Step::Theme {
-                welcome.answers.theme = dacode_theme::Theme::BUILT_IN[index].0;
+                welcome.answers.theme = dacode_theme::Theme::grouped()[index];
             }
             welcome.choose();
             if welcome.is_done() {
@@ -6124,6 +6161,9 @@ impl App {
         use dacode::settings_ui::{Entry, Line, Link};
         match entry {
             Entry::Heading { .. } | Entry::Command(_) => {}
+            // Thirteen themes are too many to step through one click at a time: the row opens the
+            // list of them instead.
+            Entry::Field(dacode::settings_ui::Field::Theme) => self.open_theme_dropdown(),
             Entry::Field(field) => self.cycle_setting(field),
             Entry::Line(Line::Import(item)) => self.tick_import(item),
             Entry::Line(Line::RunImport) => self.run_import(),
@@ -7627,6 +7667,13 @@ impl App {
             }
             return;
         }
+        // The theme dropdown, like the menu, takes the click wherever it lands.
+        if self.dropdown_showing() {
+            if !extend {
+                self.click_dropdown(x, y);
+            }
+            return;
+        }
 
         // A press decides where the keys go, before anything below handles it. The chrome's own
         // bars say `None`, so a toolbar button does not move focus; the buttons that open a view
@@ -8331,6 +8378,150 @@ impl App {
         ))
     }
 
+    /// Where the theme dropdown is, as the last frame drew it: hung from the theme row of
+    /// [`App::settings_page_geometry`], inside the editor area. The one geometry the mouse reads and
+    /// the one `chrome` draws the card from.
+    fn settings_dropdown_geometry(&self) -> Option<dacode::settings_ui::DropdownGeometry> {
+        let page = self.state.settings_page.as_ref()?;
+        page.dropdown()?;
+        let geometry = self.settings_page_geometry()?;
+        page.dropdown_geometry(
+            &geometry,
+            self.layout().editor,
+            self.scale(),
+            &self.state.typography,
+        )
+    }
+
+    /// Whether the theme dropdown is open over a settings tab on screen: an overlay, which takes the
+    /// keys and the clicks before the page under it.
+    fn dropdown_showing(&self) -> bool {
+        self.state.settings_showing()
+            && self
+                .state
+                .settings_page
+                .as_ref()
+                .is_some_and(|page| page.dropdown().is_some())
+    }
+
+    /// Opens the theme dropdown on the theme in use, with the row it hangs from scrolled into view
+    /// first so the card has something to hang from.
+    fn open_theme_dropdown(&mut self) {
+        let (rect, scale, modal) = (self.layout().editor, self.scale(), self.state.modal);
+        let typography = self.state.typography;
+        let current = self.state.setting_values().theme;
+        if let Some(page) = &mut self.state.settings_page {
+            page.reveal(rect, scale, modal, &typography);
+            page.open_dropdown(current);
+        }
+        self.reveal_dropdown();
+    }
+
+    fn reveal_dropdown(&mut self) {
+        let Some(geometry) = self.settings_page_geometry() else {
+            return;
+        };
+        let (editor, scale, typography) =
+            (self.layout().editor, self.scale(), self.state.typography);
+        if let Some(page) = &mut self.state.settings_page {
+            page.reveal_dropdown(&geometry, editor, scale, &typography);
+        }
+    }
+
+    fn scroll_dropdown(&mut self, pixels: f32) {
+        let Some(geometry) = self.settings_page_geometry() else {
+            return;
+        };
+        let (editor, scale, typography) =
+            (self.layout().editor, self.scale(), self.state.typography);
+        if let Some(page) = &mut self.state.settings_page {
+            page.scroll_dropdown(pixels, &geometry, editor, scale, &typography);
+        }
+    }
+
+    /// Closes the dropdown and applies `name`: a change on the page like any other, so it glows, is
+    /// marked touched and is written after the pause.
+    fn pick_theme(&mut self, name: &'static str) {
+        if let Some(page) = &mut self.state.settings_page {
+            page.close_dropdown();
+        }
+        self.change_setting(dacode::settings_ui::Field::Theme, |values| {
+            values.theme = Some(name);
+        });
+    }
+
+    /// Keys while the theme dropdown is open. ↑ ↓ (and page up and down, home and end) move the
+    /// highlight, enter or space picks it, escape closes. Any other key closes the list and goes on
+    /// where it would have gone, so `ctrl-shift-p` still opens the palette and a letter still types
+    /// into the search box — a dropdown is not worth a key that does nothing.
+    fn handle_dropdown_key(&mut self, key: Key) -> bool {
+        let plain = !key.ctrl && !key.alt;
+        let delta = match key.code {
+            KeyCode::Up if plain => Some(-1),
+            KeyCode::Down if plain => Some(1),
+            KeyCode::PageUp if plain => Some(-8),
+            KeyCode::PageDown if plain => Some(8),
+            KeyCode::Home if plain => Some(isize::MIN / 2),
+            KeyCode::End if plain => Some(isize::MAX / 2),
+            _ => None,
+        };
+        if let Some(delta) = delta {
+            if let Some(page) = &mut self.state.settings_page {
+                page.move_dropdown(delta);
+            }
+            self.reveal_dropdown();
+            return true;
+        }
+        let choice = self
+            .state
+            .settings_page
+            .as_ref()
+            .and_then(|page| page.dropdown_choice());
+        match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') if plain => {
+                match choice {
+                    Some(name) => self.pick_theme(name),
+                    None => self.close_dropdown(),
+                }
+                true
+            }
+            KeyCode::Escape => {
+                self.close_dropdown();
+                true
+            }
+            _ => {
+                self.close_dropdown();
+                false
+            }
+        }
+    }
+
+    fn close_dropdown(&mut self) {
+        if let Some(page) = &mut self.state.settings_page {
+            page.close_dropdown();
+        }
+    }
+
+    /// A click while the dropdown is open, wherever it lands: on a theme it picks it, on a heading
+    /// or the card's padding it does nothing, and anywhere else it closes the list — what clicking
+    /// away from a dropdown means everywhere — without reaching what is under it.
+    fn click_dropdown(&mut self, x: f32, y: f32) {
+        let Some(geometry) = self.settings_dropdown_geometry() else {
+            self.close_dropdown();
+            return;
+        };
+        if let Some(index) = geometry.hit(x, y) {
+            if let Some(name) = dacode::settings_ui::theme_picks()
+                .get(index)
+                .and_then(|pick| pick.theme())
+            {
+                self.pick_theme(name);
+            }
+        } else if !geometry.contains(x, y) {
+            self.close_dropdown();
+        }
+    }
+
     /// A click on the settings tab. The tree opens a page; a control changes its setting exactly as
     /// → or space would, a number at its limit wrapping (a click has no other direction to go in);
     /// the ⟲ resets; a row is selected, and an import item, an action or the link is chosen.
@@ -8374,7 +8565,7 @@ impl App {
             (Part::Reset, Entry::Field(field)) => self.reset_setting(field),
             (Part::Decrease, Entry::Field(field)) => self.adjust_setting(field, -1),
             (Part::Increase, Entry::Field(field)) => self.adjust_setting(field, 1),
-            (Part::Control, Entry::Field(field)) => self.cycle_setting(field),
+            (Part::Control, Entry::Field(field)) => self.choose_page_entry(Entry::Field(field)),
             // A setting's row away from its control only selects it, so a click to read its
             // explanation does not change it.
             (_, Entry::Field(_) | Entry::Command(_) | Entry::Heading { .. }) => {}
@@ -9709,7 +9900,7 @@ mod wiring_tests {
         app.click(false);
         let welcome = app.state.welcome.as_ref().unwrap();
         assert_eq!(welcome.step, Step::Import);
-        assert_eq!(welcome.answers.theme, dacode_theme::Theme::BUILT_IN[2].0);
+        assert_eq!(welcome.answers.theme, dacode_theme::Theme::grouped()[2]);
     }
 
     /// A context-menu row has to run its command, through the real right-click and the real click.
@@ -10496,6 +10687,156 @@ mod wiring_tests {
             app.state.focus,
             dacode::focus::Focus::Editor,
             "a click on the page gives it the keys"
+        );
+    }
+
+    fn dropdown_open(app: &App) -> bool {
+        app.state
+            .settings_page
+            .as_ref()
+            .is_some_and(|page| page.dropdown().is_some())
+    }
+
+    /// The theme dropdown's row for `name`, as the mouse would find it.
+    fn dropdown_row(app: &App, name: &str) -> dacode::settings_ui::DropdownRow {
+        app.settings_dropdown_geometry()
+            .expect("the dropdown is open")
+            .rows
+            .into_iter()
+            .find(|row| row.pick.theme() == Some(name))
+            .unwrap_or_else(|| panic!("{name} is in the dropdown"))
+    }
+
+    #[test]
+    fn a_click_on_a_theme_in_the_dropdown_applies_it_and_saves_it_like_any_change() {
+        // Through `App::click` both times, the way a mouse gets there: the control opens the list,
+        // and the row picks — live, touched, and waiting to be written, as a switch's click is.
+        use dacode::settings_ui::Field;
+        let dir = scratch("theme-dropdown-click");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let start = app.state.theme.name();
+        assert_ne!(start, Some("coral-light"));
+
+        app.pointer = middle(page_row(&app, Field::Theme).control.expect("a control"));
+        app.click(false);
+        assert!(dropdown_open(&app), "a click on the control opens the list");
+        assert_eq!(app.state.theme.name(), start, "opening changes nothing");
+
+        let row = dropdown_row(&app, "coral-light");
+        assert_eq!(row.clip, row.rect, "on screen whole at this size");
+        app.pointer = middle(row.clip);
+        app.click(false);
+
+        assert_eq!(app.state.theme.name(), Some("coral-light"), "applied live");
+        assert!(!dropdown_open(&app), "choosing closes it");
+        assert!(app.settings_touched.contains(&Field::Theme), "touched");
+        assert!(app.settings_changed_at.is_some(), "and a write is waiting");
+    }
+
+    #[test]
+    fn escape_closes_the_theme_dropdown_and_nothing_else() {
+        let dir = scratch("theme-dropdown-escape");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let start = app.state.theme.name();
+        // The page opens with the theme row selected; Enter does what a click on it does.
+        app.press(Key::named(KeyCode::Enter));
+        assert!(dropdown_open(&app), "enter on the row opens it");
+        app.press(Key::named(KeyCode::Down));
+
+        app.press(Key::named(KeyCode::Escape));
+        assert!(!dropdown_open(&app), "escape closes it");
+        assert!(
+            app.state.settings_showing(),
+            "and only it: the tab is still up"
+        );
+        assert_eq!(app.state.theme.name(), start, "a highlight is not a choice");
+        assert!(app.settings_touched.is_empty());
+
+        // Space opens it too, and a click away from it closes it without choosing.
+        app.press(Key::char(' '));
+        assert!(dropdown_open(&app), "space on the row opens it");
+        let card = app.settings_dropdown_geometry().unwrap().card;
+        app.pointer = (card.x - 20.0, card.bottom() - 2.0);
+        app.click(false);
+        assert!(!dropdown_open(&app), "a click outside closes it");
+        assert_eq!(app.state.theme.name(), start);
+    }
+
+    #[test]
+    fn down_and_enter_in_the_dropdown_pick_the_theme_below() {
+        use dacode::settings_ui::Field;
+        let dir = scratch("theme-dropdown-keys");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        app.press(Key::named(KeyCode::Enter));
+        let start = app.state.theme.name().expect("a built-in");
+        let order = dacode_theme::Theme::grouped();
+        let next = order[order.iter().position(|name| *name == start).unwrap() + 1];
+
+        app.press(Key::named(KeyCode::Down));
+        assert_eq!(
+            app.state.theme.name(),
+            Some(start),
+            "the arrows move the highlight, not the theme"
+        );
+        app.press(Key::named(KeyCode::Enter));
+
+        assert_eq!(app.state.theme.name(), Some(next));
+        assert!(!dropdown_open(&app));
+        assert!(app.settings_touched.contains(&Field::Theme));
+        // The page's own selection did not move under the dropdown.
+        assert_eq!(
+            app.state
+                .settings_page
+                .as_ref()
+                .and_then(|page| page.selected_entry(app.state.modal)),
+            Some(dacode::settings_ui::Entry::Field(Field::Theme))
+        );
+    }
+
+    #[test]
+    fn the_theme_dropdown_fits_a_640_by_480_window_and_scrolls_to_its_last_theme() {
+        let dir = scratch("theme-dropdown-small");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        app.headless_size = (640, 480);
+        app.press(Key::named(KeyCode::Enter));
+        let window = app.window_bounds();
+        let editor = app.layout().editor;
+
+        app.press(Key::named(KeyCode::End));
+        let geometry = app.settings_dropdown_geometry().expect("open");
+        let card = geometry.card;
+        assert!(
+            card.x >= editor.x
+                && card.y >= editor.y
+                && card.right() <= editor.right() + 0.01
+                && card.bottom() <= editor.bottom() + 0.01,
+            "{card:?} inside the editor area of {window:?}"
+        );
+        assert!(
+            geometry.max_scroll > 0.0,
+            "fifteen rows do not fit in 480 px"
+        );
+        let last = dacode_theme::Theme::grouped().last().copied().unwrap();
+        let row = dropdown_row(&app, last);
+        assert_eq!(
+            row.clip, row.rect,
+            "End scrolled the last theme into view whole"
+        );
+
+        // And the wheel scrolls the list, not the page behind it.
+        let page_scroll = app.state.settings_page.as_ref().unwrap().scroll();
+        app.pointer = middle(card);
+        app.wheel(-3);
+        let after = app.settings_dropdown_geometry().unwrap();
+        assert!(
+            after.scroll < geometry.scroll,
+            "{} → {}",
+            geometry.scroll,
+            after.scroll
+        );
+        assert_eq!(
+            app.state.settings_page.as_ref().unwrap().scroll(),
+            page_scroll
         );
     }
 

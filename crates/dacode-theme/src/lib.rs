@@ -375,6 +375,211 @@ mod tests {
         }
     }
 
+    /// The names the seven themes taken from Quizzy go by. A list, because a test that only iterated
+    /// `BUILT_IN` would pass with any of them missing.
+    const QUIZZY: [&str; 7] = [
+        "quizzy-dark",
+        "quizzy-light",
+        "coral-dark",
+        "coral-light",
+        "sky-dark",
+        "sky-light",
+        "amoled-black",
+    ];
+
+    #[test]
+    fn every_built_in_says_whether_it_is_dark_or_light_and_means_it() {
+        // The settings tab lists themes under "Dark" and "Light", and a theme filed under the wrong
+        // one is a white page found under "Dark". So the declared appearance is checked against what
+        // the theme looks like: its canvas, the same test a theme file is classified by.
+        for (name, build) in Theme::BUILT_IN {
+            let theme = build();
+            assert_eq!(
+                theme.appearance,
+                Appearance::of_background(theme.bg),
+                "{name} is filed under the wrong appearance"
+            );
+        }
+        for appearance in Appearance::ALL {
+            assert!(
+                Theme::built_ins(appearance).next().is_some(),
+                "{appearance:?} has no themes, so its heading would head nothing"
+            );
+        }
+        assert_eq!(Appearance::Dark.title(), "Dark");
+        assert_eq!(Appearance::Light.title(), "Light");
+        assert_eq!(
+            Appearance::of_background(Oklch::new(0.98, 0.0, 0.0)),
+            Appearance::Light
+        );
+        assert_eq!(
+            Appearance::of_background(Oklch::new(0.0, 0.0, 0.0)),
+            Appearance::Dark
+        );
+    }
+
+    #[test]
+    fn the_grouped_order_lists_every_built_in_once_dark_first() {
+        // Every list of themes — the dropdown, the wizard, the arrows on the theme row — walks this
+        // order, so a theme missing from it is a theme nobody can pick.
+        let grouped = Theme::grouped();
+        assert_eq!(grouped.len(), Theme::BUILT_IN.len());
+        for (name, _) in Theme::BUILT_IN {
+            assert_eq!(
+                grouped.iter().filter(|listed| **listed == name).count(),
+                1,
+                "{name}"
+            );
+        }
+        let first_light = grouped
+            .iter()
+            .position(|name| Theme::by_name(name).unwrap().appearance == Appearance::Light)
+            .expect("there are light themes");
+        assert!(
+            grouped[first_light..]
+                .iter()
+                .all(|name| Theme::by_name(name).unwrap().appearance == Appearance::Light),
+            "every light theme comes after every dark one: {grouped:?}"
+        );
+    }
+
+    #[test]
+    fn the_quizzy_themes_are_built_in() {
+        for name in QUIZZY {
+            assert!(Theme::by_name(name).is_some(), "{name} is not built in");
+        }
+        // The old one stays: `theme = "amoled"` is in people's init.lua.
+        assert!(Theme::by_name("amoled").is_some());
+        assert_ne!(
+            Theme::by_name("amoled").unwrap(),
+            Theme::by_name("amoled-black").unwrap()
+        );
+    }
+
+    #[test]
+    fn the_quizzy_themes_keep_quizzys_own_colours() {
+        // The surfaces, the text and the accent are Quizzy's tokens exactly, so the editor and the
+        // app it was asked to match are the same colours rather than near them.
+        let expect = [
+            ("quizzy-dark", "#1c1917", "#292524", "#fafaf9", "#14b8a6"),
+            ("quizzy-light", "#fafaf9", "#ffffff", "#1c1917", "#0f766e"),
+            ("coral-dark", "#090d16", "#1e293b", "#f1f5f9", "#ff5757"),
+            ("coral-light", "#f1f5f9", "#ffffff", "#090d16", "#d93a3a"),
+            ("sky-dark", "#05151a", "#072e33", "#e6f1f3", "#38bdf8"),
+            ("sky-light", "#f8fafc", "#ffffff", "#05151a", "#0369a1"),
+            ("amoled-black", "#000000", "#0b0b0b", "#f5f5f4", "#14b8a6"),
+        ];
+        for (name, bg, panel, ink, primary) in expect {
+            let theme = Theme::by_name(name).unwrap();
+            assert_eq!(theme.bg.to_hex(), bg, "{name} bg");
+            assert_eq!(theme.bg_panel.to_hex(), panel, "{name} bg_panel");
+            assert_eq!(theme.ink.to_hex(), ink, "{name} ink");
+            assert_eq!(theme.primary.to_hex(), primary, "{name} primary");
+        }
+    }
+
+    /// WCAG's contrast ratio, from the relative luminance of two opaque colours.
+    fn contrast(a: Oklch, b: Oklch) -> f32 {
+        let luminance = |color: Oklch| {
+            let [r, g, b, _] = color.to_linear();
+            0.2126 * r + 0.7152 * g + 0.0722 * b
+        };
+        let (x, y) = (luminance(a), luminance(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn the_quizzy_themes_syntax_is_one_family_all_distinct_and_readable() {
+        // Quizzy has no syntax colours, so each theme's were derived from its palette: one lightness
+        // band and one chroma per appearance, hues taken from its accent and status colours. The
+        // same rules `syntax_colors_are_one_family_and_all_distinct` holds the default to, plus the
+        // one lightness alone cannot promise: 4.5:1 against the canvas, comments included.
+        for name in QUIZZY {
+            let theme = Theme::by_name(name).unwrap();
+            let syntax = theme.syntax;
+            let colors = [
+                syntax.keyword,
+                syntax.type_,
+                syntax.function,
+                syntax.attribute,
+                syntax.string,
+                syntax.number,
+                syntax.constant,
+            ];
+            let mut hex: Vec<String> = colors.iter().map(|c| c.to_hex()).collect();
+            hex.sort();
+            hex.dedup();
+            assert_eq!(hex.len(), colors.len(), "{name}: roles must differ");
+
+            let dark = theme.appearance == Appearance::Dark;
+            for color in colors {
+                assert!(
+                    (0.08..=0.14).contains(&color.c),
+                    "{name}: chroma out of family range: {color:?}"
+                );
+                assert!(
+                    if dark { color.l > 0.6 } else { color.l < 0.6 },
+                    "{name}: lightness on the wrong side for its appearance: {color:?}"
+                );
+            }
+            assert!(syntax.comment.c < 0.05, "{name}: comments are near-neutral");
+            for color in colors.into_iter().chain([syntax.comment, theme.ink]) {
+                let ratio = contrast(color, theme.bg);
+                assert!(
+                    ratio >= 4.5,
+                    "{name}: {color:?} is only {ratio:.1}:1 on its canvas"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_light_quizzy_theme_darkens_the_accents_of_its_dark_one() {
+        for (dark, light) in [
+            ("quizzy-dark", "quizzy-light"),
+            ("coral-dark", "coral-light"),
+            ("sky-dark", "sky-light"),
+        ] {
+            let (dark, light) = (
+                Theme::by_name(dark).unwrap(),
+                Theme::by_name(light).unwrap(),
+            );
+            for mode in Mode::ALL {
+                assert!(light.accent(mode).l < dark.accent(mode).l, "{mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn toggling_a_theme_lands_on_its_own_other_half() {
+        // `toggle_theme` used to jump to `light` or `dark` from anything, so toggling a coral theme
+        // threw coral away. A pair swaps within itself; AMOLED black has no light side, and Quizzy
+        // gives it Quizzy light; anything else goes to the plain theme of the other appearance.
+        let pairs = [
+            ("quizzy-dark", "quizzy-light"),
+            ("quizzy-light", "quizzy-dark"),
+            ("coral-dark", "coral-light"),
+            ("coral-light", "coral-dark"),
+            ("sky-dark", "sky-light"),
+            ("sky-light", "sky-dark"),
+            ("amoled-black", "quizzy-light"),
+            ("dark", "light"),
+            ("light", "dark"),
+            ("rose-pine", "light"),
+        ];
+        for (from, to) in pairs {
+            let flipped = Theme::by_name(from).unwrap().counterpart();
+            assert_eq!(flipped.name(), Some(to), "{from}");
+        }
+        for (name, build) in Theme::BUILT_IN {
+            assert_ne!(
+                build().counterpart().appearance,
+                build().appearance,
+                "{name}: a toggle must change the appearance"
+            );
+        }
+    }
+
     #[test]
     fn amoled_is_actually_black() {
         // The point of the theme: those pixels are off on an OLED panel. A near-black would not be.

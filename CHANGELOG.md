@@ -26,6 +26,12 @@ release, where one exists, lives in `packaging/notes/`.
   they came from, are gone.
 - A new default theme, `dacode`, with the chrome a shade darker than the code. The other five are
   still there.
+- Switching between light and dark keeps the theme's family where it has one: `coral-dark` and
+  `coral-light` swap with each other rather than with the plain `light` and `dark`.
+- The welcome screen's theme cards wrap into rows, dark themes first, and shrink to fit a short
+  window; thirteen cards in one row left each too narrow for its name.
+- A theme file that does not say whether it is dark or light is classified by its background, and
+  the colours it leaves out come from the matching built-in rather than always from the dark one.
 - With Vim keys off, shortcuts are written the usual way — `Ctrl+Shift+P` rather than `<c-s-p>` — in
   the menus, the palette, tooltips and messages.
 
@@ -84,6 +90,17 @@ release, where one exists, lives in `packaging/notes/`.
   read, and the Windows installer upgrades a vex install in place rather than adding a second one.
 
 ### Added
+
+- Seven themes from Quizzy: `quizzy-dark` and `quizzy-light`, `coral-dark` and `coral-light`
+  (Charcoal coral), `sky-dark` and `sky-light` (Abyss sky), and `amoled-black`. Their surfaces, text
+  and accent are Quizzy's own colours; their syntax colours, which Quizzy does not have, are derived
+  from each palette and read at 4.5:1 or better against the background. `amoled` is still there,
+  under its own name.
+- The settings tab's theme row opens a list instead of stepping to the next theme: every theme, under
+  **Dark** and **Light**, with its colours beside its name and the one in use marked. Click or press
+  enter or space to open it, ↑ ↓ to move, enter or a click to pick, esc or a click outside to close.
+  It scrolls in a small window. ← → on the row still step through the themes, in the list's order.
+- `--theme-dropdown` renders the settings tab with that list open.
 
 - `transparency` — how much of the desktop shows through the window, from `0` to `90` percent, in
   `init.lua` or the settings tab. Backgrounds go see-through; text, highlights and popups stay

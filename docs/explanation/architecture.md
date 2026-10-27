@@ -97,7 +97,7 @@ down this list. Nothing below reaches back up.
 | Crate | What it owns |
 |---|---|
 | `dacode-text` | The rope (`ropey`), the typed coordinate types, `Edit`/`Transaction`, `Anchor`, `SelectionSet`. |
-| `dacode-theme` | Oklch colour, the six built-in themes, the type roles, the per-mode accents. |
+| `dacode-theme` | Oklch colour, the thirteen built-in themes, the type roles, the per-mode accents. |
 | `dacode-display` | Soft wrap, `ScrollAnchor`, folds, sticky scroll — the mapping from buffer lines to display rows. |
 | `dacode-buffer` | `Document`: text plus undo history plus pending changes plus bracket pairing. |
 | `dacode-input` | `Action`, the modal `Grammar`, `Keymap`, the jump list, macros, and the command table. |

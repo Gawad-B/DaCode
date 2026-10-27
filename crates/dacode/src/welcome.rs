@@ -131,7 +131,7 @@ impl Welcome {
         // On the theme step the highlight *is* the answer: moving it previews that theme live, so the
         // choice is made by looking rather than by committing and finding out.
         if self.step == Step::Theme {
-            self.answers.theme = Theme::BUILT_IN[self.selected].0;
+            self.answers.theme = Theme::grouped()[self.selected];
         }
     }
 
@@ -149,7 +149,7 @@ impl Welcome {
                 true
             }
             Step::Theme => {
-                self.answers.theme = Theme::BUILT_IN[self.selected].0;
+                self.answers.theme = Theme::grouped()[self.selected];
                 self.advance();
                 true
             }
@@ -189,9 +189,9 @@ impl Welcome {
         self.step = previous;
         self.selected = match previous {
             Step::Keys => usize::from(self.answers.modal),
-            Step::Theme => Theme::BUILT_IN
+            Step::Theme => Theme::grouped()
                 .iter()
-                .position(|(name, _)| *name == self.answers.theme)
+                .position(|name| *name == self.answers.theme)
                 .unwrap_or(0),
             _ => 0,
         };
@@ -207,9 +207,9 @@ impl Welcome {
         // Landing on the theme step highlights the theme already chosen, so going back and forth does
         // not silently reset it.
         self.selected = match self.step {
-            Step::Theme => Theme::BUILT_IN
+            Step::Theme => Theme::grouped()
                 .iter()
-                .position(|(name, _)| *name == self.answers.theme)
+                .position(|name| *name == self.answers.theme)
                 .unwrap_or(0),
             _ => 0,
         };
@@ -241,6 +241,66 @@ pub struct Geometry {
     pub next: Option<Rect>,
 }
 
+/// How tall a step's content is, below its heading: what the wizard is centred on. One function for
+/// [`geometry`] and `chrome::draw_welcome`, which both walk the same stack.
+pub fn content_height(step: Step, bounds: Rect, scale: f32) -> f32 {
+    let px = |v: f32| v * scale;
+    match step {
+        Step::Keys => px(200.0),
+        Step::Theme => {
+            let width = px(1000.0).min(bounds.width - px(96.0));
+            ThemeGrid::new(width, bounds, scale).height()
+        }
+        Step::Import => px(230.0),
+        Step::Done => 0.0,
+    }
+}
+
+/// The theme step's cards, as a grid: as many columns as fit cards at least [`ThemeGrid::MIN_CARD`]
+/// wide, and rows as tall as the window has room for, up to the 200 px a card has when nothing is
+/// short. In [`Theme::grouped`]'s order, the dark themes first.
+///
+/// Thirteen cards in one row — six cards' layout, stretched — were 29 px wide at 640, too narrow for
+/// a name. A card shorter than its sample shows as many lines of it as fit, and at the smallest
+/// window only its colours and its name: honest, if not much of a preview.
+struct ThemeGrid {
+    columns: usize,
+    rows: usize,
+    card: (f32, f32),
+    gap: f32,
+}
+
+impl ThemeGrid {
+    const MIN_CARD: f32 = 112.0;
+
+    fn new(width: f32, bounds: Rect, scale: f32) -> Self {
+        let px = |v: f32| v * scale;
+        let count = Theme::BUILT_IN.len();
+        let gap = px(14.0);
+        let columns =
+            (((width + gap) / (px(Self::MIN_CARD) + gap)).floor() as usize).clamp(1, count);
+        let rows = count.div_ceil(columns);
+        let card_width = ((width - gap * (columns as f32 - 1.0)) / columns as f32).floor();
+        // The room under the heading when the wizard sits as high as it goes (56 px down, then the
+        // mark, the title and the step's heading: 134), less the line of keys 64 px from the bottom
+        // and a gap above it.
+        let room = bounds.height - px(56.0 + 134.0 + 64.0 + 14.0);
+        let card_height = ((room - gap * (rows as f32 - 1.0)) / rows as f32)
+            .floor()
+            .clamp(px(40.0), px(200.0));
+        Self {
+            columns,
+            rows,
+            card: (card_width, card_height),
+            gap,
+        }
+    }
+
+    fn height(&self) -> f32 {
+        self.rows as f32 * self.card.1 + (self.rows as f32 - 1.0) * self.gap
+    }
+}
+
 /// The layout of the current step. `bounds` is the whole window.
 pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
     let px = |v: f32| v * scale;
@@ -248,12 +308,7 @@ pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
     let left = (bounds.x + (bounds.width - content_width) / 2.0).round();
 
     // The same stack `draw_welcome` walks: mark, heading, then the step's own content.
-    let content_height = match welcome.step {
-        Step::Keys => px(200.0),
-        Step::Theme => px(200.0),
-        Step::Import => px(230.0),
-        Step::Done => 0.0,
-    };
+    let content_height = content_height(welcome.step, bounds, scale);
     let header = px(34.0) + px(48.0) + px(26.0) + px(52.0);
     let mark = px(34.0);
     let top = (bounds.y + ((bounds.height - header - content_height) / 2.0).max(px(56.0))).round()
@@ -274,11 +329,17 @@ pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
             })
             .collect(),
         Step::Theme => {
-            let count = Theme::BUILT_IN.len();
-            let gap = px(14.0);
-            let card = ((content_width - gap * (count as f32 - 1.0)) / count as f32).floor();
-            (0..count)
-                .map(|index| Rect::new(left + index as f32 * (card + gap), top, card, px(200.0)))
+            let grid = ThemeGrid::new(content_width, bounds, scale);
+            (0..Theme::BUILT_IN.len())
+                .map(|index| {
+                    let (row, column) = (index / grid.columns, index % grid.columns);
+                    Rect::new(
+                        left + column as f32 * (grid.card.0 + grid.gap),
+                        top + row as f32 * (grid.card.1 + grid.gap),
+                        grid.card.0,
+                        grid.card.1,
+                    )
+                })
                 .collect()
         }
         // The list starts below the "found a vscode installation" line.
@@ -373,7 +434,7 @@ mod tests {
         welcome.choose();
         assert_eq!(welcome.step, Step::Theme);
         assert_eq!(
-            Theme::BUILT_IN[welcome.selected].0,
+            Theme::grouped()[welcome.selected],
             welcome.answers.theme,
             "the theme step starts on it too"
         );
@@ -439,6 +500,50 @@ mod tests {
     }
 
     #[test]
+    fn the_theme_cards_fit_the_window_at_every_size() {
+        // Thirteen cards in one row was six cards' layout stretched: at 640 wide each was 29 px, too
+        // narrow for a name, and the row would only get worse with every theme added. They wrap into
+        // a grid now, dark themes first, and shrink in height before they leave the window.
+        let mut welcome = Welcome::new();
+        welcome.choose();
+        assert_eq!(welcome.step, Step::Theme);
+        for (width, height) in [
+            (640.0, 480.0),
+            (800.0, 600.0),
+            (1280.0, 720.0),
+            (1600.0, 1000.0),
+        ] {
+            for scale in [1.0_f32, 2.0] {
+                let bounds = Rect::new(0.0, 0.0, width * scale, height * scale);
+                let cards = geometry(&welcome, bounds, scale).options;
+                assert_eq!(cards.len(), Theme::BUILT_IN.len(), "{width}x{height}");
+                // Above the line of keys at the bottom, which sits 64 px up.
+                let floor = bounds.bottom() - 64.0 * scale;
+                for (at, card) in cards.iter().enumerate() {
+                    assert!(
+                        card.width >= 100.0 * scale,
+                        "{width}x{height} card {at}: {card:?}"
+                    );
+                    assert!(
+                        card.x >= bounds.x && card.right() <= bounds.right(),
+                        "{card:?}"
+                    );
+                    assert!(
+                        card.y >= bounds.y && card.bottom() <= floor,
+                        "{width}x{height}: {card:?}"
+                    );
+                    for other in &cards[at + 1..] {
+                        assert!(
+                            card.intersect(*other).width * card.intersect(*other).height == 0.0,
+                            "{width}x{height}: {card:?} overlaps {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn several_import_items_can_be_ticked() {
         let mut welcome = Welcome::new();
         welcome.choose();
@@ -476,7 +581,7 @@ mod tests {
             "the theme is still the one that was picked"
         );
         assert_eq!(
-            Theme::BUILT_IN[welcome.selected].0,
+            Theme::grouped()[welcome.selected],
             chosen,
             "and the highlight is on it"
         );

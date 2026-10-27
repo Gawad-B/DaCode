@@ -125,6 +125,8 @@ pub enum Key {
     Glow(u32),
     /// A tab that has just been opened, growing in.
     TabGrow,
+    /// The settings tab's theme dropdown.
+    Dropdown,
 }
 
 /// One animated quantity. `position` and `velocity` are what they were at `since`; the present is

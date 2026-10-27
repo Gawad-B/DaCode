@@ -406,9 +406,9 @@ impl Values {
             Field::SoftWrap => self.soft_wrap = !self.soft_wrap,
             Field::FormatOnSave => self.format_on_save = !self.format_on_save,
             Field::Theme => {
-                // Cycles through the built-ins in the order they are listed, both ways.
-                let names: Vec<&'static str> =
-                    Theme::BUILT_IN.iter().map(|(name, _)| *name).collect();
+                // Cycles through the built-ins both ways, in the order the dropdown lists them, so the
+                // arrows on the row walk the same list a click opens.
+                let names = Theme::grouped();
                 let at = self
                     .theme
                     .and_then(|current| names.iter().position(|name| *name == current))
@@ -743,6 +743,9 @@ pub enum Control {
     Stepper,
     /// One of a fixed set of names, in the order a click cycles through them.
     Choice(&'static [&'static str]),
+    /// One of a set too long to cycle through: a click opens a list of them. The theme's, whose
+    /// list is grouped by appearance ([`theme_picks`]); the names are here for measuring.
+    Dropdown(&'static [&'static str]),
 }
 
 /// The names a choice offers, taken from the lists the values themselves cycle through — written
@@ -867,7 +870,7 @@ impl Field {
             | Field::InlayHints
             | Field::Autosave => Control::Switch,
             Field::FontSize | Field::TabWidth | Field::Transparency => Control::Stepper,
-            Field::Theme => Control::Choice(&THEMES),
+            Field::Theme => Control::Dropdown(&THEMES),
             Field::LineNumbers => Control::Choice(&LINE_NUMBERS),
             Field::Animations => Control::Choice(&ANIMATIONS),
         }
@@ -1089,6 +1092,9 @@ pub struct Page {
     formatters: Vec<ServerRow>,
     /// Which import items are ticked. Nothing, until asked — the same default the CLI has.
     ticked: Vec<Importable>,
+    /// The theme dropdown, while it is open. On the page because it hangs from the page's theme
+    /// row, and a page that is closed takes it with it.
+    dropdown: Option<Dropdown>,
     flow: RefCell<Option<Flow>>,
 }
 
@@ -1311,7 +1317,7 @@ impl Metrics {
         match field.control() {
             Control::Switch => self.control * 1.8,
             Control::Stepper => self.control * 2.0 + self.ui_advance * 6.0 + self.gap * 2.0,
-            Control::Choice(names) => {
+            Control::Choice(names) | Control::Dropdown(names) => {
                 let longest = names
                     .iter()
                     .map(|name| name.chars().count())
@@ -1502,6 +1508,7 @@ impl Page {
             servers: Vec::new(),
             formatters: Vec::new(),
             ticked: Vec::new(),
+            dropdown: None,
             flow: RefCell::new(None),
         }
     }
@@ -1601,6 +1608,8 @@ impl Page {
     }
 
     fn restart(&mut self, modal: bool) {
+        // The row it hangs from may be gone from the new list.
+        self.dropdown = None;
         self.scroll = 0.0;
         self.selected = 0;
         self.move_selection(0, modal);
@@ -2169,6 +2178,376 @@ impl Layout<'_> {
     }
 }
 
+// ---- the theme dropdown -------------------------------------------------------------------------
+//
+// Thirteen themes were too many to cycle through one click at a time — the row offered "next" and
+// nothing about what came after it — so the theme row's control opens a list instead, split into
+// Dark and Light because that is the first thing anyone choosing a theme decides.
+
+/// One line of the theme dropdown: a heading naming an appearance, or a built-in theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Heading(dacode_theme::Appearance),
+    Theme(&'static str),
+}
+
+impl Pick {
+    pub fn theme(self) -> Option<&'static str> {
+        match self {
+            Pick::Theme(name) => Some(name),
+            Pick::Heading(_) => None,
+        }
+    }
+}
+
+/// What the dropdown lists: each appearance's heading, then its themes, in [`Theme::grouped`]'s
+/// order — the order the arrows on the row and the wizard's cards walk too.
+pub fn theme_picks() -> Vec<Pick> {
+    dacode_theme::Appearance::ALL
+        .into_iter()
+        .flat_map(|appearance| {
+            std::iter::once(Pick::Heading(appearance))
+                .chain(Theme::built_ins(appearance).map(Pick::Theme))
+        })
+        .collect()
+}
+
+/// The open dropdown: which row is highlighted, and how far its list is scrolled, in pixels. The
+/// highlight is never on a heading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Dropdown {
+    selected: usize,
+    scroll: f32,
+}
+
+impl Dropdown {
+    /// The highlighted row, as an index into [`theme_picks`].
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// The scroll target, before [`theme_dropdown`] clamps it to the list.
+    pub fn scroll(&self) -> f32 {
+        self.scroll
+    }
+}
+
+/// Where the dropdown and every row in it are. Read by the drawing and by the mouse, as
+/// [`PageGeometry`] is and for the same reason.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropdownGeometry {
+    /// The card, inside the editor area whatever the window's size.
+    pub card: Rect,
+    /// The scrolled region inside the card. Drawing clips to it.
+    pub list: Rect,
+    /// Every row — there are fifteen, so all of them rather than only the visible ones — placed at
+    /// the scroll offset.
+    pub rows: Vec<DropdownRow>,
+    /// The offset the rows are placed at, after clamping.
+    pub scroll: f32,
+    pub max_scroll: f32,
+    /// Whether it opened upwards, for want of room below the control: what it grows from.
+    pub above: bool,
+}
+
+/// One row of the dropdown and the boxes inside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropdownRow {
+    pub pick: Pick,
+    /// Its position in [`theme_picks`], which [`Dropdown::selected`] counts in.
+    pub index: usize,
+    /// The whole row at the scroll offset, unclipped.
+    pub rect: Rect,
+    /// `rect` cut to the list: what is on screen, and what [`DropdownGeometry::hit`] tests.
+    pub clip: Rect,
+    /// The name, or the heading's title.
+    pub label: Rect,
+    /// A theme's colour chip, the same chip the row's control shows.
+    pub swatch: Option<Rect>,
+    /// Where the mark for the theme in use goes, at the row's right.
+    pub mark: Option<Rect>,
+}
+
+impl DropdownGeometry {
+    /// The theme row under a point, if any. A heading is not a target, and nor is a row's part that
+    /// is scrolled out of the list.
+    pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
+        if !contains(self.list, x, y) {
+            return None;
+        }
+        self.rows
+            .iter()
+            .find(|row| row.pick.theme().is_some() && contains(row.clip, x, y))
+            .map(|row| row.index)
+    }
+
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        contains(self.card, x, y)
+    }
+}
+
+/// Lays the dropdown out hanging from `anchor`, the theme row's control, inside `bounds`, with its
+/// list scrolled by `scroll`.
+///
+/// It opens downwards, and upwards only when the room above is the larger and the list does not fit
+/// below; either way it is cut to the room there is and its list scrolls. It is at least as wide as
+/// the control and right-aligned with it, as the control sits at the row's right end.
+pub fn theme_dropdown(
+    anchor: Rect,
+    bounds: Rect,
+    scale: f32,
+    typography: &Typography,
+    scroll: f32,
+) -> DropdownGeometry {
+    let metrics = Metrics::new(typography, scale);
+    let picks = theme_picks();
+    let row = metrics.control;
+    let heading = metrics.label_line;
+    let pad = metrics.gap;
+    let margin = space::XS * scale;
+    let swatch = metrics.swatch();
+
+    let height_of = |pick: &Pick| match pick {
+        Pick::Heading(_) => heading,
+        Pick::Theme(_) => row,
+    };
+    let total: f32 = picks.iter().map(height_of).sum();
+    let longest = picks
+        .iter()
+        .map(|pick| match pick {
+            Pick::Theme(name) => name.chars().count(),
+            Pick::Heading(appearance) => appearance.title().chars().count(),
+        })
+        .max()
+        .unwrap_or(0);
+    let natural = metrics.inset * 2.0
+        + swatch
+        + metrics.gap * 2.0
+        + longest as f32 * metrics.ui_advance
+        + row;
+
+    let room_x = (bounds.width - margin * 2.0).max(0.0);
+    let width = natural.max(anchor.width).min(room_x);
+    let x = (anchor.right() - width)
+        .min(bounds.right() - margin - width)
+        .max(bounds.x + margin);
+
+    let below = (bounds.bottom() - margin) - (anchor.bottom() + metrics.small);
+    let over = (anchor.y - metrics.small) - (bounds.y + margin);
+    let wanted = total + pad * 2.0;
+    let above = below < wanted && over > below;
+    let room = if above { over } else { below }.max(0.0);
+    let height = wanted.min(room);
+    let y = if above {
+        anchor.y - metrics.small - height
+    } else {
+        anchor.bottom() + metrics.small
+    };
+    // An anchor scrolled half out of the page still leaves the card inside it.
+    let y = y
+        .min(bounds.bottom() - margin - height)
+        .max(bounds.y + margin.min(bounds.height / 2.0));
+    let card = Rect::new(x, y, width, height);
+    let inner_pad = pad.min(height / 2.0);
+    let list = Rect::new(
+        card.x,
+        card.y + inner_pad,
+        card.width,
+        (card.height - inner_pad * 2.0).max(0.0),
+    );
+
+    let max_scroll = (total - list.height).max(0.0);
+    let scroll = if scroll.is_finite() {
+        scroll.clamp(0.0, max_scroll)
+    } else {
+        0.0
+    };
+
+    let mut top = 0.0;
+    let rows = picks
+        .iter()
+        .enumerate()
+        .map(|(index, pick)| {
+            let h = height_of(pick);
+            let rect = Rect::new(list.x, list.y + top - scroll, list.width, h);
+            top += h;
+            let x = rect.x + metrics.inset;
+            let inner = (rect.width - metrics.inset * 2.0).max(0.0);
+            let (label, swatch, mark) = match pick {
+                Pick::Heading(_) => (Rect::new(x, rect.y, inner, h), None, None),
+                Pick::Theme(_) => {
+                    let side = swatch.min(h);
+                    let chip = Rect::new(x, rect.y + (h - side) / 2.0, side, side);
+                    let mark = Rect::new(rect.right() - metrics.inset - h, rect.y, h, h);
+                    let left = chip.right() + metrics.gap;
+                    let label = Rect::new(left, rect.y, (mark.x - left).max(0.0), h);
+                    (label, Some(chip), Some(mark))
+                }
+            };
+            DropdownRow {
+                pick: *pick,
+                index,
+                rect,
+                clip: rect.intersect(list),
+                label,
+                swatch,
+                mark,
+            }
+        })
+        .collect();
+
+    DropdownGeometry {
+        card,
+        list,
+        rows,
+        scroll,
+        max_scroll,
+        above,
+    }
+}
+
+impl Page {
+    /// The theme dropdown, when it is open.
+    pub fn dropdown(&self) -> Option<Dropdown> {
+        self.dropdown
+    }
+
+    /// Opens the theme dropdown with `current` highlighted — or the first theme, for a theme loaded
+    /// from a file, which is on no list.
+    pub fn open_dropdown(&mut self, current: Option<&str>) {
+        let picks = theme_picks();
+        let selected = current
+            .and_then(|current| picks.iter().position(|pick| pick.theme() == Some(current)))
+            .or_else(|| picks.iter().position(|pick| pick.theme().is_some()))
+            .unwrap_or(0);
+        self.dropdown = Some(Dropdown {
+            selected,
+            scroll: 0.0,
+        });
+    }
+
+    pub fn close_dropdown(&mut self) {
+        self.dropdown = None;
+    }
+
+    /// The highlighted theme.
+    pub fn dropdown_choice(&self) -> Option<&'static str> {
+        let dropdown = self.dropdown?;
+        theme_picks().get(dropdown.selected)?.theme()
+    }
+
+    /// Moves the highlight `delta` themes, stepping over the headings and stopping at either end.
+    /// Follow it with [`Page::reveal_dropdown`].
+    pub fn move_dropdown(&mut self, delta: isize) {
+        let Some(dropdown) = &mut self.dropdown else {
+            return;
+        };
+        let themes: Vec<usize> = theme_picks()
+            .iter()
+            .enumerate()
+            .filter(|(_, pick)| pick.theme().is_some())
+            .map(|(index, _)| index)
+            .collect();
+        let Some(last) = themes.len().checked_sub(1) else {
+            return;
+        };
+        let at = themes
+            .iter()
+            .position(|index| *index >= dropdown.selected)
+            .unwrap_or(last);
+        dropdown.selected = themes[at.saturating_add_signed(delta).min(last)];
+    }
+
+    /// Where the dropdown is, hanging from the theme row's control as `page` lays it out, inside
+    /// `bounds` — the editor area, so it never covers the bars around it.
+    ///
+    /// If the theme row is not among `page`'s rows — the window was resized under it — the card
+    /// hangs from the top right of the list rather than from nowhere.
+    pub fn dropdown_geometry(
+        &self,
+        page: &PageGeometry,
+        bounds: Rect,
+        scale: f32,
+        typography: &Typography,
+    ) -> Option<DropdownGeometry> {
+        let dropdown = self.dropdown?;
+        let anchor = page
+            .rows
+            .iter()
+            .find(|row| row.field() == Some(Field::Theme))
+            .and_then(|row| row.control)
+            .unwrap_or(Rect::new(page.list.right(), page.list.y, 0.0, 0.0));
+        Some(theme_dropdown(
+            anchor,
+            bounds,
+            scale,
+            typography,
+            dropdown.scroll,
+        ))
+    }
+
+    /// Scrolls the dropdown's list by as little as it takes to show the highlighted row whole, and
+    /// the heading above it with it when that is the first theme of its group and both fit.
+    pub fn reveal_dropdown(
+        &mut self,
+        page: &PageGeometry,
+        bounds: Rect,
+        scale: f32,
+        typography: &Typography,
+    ) {
+        let Some(geometry) = self.dropdown_geometry(page, bounds, scale, typography) else {
+            return;
+        };
+        let Some(dropdown) = &mut self.dropdown else {
+            return;
+        };
+        let Some(row) = geometry.rows.get(dropdown.selected) else {
+            return;
+        };
+        let offset = |rect: Rect| rect.y - geometry.list.y + geometry.scroll;
+        let view = geometry.list.height;
+        let top = offset(row.rect);
+        let bottom = top + row.rect.height;
+        let mut scroll = geometry.scroll;
+        if bottom > scroll + view {
+            scroll = bottom - view;
+        }
+        if top < scroll {
+            scroll = top;
+        }
+        if let Some(above) = dropdown
+            .selected
+            .checked_sub(1)
+            .and_then(|above| geometry.rows.get(above))
+            .filter(|above| above.pick.theme().is_none())
+        {
+            let heading = offset(above.rect);
+            if heading < scroll && bottom - heading <= view {
+                scroll = heading;
+            }
+        }
+        dropdown.scroll = scroll.clamp(0.0, geometry.max_scroll);
+    }
+
+    /// Scrolls the dropdown's list by `delta` pixels, clamped to it: what the wheel does over it.
+    pub fn scroll_dropdown(
+        &mut self,
+        delta: f32,
+        page: &PageGeometry,
+        bounds: Rect,
+        scale: f32,
+        typography: &Typography,
+    ) {
+        let Some(geometry) = self.dropdown_geometry(page, bounds, scale, typography) else {
+            return;
+        };
+        if let Some(dropdown) = &mut self.dropdown {
+            let delta = if delta.is_finite() { delta } else { 0.0 };
+            dropdown.scroll = (geometry.scroll + delta).clamp(0.0, geometry.max_scroll);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2448,7 +2827,10 @@ mod tests {
                    vex.set {\n  tab_width = 4,\n  theme = \"rose-pine\",\n}\n";
         let written = write_back(old, &values());
         assert_eq!(written.matches("dacode.set {").count(), 1);
-        assert!(!written.contains("vex.set"), "the old block is gone:\n{written}");
+        assert!(
+            !written.contains("vex.set"),
+            "the old block is gone:\n{written}"
+        );
         assert!(written.starts_with(MARKER));
     }
 
@@ -2480,7 +2862,10 @@ mod tests {
         assert!(config.problems.is_empty(), "{:?}", config.problems);
         assert_eq!(config.tab_width, Some(original.tab_width));
         assert_eq!(config.soft_wrap, Some(original.soft_wrap));
-        assert_eq!(config.theme_name.as_deref(), Some("light"));
+        // The step lands wherever the grouped order puts the next theme; what matters is that the
+        // name written is the name read.
+        assert_ne!(original.theme, Some("dark"), "the theme did move");
+        assert_eq!(config.theme_name.as_deref(), original.theme);
         assert_eq!(
             config.font_size.map(|size| format!("{size:.1}")),
             Some(original.get(Field::FontSize))
@@ -3588,5 +3973,220 @@ mod tab_tests {
                 "only the theme has one"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dropdown_tests {
+    use super::*;
+    use dacode_theme::Appearance;
+
+    fn values(theme: Option<&'static str>) -> Values {
+        Values {
+            theme,
+            ..Values::defaults(true)
+        }
+    }
+
+    /// The editor area at the sizes the page is checked at, small and short ones first.
+    fn editors() -> Vec<(Rect, f32, String)> {
+        let mut editors = Vec::new();
+        for (width, height) in [
+            (640.0, 480.0),
+            (800.0, 600.0),
+            (1600.0, 480.0),
+            (1600.0, 1000.0),
+            (2560.0, 1440.0),
+        ] {
+            for scale in [1.0_f32, 2.0] {
+                let window = Rect::new(0.0, 0.0, width, height);
+                let editor = crate::layout::Layout::of(window, scale, None, 0.0).editor;
+                editors.push((editor, scale, format!("{width}x{height} at {scale}")));
+            }
+        }
+        editors
+    }
+
+    fn inside(outer: Rect, inner: Rect) -> bool {
+        let slack = 0.01;
+        inner.x >= outer.x - slack
+            && inner.y >= outer.y - slack
+            && inner.right() <= outer.right() + slack
+            && inner.bottom() <= outer.bottom() + slack
+    }
+
+    /// The page at the top of Appearance, with the dropdown open on `theme`.
+    fn opened(theme: Option<&'static str>) -> Page {
+        let mut page = Page::new();
+        page.set_category(Category::Appearance, true);
+        page.open_dropdown(theme);
+        page
+    }
+
+    fn geometry(page: &Page, editor: Rect, scale: f32) -> DropdownGeometry {
+        let typography = Typography::default();
+        let values = values(page.dropdown_choice());
+        let rows = page.geometry(editor, scale, &values, true, &typography);
+        page.dropdown_geometry(&rows, editor, scale, &typography)
+            .expect("the dropdown is open")
+    }
+
+    #[test]
+    fn the_dropdown_lists_every_theme_under_the_heading_of_its_appearance() {
+        // "Dark" over a white page is the failure this split exists to prevent, so each theme is
+        // checked against the heading it sits under rather than against a list written out here.
+        let picks = theme_picks();
+        assert_eq!(picks.first(), Some(&Pick::Heading(Appearance::Dark)));
+        let headings: Vec<Appearance> = picks
+            .iter()
+            .filter_map(|pick| match pick {
+                Pick::Heading(appearance) => Some(*appearance),
+                Pick::Theme(_) => None,
+            })
+            .collect();
+        assert_eq!(headings, vec![Appearance::Dark, Appearance::Light]);
+
+        let mut under = Appearance::Dark;
+        let mut listed = Vec::new();
+        for pick in &picks {
+            match pick {
+                Pick::Heading(appearance) => under = *appearance,
+                Pick::Theme(name) => {
+                    assert_eq!(
+                        Theme::by_name(name).unwrap().appearance,
+                        under,
+                        "{name} sits under {}",
+                        under.title()
+                    );
+                    listed.push(*name);
+                }
+            }
+        }
+        let mut every: Vec<&str> = Theme::BUILT_IN.iter().map(|(name, _)| *name).collect();
+        every.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(listed, every, "every built-in, once");
+    }
+
+    #[test]
+    fn opening_the_dropdown_highlights_the_theme_in_use() {
+        assert_eq!(
+            opened(Some("sky-light")).dropdown_choice(),
+            Some("sky-light")
+        );
+        assert_eq!(
+            opened(Some("amoled-black")).dropdown_choice(),
+            Some("amoled-black")
+        );
+        // A theme from a file is on no list; the highlight starts on the first theme, not a heading.
+        assert_eq!(opened(None).dropdown_choice(), Some(Theme::grouped()[0]));
+    }
+
+    #[test]
+    fn the_highlight_steps_over_the_headings_and_stops_at_the_ends() {
+        let mut page = opened(Some("amoled-black"));
+        // The last dark theme, then across the "Light" heading to the first light one.
+        page.move_dropdown(1);
+        assert_eq!(page.dropdown_choice(), Some("light"));
+        page.move_dropdown(-1);
+        assert_eq!(page.dropdown_choice(), Some("amoled-black"));
+
+        page.move_dropdown(isize::MIN / 2);
+        assert_eq!(page.dropdown_choice(), Some(Theme::grouped()[0]));
+        page.move_dropdown(isize::MAX / 2);
+        assert_eq!(page.dropdown_choice(), Theme::grouped().last().copied());
+        for _ in 0..40 {
+            page.move_dropdown(-1);
+            assert!(page.dropdown_choice().is_some(), "never on a heading");
+        }
+    }
+
+    #[test]
+    fn the_dropdown_hangs_under_the_theme_control_and_stays_inside_the_window() {
+        for (editor, scale, at) in editors() {
+            let page = opened(Some("dacode"));
+            let typography = Typography::default();
+            let rows = page.geometry(editor, scale, &values(Some("dacode")), true, &typography);
+            let control = rows
+                .rows
+                .iter()
+                .find(|row| row.field() == Some(Field::Theme))
+                .and_then(|row| row.control)
+                .expect("the theme row is on screen");
+            let dropdown = geometry(&page, editor, scale);
+            let card = dropdown.card;
+
+            assert!(
+                card.x >= editor.x && card.right() <= editor.right() + 0.01,
+                "{at}: {card:?}"
+            );
+            assert!(
+                card.y >= editor.y && card.bottom() <= editor.bottom() + 0.01,
+                "{at}: {card:?}"
+            );
+            assert!(card.height > 0.0 && card.width > 0.0, "{at}");
+            if !dropdown.above {
+                assert!(
+                    card.y >= control.bottom(),
+                    "{at}: under the control, not over it"
+                );
+            }
+            assert!(card.width >= control.width.min(editor.width), "{at}");
+            for row in &dropdown.rows {
+                assert!(
+                    row.clip.height == 0.0 || inside(dropdown.list, row.clip),
+                    "{at}: {row:?} is drawn outside the list"
+                );
+            }
+            // A dropdown too short for its list scrolls rather than running off the window.
+            let wanted: f32 = dropdown.rows.iter().map(|row| row.rect.height).sum();
+            assert_eq!(
+                dropdown.max_scroll > 0.0,
+                wanted > dropdown.list.height + 0.01,
+                "{at}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_heading_is_not_a_target_and_a_theme_row_is() {
+        let (editor, scale) = (Rect::new(0.0, 0.0, 1400.0, 900.0), 1.0);
+        let page = opened(Some("dacode"));
+        let dropdown = geometry(&page, editor, scale);
+        for row in &dropdown.rows {
+            let (x, y) = (
+                row.clip.x + row.clip.width / 2.0,
+                row.clip.y + row.clip.height / 2.0,
+            );
+            match row.pick {
+                Pick::Heading(_) => assert_eq!(dropdown.hit(x, y), None, "{row:?}"),
+                Pick::Theme(_) => assert_eq!(dropdown.hit(x, y), Some(row.index), "{row:?}"),
+            }
+        }
+        assert_eq!(dropdown.hit(dropdown.card.x - 5.0, dropdown.card.y), None);
+    }
+
+    #[test]
+    fn the_dropdown_scrolls_to_keep_the_highlight_whole() {
+        // At 640×480 the list does not fit; walking to the last light theme must scroll the card's
+        // list, or Enter picks a row nobody can see.
+        let window = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let editor = crate::layout::Layout::of(window, 1.0, None, 0.0).editor;
+        let typography = Typography::default();
+        let mut page = opened(Some("dacode"));
+        assert!(
+            geometry(&page, editor, 1.0).max_scroll > 0.0,
+            "it has to scroll here"
+        );
+        for step in 0..Theme::BUILT_IN.len() {
+            page.move_dropdown(1);
+            let rows = page.geometry(editor, 1.0, &values(Some("dacode")), true, &typography);
+            page.reveal_dropdown(&rows, editor, 1.0, &typography);
+            let dropdown = geometry(&page, editor, 1.0);
+            let selected = page.dropdown().unwrap().selected();
+            let row = dropdown.rows[selected];
+            assert_eq!(row.clip, row.rect, "step {step}: the highlight is whole");
+        }
+        assert_eq!(page.dropdown_choice(), Theme::grouped().last().copied());
     }
 }

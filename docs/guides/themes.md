@@ -4,29 +4,50 @@ For someone who wants different colours or a different text size. By the end you
 theme, know how to bring one over from somewhere else, and know which of your two `theme` settings
 wins when they disagree.
 
-## The six that ship
+## The thirteen that ship
 
-| Name | |
-|---|---|
-| `dacode` | the default: a cool charcoal, the palette the interface is designed in |
-| `dark` | the warmer dark theme that was the default before it |
-| `light` | |
-| `rose-pine` | |
-| `rose-pine-moon` | |
-| `amoled` | true black, for an OLED panel |
+| Name | Appearance | |
+|---|---|---|
+| `dacode` | dark | the default: a cool charcoal, the palette the interface is designed in |
+| `dark` | dark | the warmer dark theme that was the default before it |
+| `light` | light | |
+| `rose-pine` | dark | |
+| `rose-pine-moon` | dark | |
+| `amoled` | dark | true black, for an OLED panel |
+| `quizzy-dark` | dark | Quizzy's default: an espresso room, cream ink, a teal accent |
+| `quizzy-light` | light | its light side: a cream page, espresso ink, a deep teal |
+| `coral-dark` | dark | Quizzy's *Charcoal coral*: charcoal and slate, coral beside indigo |
+| `coral-light` | light | its light side, on slate-white |
+| `sky-dark` | dark | Quizzy's *Abyss sky*: an abyss-teal room, sky-blue actions |
+| `sky-light` | light | its light side, on snow |
+| `amoled-black` | dark | Quizzy's *AMOLED black*: true black, warm off-white text, teal |
 
-Cycle them in the settings tab: <kbd>ctrl</kbd>+<kbd>,</kbd>, then the *theme* row on the
-**Appearance** page, changed with <kbd>←</kbd>/<kbd>→</kbd>, <kbd>enter</kbd> or a click. Each change
-applies live, so you are choosing by looking rather than by name, and it is written to `init.lua` a
-moment after the last one.
+The seven from Quizzy take its surfaces, text, hairlines and accent exactly. Quizzy has no syntax
+colours, so those are derived from each palette — one lightness and one chroma per theme, with hues
+from its accent and status colours (teal keywords in Quizzy, coral in Charcoal coral, sky blue in
+Abyss sky) — and every one of them, comments included, is at least 4.5:1 against its canvas. The mode
+accents take the lightness and chroma of Quizzy's status colours. `amoled` and `amoled-black` are two
+different themes: the first is DaCode's own, kept under its name because it is in people's
+`init.lua`.
+
+Choose one in the settings tab: <kbd>ctrl</kbd>+<kbd>,</kbd>, then the *theme* row on the
+**Appearance** page. A click on its control, or <kbd>enter</kbd> or <kbd>space</kbd> on the row, opens
+a list of every theme under two headings, **Dark** and **Light**, each with its colour chip and the
+one in use marked. <kbd>↑</kbd>/<kbd>↓</kbd> move through it, <kbd>enter</kbd> or a click picks,
+<kbd>esc</kbd> or a click outside closes it, and it scrolls when the window is too short for all
+thirteen. <kbd>←</kbd>/<kbd>→</kbd> on the row still step to the next theme without opening anything,
+in the same order the list shows. Each change applies live, so you are choosing by looking rather
+than by name, and it is written to `init.lua` a moment after the last one.
 
 With Vim keys on, `gt` toggles between light and dark. Either way it is in the command palette
-(<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd>) as *switch between light and dark*.
+(<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd>) as *switch between light and dark*. The toggle keeps
+the family where it can: `coral-dark` goes to `coral-light` and back, `amoled-black` goes to
+`quizzy-light` (Quizzy's own pairing), and anything else to the plain `light` or `dark`.
 
 From config:
 
 ```lua
-dacode.set { theme = "amoled" }
+dacode.set { theme = "quizzy-dark" }
 ```
 
 There is also `appearance = "dark" | "light"`, which flips the built-in theme — but it is a
@@ -122,8 +143,12 @@ One thing is corrected rather than copied. If the imported text colour and backg
 close in lightness, the text is re-lightened and the correction is reported — a theme that leaves
 text illegible against its own background is worse than no import at all.
 
-**A theme loaded from a file cannot be changed by the settings tab.** The tab cycles the six built-ins
-by name, and a file's colours have no name it could write, so that row shows `from a file` and writes
+A theme file that does not say `appearance = "dark"` or `"light"` is classified by its `bg`: light
+from half-way up OKLCH's lightness, dark below. The tokens it leaves out then come from the matching
+built-in, so a white `bg` is not finished with a dark theme's ink.
+
+**A theme loaded from a file cannot be changed by the settings tab.** The tab offers the thirteen
+built-ins by name, and a file's colours have no name it could write, so that row shows `from a file` and writes
 nothing. Otherwise changing the font size would quietly throw away an imported theme.
 
 ## Changing individual colours

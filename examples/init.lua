@@ -22,7 +22,8 @@ dacode.set {
   -- reformat is a round trip, and it writes again when it comes back.
   format_on_save = false,
 
-  -- One of the six built-in themes: dacode, dark, light, rose-pine, rose-pine-moon, amoled.
+  -- One of the thirteen built-in themes. Dark: dacode, dark, rose-pine, rose-pine-moon, amoled,
+  -- quizzy-dark, coral-dark, sky-dark, amoled-black. Light: light, quizzy-light, coral-light, sky-light.
   -- Or the name of a file in ~/.config/dacode/themes/ — which is what `dacode import --theme` writes,
   -- slugified, so "One Dark Pro" finds one-dark-pro.toml.
   --

@@ -118,12 +118,8 @@ pub fn execute(
                 dacode_display::WrapMode::None => dacode_display::WrapMode::Word,
             };
         }
-        Action::ToggleTheme => {
-            state.theme = dacode_theme::Theme::for_appearance(match state.theme.appearance {
-                dacode_theme::Appearance::Dark => dacode_theme::Appearance::Light,
-                dacode_theme::Appearance::Light => dacode_theme::Appearance::Dark,
-            });
-        }
+        // The same theme's other half where it has one, so toggling Charcoal coral stays coral.
+        Action::ToggleTheme => state.theme = state.theme.counterpart(),
         Action::IncreaseFontSize => {
             state.typography =
                 dacode_theme::Typography::with_code_size(state.typography.code_size + 1.0);

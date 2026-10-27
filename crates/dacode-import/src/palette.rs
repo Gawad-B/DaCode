@@ -247,11 +247,7 @@ fn from_pairs(
         },
     );
 
-    let appearance = if background.l < 0.5 {
-        Appearance::Dark
-    } else {
-        Appearance::Light
-    };
+    let appearance = Appearance::of_background(background);
     let mut theme = Theme::for_appearance(appearance);
     let mut recognised = 0;
 

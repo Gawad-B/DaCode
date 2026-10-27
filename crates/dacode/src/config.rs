@@ -480,9 +480,16 @@ fn theme_path(dir: &Path, name: &str) -> PathBuf {
 pub fn load_theme(path: &Path) -> Option<Theme> {
     let config = Config::read(path)?;
 
+    // A file that does not say is classified by its canvas, before anything is built on it: the
+    // base supplies every token the file leaves out, so a white `bg` over the dark base was a white
+    // page with dark-theme ink — and filed under "Dark" in the settings tab's dropdown.
+    let canvas = ["theme.bg", "theme.surfaces.bg"]
+        .iter()
+        .find_map(|key| config.color(key));
     let appearance = match config.string("theme.appearance") {
         Some("light") => Appearance::Light,
-        _ => Appearance::Dark,
+        Some("dark") => Appearance::Dark,
+        _ => canvas.map_or(Appearance::Dark, Appearance::of_background),
     };
     let mut theme = Theme::for_appearance(appearance);
 
@@ -742,6 +749,37 @@ mod tests {
 
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn a_theme_file_that_does_not_say_is_dark_or_light_by_its_canvas() {
+        // The settings tab files themes under Dark and Light, and a file with a paper-white `bg`
+        // and no `appearance` line used to come back Dark — built over the dark base, so every
+        // token it did not set was a dark theme's, and the toggle went the wrong way from it.
+        let dir = scratch("appearance-by-canvas");
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        std::fs::write(dir.join("themes/paper.toml"), "[theme]\nbg = \"#fbfaf7\"\n").unwrap();
+        std::fs::write(dir.join("themes/ink.toml"), "[theme]\nbg = \"#101010\"\n").unwrap();
+        std::fs::write(
+            dir.join("themes/declared.toml"),
+            "[theme]\nappearance = \"dark\"\nbg = \"#fbfaf7\"\n",
+        )
+        .unwrap();
+
+        let paper = load_theme(&dir.join("themes/paper.toml")).unwrap();
+        assert_eq!(paper.appearance, Appearance::Light);
+        assert_eq!(
+            paper.ink.to_hex(),
+            Theme::light().ink.to_hex(),
+            "the tokens it leaves out come from the light base"
+        );
+        let ink = load_theme(&dir.join("themes/ink.toml")).unwrap();
+        assert_eq!(ink.appearance, Appearance::Dark);
+        // A file that says is taken at its word.
+        let declared = load_theme(&dir.join("themes/declared.toml")).unwrap();
+        assert_eq!(declared.appearance, Appearance::Dark);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

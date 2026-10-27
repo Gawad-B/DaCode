@@ -780,9 +780,19 @@ impl EditorState {
         // to show, so a key snapped to 0 here while a diagnostic box is up falls back to the state in
         // `Motion::fade` and is drawn whole. That fallback is load-bearing for this, not only for
         // "nothing has synced yet".
+        //
+        // The theme dropdown is the same: picking a theme changes every colour on screen at once, and
+        // a list fading out in the old theme's colours over the new one would be the last thing
+        // anyone needed to see.
+        let dropdown = self.settings_showing()
+            && self
+                .settings_page
+                .as_ref()
+                .is_some_and(|page| page.dropdown().is_some());
         let cut = [
             (Key::Completion, self.completion.is_some()),
             (Key::Info, self.hover.is_some()),
+            (Key::Dropdown, dropdown),
         ];
 
         let hovers: Vec<(u32, bool)> = {
@@ -1107,12 +1117,7 @@ pub fn draw_welcome(
     // Centred vertically, because a wizard pinned to the top of a tall window reads as a page that
     // failed to load. The content's height is known per step, so this is arithmetic rather than a
     // guess.
-    let content_height = match welcome.step {
-        Step::Keys => px(200.0),
-        Step::Theme => px(200.0),
-        Step::Import => px(230.0),
-        Step::Done => 0.0,
-    };
+    let content_height = crate::welcome::content_height(welcome.step, bounds, scale);
     let header = px(34.0) + px(48.0) + px(26.0) + px(52.0);
 
     let mark = px(34.0);
@@ -1325,8 +1330,11 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         ("}", |theme| theme.ink),
     ];
 
-    for (index, (name, build)) in Theme::BUILT_IN.iter().enumerate() {
-        let theme = build();
+    // In the order the options are laid out: the dark themes first, as the settings tab lists them.
+    for (index, name) in Theme::grouped().into_iter().enumerate() {
+        let Some(theme) = Theme::by_name(name) else {
+            continue;
+        };
         let Some(card) = context.options.get(index).copied() else {
             continue;
         };
@@ -1345,16 +1353,22 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         let mut code = typography.spec(Role::Code);
         code.size_px = px(11.5);
         for (row, (text, color)) in sample.iter().enumerate() {
+            // As many lines as the card has room for above its name: a short window gets short
+            // cards, and a line drawn into the name's place would hide the name.
+            let rect = Rect::new(
+                card.x + px(12.0),
+                card.y + px(14.0) + row as f32 * line,
+                card.width - px(16.0),
+                line,
+            );
+            if rect.bottom() > card.bottom() - px(32.0) {
+                break;
+            }
             frame.text(TextRun {
                 text: (*text).into(),
                 spec: code,
                 color: color(&theme),
-                rect: Rect::new(
-                    card.x + px(12.0),
-                    card.y + px(14.0) + row as f32 * line,
-                    card.width - px(16.0),
-                    line,
-                ),
+                rect,
                 align: Align::Left,
                 center_vertically: true,
                 wrap: false,
@@ -1748,6 +1762,16 @@ pub fn draw_panes(
     // Last, so they cover everything: these are modal overlays. Each is drawn from its live state
     // when open and from what it left behind while it fades out — never both.
     frame.set_layer(Layer::Modal);
+    // The theme dropdown first, and only with nothing else modal open: they share this layer, where
+    // every quad goes down before any glyph, so its names would print through a palette's card.
+    if let Some(page) =
+        settings.filter(|_| state.palette.is_none() && state.help.is_none() && state.menu.is_none())
+    {
+        let (fade, travel) = arrival(state, Key::Dropdown, page.dropdown().is_some());
+        overlay(frame, fade, |frame| {
+            draw_theme_dropdown(frame, state, page, regions.editor, travel, scale)
+        });
+    }
     let leaving = &state.chrome.leaving;
     let (fade, travel) = arrival(state, Key::Palette, state.palette.is_some());
     if let Some(palette) = state.palette.as_ref().or(leaving.palette.as_deref()) {
@@ -3513,9 +3537,21 @@ fn draw_control(
                 scale,
             ));
         }
-        Control::Choice(_) => {
+        kind @ (Control::Choice(_) | Control::Dropdown(_)) => {
+            // A dropdown's control is outlined in the accent while its list is open, so the card
+            // under it reads as coming from it.
+            let open = matches!(kind, Control::Dropdown(_))
+                && state
+                    .settings_page
+                    .as_ref()
+                    .is_some_and(|page| page.dropdown().is_some());
             frame.fill_rounded(control, theme.bg_alt, 5.0 * scale);
-            frame.outline_rounded(control, theme.rule, 5.0 * scale, border::BORDER * scale);
+            frame.outline_rounded(
+                control,
+                if open { accent } else { theme.rule },
+                5.0 * scale,
+                border::BORDER * scale,
+            );
             if hovered(state, control) {
                 frame.fill_rounded(control, theme.ink.with_alpha(0.05), 5.0 * scale);
             }
@@ -3525,8 +3561,13 @@ fn draw_control(
                 control.height.min(control.width),
                 control.height,
             );
+            // Right for a choice, which steps to the next; down for one that opens a list.
             frame.icon(
-                Icon::ChevronRight,
+                if matches!(kind, Control::Dropdown(_)) {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
                 centred(chevron, 12.0 * scale),
                 theme.ink_dim,
             );
@@ -3545,6 +3586,132 @@ fn draw_control(
                 scale,
             ));
         }
+    }
+}
+
+/// The settings tab's theme dropdown: the themes under "Dark" and "Light", each with its colour
+/// chip, the one in use marked and the highlighted or hovered one washed.
+///
+/// Laid out by [`crate::settings_ui::Page::dropdown_geometry`] from the same page geometry the
+/// drawing above it used, which is what the mouse reads too.
+fn draw_theme_dropdown(
+    frame: &mut Frame,
+    state: &EditorState,
+    page: &crate::settings_ui::Page,
+    editor: Rect,
+    travel: f32,
+    scale: f32,
+) {
+    use crate::settings_ui::Pick;
+    let Some(dropdown) = page.dropdown() else {
+        return;
+    };
+    let theme = &state.theme;
+    let now = state.now();
+    let values = state.setting_values();
+    let offset = state
+        .chrome
+        .motion
+        .movement(Key::SettingsScroll, page.scroll(), now);
+    let rows = page.geometry_at(
+        offset,
+        editor,
+        scale,
+        &values,
+        state.modal,
+        &state.typography,
+    );
+    let Some(geometry) = page.dropdown_geometry(&rows, editor, scale, &state.typography) else {
+        return;
+    };
+
+    let anchor = if geometry.above {
+        Anchor::Bottom
+    } else {
+        Anchor::Top
+    };
+    frame.set_zoom(Some(appear_zoom(geometry.card, travel, anchor)));
+    card(frame, theme, geometry.card, scale, 1.0);
+
+    frame.set_clip(Some(geometry.list));
+    let inset = 4.0 * scale;
+    for row in &geometry.rows {
+        if !row.clip.is_visible() {
+            continue;
+        }
+        match row.pick {
+            Pick::Heading(appearance) => {
+                frame.text(label(
+                    state,
+                    elide(
+                        state,
+                        Role::Label,
+                        appearance.title(),
+                        row.label.width,
+                        scale,
+                    ),
+                    row.label,
+                    theme.ink_faint,
+                    Align::Left,
+                    scale,
+                ));
+            }
+            Pick::Theme(name) => {
+                let wash = Rect::new(
+                    row.rect.x + inset,
+                    row.rect.y,
+                    (row.rect.width - inset * 2.0).max(0.0),
+                    row.rect.height,
+                );
+                let selected = row.index == dropdown.selected();
+                // `row_wash` asks whether the pointer is over the row, which must be the part on
+                // screen: a row scrolled half out of the list is not hovered by a pointer below it.
+                if selected || hovered(state, row.clip) {
+                    row_wash(frame, state, wash, selected, scale);
+                }
+                if let Some(swatch) = row.swatch {
+                    draw_swatch(frame, theme, Some(name), swatch, scale);
+                }
+                let current = values.theme == Some(name);
+                frame.text(ui(
+                    state,
+                    elide(state, Role::Ui, name, row.label.width, scale),
+                    row.label,
+                    if selected || current {
+                        theme.ink
+                    } else {
+                        theme.ink_dim
+                    },
+                    Align::Left,
+                    scale,
+                ));
+                if let (true, Some(mark)) = (current, row.mark) {
+                    frame.icon(
+                        Icon::Dot,
+                        centred(mark, 10.0 * scale),
+                        theme.accent(state.mode),
+                    );
+                }
+            }
+        }
+    }
+    frame.set_clip(None);
+
+    // A thumb when the list scrolls, as the page has: a list cut off with no sign of it reads as a
+    // short list.
+    if geometry.max_scroll > 0.0 && geometry.list.height > 0.0 {
+        let list = geometry.list;
+        let total = list.height + geometry.max_scroll;
+        let height = (list.height * list.height / total)
+            .max(16.0 * scale)
+            .min(list.height);
+        let y = list.y + (list.height - height) * (geometry.scroll / geometry.max_scroll);
+        let width = 3.0 * scale;
+        frame.fill_rounded(
+            Rect::new(list.right() - width - 2.0 * scale, y, width, height),
+            theme.ink.with_alpha(0.18),
+            width / 2.0,
+        );
     }
 }
 

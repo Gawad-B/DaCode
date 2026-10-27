@@ -13,6 +13,37 @@ pub enum Appearance {
     Light,
 }
 
+impl Appearance {
+    /// Both, in the order lists show them: dark first, because the default is dark.
+    pub const ALL: [Appearance; 2] = [Appearance::Dark, Appearance::Light];
+
+    /// The heading a list of themes files this appearance under.
+    pub const fn title(self) -> &'static str {
+        match self {
+            Appearance::Dark => "Dark",
+            Appearance::Light => "Light",
+        }
+    }
+
+    pub const fn opposite(self) -> Appearance {
+        match self {
+            Appearance::Dark => Appearance::Light,
+            Appearance::Light => Appearance::Dark,
+        }
+    }
+
+    /// What a canvas of this colour is: light from half-way up OKLCH's lightness, dark below. The
+    /// one rule for a theme that does not say — a theme file, an imported palette — and the rule
+    /// every built-in's own declaration is tested against.
+    pub fn of_background(bg: Oklch) -> Appearance {
+        if bg.l < 0.5 {
+            Appearance::Dark
+        } else {
+            Appearance::Light
+        }
+    }
+}
+
 /// Colors for tree-sitter highlight captures. Kept small on purpose: a theme with fifty
 /// capture colors is a theme nobody can keep coherent. Highlight queries map many captures
 /// onto these few roles.
@@ -339,15 +370,289 @@ impl Theme {
         }
     }
 
+    /// Quizzy, dark: an espresso room with cream ink and a teal accent — Quizzy's default palette.
+    ///
+    /// The surfaces, text, hairlines and accent are Quizzy's tokens exactly (`quizzy.css`). Quizzy
+    /// has no syntax colours, so these are derived: one lightness band and one chroma, with hues
+    /// from the palette — teal keywords (the accent), amber types (its "support"), green strings
+    /// (its "progress"), orange numbers (its "attention"). The mode accents take the lightness and
+    /// chroma of Quizzy's four status colours, whose hues already sit on the mode hues.
+    pub const fn quizzy_dark() -> Self {
+        Self {
+            primary: Oklch::new(0.7038, 0.1230, 182.5),
+            appearance: Appearance::Dark,
+            bg: Oklch::new(0.2161, 0.0061, 56.0),
+            bg_alt: Oklch::new(0.2423, 0.0062, 45.2),
+            bg_panel: Oklch::new(0.2685, 0.0063, 34.3),
+            row_active: Oklch::new(0.3186, 0.0059, 39.3),
+            rule: Oklch::new(0.3741, 0.0087, 67.6),
+            rule_soft: Oklch::new(0.3331, 0.0088, 53.2),
+            ink: Oklch::new(0.9848, 0.0013, 106.4),
+            ink_dim: Oklch::new(0.7161, 0.0091, 56.3),
+            ink_faint: Oklch::new(0.5534, 0.0116, 58.1),
+            scrim: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.6),
+            shadow: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.55),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.77, 0.11, 182.0),
+                type_: Oklch::new(0.84, 0.11, 72.0),
+                function: Oklch::new(0.79, 0.11, 250.0),
+                attribute: Oklch::new(0.71, 0.11, 300.0),
+                comment: Oklch::new(0.64, 0.02, 56.0),
+                string: Oklch::new(0.81, 0.11, 128.0),
+                number: Oklch::new(0.79, 0.11, 42.0),
+                constant: Oklch::new(0.75, 0.11, 12.0),
+            },
+            mode_l: 0.74,
+            mode_c: 0.18,
+        }
+    }
+
+    /// Quizzy, light: a cream page with espresso ink and a deep teal accent. The light side of
+    /// [`Theme::quizzy_dark`], with the same derived syntax hues set dark enough for 4.5:1 on paper.
+    pub const fn quizzy_light() -> Self {
+        Self {
+            primary: Oklch::new(0.5109, 0.0861, 186.4),
+            appearance: Appearance::Light,
+            bg: Oklch::new(0.9848, 0.0013, 106.4),
+            bg_alt: Oklch::new(0.9924, 0.0007, 106.4),
+            bg_panel: Oklch::new(1.0000, 0.0000, 89.9),
+            row_active: Oklch::new(0.9464, 0.0016, 103.9),
+            rule: Oklch::new(0.8687, 0.0043, 56.4),
+            rule_soft: Oklch::new(0.9232, 0.0026, 48.7),
+            ink: Oklch::new(0.2161, 0.0061, 56.0),
+            ink_dim: Oklch::new(0.4444, 0.0096, 73.6),
+            ink_faint: Oklch::new(0.7161, 0.0091, 56.3),
+            scrim: Oklch::new(0.2161, 0.0061, 56.0).with_alpha(0.4),
+            shadow: Oklch::new(0.2161, 0.0061, 56.0).with_alpha(0.22),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.47, 0.12, 182.0),
+                type_: Oklch::new(0.50, 0.12, 72.0),
+                function: Oklch::new(0.48, 0.12, 250.0),
+                attribute: Oklch::new(0.53, 0.12, 300.0),
+                comment: Oklch::new(0.53, 0.02, 56.0),
+                string: Oklch::new(0.48, 0.12, 128.0),
+                number: Oklch::new(0.51, 0.12, 42.0),
+                constant: Oklch::new(0.49, 0.12, 12.0),
+            },
+            mode_l: 0.54,
+            mode_c: 0.16,
+        }
+    }
+
+    /// Charcoal coral, dark: a charcoal room, slate panels, coral for the brand and indigo beside
+    /// it (`coral.css`). Keywords take the coral, functions the indigo, types the gold.
+    pub const fn coral_dark() -> Self {
+        Self {
+            primary: Oklch::new(0.6846, 0.2042, 24.3),
+            appearance: Appearance::Dark,
+            bg: Oklch::new(0.1596, 0.0203, 265.6),
+            bg_alt: Oklch::new(0.2196, 0.0286, 262.8),
+            bg_panel: Oklch::new(0.2795, 0.0368, 260.0),
+            row_active: Oklch::new(0.3277, 0.0347, 259.2),
+            rule: Oklch::new(0.3717, 0.0392, 257.3),
+            rule_soft: Oklch::new(0.3161, 0.0412, 261.3),
+            ink: Oklch::new(0.9683, 0.0069, 247.9),
+            ink_dim: Oklch::new(0.7107, 0.0351, 256.8),
+            ink_faint: Oklch::new(0.6530, 0.0367, 259.4),
+            scrim: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.6),
+            shadow: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.55),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.77, 0.11, 22.0),
+                type_: Oklch::new(0.84, 0.11, 92.0),
+                function: Oklch::new(0.79, 0.11, 278.0),
+                attribute: Oklch::new(0.71, 0.11, 318.0),
+                comment: Oklch::new(0.64, 0.02, 255.0),
+                string: Oklch::new(0.81, 0.11, 162.0),
+                number: Oklch::new(0.79, 0.11, 58.0),
+                constant: Oklch::new(0.75, 0.11, 205.0),
+            },
+            mode_l: 0.79,
+            mode_c: 0.17,
+        }
+    }
+
+    /// Charcoal coral, light: slate-white with near-black ink and a deeper coral.
+    pub const fn coral_light() -> Self {
+        Self {
+            primary: Oklch::new(0.5891, 0.1960, 25.6),
+            appearance: Appearance::Light,
+            bg: Oklch::new(0.9683, 0.0069, 247.9),
+            bg_alt: Oklch::new(0.9841, 0.0034, 247.9),
+            bg_panel: Oklch::new(1.0000, 0.0000, 89.9),
+            row_active: Oklch::new(0.9278, 0.0075, 248.8),
+            rule: Oklch::new(0.8690, 0.0198, 252.9),
+            rule_soft: Oklch::new(0.9288, 0.0126, 255.5),
+            ink: Oklch::new(0.1596, 0.0203, 265.6),
+            ink_dim: Oklch::new(0.4455, 0.0374, 257.3),
+            ink_faint: Oklch::new(0.5544, 0.0407, 257.4),
+            scrim: Oklch::new(0.1596, 0.0203, 265.6).with_alpha(0.4),
+            shadow: Oklch::new(0.1596, 0.0203, 265.6).with_alpha(0.22),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.47, 0.12, 22.0),
+                type_: Oklch::new(0.50, 0.12, 92.0),
+                function: Oklch::new(0.48, 0.12, 278.0),
+                attribute: Oklch::new(0.53, 0.12, 318.0),
+                comment: Oklch::new(0.53, 0.02, 255.0),
+                string: Oklch::new(0.48, 0.12, 162.0),
+                number: Oklch::new(0.51, 0.12, 58.0),
+                constant: Oklch::new(0.49, 0.12, 205.0),
+            },
+            mode_l: 0.52,
+            mode_c: 0.13,
+        }
+    }
+
+    /// Abyss sky, dark: an abyss-teal room with deep teal panels and sky-blue actions (`sky.css`).
+    /// Keywords take the sky blue and functions the teal of its focus ring.
+    pub const fn sky_dark() -> Self {
+        Self {
+            primary: Oklch::new(0.7535, 0.1390, 232.7),
+            appearance: Appearance::Dark,
+            bg: Oklch::new(0.1840, 0.0247, 219.8),
+            bg_alt: Oklch::new(0.2307, 0.0336, 213.7),
+            bg_panel: Oklch::new(0.2775, 0.0426, 207.6),
+            row_active: Oklch::new(0.3246, 0.0404, 207.7),
+            rule: Oklch::new(0.4063, 0.0559, 205.6),
+            rule_soft: Oklch::new(0.3402, 0.0488, 207.6),
+            ink: Oklch::new(0.9505, 0.0120, 209.8),
+            ink_dim: Oklch::new(0.7705, 0.0346, 220.7),
+            ink_faint: Oklch::new(0.6669, 0.0366, 220.1),
+            scrim: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.6),
+            shadow: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.55),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.77, 0.11, 237.0),
+                type_: Oklch::new(0.84, 0.11, 75.0),
+                function: Oklch::new(0.79, 0.11, 178.0),
+                attribute: Oklch::new(0.71, 0.11, 292.0),
+                comment: Oklch::new(0.64, 0.02, 215.0),
+                string: Oklch::new(0.81, 0.11, 135.0),
+                number: Oklch::new(0.79, 0.11, 45.0),
+                constant: Oklch::new(0.75, 0.11, 335.0),
+            },
+            mode_l: 0.76,
+            mode_c: 0.17,
+        }
+    }
+
+    /// Abyss sky, light: snow, with the deeper sky Quizzy uses so white on it still passes AA.
+    pub const fn sky_light() -> Self {
+        Self {
+            primary: Oklch::new(0.5000, 0.1193, 242.7),
+            appearance: Appearance::Light,
+            bg: Oklch::new(0.9842, 0.0034, 247.9),
+            bg_alt: Oklch::new(0.9921, 0.0017, 247.9),
+            bg_panel: Oklch::new(1.0000, 0.0000, 89.9),
+            row_active: Oklch::new(0.9441, 0.0045, 246.5),
+            rule: Oklch::new(0.8510, 0.0217, 215.3),
+            rule_soft: Oklch::new(0.9205, 0.0125, 215.8),
+            ink: Oklch::new(0.1840, 0.0247, 219.8),
+            ink_dim: Oklch::new(0.4496, 0.0354, 220.6),
+            ink_faint: Oklch::new(0.5510, 0.0359, 221.8),
+            scrim: Oklch::new(0.1840, 0.0247, 219.8).with_alpha(0.4),
+            shadow: Oklch::new(0.1840, 0.0247, 219.8).with_alpha(0.22),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.47, 0.12, 237.0),
+                type_: Oklch::new(0.50, 0.12, 75.0),
+                function: Oklch::new(0.48, 0.12, 178.0),
+                attribute: Oklch::new(0.53, 0.12, 292.0),
+                comment: Oklch::new(0.53, 0.02, 215.0),
+                string: Oklch::new(0.48, 0.12, 135.0),
+                number: Oklch::new(0.51, 0.12, 45.0),
+                constant: Oklch::new(0.49, 0.12, 335.0),
+            },
+            mode_l: 0.55,
+            mode_c: 0.17,
+        }
+    }
+
+    /// Quizzy's AMOLED black: a true #000000 canvas with near-black panels, warm off-white text and
+    /// teal. Not [`Theme::amoled`], which is the editor's own and stays under its name: this is the
+    /// one from Quizzy, dark only by design — Quizzy gives it Quizzy light as its light side.
+    pub const fn amoled_black() -> Self {
+        Self {
+            primary: Oklch::new(0.7038, 0.1230, 182.5),
+            appearance: Appearance::Dark,
+            bg: Oklch::new(0.0000, 0.0000, 0.0),
+            bg_alt: Oklch::new(0.0748, 0.0000, 89.9),
+            bg_panel: Oklch::new(0.1496, 0.0000, 89.9),
+            row_active: Oklch::new(0.2070, 0.0001, 106.4),
+            rule: Oklch::new(0.2850, 0.0000, 89.9),
+            rule_soft: Oklch::new(0.2264, 0.0000, 89.9),
+            ink: Oklch::new(0.9699, 0.0013, 106.4),
+            ink_dim: Oklch::new(0.7161, 0.0091, 56.3),
+            ink_faint: Oklch::new(0.6168, 0.0115, 67.6),
+            scrim: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.75),
+            shadow: Oklch::new(0.0000, 0.0000, 0.0).with_alpha(0.8),
+            syntax: SyntaxPalette {
+                keyword: Oklch::new(0.77, 0.12, 178.0),
+                type_: Oklch::new(0.84, 0.12, 75.0),
+                function: Oklch::new(0.79, 0.12, 245.0),
+                attribute: Oklch::new(0.71, 0.12, 305.0),
+                comment: Oklch::new(0.62, 0.02, 56.0),
+                string: Oklch::new(0.81, 0.12, 130.0),
+                number: Oklch::new(0.79, 0.12, 45.0),
+                constant: Oklch::new(0.75, 0.12, 10.0),
+            },
+            mode_l: 0.76,
+            mode_c: 0.17,
+        }
+    }
+
     /// Every theme that ships in the binary, by the name config and the settings panel use.
-    pub const BUILT_IN: [BuiltIn; 6] = [
+    pub const BUILT_IN: [BuiltIn; 13] = [
         ("dacode", Self::dacode),
         ("dark", Self::dark),
         ("light", Self::light),
         ("rose-pine", Self::rose_pine),
         ("rose-pine-moon", Self::rose_pine_moon),
         ("amoled", Self::amoled),
+        ("quizzy-dark", Self::quizzy_dark),
+        ("quizzy-light", Self::quizzy_light),
+        ("coral-dark", Self::coral_dark),
+        ("coral-light", Self::coral_light),
+        ("sky-dark", Self::sky_dark),
+        ("sky-light", Self::sky_light),
+        ("amoled-black", Self::amoled_black),
     ];
+
+    /// The built-ins of one appearance, in the order [`Theme::BUILT_IN`] lists them.
+    pub fn built_ins(appearance: Appearance) -> impl Iterator<Item = &'static str> {
+        Self::BUILT_IN
+            .iter()
+            .filter(move |(_, build)| build().appearance == appearance)
+            .map(|(name, _)| *name)
+    }
+
+    /// Every built-in, the dark ones first and then the light: the order every list of themes shows
+    /// them in — the settings tab's dropdown under its two headings, the wizard's cards, and the
+    /// arrows on the theme row — so a theme is in the same place wherever it is chosen from.
+    pub fn grouped() -> Vec<&'static str> {
+        Appearance::ALL
+            .into_iter()
+            .flat_map(Self::built_ins)
+            .collect()
+    }
+
+    /// The same theme in the other appearance, for `toggle_theme`.
+    ///
+    /// A `-dark` theme with a `-light` twin swaps to it and back, so toggling Charcoal coral stays
+    /// Charcoal coral. AMOLED black has no light side; Quizzy gives it Quizzy light, and so does this.
+    /// Anything else goes to the plain [`Theme::dark`] or [`Theme::light`], which is what the toggle
+    /// always did.
+    pub fn counterpart(&self) -> Theme {
+        let twin = self.name().and_then(|name| match name {
+            "amoled-black" => Some("quizzy-light".to_string()),
+            _ => name
+                .strip_suffix("-dark")
+                .map(|stem| format!("{stem}-light"))
+                .or_else(|| {
+                    name.strip_suffix("-light")
+                        .map(|stem| format!("{stem}-dark"))
+                }),
+        });
+        twin.and_then(|name| Self::by_name(&name))
+            .unwrap_or_else(|| Self::for_appearance(self.appearance.opposite()))
+    }
 
     /// Looks a built-in theme up by name. Names are slugs, as they are written in config.
     pub fn by_name(name: &str) -> Option<Self> {

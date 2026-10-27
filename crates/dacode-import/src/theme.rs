@@ -27,8 +27,8 @@ pub fn import_theme(json: &Value, report: &mut ImportReport) -> (Theme, usize) {
     let appearance = match (declared, background) {
         (Some("light"), _) => Appearance::Light,
         (Some("dark"), _) => Appearance::Dark,
-        (_, Some(bg)) if bg.l > 0.5 => Appearance::Light,
-        _ => Appearance::Dark,
+        (_, Some(bg)) => Appearance::of_background(bg),
+        (_, None) => Appearance::Dark,
     };
 
     let mut theme = Theme::for_appearance(appearance);
