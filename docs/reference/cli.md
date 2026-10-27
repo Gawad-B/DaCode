@@ -103,7 +103,7 @@ Configuration lives in %APPDATA%\dacode. DACODE_CONFIG_DIR and DACODE_STATE_DIR 
 DACODE_NO_SYSTEM_FONTS=1 makes a render reproducible.
 
 Keys: press F1 in the editor, or read CHEATSHEET.md.
-Docs: https://github.com/Gawad-B/Vex/tree/main/docs
+Docs: https://github.com/Gawad-B/DaCode/tree/main/docs
 ```
 
 Column widths are computed from the longest entry, so adding a flag cannot leave them ragged. The

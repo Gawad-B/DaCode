@@ -17,9 +17,8 @@ export type Platform = {
   /** null when there is no build for this platform. */
   primary: Download | null;
   /**
-   * What to say in place of the button when there is nothing to download. A
-   * label rather than a link: the source is private, so "build it yourself"
-   * is no longer an offer this page can make.
+   * What to say in place of the button when there is nothing to download: a
+   * label rather than a link, since there is no build to send anyone to.
    */
   pending: string | null;
   /** Other artifacts for the same platform: the rpm and the tarball on Linux. */
@@ -40,28 +39,18 @@ export type Release = {
 };
 
 /*
- * Downloads come from a release on Gawad-B/dacode-releases, a public repository
- * that holds nothing at all — one empty commit, so that a tag can exist, and
- * four assets hanging off it. The editor's own repository is private, which
- * took its releases private with it: the assets and the API that listed them
- * answer 404 to anyone not signed in as the owner, and the page could not see
- * that. It fetched the API, ignored the failure, and fell back to hard-coded
- * GitHub URLs — so every button rendered with the right version, date and size,
- * and 404'd on click, for everyone except the owner, whose session resolved
- * them.
+ * Downloads come straight from the release on Gawad-B/DaCode, now that the
+ * repository is public. While it was private its releases were private with
+ * it: the asset URLs answered 404 to anyone not signed in as the owner, so every
+ * button rendered with the right version, date and size and failed on click for
+ * everyone else. That is why a separate, empty Gawad-B/dacode-releases
+ * repository held copies of the assets for a while, and Google Drive before it.
  *
- * Google Drive was tried in between and is what this replaced. The bytes are
- * reachable, but which URL Drive honours depends on the visitor's session: the
- * download host answers with the file to a request carrying no cookies and with
- * the "Google Drive can't scan this file for viruses" page to a signed-in one.
- * A download that works when tested and not when clicked is worse than one that
- * plainly fails, and none of it is configurable from this end.
- *
- * The cost of doing it this way is that a new release must be uploaded there
- * and the version written in here. `conventions.rs` fails the build if this
- * table names a version the crate is not.
+ * Nothing is fetched: a new release means writing its version and sizes in
+ * here. `conventions.rs` fails the build if this table names a version the
+ * crate is not.
  */
-const ASSETS = "https://github.com/Gawad-B/dacode-releases/releases/download";
+const ASSETS = "https://github.com/Gawad-B/DaCode/releases/download";
 
 const RELEASE: Release = {
   version: "1.0.0",
@@ -69,19 +58,19 @@ const RELEASE: Release = {
   assets: {
     "dacode-setup.exe": {
       url: `${ASSETS}/v1.0.0/dacode-setup.exe`,
-      size: 7953718,
+      size: 8001050,
     },
     "dacode_1.0.0_amd64.deb": {
       url: `${ASSETS}/v1.0.0/dacode_1.0.0_amd64.deb`,
-      size: 9849304,
+      size: 9949890,
     },
     "dacode-1.0.0-1.x86_64.rpm": {
       url: `${ASSETS}/v1.0.0/dacode-1.0.0-1.x86_64.rpm`,
-      size: 9748746,
+      size: 9845331,
     },
     "dacode-1.0.0-x86_64-linux.tar.gz": {
       url: `${ASSETS}/v1.0.0/dacode-1.0.0-x86_64-linux.tar.gz`,
-      size: 9848676,
+      size: 9944482,
     },
   },
   stale: false,

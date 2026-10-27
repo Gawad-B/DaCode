@@ -47,8 +47,7 @@ export function Download({ reduced }: { reduced: boolean }) {
           <span className="arrow">↓</span>
         </a>
       ) : platform.pending ? (
-        // Not a link. There is nothing to download and, with the source
-        // private, nothing to send someone off to build either.
+        // Not a link: there is no build for this platform to send anyone to.
         <span className="dl-primary dl-pending" aria-disabled="true">
           <span>{platform.pending}</span>
         </span>

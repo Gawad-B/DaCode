@@ -14,7 +14,7 @@ land on `main` and go out in the next release; nothing is backported.
 
 Use GitHub's private vulnerability reporting:
 
-**https://github.com/Gawad-B/Vex/security/advisories/new**
+**https://github.com/Gawad-B/DaCode/security/advisories/new**
 
 There is no security mailing address, and that link is the only private channel. Please do not open a
 public issue for something exploitable, and please do not post a proof of concept anywhere public

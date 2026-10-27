@@ -13,6 +13,7 @@ import {
   OVERHAUL,
   PRINCIPLES,
   RELEASES,
+  REPO_URL,
   SCOPE,
 } from "./data";
 import { useMode, usePrefersReducedMotion, useReveal, useScrolled } from "./hooks";
@@ -350,9 +351,8 @@ export default function App() {
         <Wordmark style={{ fontSize: 20 }} />
         <span className="caret" style={{ height: 14, width: 6 }} />
         <span style={{ flex: 1 }} />
-        {/* Everything that used to live here pointed into the repository,
-            which is private — five links that rendered fine and 404'd. */}
-        <a href="#releases">download</a>
+        <a href={`${REPO_URL}/releases/latest`}>download</a>
+        <a href={REPO_URL}>source</a>
         <a href="#keys">keys</a>
         <span className="label">mit licence · fira code under the ofl</span>
       </footer>

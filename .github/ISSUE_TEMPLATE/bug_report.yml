@@ -10,7 +10,7 @@ body:
         `--screenshot` render is worth more than any description of it.
 
         If this is a security problem, please do not file it here. Report it privately at
-        https://github.com/Gawad-B/Vex/security/advisories/new instead.
+        https://github.com/Gawad-B/DaCode/security/advisories/new instead.
 
   - type: textarea
     id: what-happened

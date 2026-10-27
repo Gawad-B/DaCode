@@ -9,8 +9,8 @@
 
 **A code editor that never stalls on your keystroke.**
 
-[![build](https://github.com/Gawad-B/Vex/actions/workflows/build.yml/badge.svg)](https://github.com/Gawad-B/Vex/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/Gawad-B/Vex)](https://github.com/Gawad-B/Vex/releases/latest)
+[![build](https://github.com/Gawad-B/DaCode/actions/workflows/build.yml/badge.svg)](https://github.com/Gawad-B/DaCode/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Gawad-B/DaCode)](https://github.com/Gawad-B/DaCode/releases/latest)
 [![licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
 [Install](#install) · [Documentation](docs/) · [Keys](CHEATSHEET.md) · [Changelog](CHANGELOG.md)
@@ -38,7 +38,7 @@ it is asserted by a test that fails the build if it stops being true.
 
 ## Install
 
-**Windows** — download [`dacode-setup.exe`](https://github.com/Gawad-B/Vex/releases/latest) and run it.
+**Windows** — download [`dacode-setup.exe`](https://github.com/Gawad-B/DaCode/releases/latest) and run it.
 It installs per-user under `%LOCALAPPDATA%\Programs\dacode`, so there is no UAC prompt, and it adds a
 Start Menu entry, `dacode` on your `PATH`, "Open with DaCode" on a folder's right-click menu, and an
 uninstaller.
@@ -68,7 +68,7 @@ tar xzf dacode-1.0.0-x86_64-linux.tar.gz
 cargo build --release && packaging/linux/install.sh
 ```
 
-Every artifact is on the [releases page](https://github.com/Gawad-B/Vex/releases/latest).
+Every artifact is on the [releases page](https://github.com/Gawad-B/DaCode/releases/latest).
 [Getting started](docs/getting-started.md) walks through the rest.
 
 ## Start

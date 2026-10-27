@@ -10,7 +10,7 @@ faster read.
 ## 1. Install it
 
 Pick your platform. Every artifact is on the
-[latest release](https://github.com/Gawad-B/Vex/releases/latest).
+[latest release](https://github.com/Gawad-B/DaCode/releases/latest).
 
 ### Windows
 
@@ -65,7 +65,7 @@ You need Rust 1.85 or newer. On Debian-family Linux you also need `libwayland-de
 `libxkbcommon-dev`; on Windows you need the MSVC build tools, because two crates compile C.
 
 ```sh
-git clone https://github.com/Gawad-B/Vex
+git clone https://github.com/Gawad-B/DaCode
 cd Vex
 cargo build --release
 packaging/linux/install.sh     # packaging/linux/uninstall.sh removes it
@@ -180,6 +180,6 @@ Dirty buffers are written to a recovery directory every two seconds, so a crash 
 seconds rather than work — reopening the file offers the copy back. See
 [files on disk](reference/files.md) for where that lives.
 
-If DaCode is doing something wrong, [open an issue](https://github.com/Gawad-B/Vex/issues/new/choose).
+If DaCode is doing something wrong, [open an issue](https://github.com/Gawad-B/DaCode/issues/new/choose).
 The bug form asks for `dacode --version` and your platform, which between them explain most of what is
 otherwise guesswork.

@@ -550,7 +550,7 @@ fn usage() -> String {
          DACODE_NO_SYSTEM_FONTS=1 makes a render reproducible.\n\
          \n\
          Keys: press F1 in the editor, or read CHEATSHEET.md.\n\
-         Docs: https://github.com/Gawad-B/Vex/tree/main/docs\n",
+         Docs: https://github.com/Gawad-B/DaCode/tree/main/docs\n",
         env!("CARGO_PKG_VERSION"),
         render(&FLAGS[..PLAIN_FLAGS]),
         render(&FLAGS[PLAIN_FLAGS..]),

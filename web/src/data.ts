@@ -34,7 +34,7 @@
  * than about twenty words. Keep it that way when adding a claim.
  */
 
-export const REPO = "Gawad-B/Vex";
+export const REPO = "Gawad-B/DaCode";
 export const REPO_URL = `https://github.com/${REPO}`;
 
 export type Mode = "normal" | "insert" | "visual" | "replace";

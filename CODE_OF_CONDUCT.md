@@ -52,7 +52,7 @@ an appointed representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community
 leaders responsible for enforcement by opening an issue at
-https://github.com/Gawad-B/Vex/issues, or — where a public issue would not be appropriate, which is
+https://github.com/Gawad-B/DaCode/issues, or — where a public issue would not be appropriate, which is
 usually the case — by emailing the maintainer at abdelrahman.gawad.28@gmail.com. All complaints will
 be reviewed and investigated promptly and fairly.
 

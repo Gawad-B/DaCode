@@ -13,7 +13,7 @@
 
 #define AppName "DaCode"
 #define AppPublisher "DaCode"
-#define AppUrl "https://github.com/Gawad-B/Vex"
+#define AppUrl "https://github.com/Gawad-B/DaCode"
 #define AppExe "dacode.exe"
 
 ; Passed in as /DAppVersion=… by build-installer.ps1, which reads it out of crates/dacode/Cargo.toml.

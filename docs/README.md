@@ -62,4 +62,4 @@ Inside the editor, <kbd>F1</kbd> lists every key that works right now and
 <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>P</kbd> searches every command — both read the same table the
 documentation does, so neither can drift from what the keys actually do.
 
-Something here wrong or missing? [Open an issue](https://github.com/Gawad-B/Vex/issues/new/choose).
+Something here wrong or missing? [Open an issue](https://github.com/Gawad-B/DaCode/issues/new/choose).
