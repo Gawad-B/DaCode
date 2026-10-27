@@ -26,6 +26,7 @@ impl Session {
             state: EditorState {
                 mode: Mode::Normal,
                 theme: Theme::dark(),
+                theme_toggled_from: None,
                 typography: Typography::default(),
                 document: Document::from_str(contents),
                 pairs: dacode_buffer::PairConfig::default(),

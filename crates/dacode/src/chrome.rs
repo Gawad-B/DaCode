@@ -39,6 +39,10 @@ pub struct PaneView<'a> {
 pub struct EditorState {
     pub mode: Mode,
     pub theme: Theme,
+    /// The theme `toggle_theme` last left, when its counterpart does not lead back to it: AMOLED
+    /// black toggles to Quizzy light, whose own other half is Quizzy dark, and DaCode to Light, whose
+    /// other half is Dark. A second toggle goes back to this instead.
+    pub theme_toggled_from: Option<Theme>,
     pub typography: Typography,
 
     pub document: Document,
@@ -1111,13 +1115,13 @@ pub fn draw_welcome(
     frame.fill(bounds, theme.bg);
 
     let px = |v: f32| v * scale;
-    let content_width = px(1000.0).min(bounds.width - px(96.0));
+    let content_width = crate::welcome::content_width(bounds, scale);
     let left = (bounds.x + (bounds.width - content_width) / 2.0).round();
 
     // Centred vertically, because a wizard pinned to the top of a tall window reads as a page that
     // failed to load. The content's height is known per step, so this is arithmetic rather than a
     // guess.
-    let content_height = crate::welcome::content_height(welcome.step, bounds, scale);
+    let content_height = crate::welcome::content_height(welcome.step, bounds, scale, typography);
     let header = px(34.0) + px(48.0) + px(26.0) + px(52.0);
 
     let mark = px(34.0);
@@ -1169,7 +1173,7 @@ pub fn draw_welcome(
 
     y += px(52.0);
 
-    let geometry = crate::welcome::geometry(welcome, bounds, scale);
+    let geometry = crate::welcome::geometry(welcome, bounds, scale, typography);
     let context = WelcomeFrame {
         welcome,
         typography,
@@ -1378,10 +1382,11 @@ fn draw_theme_cards(frame: &mut Frame, context: &WelcomeFrame<'_>) {
         }
 
         // The name goes on the card, in the card's own ink — whole, or with an ellipsis on a card
-        // too narrow for it, never cut at the card's edge mid-letter.
+        // too narrow for it, never cut at the card's edge mid-letter. The display name: the card's
+        // own colours say which half of a pair it is.
         let name_width = card.width - px(24.0);
         let name = elide_to(
-            name,
+            Theme::display_name_of(name).unwrap_or(name),
             name_width,
             crate::layout::measured_advance(typography, Role::Label, scale),
         );
@@ -3675,7 +3680,14 @@ fn draw_theme_dropdown(
                 let current = values.theme == Some(name);
                 frame.text(ui(
                     state,
-                    elide(state, Role::Ui, name, row.label.width, scale),
+                    // The display name: the heading above already says which half of a pair it is.
+                    elide(
+                        state,
+                        Role::Ui,
+                        Theme::display_name_of(name).unwrap_or(name),
+                        row.label.width,
+                        scale,
+                    ),
                     row.label,
                     if selected || current {
                         theme.ink

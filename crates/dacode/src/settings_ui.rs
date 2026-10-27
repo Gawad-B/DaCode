@@ -342,7 +342,13 @@ impl Values {
             Field::TabWidth => self.tab_width.to_string(),
             Field::SoftWrap => on_off(self.soft_wrap),
             Field::FormatOnSave => on_off(self.format_on_save),
-            Field::Theme => self.theme.unwrap_or("from a file").to_string(),
+            // The display name: the row shows "Charcoal coral", and the block still writes the slug.
+            Field::Theme => self
+                .theme
+                .map_or("from a file", |slug| {
+                    Theme::display_name_of(slug).unwrap_or(slug)
+                })
+                .to_string(),
             Field::LineNumbers => self.line_numbers.name().to_string(),
             Field::StickyScroll => on_off(self.sticky_scroll),
             Field::InlayHints => on_off(self.inlay_hints),
@@ -754,7 +760,7 @@ const THEMES: [&str; Theme::BUILT_IN.len()] = {
     let mut names = [""; Theme::BUILT_IN.len()];
     let mut at = 0;
     while at < names.len() {
-        names[at] = Theme::BUILT_IN[at].0;
+        names[at] = Theme::BUILT_IN[at].1;
         at += 1;
     }
     names
@@ -2315,7 +2321,7 @@ pub fn theme_dropdown(
     let longest = picks
         .iter()
         .map(|pick| match pick {
-            Pick::Theme(name) => name.chars().count(),
+            Pick::Theme(name) => Theme::display_name_of(name).unwrap_or(name).chars().count(),
             Pick::Heading(appearance) => appearance.title().chars().count(),
         })
         .max()
@@ -2729,25 +2735,33 @@ mod tests {
     #[test]
     fn the_theme_cycles_through_every_built_in_both_ways() {
         let mut values = values();
-        let mut seen = vec![values.get(Field::Theme)];
+        // By slug: two themes share a display name, so the shown value cannot count them.
+        let mut seen = vec![values.theme.unwrap()];
 
         for _ in 1..Theme::BUILT_IN.len() {
             values.adjust(Field::Theme, 1);
-            seen.push(values.get(Field::Theme));
+            seen.push(values.theme.unwrap());
         }
-        assert_eq!(seen.len(), Theme::BUILT_IN.len());
-        assert!(seen.contains(&"rose-pine".to_string()));
-        assert!(seen.contains(&"amoled".to_string()));
+        let mut distinct = seen.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), Theme::BUILT_IN.len());
+        assert!(seen.contains(&"rose-pine"));
+        assert!(seen.contains(&"amoled"));
 
         // Wherever it started, one more step comes back to it, and one back from there is the last
         // one seen — the wrap, in both directions, without the test knowing the list's order.
         values.adjust(Field::Theme, 1);
-        assert_eq!(values.get(Field::Theme), seen[0], "and wraps round");
+        assert_eq!(values.theme.unwrap(), seen[0], "and wraps round");
         values.adjust(Field::Theme, -1);
         assert_eq!(
-            &values.get(Field::Theme),
-            seen.last().unwrap(),
+            values.theme.unwrap(),
+            *seen.last().unwrap(),
             "backwards too"
+        );
+        assert_eq!(
+            values.get(Field::Theme),
+            Theme::display_name_of(seen.last().unwrap()).unwrap()
         );
     }
 
@@ -4062,7 +4076,7 @@ mod dropdown_tests {
                 }
             }
         }
-        let mut every: Vec<&str> = Theme::BUILT_IN.iter().map(|(name, _)| *name).collect();
+        let mut every: Vec<&str> = Theme::BUILT_IN.iter().map(|(name, _, _)| *name).collect();
         every.sort_unstable();
         listed.sort_unstable();
         assert_eq!(listed, every, "every built-in, once");

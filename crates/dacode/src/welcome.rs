@@ -11,7 +11,7 @@
 //! in it tells you everything. That is the whole reason this is a screen rather than a prompt.
 
 use dacode_render::Rect;
-use dacode_theme::Theme;
+use dacode_theme::{Theme, Typography};
 
 /// Which question is on screen.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -135,6 +135,20 @@ impl Welcome {
         }
     }
 
+    /// Moves the highlight a row of the theme grid up or down — `columns` cards — stopping at the
+    /// first or last card rather than wrapping into another column.
+    pub fn move_row(&mut self, delta: isize, columns: usize) {
+        let count = self.options();
+        if count == 0 {
+            return;
+        }
+        let to = self.selected as isize + delta * columns.max(1) as isize;
+        self.selected = to.clamp(0, count as isize - 1) as usize;
+        if self.step == Step::Theme {
+            self.answers.theme = Theme::grouped()[self.selected];
+        }
+    }
+
     /// Whether an import item is ticked.
     pub fn is_ticked(&self, item: crate::settings_ui::Importable) -> bool {
         self.answers.import.contains(&item)
@@ -243,26 +257,40 @@ pub struct Geometry {
 
 /// How tall a step's content is, below its heading: what the wizard is centred on. One function for
 /// [`geometry`] and `chrome::draw_welcome`, which both walk the same stack.
-pub fn content_height(step: Step, bounds: Rect, scale: f32) -> f32 {
+pub fn content_height(step: Step, bounds: Rect, scale: f32, typography: &Typography) -> f32 {
     let px = |v: f32| v * scale;
     match step {
         Step::Keys => px(200.0),
         Step::Theme => {
-            let width = px(1000.0).min(bounds.width - px(96.0));
-            ThemeGrid::new(width, bounds, scale).height()
+            ThemeGrid::new(content_width(bounds, scale), bounds, scale, typography).height()
         }
         Step::Import => px(230.0),
         Step::Done => 0.0,
     }
 }
 
-/// The theme step's cards, as a grid: as many columns as fit cards at least [`ThemeGrid::MIN_CARD`]
-/// wide, and rows as tall as the window has room for, up to the 200 px a card has when nothing is
-/// short. In [`Theme::grouped`]'s order, the dark themes first.
+/// How wide the wizard's content is: 1000 px at most, with 48 px either side. One function for
+/// [`geometry`], [`content_height`] and `chrome::draw_welcome`, which each had a copy.
+pub fn content_width(bounds: Rect, scale: f32) -> f32 {
+    (1000.0 * scale).min(bounds.width - 96.0 * scale)
+}
+
+/// How many columns of theme cards the wizard lays out in this window: what ↑ and ↓ step by.
+pub fn theme_columns(bounds: Rect, scale: f32, typography: &Typography) -> usize {
+    ThemeGrid::new(content_width(bounds, scale), bounds, scale, typography).columns
+}
+
+/// The theme step's cards, as a grid: as many columns as fit cards wide enough for the longest
+/// display name, and rows as tall as the window has room for, up to the 200 px a card has when
+/// nothing is short. In [`Theme::grouped`]'s order, the dark themes first.
 ///
 /// Thirteen cards in one row — six cards' layout, stretched — were 29 px wide at 640, too narrow for
-/// a name. A card shorter than its sample shows as many lines of it as fit, and at the smallest
-/// window only its colours and its name: honest, if not much of a preview.
+/// a name. A fixed minimum width then cut four names at 1600×1000, where there was room for all of
+/// them; the width is measured from the names now. When the window is too short for the rows that
+/// width makes, the grid takes more, narrower columns rather than running off the bottom, and those
+/// names are elided — the one case where the window, not the layout, is the limit. A card shorter
+/// than its sample shows as many lines of it as fit, and at the smallest window only its colours
+/// and its name: honest, if not much of a preview.
 struct ThemeGrid {
     columns: usize,
     rows: usize,
@@ -271,23 +299,44 @@ struct ThemeGrid {
 }
 
 impl ThemeGrid {
+    /// The narrowest a card gets, whatever its name: room for six lines of sample.
     const MIN_CARD: f32 = 112.0;
+    /// The shortest a card gets: its name and its colours.
+    const MIN_HEIGHT: f32 = 40.0;
 
-    fn new(width: f32, bounds: Rect, scale: f32) -> Self {
+    fn new(width: f32, bounds: Rect, scale: f32, typography: &Typography) -> Self {
         let px = |v: f32| v * scale;
         let count = Theme::BUILT_IN.len();
         let gap = px(14.0);
-        let columns =
-            (((width + gap) / (px(Self::MIN_CARD) + gap)).floor() as usize).clamp(1, count);
-        let rows = count.div_ceil(columns);
-        let card_width = ((width - gap * (columns as f32 - 1.0)) / columns as f32).floor();
+        // The name is drawn 12 px in from either side, in the label face — measured as the drawing
+        // elides it, so a name that fits here is not cut there.
+        let longest = Theme::BUILT_IN
+            .iter()
+            .map(|(_, title, _)| title.chars().count())
+            .max()
+            .unwrap_or(0);
+        let named = longest as f32
+            * crate::layout::measured_advance(typography, dacode_theme::Role::Label, scale)
+            + px(24.0)
+            + 1.0;
+        let narrowest = named.max(px(Self::MIN_CARD));
         // The room under the heading when the wizard sits as high as it goes (56 px down, then the
         // mark, the title and the step's heading: 134), less the line of keys 64 px from the bottom
         // and a gap above it.
         let room = bounds.height - px(56.0 + 134.0 + 64.0 + 14.0);
+        let fits = |columns: usize| {
+            let rows = count.div_ceil(columns) as f32;
+            rows * px(Self::MIN_HEIGHT) + (rows - 1.0) * gap <= room
+        };
+        let mut columns = (((width + gap) / (narrowest + gap)).floor() as usize).clamp(1, count);
+        while columns < count && !fits(columns) {
+            columns += 1;
+        }
+        let rows = count.div_ceil(columns);
+        let card_width = ((width - gap * (columns as f32 - 1.0)) / columns as f32).floor();
         let card_height = ((room - gap * (rows as f32 - 1.0)) / rows as f32)
             .floor()
-            .clamp(px(40.0), px(200.0));
+            .clamp(px(Self::MIN_HEIGHT), px(200.0));
         Self {
             columns,
             rows,
@@ -302,13 +351,13 @@ impl ThemeGrid {
 }
 
 /// The layout of the current step. `bounds` is the whole window.
-pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
+pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32, typography: &Typography) -> Geometry {
     let px = |v: f32| v * scale;
-    let content_width = px(1000.0).min(bounds.width - px(96.0));
+    let content_width = content_width(bounds, scale);
     let left = (bounds.x + (bounds.width - content_width) / 2.0).round();
 
     // The same stack `draw_welcome` walks: mark, heading, then the step's own content.
-    let content_height = content_height(welcome.step, bounds, scale);
+    let content_height = content_height(welcome.step, bounds, scale, typography);
     let header = px(34.0) + px(48.0) + px(26.0) + px(52.0);
     let mark = px(34.0);
     let top = (bounds.y + ((bounds.height - header - content_height) / 2.0).max(px(56.0))).round()
@@ -329,7 +378,7 @@ pub fn geometry(welcome: &Welcome, bounds: Rect, scale: f32) -> Geometry {
             })
             .collect(),
         Step::Theme => {
-            let grid = ThemeGrid::new(content_width, bounds, scale);
+            let grid = ThemeGrid::new(content_width, bounds, scale, typography);
             (0..Theme::BUILT_IN.len())
                 .map(|index| {
                     let (row, column) = (index / grid.columns, index % grid.columns);
@@ -515,7 +564,7 @@ mod tests {
         ] {
             for scale in [1.0_f32, 2.0] {
                 let bounds = Rect::new(0.0, 0.0, width * scale, height * scale);
-                let cards = geometry(&welcome, bounds, scale).options;
+                let cards = geometry(&welcome, bounds, scale, &Typography::default()).options;
                 assert_eq!(cards.len(), Theme::BUILT_IN.len(), "{width}x{height}");
                 // Above the line of keys at the bottom, which sits 64 px up.
                 let floor = bounds.bottom() - 64.0 * scale;
@@ -541,6 +590,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_theme_names_fit_their_cards_where_the_window_has_room() {
+        // At the default size the window has room to spare, and four names were cut anyway because
+        // the cards were sized to a fixed minimum rather than to the longest name.
+        let mut welcome = Welcome::new();
+        welcome.choose();
+        let typography = Typography::default();
+        for (width, height) in [(1600.0, 1000.0), (1280.0, 720.0)] {
+            let bounds = Rect::new(0.0, 0.0, width, height);
+            let cards = geometry(&welcome, bounds, 1.0, &typography).options;
+            let advance =
+                crate::layout::measured_advance(&typography, dacode_theme::Role::Label, 1.0);
+            for (card, name) in cards.iter().zip(Theme::grouped()) {
+                let title = Theme::display_name_of(name).unwrap();
+                let room = card.width - 24.0;
+                assert!(
+                    title.chars().count() as f32 * advance <= room,
+                    "{width}x{height}: `{title}` needs {} px in {room}",
+                    title.chars().count() as f32 * advance
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn up_and_down_on_the_theme_grid_move_by_a_row() {
+        // The cards are a grid, so ↓ goes to the card below rather than the one beside it.
+        let mut welcome = Welcome::new();
+        welcome.choose();
+        welcome.selected = 0;
+        let columns = 4;
+        welcome.move_row(1, columns);
+        assert_eq!(welcome.selected, columns);
+        assert_eq!(
+            welcome.answers.theme,
+            Theme::grouped()[columns],
+            "and previews it"
+        );
+        welcome.move_row(-1, columns);
+        assert_eq!(welcome.selected, 0);
+        // Off the top or the bottom it stops at the first or last card rather than wrapping into a
+        // column it was not in.
+        welcome.move_row(-1, columns);
+        assert_eq!(welcome.selected, 0);
+        for _ in 0..10 {
+            welcome.move_row(1, columns);
+        }
+        assert_eq!(welcome.selected, Theme::BUILT_IN.len() - 1);
     }
 
     #[test]

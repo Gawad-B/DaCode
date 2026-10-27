@@ -27,9 +27,11 @@ release, where one exists, lives in `packaging/notes/`.
 - A new default theme, `dacode`, with the chrome a shade darker than the code. The other five are
   still there.
 - Switching between light and dark keeps the theme's family where it has one: `coral-dark` and
-  `coral-light` swap with each other rather than with the plain `light` and `dark`.
-- The welcome screen's theme cards wrap into rows, dark themes first, and shrink to fit a short
-  window; thirteen cards in one row left each too narrow for its name.
+  `coral-light` swap with each other rather than with the plain `light` and `dark`, and switching
+  back returns to the theme you started from.
+- The welcome screen's theme cards wrap into rows, dark themes first, are as wide as the longest name
+  where the window allows, and shrink to fit a short window; ↑ ↓ move a row. Thirteen cards in one
+  row left each too narrow for its name.
 - A theme file that does not say whether it is dark or light is classified by its background, and
   the colours it leaves out come from the matching built-in rather than always from the dark one.
 - With Vim keys off, shortcuts are written the usual way — `Ctrl+Shift+P` rather than `<c-s-p>` — in
@@ -100,6 +102,8 @@ release, where one exists, lives in `packaging/notes/`.
   **Dark** and **Light**, with its colours beside its name and the one in use marked. Click or press
   enter or space to open it, ↑ ↓ to move, enter or a click to pick, esc or a click outside to close.
   It scrolls in a small window. ← → on the row still step through the themes, in the list's order.
+  The list, the row and the welcome screen show each theme by name — *Charcoal coral*, *Rosé Pine*
+  — rather than by the slug `init.lua` uses.
 - `--theme-dropdown` renders the settings tab with that list open.
 
 - `transparency` — how much of the desktop shows through the window, from `0` to `90` percent, in

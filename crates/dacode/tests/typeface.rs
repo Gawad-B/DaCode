@@ -46,6 +46,17 @@ fn the_tables_the_interface_reads_are_all_in_the_bundled_face() {
         }
     }
     shown.extend(Importable::ALL.iter().map(|item| item.name().to_string()));
+    // The theme dropdown's headings and rows, and the wizard's cards: "Rosé Pine" has an é.
+    shown.extend(
+        dacode_theme::Appearance::ALL
+            .iter()
+            .map(|appearance| appearance.title().to_string()),
+    );
+    shown.extend(
+        dacode_theme::Theme::BUILT_IN
+            .iter()
+            .map(|(_, title, _)| title.to_string()),
+    );
     shown.push(Link::RebindKeys.label().to_string());
     shown.push(Link::RebindKeys.explanation().to_string());
 

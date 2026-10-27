@@ -454,7 +454,7 @@ fn resolve_theme(dir: &Path, name: &str) -> Option<Resolved> {
 fn built_in_names() -> String {
     Theme::BUILT_IN
         .iter()
-        .map(|(name, _)| *name)
+        .map(|(name, _, _)| *name)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -482,7 +482,7 @@ pub fn load_theme(path: &Path) -> Option<Theme> {
 
     // A file that does not say is classified by its canvas, before anything is built on it: the
     // base supplies every token the file leaves out, so a white `bg` over the dark base was a white
-    // page with dark-theme ink — and filed under "Dark" in the settings tab's dropdown.
+    // page with dark-theme ink, and `toggle_theme` went the wrong way from it.
     let canvas = ["theme.bg", "theme.surfaces.bg"]
         .iter()
         .find_map(|key| config.color(key));
@@ -727,7 +727,7 @@ mod tests {
         // The panel writes `theme = "<built-in name>"` into init.lua, so every one of those names has
         // to come back as a theme and not as a problem. It did not: the reader looked names up as
         // files only, and choosing a theme in the panel meant an error box on the next start.
-        for (name, build) in Theme::BUILT_IN {
+        for (name, _, build) in Theme::BUILT_IN {
             let dir = scratch(&format!("built-in-{name}"));
             std::fs::write(
                 dir.join("init.lua"),
@@ -742,6 +742,9 @@ mod tests {
                 settings.problems
             );
             assert_eq!(settings.theme.bg.to_hex(), build().bg.to_hex(), "{name}");
+            // By name too: `amoled` and `amoled-black` share a #000000 canvas, so the colour alone
+            // could not tell a lookup that returned the wrong one of the two.
+            assert_eq!(settings.theme.name(), Some(name), "{name}");
             assert!(
                 settings.theme_source.is_none(),
                 "{name} is compiled in, not a file"

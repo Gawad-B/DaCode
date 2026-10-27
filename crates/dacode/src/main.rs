@@ -259,6 +259,7 @@ fn new_state(
     let state = EditorState {
         mode,
         theme: theme_override.unwrap_or(settings.theme),
+        theme_toggled_from: None,
         typography: settings.typography,
         document: Document::from_text(text),
         pairs: pair_config(file_path.as_deref(), settings.tab_width),
@@ -1982,7 +1983,8 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                         self.dragging = self.state.menu.is_none()
                             && self.state.welcome.is_none()
                             && self.state.palette.is_none()
-                            && self.state.help.is_none();
+                            && self.state.help.is_none()
+                            && !self.dropdown_showing();
                         self.click_count = self.count_click();
                         self.click(false);
                         self.keep_offset_under_pointer();
@@ -5890,7 +5892,7 @@ impl App {
         let Some(welcome) = &mut self.state.welcome else {
             return false;
         };
-        let geometry = dacode::welcome::geometry(welcome, bounds, scale);
+        let geometry = dacode::welcome::geometry(welcome, bounds, scale, &self.state.typography);
 
         if let Some(index) = geometry
             .options
@@ -5941,11 +5943,21 @@ impl App {
     }
 
     fn handle_welcome_key(&mut self, key: Key) -> bool {
+        // The theme cards are a grid, so ↑ and ↓ move by a row of it: its columns, from the same
+        // layout the cards are drawn and clicked from.
+        let columns = dacode::welcome::theme_columns(
+            self.window_bounds(),
+            self.scale(),
+            &self.state.typography,
+        );
         let Some(welcome) = &mut self.state.welcome else {
             return false;
         };
+        let grid = welcome.step == dacode::welcome::Step::Theme;
 
         match key.code {
+            KeyCode::Char('j') | KeyCode::Down if grid => welcome.move_row(1, columns),
+            KeyCode::Char('k') | KeyCode::Up if grid => welcome.move_row(-1, columns),
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Right => welcome.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up | KeyCode::Left
                 if key.code == KeyCode::Left && welcome.step != dacode::welcome::Step::Theme =>
@@ -6103,7 +6115,7 @@ impl App {
             }
             KeyCode::Escape if !query.is_empty() => self.set_settings_query(String::new()),
             // Back to the file, which is still where it was; the tab stays open beside it.
-            KeyCode::Escape => self.state.settings_active = false,
+            KeyCode::Escape => self.hide_settings_tab(),
             KeyCode::Char(typed) => {
                 let mut longer = query;
                 longer.push(typed);
@@ -6252,6 +6264,15 @@ impl App {
         // What would otherwise take its keys belongs to the text it is covering.
         self.state.completion = None;
         self.state.focus = dacode::focus::Focus::Editor;
+    }
+
+    /// Puts the file back in front of the settings tab, which stays open beside it. The one way the
+    /// tab is hidden, because the theme dropdown hangs from it: a list left open behind a hidden tab
+    /// came back with the tab and took the next key — and a dropped file hides the tab with no key
+    /// or click reaching the list first.
+    fn hide_settings_tab(&mut self) {
+        self.state.settings_active = false;
+        self.close_dropdown();
     }
 
     /// Closes the settings tab: its close button, or `ctrl-w` while it is the tab on screen. A change
@@ -7152,7 +7173,7 @@ impl App {
 
     /// Makes a new document the active one, keeping the previous buffer.
     fn open_document(&mut self, document: Document, path: Vec<String>, file_path: Option<String>) {
-        self.state.settings_active = false;
+        self.hide_settings_tab();
         let previous = Buffer {
             document: std::mem::replace(&mut self.state.document, document),
             path: std::mem::replace(&mut self.state.path, path),
@@ -7399,7 +7420,7 @@ impl App {
     fn switch_to(&mut self, index: usize) {
         // Choosing a file is choosing to see it, the live one included: its tab, clicked while the
         // settings tab is showing, brings it back.
-        self.state.settings_active = false;
+        self.hide_settings_tab();
         let was = self.state.active_buffer;
         if index == was || index > self.buffers.len() {
             return;
@@ -7667,9 +7688,11 @@ impl App {
             }
             return;
         }
-        // The theme dropdown, like the menu, takes the click wherever it lands.
+        // The theme dropdown, like the menu, takes the click wherever it lands. Only the first press
+        // of a series: the second press of a double-click on the control that opened it lands on the
+        // control again, outside the card, and would close the list it had just opened.
         if self.dropdown_showing() {
-            if !extend {
+            if !extend && self.click_count <= 1 {
                 self.click_dropdown(x, y);
             }
             return;
@@ -8515,6 +8538,9 @@ impl App {
                 .get(index)
                 .and_then(|pick| pick.theme())
             {
+                // The pick closes the list, so the rest of a double-click would reach the page under
+                // the card — and whichever control was there.
+                self.chosen_by_overlay = true;
                 self.pick_theme(name);
             }
         } else if !geometry.contains(x, y) {
@@ -9886,7 +9912,13 @@ mod wiring_tests {
         let option = |app: &App, index: usize| {
             let welcome = app.state.welcome.as_ref().expect("still up");
             middle(
-                dacode::welcome::geometry(welcome, app.window_bounds(), app.scale()).options[index],
+                dacode::welcome::geometry(
+                    welcome,
+                    app.window_bounds(),
+                    app.scale(),
+                    &app.state.typography,
+                )
+                .options[index],
             )
         };
 
@@ -10791,6 +10823,128 @@ mod wiring_tests {
                 .and_then(|page| page.selected_entry(app.state.modal)),
             Some(dacode::settings_ui::Entry::Field(Field::Theme))
         );
+    }
+
+    /// A point on a dropdown row that is also on another setting's control in the page under the
+    /// card — where a press that reached the page would change that setting.
+    fn dropdown_point_over_another_control(app: &App) -> (f32, f32, dacode::settings_ui::Field) {
+        use dacode::settings_ui::Field;
+        let page = app.settings_page_geometry().unwrap();
+        let dropdown = app.settings_dropdown_geometry().unwrap();
+        for row in dropdown
+            .rows
+            .iter()
+            .filter(|row| row.pick.theme().is_some())
+        {
+            for under in &page.rows {
+                let (Some(field), Some(control)) = (under.field(), under.control) else {
+                    continue;
+                };
+                if field == Field::Theme {
+                    continue;
+                }
+                let overlap = row.clip.intersect(control.intersect(under.clip));
+                if overlap.width > 2.0 && overlap.height > 2.0 {
+                    return (
+                        overlap.x + overlap.width / 2.0,
+                        overlap.y + overlap.height / 2.0,
+                        field,
+                    );
+                }
+            }
+        }
+        panic!("the card covers no other control at this size");
+    }
+
+    #[test]
+    fn a_double_click_on_a_dropdown_row_changes_the_theme_and_nothing_under_it() {
+        // The first press picks and closes the list; the second, with nothing in front of the page
+        // any more, used to land on whatever control the card had been covering — Animations, the
+        // font size, transparency — which was then marked touched and written to init.lua.
+        use dacode::settings_ui::Field;
+        let dir = scratch("theme-dropdown-double");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        app.pointer = middle(page_row(&app, Field::Theme).control.unwrap());
+        app.click_count = 1;
+        app.click(false);
+        assert!(dropdown_open(&app));
+        let start = app.state.theme.name();
+        let (x, y, under) = dropdown_point_over_another_control(&app);
+        let values = app.state.setting_values();
+
+        app.pointer = (x, y);
+        app.click_count = 1;
+        app.click(false);
+        app.click_count = 2;
+        app.click(false);
+        app.click(true);
+
+        assert_ne!(app.state.theme.name(), start, "the theme was picked");
+        assert_eq!(
+            app.settings_touched,
+            vec![Field::Theme],
+            "and only the theme"
+        );
+        assert!(
+            !app.state.setting_values().differs(under, &values),
+            "{under:?}, under the card, is as it was"
+        );
+        // A fresh press is an ordinary click again.
+        app.click_count = 1;
+        app.click(false);
+        assert!(!app.settings_touched.is_empty());
+    }
+
+    #[test]
+    fn a_double_click_on_the_theme_control_leaves_the_list_open() {
+        // The first press opens the list; the second lands on the control again, which is outside
+        // the card, and closed it — a list that flashed and was gone.
+        use dacode::settings_ui::Field;
+        let dir = scratch("theme-dropdown-double-control");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        app.pointer = middle(page_row(&app, Field::Theme).control.unwrap());
+        app.click_count = 1;
+        app.click(false);
+        app.click_count = 2;
+        app.click(false);
+        app.click(true);
+        assert!(dropdown_open(&app), "still open after the second press");
+        assert!(app.settings_touched.is_empty());
+    }
+
+    #[test]
+    fn the_theme_dropdown_does_not_outlive_its_tab_being_hidden() {
+        // A file dropped on the window opens it and hides the tab with no key or click reaching the
+        // list; coming back to the tab brought the card back with it, taking the next key.
+        let dir = scratch("theme-dropdown-hidden");
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        std::fs::write(dir.join("dropped.rs"), "fn dropped() {}\n").unwrap();
+        app.press(Key::named(KeyCode::Enter));
+        assert!(dropdown_open(&app));
+
+        app.activate(Target::File(dir.join("dropped.rs")));
+        assert!(!app.state.settings_showing());
+        app.open_settings_tab();
+        assert!(app.state.settings_showing());
+        assert!(!dropdown_open(&app), "the list closed with the tab");
+    }
+
+    #[test]
+    fn toggling_twice_comes_back_to_the_theme_it_started_from() {
+        // AMOLED black has no light side; its toggle lands on Quizzy light, whose own other half is
+        // Quizzy dark. The toggle remembers where it came from, so a second press goes back.
+        let dir = scratch("toggle-back");
+        let mut app = editor(&dir, "a.rs", "one\n");
+        for start in ["amoled-black", "dacode", "rose-pine", "coral-dark"] {
+            app.state.theme = dacode_theme::Theme::by_name(start).unwrap();
+            let _ = app.run(Action::ToggleTheme);
+            assert_ne!(
+                app.state.theme.appearance,
+                dacode_theme::Theme::by_name(start).unwrap().appearance
+            );
+            let _ = app.run(Action::ToggleTheme);
+            assert_eq!(app.state.theme.name(), Some(start), "back to {start}");
+        }
     }
 
     #[test]

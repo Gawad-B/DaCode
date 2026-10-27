@@ -6,21 +6,26 @@ wins when they disagree.
 
 ## The thirteen that ship
 
-| Name | Appearance | |
-|---|---|---|
-| `dacode` | dark | the default: a cool charcoal, the palette the interface is designed in |
-| `dark` | dark | the warmer dark theme that was the default before it |
-| `light` | light | |
-| `rose-pine` | dark | |
-| `rose-pine-moon` | dark | |
-| `amoled` | dark | true black, for an OLED panel |
-| `quizzy-dark` | dark | Quizzy's default: an espresso room, cream ink, a teal accent |
-| `quizzy-light` | light | its light side: a cream page, espresso ink, a deep teal |
-| `coral-dark` | dark | Quizzy's *Charcoal coral*: charcoal and slate, coral beside indigo |
-| `coral-light` | light | its light side, on slate-white |
-| `sky-dark` | dark | Quizzy's *Abyss sky*: an abyss-teal room, sky-blue actions |
-| `sky-light` | light | its light side, on snow |
-| `amoled-black` | dark | Quizzy's *AMOLED black*: true black, warm off-white text, teal |
+| Name in config | Shown as | Appearance | |
+|---|---|---|---|
+| `dacode` | DaCode | dark | the default: a cool charcoal, the palette the interface is designed in |
+| `dark` | Dark | dark | the warmer dark theme that was the default before it |
+| `light` | Light | light | |
+| `rose-pine` | Rosé Pine | dark | |
+| `rose-pine-moon` | Rosé Pine Moon | dark | |
+| `amoled` | AMOLED | dark | true black, for an OLED panel |
+| `quizzy-dark` | Quizzy | dark | Quizzy's default: an espresso room, cream ink, a teal accent |
+| `quizzy-light` | Quizzy | light | its light side: a cream page, espresso ink, a deep teal |
+| `coral-dark` | Charcoal coral | dark | charcoal and slate, coral beside indigo |
+| `coral-light` | Charcoal coral | light | its light side, on slate-white |
+| `sky-dark` | Abyss sky | dark | an abyss-teal room, sky-blue actions |
+| `sky-light` | Abyss sky | light | its light side, on snow |
+| `amoled-black` | AMOLED black | dark | Quizzy's true black, warm off-white text, teal |
+
+The settings tab and the welcome screen show the second column, the names Quizzy's own picker uses;
+both halves of a pair go by one name, because the list's **Dark** and **Light** headings (or, on the
+welcome screen, the card's own colours) already say which half it is. `init.lua` takes the first
+column, which has to say it.
 
 The seven from Quizzy take its surfaces, text, hairlines and accent exactly. Quizzy has no syntax
 colours, so those are derived from each palette — one lightness and one chroma per theme, with hues
@@ -42,7 +47,9 @@ than by name, and it is written to `init.lua` a moment after the last one.
 With Vim keys on, `gt` toggles between light and dark. Either way it is in the command palette
 (<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd>) as *switch between light and dark*. The toggle keeps
 the family where it can: `coral-dark` goes to `coral-light` and back, `amoled-black` goes to
-`quizzy-light` (Quizzy's own pairing), and anything else to the plain `light` or `dark`.
+`quizzy-light` (Quizzy's own pairing), and anything else to the plain `light` or `dark`. A second
+toggle always goes back to the theme the first one left, so `amoled-black` and `dacode` come back
+rather than landing on `quizzy-dark` and `dark`.
 
 From config:
 

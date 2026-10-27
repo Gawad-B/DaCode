@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn every_built_in_theme_is_reachable_by_name_and_names_itself() {
-        for (name, build) in Theme::BUILT_IN {
+        for (name, _, build) in Theme::BUILT_IN {
             let theme = build();
             assert!(
                 Theme::by_name(name).is_some(),
@@ -343,7 +343,7 @@ mod tests {
         // The one property a theme cannot get wrong: text has to be distinguishable from the surface
         // it sits on, and every syntax colour from the background. Checked in OKLCH lightness, which
         // is perceptual — the whole reason the palette is stored this way.
-        for (name, build) in Theme::BUILT_IN {
+        for (name, _, build) in Theme::BUILT_IN {
             let theme = build();
             let gap = (theme.ink.l - theme.bg.l).abs();
             assert!(
@@ -392,7 +392,7 @@ mod tests {
         // The settings tab lists themes under "Dark" and "Light", and a theme filed under the wrong
         // one is a white page found under "Dark". So the declared appearance is checked against what
         // the theme looks like: its canvas, the same test a theme file is classified by.
-        for (name, build) in Theme::BUILT_IN {
+        for (name, _, build) in Theme::BUILT_IN {
             let theme = build();
             assert_eq!(
                 theme.appearance,
@@ -424,7 +424,7 @@ mod tests {
         // order, so a theme missing from it is a theme nobody can pick.
         let grouped = Theme::grouped();
         assert_eq!(grouped.len(), Theme::BUILT_IN.len());
-        for (name, _) in Theme::BUILT_IN {
+        for (name, _, _) in Theme::BUILT_IN {
             assert_eq!(
                 grouped.iter().filter(|listed| **listed == name).count(),
                 1,
@@ -460,21 +460,85 @@ mod tests {
     fn the_quizzy_themes_keep_quizzys_own_colours() {
         // The surfaces, the text and the accent are Quizzy's tokens exactly, so the editor and the
         // app it was asked to match are the same colours rather than near them.
+        // bg, bg_panel, ink, ink_dim, ink_faint, rule, rule_soft, primary — every token taken from
+        // Quizzy, so an edit to any one of them is caught, not only to the four most visible.
         let expect = [
-            ("quizzy-dark", "#1c1917", "#292524", "#fafaf9", "#14b8a6"),
-            ("quizzy-light", "#fafaf9", "#ffffff", "#1c1917", "#0f766e"),
-            ("coral-dark", "#090d16", "#1e293b", "#f1f5f9", "#ff5757"),
-            ("coral-light", "#f1f5f9", "#ffffff", "#090d16", "#d93a3a"),
-            ("sky-dark", "#05151a", "#072e33", "#e6f1f3", "#38bdf8"),
-            ("sky-light", "#f8fafc", "#ffffff", "#05151a", "#0369a1"),
-            ("amoled-black", "#000000", "#0b0b0b", "#f5f5f4", "#14b8a6"),
+            (
+                "quizzy-dark",
+                [
+                    "#1c1917", "#292524", "#fafaf9", "#a8a29e", "#78716c", "#44403c", "#3a3532",
+                    "#14b8a6",
+                ],
+            ),
+            (
+                "quizzy-light",
+                [
+                    "#fafaf9", "#ffffff", "#1c1917", "#57534e", "#a8a29e", "#d6d3d1", "#e7e5e4",
+                    "#0f766e",
+                ],
+            ),
+            (
+                "coral-dark",
+                [
+                    "#090d16", "#1e293b", "#f1f5f9", "#94a3b8", "#8391a7", "#334155", "#263247",
+                    "#ff5757",
+                ],
+            ),
+            (
+                "coral-light",
+                [
+                    "#f1f5f9", "#ffffff", "#090d16", "#475569", "#64748b", "#cbd5e1", "#e2e8f0",
+                    "#d93a3a",
+                ],
+            ),
+            (
+                "sky-dark",
+                [
+                    "#05151a", "#072e33", "#e6f1f3", "#9dbac4", "#7c9aa4", "#1d5258", "#123f45",
+                    "#38bdf8",
+                ],
+            ),
+            (
+                "sky-light",
+                [
+                    "#f8fafc", "#ffffff", "#05151a", "#3f5a63", "#5b7781", "#bfd2d7", "#dce7ea",
+                    "#0369a1",
+                ],
+            ),
+            (
+                "amoled-black",
+                [
+                    "#000000", "#0b0b0b", "#f5f5f4", "#a8a29e", "#8a847e", "#2a2a2a", "#1c1c1c",
+                    "#14b8a6",
+                ],
+            ),
         ];
-        for (name, bg, panel, ink, primary) in expect {
+        for (name, hex) in expect {
             let theme = Theme::by_name(name).unwrap();
-            assert_eq!(theme.bg.to_hex(), bg, "{name} bg");
-            assert_eq!(theme.bg_panel.to_hex(), panel, "{name} bg_panel");
-            assert_eq!(theme.ink.to_hex(), ink, "{name} ink");
-            assert_eq!(theme.primary.to_hex(), primary, "{name} primary");
+            let got = [
+                theme.bg,
+                theme.bg_panel,
+                theme.ink,
+                theme.ink_dim,
+                theme.ink_faint,
+                theme.rule,
+                theme.rule_soft,
+                theme.primary,
+            ]
+            .map(|color| color.to_hex());
+            let tokens = [
+                "bg",
+                "bg_panel",
+                "ink",
+                "ink_dim",
+                "ink_faint",
+                "rule",
+                "rule_soft",
+                "primary",
+            ];
+            for at in 0..tokens.len() {
+                assert_eq!(got[at], hex[at], "{name} {}", tokens[at]);
+            }
         }
     }
 
@@ -571,13 +635,57 @@ mod tests {
             let flipped = Theme::by_name(from).unwrap().counterpart();
             assert_eq!(flipped.name(), Some(to), "{from}");
         }
-        for (name, build) in Theme::BUILT_IN {
+        for (name, _, build) in Theme::BUILT_IN {
             assert_ne!(
                 build().counterpart().appearance,
                 build().appearance,
                 "{name}: a toggle must change the appearance"
             );
         }
+    }
+
+    #[test]
+    fn every_built_in_has_a_display_name_and_a_pair_shares_one() {
+        // The dropdown files themes under "Dark" and "Light", so a name that repeats the heading
+        // ("quizzy-dark" under Dark) is noise: the two halves of a pair go by one name, and the heading
+        // or the card's own colours say which half it is. Config keeps the slugs.
+        for (name, title, build) in Theme::BUILT_IN {
+            assert!(!title.is_empty(), "{name}");
+            assert_eq!(Theme::display_name_of(name), Some(title));
+            assert_eq!(build().display_name(), Some(title), "{name}");
+            assert!(
+                !title.to_lowercase().ends_with(" dark")
+                    && !title.to_lowercase().ends_with(" light"),
+                "{name}: `{title}` repeats its heading"
+            );
+        }
+        for (pair, title) in [
+            (["quizzy-dark", "quizzy-light"], "Quizzy"),
+            (["coral-dark", "coral-light"], "Charcoal coral"),
+            (["sky-dark", "sky-light"], "Abyss sky"),
+        ] {
+            for name in pair {
+                assert_eq!(Theme::display_name_of(name), Some(title), "{name}");
+            }
+        }
+        assert_eq!(Theme::display_name_of("amoled-black"), Some("AMOLED black"));
+        assert_eq!(
+            Theme::display_name_of("rose-pine-moon"),
+            Some("Rosé Pine Moon")
+        );
+        assert_eq!(Theme::display_name_of("dacode"), Some("DaCode"));
+        // Within one appearance no two share a name, or the list would show the same row twice.
+        for appearance in Appearance::ALL {
+            let mut titles: Vec<&str> = Theme::built_ins(appearance)
+                .map(|name| Theme::display_name_of(name).unwrap())
+                .collect();
+            let count = titles.len();
+            titles.sort_unstable();
+            titles.dedup();
+            assert_eq!(titles.len(), count, "{appearance:?}: {titles:?}");
+        }
+        // A display name is not a config name.
+        assert!(Theme::by_name("Charcoal coral").is_none());
     }
 
     #[test]
@@ -588,7 +696,7 @@ mod tests {
 
     #[test]
     fn mode_accents_stay_distinct_in_every_theme() {
-        for (name, build) in Theme::BUILT_IN {
+        for (name, _, build) in Theme::BUILT_IN {
             let theme = build();
             let mut colors: Vec<String> = Mode::ALL
                 .iter()

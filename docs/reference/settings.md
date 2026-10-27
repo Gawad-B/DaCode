@@ -112,7 +112,8 @@ without being asked is not a decision to make on their behalf, and it is the kin
 loses trust the first time it fires.
 
 **The theme row opens a list.** A click on its control, or enter or space on the row, opens a card
-under the control listing the built-ins under **Dark** and **Light**; ↑ ↓ move, enter or a click picks
+under the control listing the built-ins under **Dark** and **Light** by their display names (*Quizzy*, *Charcoal coral*,
+*Rosé Pine* — both halves of a pair share one, and the heading says which); ↑ ↓ move, enter or a click picks
 (applied live and written like any other change), esc or a click outside closes. ← → on the row step
 through the same order without opening it.
 

@@ -100,8 +100,13 @@ pub struct Theme {
     mode_c: f32,
 }
 
-/// A built-in theme: the name it is known by, and how to build it.
-pub type BuiltIn = (&'static str, fn() -> Theme);
+/// A built-in theme: the slug config knows it by, the name it is shown under, and how to build it.
+///
+/// Two names because they answer different questions. The slug is public API — `theme = "coral-dark"`
+/// in someone's init.lua — and must say which half of a pair it is. The display name is for lists
+/// that already say so: under the dropdown's "Light" heading, "Charcoal coral" is the light one, and
+/// "coral-light" would only repeat the heading.
+pub type BuiltIn = (&'static str, &'static str, fn() -> Theme);
 
 impl Default for Theme {
     fn default() -> Self {
@@ -600,27 +605,42 @@ impl Theme {
 
     /// Every theme that ships in the binary, by the name config and the settings panel use.
     pub const BUILT_IN: [BuiltIn; 13] = [
-        ("dacode", Self::dacode),
-        ("dark", Self::dark),
-        ("light", Self::light),
-        ("rose-pine", Self::rose_pine),
-        ("rose-pine-moon", Self::rose_pine_moon),
-        ("amoled", Self::amoled),
-        ("quizzy-dark", Self::quizzy_dark),
-        ("quizzy-light", Self::quizzy_light),
-        ("coral-dark", Self::coral_dark),
-        ("coral-light", Self::coral_light),
-        ("sky-dark", Self::sky_dark),
-        ("sky-light", Self::sky_light),
-        ("amoled-black", Self::amoled_black),
+        ("dacode", "DaCode", Self::dacode),
+        ("dark", "Dark", Self::dark),
+        ("light", "Light", Self::light),
+        ("rose-pine", "Rosé Pine", Self::rose_pine),
+        ("rose-pine-moon", "Rosé Pine Moon", Self::rose_pine_moon),
+        ("amoled", "AMOLED", Self::amoled),
+        // The names Quizzy's own theme picker uses.
+        ("quizzy-dark", "Quizzy", Self::quizzy_dark),
+        ("quizzy-light", "Quizzy", Self::quizzy_light),
+        ("coral-dark", "Charcoal coral", Self::coral_dark),
+        ("coral-light", "Charcoal coral", Self::coral_light),
+        ("sky-dark", "Abyss sky", Self::sky_dark),
+        ("sky-light", "Abyss sky", Self::sky_light),
+        ("amoled-black", "AMOLED black", Self::amoled_black),
     ];
 
     /// The built-ins of one appearance, in the order [`Theme::BUILT_IN`] lists them.
     pub fn built_ins(appearance: Appearance) -> impl Iterator<Item = &'static str> {
         Self::BUILT_IN
             .iter()
-            .filter(move |(_, build)| build().appearance == appearance)
-            .map(|(name, _)| *name)
+            .filter(move |(_, _, build)| build().appearance == appearance)
+            .map(|(name, _, _)| *name)
+    }
+
+    /// The name a built-in is shown under, by its slug: what the dropdown, the theme row's control
+    /// and the wizard's cards say. `None` for a name that is not a built-in.
+    pub fn display_name_of(slug: &str) -> Option<&'static str> {
+        Self::BUILT_IN
+            .iter()
+            .find(|(name, _, _)| *name == slug)
+            .map(|(_, title, _)| *title)
+    }
+
+    /// This theme's display name, if it is one of the built-ins.
+    pub fn display_name(&self) -> Option<&'static str> {
+        self.name().and_then(Self::display_name_of)
     }
 
     /// Every built-in, the dark ones first and then the light: the order every list of themes shows
@@ -639,6 +659,10 @@ impl Theme {
     /// Charcoal coral. AMOLED black has no light side; Quizzy gives it Quizzy light, and so does this.
     /// Anything else goes to the plain [`Theme::dark`] or [`Theme::light`], which is what the toggle
     /// always did.
+    ///
+    /// Not symmetric for those last two: Quizzy light's counterpart is Quizzy dark, not AMOLED black,
+    /// and Light's is Dark, not DaCode. `toggle_theme` remembers the theme it left so a second toggle
+    /// goes back to it; this function has no memory and does not try to.
     pub fn counterpart(&self) -> Theme {
         let twin = self.name().and_then(|name| match name {
             "amoled-black" => Some("quizzy-light".to_string()),
@@ -659,19 +683,19 @@ impl Theme {
         let wanted = name.trim().to_ascii_lowercase().replace([' ', '_'], "-");
         Self::BUILT_IN
             .iter()
-            .find(|(known, _)| *known == wanted)
-            .map(|(_, build)| build())
+            .find(|(known, _, _)| *known == wanted)
+            .map(|(_, _, build)| build())
     }
 
     /// The name of this theme, if it is one of the built-ins.
     pub fn name(&self) -> Option<&'static str> {
         Self::BUILT_IN
             .iter()
-            .find(|(_, build)| {
+            .find(|(_, _, build)| {
                 build().bg.to_hex() == self.bg.to_hex()
                     && build().syntax.keyword.to_hex() == self.syntax.keyword.to_hex()
             })
-            .map(|(name, _)| *name)
+            .map(|(name, _, _)| *name)
     }
 
     /// The logo's amber — the block in the mark and "Da" in the wordmark.

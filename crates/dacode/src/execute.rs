@@ -118,8 +118,20 @@ pub fn execute(
                 dacode_display::WrapMode::None => dacode_display::WrapMode::Word,
             };
         }
-        // The same theme's other half where it has one, so toggling Charcoal coral stays coral.
-        Action::ToggleTheme => state.theme = state.theme.counterpart(),
+        // The same theme's other half where it has one, so toggling Charcoal coral stays coral, and
+        // back to where it came from when the other half does not lead there: a second toggle from
+        // AMOLED black is AMOLED black again, not Quizzy dark. A remembered theme counts only while
+        // the theme on screen is the one it toggled to, so a theme chosen since is not undone.
+        Action::ToggleTheme => {
+            let next = match state.theme_toggled_from.take() {
+                Some(back) if back.counterpart() == state.theme => back,
+                _ => state.theme.counterpart(),
+            };
+            if next.counterpart() != state.theme {
+                state.theme_toggled_from = Some(state.theme);
+            }
+            state.theme = next;
+        }
         Action::IncreaseFontSize => {
             state.typography =
                 dacode_theme::Typography::with_code_size(state.typography.code_size + 1.0);
