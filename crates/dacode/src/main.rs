@@ -4856,12 +4856,7 @@ impl App {
             KeyCode::Char('f') if key.ctrl && key.shift && prompt.is_search() => {
                 let query = prompt.input.clone();
                 self.state.prompt = None;
-                if !query.is_empty() {
-                    self.state.show_results(dacode::results::Results::start(
-                        &self.state.project_root,
-                        &query,
-                    ));
-                }
+                self.state.open_search(&query);
             }
             KeyCode::Char(c) if !key.ctrl && !key.alt => {
                 prompt.field_mut().push(c);

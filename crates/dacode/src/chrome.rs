@@ -568,6 +568,23 @@ impl EditorState {
         self.tree.is_some() || self.search_showing()
     }
 
+    /// Shows the search view with the keys in its query box, searching for `query` unless it is
+    /// empty or already what the view is searching for.
+    pub fn open_search(&mut self, query: &str) {
+        let root = self.project_root.clone();
+        self.close_sidebar();
+        self.chrome.activity = Some(crate::layout::Activity::Search);
+        let panel = self
+            .search
+            .get_or_insert_with(|| crate::search_panel::SearchPanel::new(""));
+        if !query.is_empty() && query != panel.query {
+            panel.query = query.to_string();
+            panel.restart(&root);
+        }
+        panel.field = crate::search_panel::Field::Query;
+        self.focus = crate::focus::Focus::Sidebar;
+    }
+
     /// Whether the sidebar is showing the search view.
     pub fn search_showing(&self) -> bool {
         self.tree.is_none()

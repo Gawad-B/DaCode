@@ -385,18 +385,7 @@ pub fn execute(
             // people want from a bare invocation, and what VSCode puts there too. A search already
             // open keeps its query when the cursor is on nothing.
             let word = word_under_cursor(state);
-            let root = state.project_root.clone();
-            state.close_sidebar();
-            state.chrome.activity = Some(crate::layout::Activity::Search);
-            let panel = state
-                .search
-                .get_or_insert_with(|| crate::search_panel::SearchPanel::new(""));
-            if !word.is_empty() && word != panel.query {
-                panel.query = word;
-                panel.restart(&root);
-            }
-            panel.field = crate::search_panel::Field::Query;
-            state.focus = crate::focus::Focus::Sidebar;
+            state.open_search(&word);
         }
     }
 

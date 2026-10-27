@@ -27,8 +27,9 @@
 > - Built for my own use, published so anyone can try it.
 
 Rust, `winit` + `wgpu` + `glyphon` — drawn straight onto the GPU, with no GUI framework and no web
-view. Tree-sitter highlighting, language servers over LSP, splits, a file tree, a git gutter and a
-command palette. Vim's grammar if you want it, a conventional editor if you don't.
+view. Tree-sitter highlighting, language servers over LSP, splits, a file tree, project-wide search
+and replace, a git gutter and a command palette. Vim's grammar if you want it, a conventional editor
+if you don't.
 
 One rule is enforced above every other: **nothing unbounded ever runs on the UI thread.** That is why
 a keystroke costs the same in a 100,000-line file as in a ten-line one — about 7 µs either way — and
@@ -100,6 +101,7 @@ keyboard and then gets out of the way.
 | <kbd>F1</kbd> | every key that works *right now*, in the grammar you actually chose |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>P</kbd> | every command, searchable, with its key beside it |
 | <kbd>ctrl</kbd>+<kbd>,</kbd> | settings, as a tab: searchable, explained, and written to `init.lua` for you |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>F</kbd> | search the whole project, and replace, in the sidebar |
 
 <img src="docs/images/commands.png" alt="The command palette" width="49%"> <img src="docs/images/settings.png" alt="The settings tab" width="49%">
 
@@ -118,6 +120,17 @@ palette, the help panel and the menus read. A test presses each of them through 
 a shortcut this documentation claims that did nothing would fail the build.
 
 [commands]: crates/dacode-input/src/commands.rs
+
+## Search and replace across the project
+
+<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>F</kbd>, or the magnifier in the icon column, opens search in
+the sidebar, as in VSCode: a query box with match-case, whole-word and regex toggles
+(<kbd>alt</kbd>+<kbd>C</kbd>, <kbd>alt</kbd>+<kbd>W</kbd>, <kbd>alt</kbd>+<kbd>R</kbd>), a replace
+box, and the results grouped by file as they stream in. **All** replaces every match in the project.
+It rewrites files and cannot be undone, so it asks to be pressed twice, and it leaves alone any file
+you have open with unsaved changes. <kbd>ctrl</kbd>+<kbd>F</kbd> is still search in this file.
+
+![Search and replace in the sidebar](docs/images/search.png)
 
 ## Language support
 
@@ -144,13 +157,15 @@ and brings its import with it; formatting works through the server when it can a
 
 ## Status
 
-Used daily by its author on Linux, and run on Windows since 0.3.0 — where real use immediately found
-things no test could, which is what 0.4.1 and 0.4.2 are both made of. **Nobody has ever run DaCode on macOS.**
+1.0.0 is the current release. DaCode is used daily by its author on Linux, and builds, installs and
+passes its tests on Windows, where real use has found things no test could. **Nobody has ever run
+DaCode on macOS.**
 
 Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no integrated terminal, no git blame, no
 structural text objects, no macOS packaging. Known limitations, stated rather than hidden: buffer
-search is still linear in the document, opening a file is still synchronous (though bounded), and
-only the *active* buffer gets a file watcher, a git diff and a language server.
+search is still linear in the document, opening a file is still synchronous (though bounded), only
+the *active* buffer gets a file watcher, a git diff and a language server, and replacing across the
+project is not undoable.
 
 ## Licence
 
