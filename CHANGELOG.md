@@ -9,6 +9,8 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-27
+
 ### Changed
 
 - A new interface, shaped like VSCode and Zed: a title bar with the logo, a menu bar, a search box
@@ -471,7 +473,8 @@ language-server support, drawn directly on the GPU with wgpu.
 - Packaging for deb, rpm, Windows and a portable tarball, with a desktop entry and window icon that
   the desktop actually picks up.
 
-[Unreleased]: https://github.com/Gawad-B/Vex/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/Gawad-B/Vex/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Gawad-B/Vex/compare/v0.4.3...v1.0.0
 [0.4.3]: https://github.com/Gawad-B/Vex/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/Gawad-B/Vex/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/Gawad-B/Vex/compare/v0.4.0...v0.4.1

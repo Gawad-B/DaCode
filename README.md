@@ -39,20 +39,20 @@ uninstaller.
 **Debian, Ubuntu, Mint**
 
 ```sh
-sudo apt install ./dacode_0.4.3_amd64.deb
+sudo apt install ./dacode_1.0.0_amd64.deb
 ```
 
 **Fedora, RHEL, openSUSE**
 
 ```sh
-sudo dnf install ./dacode-0.4.3-1.x86_64.rpm
+sudo dnf install ./dacode-1.0.0-1.x86_64.rpm
 ```
 
 **Any Linux, no package manager**
 
 ```sh
-tar xzf dacode-0.4.3-x86_64-linux.tar.gz
-./dacode-0.4.3-x86_64-linux/install.sh        # into ~/.local, no root needed
+tar xzf dacode-1.0.0-x86_64-linux.tar.gz
+./dacode-1.0.0-x86_64-linux/install.sh        # into ~/.local, no root needed
 ```
 
 **From source** — needs Rust 1.85 or newer.

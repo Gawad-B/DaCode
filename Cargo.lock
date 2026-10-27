@@ -585,7 +585,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dacode"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-buffer"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "dacode-text",
  "proptest",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-display"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "dacode-text",
  "proptest",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-import"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "dacode-input",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-input"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "dacode-text",
  "dacode-theme",
@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-lsp"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "dacode-text",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-lua"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "dacode-input",
@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-project"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "dacode-text",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-render"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-syntax"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "criterion",
  "dacode-text",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-text"
-version = "0.4.3"
+version = "1.0.0"
 dependencies = [
  "proptest",
  "ropey",
@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-theme"
-version = "0.4.3"
+version = "1.0.0"
 
 [[package]]
 name = "derive_arbitrary"
