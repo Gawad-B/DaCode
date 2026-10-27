@@ -18,11 +18,24 @@ deliberate choice, not an omission.
 
 ## What drives the page
 
-**One hue.** `--mode-h` on the root element is the only thing that changes when the mode changes;
-every accent on the page is `oklch(var(--mode-l) var(--mode-c) var(--mode-h))`. That is the identity
-from the handoff — one lightness, one chroma, four hues, so the modes read as four states of one
-instrument rather than four themes. `--mode-l` is the only token the light theme moves (0.74 → 0.52),
-so accents stay legible on paper.
+**True black and one teal.** The page is dark-only: `--bg` is `#000000` and the accent is teal
+`#14b8a6`. Every other colour in `:root` in `styles.css` is a step from one of those two — near-black
+surfaces, low-alpha or teal-grey hairlines, grey text, lighter/darker/thinner teals for hover,
+pressed and tint. Use the tokens, never a literal.
+
+**The editor's mode hues are the exception.** `--mode-h` on the root element is the only thing that
+changes when the mode changes, and `oklch(var(--mode-l) var(--mode-c) var(--mode-h))` colours only
+what shows a mode: the caret by the wordmark, the mode panel, the mini editor's cursor, the cursor
+set and the swatches. One lightness, one chroma, four hues — left exactly as the editor draws them.
+
+**The logo.** `src/assets/mark.png` is the ض mark built from the editor's coverage mask
+(`crates/dacode-render/assets/mark.png`: red is the letter, drawn in the editor's light ink; green is
+the block, in the brand amber), transparent so it sits on black. It is in the header, the hero, the
+name section, the identity card and the footer. `public/favicon.png` and `apple-touch-icon.png` are
+the finished app icons from `packaging/linux/icons/hicolor/`, on their own dark tile.
+
+**Bullets, not paragraphs.** Every block of copy is a list of one-line facts, rendered by `Bullets` in
+`App.tsx`; keep each under about twenty words.
 
 **The mode cycles until it is touched.** `useMode` advances every 3.4s and stops for good on the
 first click or keypress, because a control that keeps moving after you have taken hold of it has
@@ -61,7 +74,7 @@ The screenshots are imported from `../docs/images`, not copied — two copies of
 the moment one of them is regenerated. `vite.config.ts` allows the parent directory for that reason.
 The same goes for the face and the logo: `styles.css` declares Fira Code with `@font-face` from the
 editor's own `crates/dacode-render/fonts/FiraCode-Regular.ttf` (OFL, licence beside it, credited in
-the footer), and `main.tsx` sets the favicon from `logo/dacode/`. There are no font links.
+the footer). There are no font links.
 
 **One face, one weight.** As in the editor, everything is Fira Code Regular. Headings rank by size,
 case, tracking and colour; `font-synthesis: none` and the `h1`–`h3` reset keep the browser from

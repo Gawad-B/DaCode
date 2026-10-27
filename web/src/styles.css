@@ -1,8 +1,9 @@
 /*
-  Tokens are exactly the ones in the design handoff. The mode accent is not a
-  colour here but a *hue*: one lightness and one chroma for all four modes, so
-  changing `--mode-h` alone moves every accent on the page together. That is the
-  whole identity — four states of one instrument, never four themes.
+  The page is true black with one teal accent; see the :root block. The editor's
+  mode accent is kept apart from that, and is not a colour but a *hue*: one
+  lightness and one chroma for all four modes, so changing `--mode-h` alone moves
+  every mode-coloured thing together — the caret by the wordmark, the mode panel
+  and the cursor set. Four states of one instrument, never four themes.
 */
 
 /*
@@ -21,20 +22,48 @@
 }
 
 :root {
-  --bg: oklch(0.165 0.008 70);
-  --bg-alt: oklch(0.19 0.009 70);
-  --bg-panel: oklch(0.215 0.01 70);
-  --rule: oklch(0.3 0.01 70);
-  --rule-soft: oklch(0.25 0.009 70);
-  --ink: oklch(0.91 0.012 80);
-  --ink-dim: oklch(0.7 0.012 75);
-  --ink-faint: oklch(0.55 0.01 72);
-  --syn-kw: oklch(0.74 0.12 300);
-  --syn-type: oklch(0.83 0.09 60);
-  --syn-fn: oklch(0.82 0.09 215);
-  --syn-comment: oklch(0.6 0.02 60);
-  --shadow: oklch(0.05 0 0 / 0.6);
+  /*
+    True black and one teal; every other colour is a step from one of the two.
+    Surfaces are near-black greys, hairlines are low-alpha white or a dark
+    teal-grey, text is off-white and greys, and the accent's hover, pressed and
+    tint are the same teal lighter, darker or thinner. The editor-mode hues
+    below (--mode-*) are deliberately outside this rule: they are the editor's
+    own language for modal state, shown here exactly as it draws them.
+  */
+  color-scheme: dark;
 
+  --black: #000000;
+  --teal: #14b8a6;
+
+  --bg: var(--black);
+  --bg-alt: #0a0a0a;
+  --bg-panel: #111111;
+  --bg-raised: #161616;
+
+  --rule: #1d2b29;
+  --rule-soft: rgba(255, 255, 255, 0.07);
+  --rule-strong: rgba(255, 255, 255, 0.16);
+
+  --ink: #ededed;
+  --ink-dim: #a6a6a6;
+  --ink-faint: #7a7a7a;
+
+  --accent: var(--teal);
+  --accent-hover: #2dd4bf;
+  --accent-pressed: #0d9488;
+  --accent-soft: #5eead4;
+  --accent-deep: #115e59;
+  --accent-tint: rgba(20, 184, 166, 0.12);
+  --accent-wash: rgba(20, 184, 166, 0.3);
+
+  /* The mini editor's syntax colours, as shades of the same two. */
+  --syn-kw: var(--accent);
+  --syn-type: var(--accent-soft);
+  --syn-fn: var(--ink);
+  --syn-comment: var(--ink-faint);
+  --shadow: rgba(0, 0, 0, 0.6);
+
+  /* Editor-mode accents: unchanged, and used only where the page shows a mode. */
   --mode-l: 0.74;
   --mode-c: 0.13;
   --mode-h: 250;
@@ -53,28 +82,6 @@
 
   /* Under 80ms, per the handoff: ambient tints may cross-fade, nothing else. */
   --tint: 70ms linear;
-}
-
-[data-theme="light"] {
-  --bg: oklch(0.965 0.008 85);
-  --bg-alt: oklch(0.978 0.008 85);
-  --bg-panel: oklch(0.99 0.006 85);
-  --rule: oklch(0.88 0.012 85);
-  --rule-soft: oklch(0.91 0.01 85);
-  --ink: oklch(0.24 0.015 70);
-  --ink-dim: oklch(0.47 0.015 70);
-  --ink-faint: oklch(0.64 0.012 70);
-  --syn-kw: oklch(0.42 0.13 300);
-  --syn-type: oklch(0.44 0.11 45);
-  --syn-fn: oklch(0.45 0.1 230);
-  --syn-comment: oklch(0.52 0.02 60);
-  --shadow: oklch(0.5 0.01 70 / 0.22);
-
-  /* Accents darken on paper so they stay legible at the same chroma. */
-  --mode-l: 0.52;
-
-  /* The bright amber reads as yellow on white; the logo sheet gives a deeper one. */
-  --brand: oklch(0.6212 0.129 72.8);
 }
 
 /* Every mode-derived colour comes from the three variables above and nothing else. */
@@ -130,7 +137,7 @@ body {
 }
 
 ::selection {
-  background: oklch(var(--mode-l) var(--mode-c) var(--mode-h) / 0.3);
+  background: var(--accent-wash);
 }
 
 a {
@@ -162,7 +169,7 @@ em {
 
 /* No border radius anywhere. Every corner is square. */
 :focus-visible {
-  outline: 2px solid var(--mode);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -215,10 +222,10 @@ em {
   top: 0;
   z-index: 20;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 20px;
-  padding: 26px var(--pad-x);
-  background: color-mix(in oklab, var(--bg) 88%, transparent);
+  padding: 22px var(--pad-x);
+  background: rgba(0, 0, 0, 0.86);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--rule);
   transition:
@@ -268,7 +275,7 @@ em {
 }
 
 .nav-links a:hover {
-  color: var(--mode);
+  color: var(--accent-hover);
 }
 
 .chip {
@@ -283,7 +290,100 @@ em {
 
 .chip:hover {
   color: var(--ink);
-  border-color: var(--ink-faint);
+  border-color: var(--rule-strong);
+}
+
+/* ── Logo and bullets ────────────────────────────────────────────────────── */
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo {
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.hero-mark {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+/*
+  One fact per line. The marker is a small teal square — the page's accent, and
+  a nod to the block in the mark — rather than a round bullet.
+*/
+.bullets {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-dim);
+}
+
+.bullets li {
+  position: relative;
+  padding-left: 20px;
+}
+
+.bullets li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 0.62em;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+}
+
+/* Fira Code has no Arabic, so this span alone falls back to a face that does. */
+.arabic {
+  font-family: "Noto Naskh Arabic", "Noto Sans Arabic", "Geeza Pro", "Segoe UI", "Arial", sans-serif;
+  font-size: 1.25em;
+  color: var(--brand);
+  unicode-bidi: isolate;
+}
+
+/* ── The name and the mark ───────────────────────────────────────────────── */
+
+.name {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 56px;
+  align-items: center;
+  padding: 62px var(--pad-x) 68px;
+}
+
+.name > * {
+  min-width: 0;
+}
+
+.name-mark {
+  padding: 22px;
+  background: var(--bg-panel);
+  border: 1px solid var(--rule);
+}
+
+.name h2 {
+  font-family: var(--serif);
+  font-size: clamp(26px, 2.6vw, 34px);
+  letter-spacing: -0.03em;
+  font-weight: 400;
+  margin: 0 0 24px;
+}
+
+.name .bullets {
+  font-size: 15px;
+  max-width: 62ch;
 }
 
 /* ── Hero ────────────────────────────────────────────────────────────────── */
@@ -329,13 +429,30 @@ em {
 }
 
 .headline em {
-  color: var(--mode);
-  transition: color var(--tint);
+  color: var(--accent);
+}
+
+.project-note {
+  display: grid;
+  gap: 10px;
+  max-width: 46ch;
+  padding: 14px 16px;
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-deep);
+  border-left: 3px solid var(--accent);
+}
+
+.project-note .label {
+  color: var(--accent-soft);
+}
+
+.project-note ul {
+  margin: 0;
 }
 
 .hero-blurb {
   font-size: 15px;
-  max-width: 52ch;
+  max-width: 54ch;
 }
 
 .specs {
@@ -365,7 +482,7 @@ em {
   gap: 16px;
   padding: 15px 22px;
   background: var(--bg-panel);
-  border: 1px solid var(--mode);
+  border: 1px solid var(--accent);
   color: var(--ink);
   font-size: 14px;
   cursor: pointer;
@@ -376,7 +493,12 @@ em {
 }
 
 .dl-primary:hover {
-  background: oklch(var(--mode-l) var(--mode-c) var(--mode-h) / 0.12);
+  background: var(--accent-tint);
+  border-color: var(--accent-hover);
+}
+
+.dl-primary:active {
+  border-color: var(--accent-pressed);
 }
 
 .dl-primary[aria-disabled="true"] {
@@ -396,7 +518,7 @@ em {
 }
 
 .dl-primary .arrow {
-  color: var(--mode);
+  color: var(--accent);
   transition: transform 160ms ease;
 }
 
@@ -429,8 +551,8 @@ em {
 }
 
 .dl-alt:hover {
-  color: var(--mode);
-  border-color: var(--mode);
+  color: var(--accent-hover);
+  border-color: var(--accent);
 }
 
 .install-box {
@@ -447,7 +569,7 @@ em {
 }
 
 .install-box .sigil {
-  color: var(--mode);
+  color: var(--accent);
   transition: color var(--tint);
 }
 
@@ -636,6 +758,7 @@ em {
 }
 
 .numeral {
+  color: var(--accent);
   font-family: var(--serif);
   font-size: 40px;
   line-height: 1;
@@ -651,9 +774,8 @@ em {
   letter-spacing: -0.01em;
 }
 
-.principle p {
-  margin: 0;
-  font-size: 14px;
+.principle .bullets {
+  font-size: 13.5px;
 }
 
 /* ── Grammar ─────────────────────────────────────────────────────────────── */
@@ -704,7 +826,7 @@ em {
 }
 
 .keyrow .keys {
-  color: var(--mode);
+  color: var(--accent);
   transition: color var(--tint);
 }
 
@@ -732,8 +854,8 @@ em {
 }
 
 .toggle-row button[aria-pressed="true"] {
-  color: var(--mode);
-  border-color: var(--mode);
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .toggle-row button:hover {
@@ -787,7 +909,7 @@ em {
 }
 
 .shot-tabs button[aria-pressed="true"] {
-  color: var(--mode);
+  color: var(--accent);
   background: var(--bg-panel);
 }
 
@@ -828,7 +950,7 @@ em {
   color: var(--ink-dim);
   max-width: 68ch;
   /* Captions differ in length; without a floor the page jumps on every tab. */
-  min-height: 10.9em;
+  min-height: 6.6em;
 }
 
 /* ── Releases ────────────────────────────────────────────────────────────── */
@@ -883,26 +1005,26 @@ em {
   font-weight: 400;
   line-height: 1.3;
   letter-spacing: -0.01em;
-  color: var(--mode-insert);
-  transition: color var(--tint);
+  color: var(--accent);
 }
 
 .card .body {
   margin: 0;
+  gap: 6px;
   font-family: var(--sans);
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--ink-dim);
 }
 
-/* A feature is not a release: its title is ink, so the green keeps meaning "shipped". */
+/* A feature is not a release: its title is ink, so the teal keeps meaning "shipped". */
 .card.feature .name {
   color: var(--ink);
 }
 
 .card.current {
   background: var(--bg-panel);
-  outline: 2px solid var(--mode);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
   transition:
     outline-color var(--tint),
@@ -910,7 +1032,7 @@ em {
 }
 
 .card.current .name {
-  color: var(--mode);
+  color: var(--accent-hover);
 }
 
 .card.current .body {
@@ -919,13 +1041,13 @@ em {
 
 /* On main, not in a download: marked, but not with the outline the current release wears. */
 .card.unreleased {
-  outline: 1px dashed var(--mode);
+  outline: 1px dashed var(--accent-deep);
   outline-offset: -1px;
   transition: outline-color var(--tint);
 }
 
 .card.unreleased .name {
-  color: var(--mode);
+  color: var(--accent-soft);
 }
 
 .card.next .name {
@@ -1018,10 +1140,8 @@ em {
   margin: 0;
 }
 
-.scope p {
-  margin: 0;
-  font-size: 14.5px;
-  max-width: 44ch;
+.scope .bullets {
+  max-width: 48ch;
 }
 
 .stamp {
@@ -1034,8 +1154,7 @@ em {
 .stamp span:first-child {
   width: 26px;
   height: 2px;
-  background: var(--mode);
-  transition: background-color var(--tint);
+  background: var(--accent);
 }
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
@@ -1060,7 +1179,7 @@ em {
 }
 
 .footer a:hover {
-  color: var(--mode);
+  color: var(--accent-hover);
 }
 
 /* ── Scroll reveal ───────────────────────────────────────────────────────── */
@@ -1120,7 +1239,26 @@ em {
 
 @media (max-width: 680px) {
   :root {
-    --pad-x: 22px;
+    --pad-x: 16px;
+  }
+
+  .name {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .name-mark {
+    width: fit-content;
+  }
+
+  .name-mark .logo {
+    width: 120px;
+    height: 120px;
+  }
+
+  .hero-mark .logo {
+    width: 80px;
+    height: 80px;
   }
 
   .nav {

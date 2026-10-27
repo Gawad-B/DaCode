@@ -3,25 +3,31 @@ import {
   BLURBS,
   FLAT_KEYS,
   HERO,
+  GRAMMAR,
   IDENTITY_CAPTIONS,
   MODAL_KEYS,
   MODES,
   MODE_HUE,
+  NAME_BULLETS,
+  PROJECT_NOTE,
   OVERHAUL,
   PRINCIPLES,
   RELEASES,
   SCOPE,
 } from "./data";
-import { useMode, usePrefersReducedMotion, useReveal, useScrolled, useTheme } from "./hooks";
+import { useMode, usePrefersReducedMotion, useReveal, useScrolled } from "./hooks";
 import { MiniEditor } from "./components/MiniEditor";
 import { Download } from "./components/Download";
 import { Screens } from "./components/Screens";
 import { useRelease } from "./useRelease";
+// The ض mark, built from the editor's own coverage mask
+// (crates/dacode-render/assets/mark.png): ink in the editor's light grey, the
+// block in the logo's amber, transparent around both so it sits on true black.
+import mark from "./assets/mark.png";
 
 export default function App() {
   const reduced = usePrefersReducedMotion();
   const { mode, setMode } = useMode(reduced);
-  const { theme, toggle } = useTheme();
   const scrolled = useScrolled();
   // Read rather than written in, so the release table stays the only place a version lives.
   const release = useRelease();
@@ -38,7 +44,10 @@ export default function App() {
   return (
     <div className="page">
       <header className={`nav ${scrolled ? "condensed" : ""}`}>
-        <Wordmark />
+        <a href="#top" className="brand" aria-label="DaCode, back to top">
+          <Logo size={30} />
+          <Wordmark />
+        </a>
         <span className="caret" />
         <span style={{ flex: 1 }} />
         {/* One link per section that exists, in the order they appear. */}
@@ -48,23 +57,35 @@ export default function App() {
           <a href="#editor">editor</a>
           <a href="#keys">keys</a>
           <a href="#releases">releases</a>
+          <a href="#name">name</a>
           <a href="#identity">identity</a>
           <a href="#scope">scope</a>
-          <button className="chip label" onClick={toggle}>
-            {theme === "dark" ? "light" : "dark"}
-          </button>
         </nav>
       </header>
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
-      <section className="section hero">
+      <section className="section hero" id="top">
         <div className="hero-left rule-v">
+          <div className="hero-mark reveal">
+            <Logo size={112} />
+            <Wordmark style={{ fontSize: 40 }} />
+          </div>
           <h1 className="headline reveal">
             A code editor that never <em>stalls</em> on your keystroke.
           </h1>
-          <p className="prose hero-blurb reveal" style={{ "--delay": "80ms" } as React.CSSProperties}>
-            {HERO.blurb}
-          </p>
+          <Bullets
+            items={HERO.bullets}
+            className="hero-blurb reveal"
+            style={{ "--delay": "80ms" } as React.CSSProperties}
+          />
+          <aside
+            className="project-note reveal"
+            aria-label={PROJECT_NOTE.title}
+            style={{ "--delay": "120ms" } as React.CSSProperties}
+          >
+            <span className="label">{PROJECT_NOTE.title}</span>
+            <Bullets items={PROJECT_NOTE.bullets} />
+          </aside>
           <div className="reveal" style={{ "--delay": "160ms" } as React.CSSProperties}>
             <Download reduced={reduced} />
           </div>
@@ -100,7 +121,7 @@ export default function App() {
 
           <MiniEditor mode={mode} />
 
-          <p className="prose" style={{ fontSize: 13.5, margin: 0, minHeight: "6.5em" }}>
+          <p className="prose" style={{ fontSize: 13.5, margin: 0, minHeight: "3.4em" }}>
             {BLURBS[mode]}
           </p>
           <span className="label" style={{ fontSize: 9.5 }}>
@@ -117,14 +138,9 @@ export default function App() {
             key={p.numeral}
             style={{ "--delay": `${i * 90}ms` } as React.CSSProperties}
           >
-            <div
-              className="numeral"
-              style={{ color: `oklch(var(--mode-l) var(--mode-c) ${p.hue})` }}
-            >
-              {p.numeral}
-            </div>
+            <div className="numeral">{p.numeral}</div>
             <h3>{p.title}</h3>
-            <p className="prose">{p.body}</p>
+            <Bullets items={p.bullets} />
           </div>
         ))}
       </section>
@@ -145,7 +161,7 @@ export default function App() {
               style={{ "--delay": `${(i % 3) * 70}ms` } as React.CSSProperties}
             >
               <h3 className="name">{f.title}</h3>
-              <p className="body">{f.body}</p>
+              <Bullets items={f.bullets} className="body" />
             </div>
           ))}
         </RuledGrid>
@@ -161,19 +177,7 @@ export default function App() {
             <br />
             Or none at all.
           </h2>
-          <p className="prose reveal" style={{ fontSize: 15, maxWidth: "42ch", margin: 0 }}>
-            A cursor is a one-wide selection with a primary, so every operator maps over the set
-            and multi-cursor is never a special case. Turn the Vim keys off and you get a real
-            conventional editor rather than a modal one with the modes hidden — the keys you
-            already know, because muscle memory is not something an editor gets to have opinions
-            about.
-          </p>
-          <p className="prose reveal" style={{ fontSize: 13, maxWidth: "42ch", margin: 0 }}>
-            Both columns come from one table in the source, which is also what the command
-            palette, the F1 help panel and the menu bar read. A test presses every key in it through
-            the real grammar, so a shortcut this page claims that did nothing would fail the
-            build.
-          </p>
+          <Bullets items={GRAMMAR} className="reveal" style={{ maxWidth: "46ch" }} />
         </div>
 
         <div className="split-right">
@@ -222,6 +226,31 @@ export default function App() {
         </RuledGrid>
       </section>
 
+      {/* ── The name and the mark ─────────────────────────────────────────── */}
+      <section className="section name" id="name">
+        <div className="name-mark reveal">
+          <Logo size={176} />
+        </div>
+        <div className="name-text">
+          <h2 className="reveal">The name and the mark</h2>
+          <ul className="bullets reveal">
+            {NAME_BULLETS.map((b) => (
+              <li key={b.text}>
+                {b.text}
+                {b.arabic && (
+                  <>
+                    {" "}
+                    <span className="arabic" lang="ar" dir="rtl" title={b.arabicLabel}>
+                      {b.arabic}
+                    </span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
       {/* ── Identity ─────────────────────────────────────────────────────── */}
       <section className="section identity" id="identity">
         <h2 className="reveal">Identity</h2>
@@ -232,7 +261,8 @@ export default function App() {
               className="spec-box"
               style={{ alignItems: "center", justifyContent: "center", gap: 4 }}
             >
-              <Wordmark style={{ fontSize: 44 }} />
+              <Logo size={52} />
+              <Wordmark style={{ fontSize: 40, marginLeft: 10 }} />
               <span style={{ width: 9, height: 40, background: "var(--mode)" }} />
             </div>
             <span className="spec-caption">{IDENTITY_CAPTIONS.mark}</span>
@@ -303,11 +333,11 @@ export default function App() {
       <section className="scope" id="scope">
         <div className="rule-v">
           <h2 className="reveal">{SCOPE.notTitle}</h2>
-          <p className="prose reveal">{SCOPE.not}</p>
+          <Bullets items={SCOPE.not} className="reveal" />
         </div>
         <div className="alt">
           <h2 className="reveal">{SCOPE.successTitle}</h2>
-          <p className="prose reveal">{SCOPE.success}</p>
+          <Bullets items={SCOPE.success} className="reveal" />
           <div className="stamp label reveal">
             <span />
             <span>{SCOPE.stamp}</span>
@@ -316,6 +346,7 @@ export default function App() {
       </section>
 
       <footer className="footer">
+        <Logo size={24} />
         <Wordmark style={{ fontSize: 20 }} />
         <span className="caret" style={{ height: 14, width: 6 }} />
         <span style={{ flex: 1 }} />
@@ -326,6 +357,32 @@ export default function App() {
         <span className="label">mit licence · fira code under the ofl</span>
       </footer>
     </div>
+  );
+}
+
+/** The ض mark. Decorative beside the wordmark, which already says the name. */
+function Logo({ size }: { size: number }) {
+  return (
+    <img className="logo" src={mark} width={size} height={size} alt="" aria-hidden="true" />
+  );
+}
+
+/** One fact per line: the page is bullets, never paragraphs. */
+function Bullets({
+  items,
+  className,
+  style,
+}: {
+  items: string[];
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <ul className={`bullets ${className ?? ""}`} style={style}>
+      {items.map((t) => (
+        <li key={t}>{t}</li>
+      ))}
+    </ul>
   );
 }
 

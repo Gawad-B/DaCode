@@ -58,7 +58,11 @@ export function Screens() {
         </div>
       </div>
 
-      <p className="shot-caption reveal">{shot.caption}</p>
+      <ul className="bullets shot-caption reveal">
+        {shot.bullets.map((b) => (
+          <li key={b}>{b}</li>
+        ))}
+      </ul>
     </section>
   );
 }

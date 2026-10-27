@@ -159,7 +159,7 @@ export function platformFor(os: Os, release: Release): Platform {
         },
         pending: null,
         alternatives: [],
-        note: "Per-user, under %LOCALAPPDATA%\\Programs\\dacode — no admin prompt. Adds a Start Menu entry, dacode on your PATH, “Open with DaCode” on a folder, and an uninstaller.",
+        note: "Per-user install, no admin prompt. Start Menu, PATH, “Open with DaCode”, uninstaller.",
         prompt: ">",
         command: ".\\dacode-setup.exe",
       };
@@ -179,7 +179,7 @@ export function platformFor(os: Os, release: Release): Platform {
           rpm && { label: ".rpm — Fedora, RHEL, openSUSE", detail: rpm.name, url: rpm.url, size: rpm.size },
           tar && { label: ".tar.gz — any distribution", detail: tar.name, url: tar.url, size: tar.size },
         ]),
-        note: "Debian, Ubuntu and Mint. The tarball installs into ~/.local and needs no root at all.",
+        note: "Debian, Ubuntu, Mint. The tarball installs into ~/.local with no root.",
         prompt: "$",
         command: deb ? `sudo apt install ./${deb.name}` : "cargo build --release",
       };
@@ -191,7 +191,7 @@ export function platformFor(os: Os, release: Release): Platform {
         primary: null,
         pending: "macOS build coming soon",
         alternatives: [],
-        note: "There is no macOS build yet, and nobody has ever run DaCode on macOS. It should compile — the code is portable — but nothing about the window, the mouse or the folder chooser has been verified there.",
+        note: "No macOS build yet, and nobody has run DaCode there. It should compile; nothing is verified.",
         prompt: "#",
         command: "no macOS build yet",
       };
@@ -208,7 +208,7 @@ export function platformFor(os: Os, release: Release): Platform {
           rpm && { label: "Linux — .rpm", detail: rpm.name, url: rpm.url, size: rpm.size },
           tar && { label: "Linux — .tar.gz", detail: tar.name, url: tar.url, size: tar.size },
         ]),
-        note: "DaCode is a desktop editor for x86-64 Linux and Windows. Pick the artifact for the machine you will run it on.",
+        note: "A desktop editor for x86-64 Linux and Windows. Pick your machine's build.",
         prompt: "#",
         command: "pick the artifact for your machine",
       };

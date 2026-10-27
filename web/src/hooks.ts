@@ -176,30 +176,6 @@ export function useMode(reduced: boolean) {
   return { mode, setMode, hue: MODE_HUE[mode], live };
 }
 
-export type Theme = "dark" | "light";
-
-export function useTheme() {
-  const [theme, setTheme] = useState<Theme>(
-    () => (document.documentElement.dataset.theme as Theme) ?? "dark",
-  );
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try {
-      localStorage.setItem("dacode-theme", theme);
-    } catch {
-      /* Private browsing. The page still works; the choice just will not stick. */
-    }
-  }, [theme]);
-
-  const toggle = useCallback(
-    () => setTheme((t) => (t === "dark" ? "light" : "dark")),
-    [],
-  );
-
-  return { theme, toggle };
-}
-
 /*
  * Types a string out one character at a time, once, when it first comes into
  * view. Retypes when the string itself changes — the install command is

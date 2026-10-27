@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,13 +8,16 @@
       name="description"
       content="A code editor in Rust, drawn straight onto the GPU. Nothing unbounded ever runs on the UI thread, so a keystroke costs the same in a 100,000-line file as in a ten-line one."
     />
-    <meta name="theme-color" content="#1c1a18" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="color-scheme" content="dark" />
 
     <!--
-      The icon is the logo from logo/dacode/, set by src/main.tsx: Vite resolves
-      an import from outside web/ but not a <link> here, and the logo is one file
-      in the repository, not two.
+      The finished app icon from packaging/linux/icons/hicolor: the ض mark on its
+      own dark tile, so it reads on a light browser chrome and a dark one alike.
+      Relative, because `base` is "./".
     -->
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 
     <meta property="og:type" content="website" />
     <meta property="og:title" content="DaCode" />
@@ -28,27 +31,6 @@
       declared with @font-face in src/styles.css and emitted by Vite as an asset.
     -->
 
-    <!--
-      The theme is resolved before the first paint. A landing page for an editor
-      whose own rule is "set the window background before the first frame" must
-      not itself flash white on the way in.
-    -->
-    <script>
-      (function () {
-        try {
-          var stored = localStorage.getItem("dacode-theme");
-          var theme =
-            stored === "light" || stored === "dark"
-              ? stored
-              : window.matchMedia("(prefers-color-scheme: light)").matches
-                ? "light"
-                : "dark";
-          document.documentElement.dataset.theme = theme;
-        } catch (e) {
-          document.documentElement.dataset.theme = "dark";
-        }
-      })();
-    </script>
   </head>
   <body>
     <div id="root"></div>
