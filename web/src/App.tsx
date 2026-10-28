@@ -146,12 +146,12 @@ export default function App() {
         ))}
       </section>
 
-      {/* ── What the next release changes ────────────────────────────────── */}
+      {/* ── What the current release added ───────────────────────────────── */}
       <section className="section overhaul" id="new">
         <div className="releases-head reveal">
-          <h2>The interface, rebuilt</h2>
+          <h2>New in {release.version}</h2>
           <span className="prose" style={{ fontSize: 13, color: "var(--ink-faint)" }}>
-            unreleased · on main now, in the next release; the download above is still {release.version}
+            in the download above · released {release.published}
           </span>
         </div>
         <RuledGrid>

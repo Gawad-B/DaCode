@@ -9,6 +9,8 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-28
+
 ### Added
 
 - **DaCode updates itself.** Once a day it asks GitHub for the latest release. A copy installed by
@@ -625,7 +627,8 @@ language-server support, drawn directly on the GPU with wgpu.
 - Packaging for deb, rpm, Windows and a portable tarball, with a desktop entry and window icon that
   the desktop actually picks up.
 
-[Unreleased]: https://github.com/Gawad-B/DaCode/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Gawad-B/DaCode/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Gawad-B/DaCode/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gawad-B/DaCode/compare/v0.4.3...v1.0.0
 [0.4.3]: https://github.com/Gawad-B/DaCode/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/Gawad-B/DaCode/compare/v0.4.1...v0.4.2

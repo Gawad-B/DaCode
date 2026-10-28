@@ -47,20 +47,20 @@ uninstaller.
 **Debian, Ubuntu, Mint**
 
 ```sh
-sudo apt install ./dacode_1.0.0_amd64.deb
+sudo apt install ./dacode_1.1.0_amd64.deb
 ```
 
 **Fedora, RHEL, openSUSE**
 
 ```sh
-sudo dnf install ./dacode-1.0.0-1.x86_64.rpm
+sudo dnf install ./dacode-1.1.0-1.x86_64.rpm
 ```
 
 **Any Linux, no package manager**
 
 ```sh
-tar xzf dacode-1.0.0-x86_64-linux.tar.gz
-./dacode-1.0.0-x86_64-linux/install.sh        # into ~/.local, no root needed
+tar xzf dacode-1.1.0-x86_64-linux.tar.gz
+./dacode-1.1.0-x86_64-linux/install.sh        # into ~/.local, no root needed
 ```
 
 **From source** — needs Rust 1.85 or newer.
@@ -161,12 +161,11 @@ and brings its import with it; formatting works through the server when it can a
 
 ## Status
 
-1.0.0 is the current release. DaCode is used daily by its author on Linux, and builds, installs and
+1.1.0 is the current release. DaCode is used daily by its author on Linux, and builds, installs and
 passes its tests on Windows, where real use has found things no test could. **Nobody has ever run
 DaCode on macOS.**
 
-Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no structural text objects, no macOS
-packaging. Known limitations, stated rather than hidden: buffer
+Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no macOS packaging. Known limitations, stated rather than hidden: buffer
 search is still linear in the document, opening a file is still synchronous (though bounded), only
 the *active* buffer gets a file watcher, a git diff and a language server, and replacing across the
 project is not undoable.

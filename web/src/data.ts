@@ -171,79 +171,64 @@ export const SHOTS: { id: ShotId; label: string; bullets: string[] }[] = [
 ];
 
 /*
- * What the next release changes, from the changelog's Unreleased section. Each
- * entry is a claim about the editor on main, not about a download.
+ * What the current release added, from the changelog's 1.1.0 section. Each entry
+ * is a claim about the download above.
  */
 export const OVERHAUL: { title: string; bullets: string[] }[] = [
   {
-    title: "A menu bar in the title bar",
+    title: "Source control, as in VSCode",
     bullets: [
-      "File, Edit, Selection, View, Go, Run, Terminal, Help — always there.",
-      "A narrow window folds titles into a “…” menu.",
+      "Ctrl+Shift+G: stage, unstage, discard and commit from the sidebar.",
+      "Diffs in a tab, a branch picker, pull, push, stash and history.",
     ],
   },
   {
-    title: "Settings, as a tab",
+    title: "A terminal under the code",
     bullets: [
-      "Category tree like JetBrains, explained rows like VSCode.",
-      "One search filters every page. ● changed, ⟲ reset.",
+      "Ctrl+T opens your shell in the project folder, in tabs.",
+      "Drag to resize; select and copy; htop and vim get the mouse.",
     ],
   },
   {
-    title: "Settings save themselves",
+    title: "Who wrote this line",
     bullets: [
-      "Applied at once; written to init.lua 600 ms later.",
-      "Only what you changed is written. A hand edit wins.",
+      "Blame after the caret's line, or a column beside the numbers.",
+      "Commits made in a terminal show up at once.",
     ],
   },
   {
-    title: "Motion, with a little overshoot",
+    title: "Select this function",
     bullets: [
-      "Springs for popups, sidebar, tabs and the bell — about 300 ms.",
-      "Typing and the cursor never animate. Full, reduced or off.",
+      "af, at, aa, ac — function, type, argument, comment. 2af goes out one.",
+      "Shift+Alt+→ grows a selection by syntax, Shift+Alt+← shrinks it.",
     ],
   },
   {
-    title: "Scrolling by the pixel",
+    title: "Indentation from the syntax tree",
     bullets: [
-      "Touchpads scroll one to one; a wheel notch glides three rows.",
-      "Pinch zooms on macOS; ctrl-scroll everywhere else.",
+      "Enter and closing brackets follow tree-sitter's rules.",
+      "Rust, Python, JS/TS, C/C++, HTML and CSS.",
     ],
   },
   {
-    title: "One card for every overlay",
+    title: "Rebind keys in Settings",
     bullets: [
-      "Palette, menus, completion, hover, help: one rounded card.",
-      "Keys drawn as chips; palette and help rows are clickable.",
+      "Click a command on the Keys page and press the new key.",
+      "Conflicts are named; every menu shows the key you chose.",
     ],
   },
   {
-    title: "Keys go where you clicked",
+    title: "Updates itself",
     bullets: [
-      "Focus is the text, the sidebar or the results — a click sets it.",
-      "Ctrl+Shift+E to the tree; Ctrl+1 or Esc back.",
+      "Checks once a day, downloads and verifies in the background.",
+      "Restart to update — from now on, no reinstalling by hand.",
     ],
   },
   {
-    title: "An idle editor sleeps",
+    title: "Keys you already know",
     bullets: [
-      "Workers wake the editor when they have an answer.",
-      "Syntax colours arrive on their own; nothing polls on a timer.",
-    ],
-  },
-  {
-    title: "One face: Fira Code",
-    bullets: [
-      "Code, menus, labels and headings — one face, one weight.",
-      "Hierarchy from size, case, spacing and colour. So is this page.",
-    ],
-  },
-  {
-    title: "Twelve themes",
-    bullets: [
-      "Dark: Slate (default), Walnut, Rosé Pine, Rosé Pine Moon, True black, Espresso, Charcoal coral, Abyss.",
-      "Light: Linen, Cream, Mist coral, Snow.",
-      "Old names still work in init.lua. Picked from a Dark/Light dropdown.",
+      "Ctrl+W closes the file. Ctrl+T toggles the terminal.",
+      "Window commands moved under Ctrl+K.",
     ],
   },
 ];
@@ -291,14 +276,19 @@ export const RELEASES: ReleaseCard[] = [
     state: "shipped",
   },
   {
-    name: "0.4.3 · the code face ←",
+    name: "0.4.3 · the code face",
     body: "Fira Code bundled, replacing IBM Plex Mono. Comments set as code.",
-    state: "current",
+    state: "shipped",
   },
   {
-    name: "unreleased · the overhaul",
+    name: "1.0.0 · the overhaul",
     body: "vex becomes DaCode: menu bar, settings tab, springs, one face, twelve themes.",
-    state: "unreleased",
+    state: "shipped",
+  },
+  {
+    name: "1.1.0 · the missing pieces ←",
+    body: "Source control, a terminal, blame, text objects, key rebinding, self-update.",
+    state: "current",
   },
   {
     name: "next · search off-thread",
@@ -360,7 +350,7 @@ export const SCOPE = {
   not: [
     "No plugin system: extension code is never run.",
     "Extension data imports fine — themes, snippets, keybindings, .vsix files.",
-    "No integrated terminal, git blame, remote editing or collaboration.",
+    "No remote editing or collaboration.",
     "No macOS packaging yet.",
   ],
   successTitle: "Success has one criterion",
