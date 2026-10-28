@@ -635,7 +635,22 @@ pub const COMMANDS: &[Command] = &[
         "<c-`>  <c-t>",
     ),
     command("focus_terminal", "go to the terminal", View, "", ""),
-    command("new_terminal", "start a new terminal", View, "", ""),
+    // The next five have keys only while a terminal has them — `ctrl-pagedown`, `ctrl-pageup`,
+    // `ctrl-shift-c`, `ctrl-shift-v` — which `dacode::terminal::route` keeps from the shell. The
+    // grammar never sees them, so they are not written here: a key in this table is a promise the
+    // grammar resolves it, and a test holds the table to that.
+    command("new_terminal", "start another terminal", View, "", ""),
+    command("next_terminal", "next terminal", View, "", ""),
+    command("previous_terminal", "previous terminal", View, "", ""),
+    command("kill_terminal", "end this terminal's shell", View, "", ""),
+    command(
+        "terminal_copy",
+        "copy the terminal's selection",
+        Editing,
+        "",
+        "",
+    ),
+    command("terminal_paste", "paste into the terminal", Editing, "", ""),
     command(
         "toggle_inlay_hints",
         "show or hide inlay hints",

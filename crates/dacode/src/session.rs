@@ -19,7 +19,7 @@ pub struct OpenFile {
     pub column: usize,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Session {
     pub files: Vec<OpenFile>,
     /// Which of them was on screen.
@@ -31,6 +31,14 @@ pub struct Session {
     /// finished. Not the *position* — a window restored onto a monitor that is no longer attached
     /// is worse than one that opens where the desktop puts it.
     pub window: Option<(u32, u32)>,
+    /// The share of the editor the terminal panel was dragged to.
+    ///
+    /// Here and not a setting, for the reason the window's size is: it is where you left things,
+    /// changed by dragging rather than chosen, and per project — a panel pulled tall for a build
+    /// in one is not a choice about every other. A setting would also be written back to
+    /// `init.lua` on every drag. `None` until the edge has been dragged, so the default can
+    /// still change under someone who never touched it.
+    pub terminal_fraction: Option<f32>,
 }
 
 impl Session {
@@ -49,6 +57,9 @@ impl Session {
         if let Some((width, height)) = self.window {
             out.push_str(&format!("!{width}x{height}\n"));
         }
+        if let Some(fraction) = self.terminal_fraction {
+            out.push_str(&format!("%terminal={fraction:.4}\n"));
+        }
         for (index, file) in self.files.iter().enumerate() {
             out.push_str(&format!(
                 "{}{}\t{}\t{}\n",
@@ -66,6 +77,13 @@ impl Session {
 
         for line in text.lines() {
             if line.starts_with('#') || line.trim().is_empty() {
+                continue;
+            }
+            if let Some(fraction) = line.strip_prefix("%terminal=") {
+                session.terminal_fraction = fraction
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|fraction| fraction.is_finite() && (0.0..=1.0).contains(fraction));
                 continue;
             }
             // Before the file parsing, which would otherwise read this as a file called `1600x900`.
@@ -217,6 +235,7 @@ mod tests {
             ],
             active: 1,
             window: None,
+            terminal_fraction: None,
         }
     }
 
@@ -241,6 +260,20 @@ mod tests {
     }
 
     #[test]
+    fn the_terminals_height_comes_back_and_is_not_a_file() {
+        // A panel dragged tall for a build should be tall the next time; the line that says so must
+        // not restore a buffer called `%terminal=0.6`, and a nonsense value is ignored, not obeyed.
+        let mut original = session();
+        original.terminal_fraction = Some(0.625);
+        let decoded = Session::decode(&original.encode());
+        assert_eq!(decoded.terminal_fraction, Some(0.625));
+        assert_eq!(decoded.files.len(), 2);
+        let broken = Session::decode("%terminal=7\n%terminal=NaN\n*/a.rs\t1\t0\n");
+        assert_eq!(broken.terminal_fraction, None);
+        assert_eq!(broken.files.len(), 1);
+    }
+
+    #[test]
     fn a_session_from_before_window_sizes_still_loads() {
         // Sessions on disk predate this field. Reading one must give the old behaviour, not fail.
         let decoded = Session::decode("# dacode session\n*/a.rs\t1\t0\n");
@@ -259,6 +292,7 @@ mod tests {
             }],
             active: 0,
             window: None,
+            terminal_fraction: None,
         };
         assert_eq!(Session::decode(&original.encode()), original);
     }
@@ -294,6 +328,7 @@ mod tests {
             ],
             active: 1,
             window: None,
+            terminal_fraction: None,
         };
 
         save(&dir, Path::new("/project"), &original);
@@ -322,6 +357,7 @@ mod tests {
             }],
             active: 0,
             window: None,
+            terminal_fraction: None,
         };
         let two = Session {
             files: vec![OpenFile {
@@ -331,6 +367,7 @@ mod tests {
             }],
             active: 0,
             window: None,
+            terminal_fraction: None,
         };
 
         save(&dir, Path::new("/home/a/project"), &one);

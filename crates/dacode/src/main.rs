@@ -372,7 +372,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 24] = [
+const VALUE_FLAGS: [&str; 27] = [
     "--which-key",
     "--menu-title",
     "--screenshot",
@@ -397,6 +397,9 @@ const VALUE_FLAGS: [&str; 24] = [
     "--transparency",
     "--at-ms",
     "--scroll-px",
+    "--terminal-tabs",
+    "--terminal-height",
+    "--terminal-select",
 ];
 
 /// Every flag `dacode` accepts, grouped, as the one description of its command line.
@@ -408,7 +411,7 @@ const VALUE_FLAGS: [&str; 24] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 46] = [
+const FLAGS: [(&str, &str, &str); 49] = [
     // Opening.
     (
         "--no-session",
@@ -486,6 +489,21 @@ const FLAGS: [(&str, &str, &str); 46] = [
         "--terminal",
         "",
         "the terminal panel, showing a fixed transcript",
+    ),
+    (
+        "--terminal-tabs",
+        "N",
+        "with --terminal: that many terminal tabs",
+    ),
+    (
+        "--terminal-height",
+        "PERCENT",
+        "with --terminal: the panel dragged to that share",
+    ),
+    (
+        "--terminal-select",
+        "R:C-R:C",
+        "with --terminal: a mouse selection",
     ),
     ("--help-panel", "", "the F1 key list"),
     ("--menu", "", "the menu bar"),
@@ -1207,8 +1225,11 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         // same parser a live terminal runs, at the size the panel's grid has here.
         state.terminal.open = true;
         state.focus = dacode::focus::Focus::Terminal;
+        if let Some(percent) = value("--terminal-height").and_then(|v| v.parse::<f32>().ok()) {
+            state.terminal.fraction = (percent / 100.0).clamp(0.0, 1.0);
+        }
         let panel = dacode::layout::Layout::of(bounds, 1.0, None, state.sidebar_fraction())
-            .with_terminal(true, 1.0)
+            .with_terminal(true, state.terminal.fraction, 1.0)
             .terminal
             .expect("asked for one");
         let rects = dacode::layout::terminal_panel(panel, &state.typography, 1.0);
@@ -1217,8 +1238,35 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             dacode_terminal::SCROLLBACK,
         );
         emulator.feed(TERMINAL_TRANSCRIPT.as_bytes());
+        // `R:C-R:C`, the first cell and the last, both included — as a drag from one to the other.
+        if let Some(spec) = value("--terminal-select") {
+            let cell = |text: &str| {
+                let (row, column) = text.split_once(':')?;
+                Some((row.trim().parse().ok()?, column.trim().parse().ok()?))
+            };
+            if let Some((Some((r0, c0)), Some((r1, c1)))) = spec
+                .split_once('-')
+                .map(|(from, to)| (cell(from), cell(to)))
+            {
+                let at = |row, column, right_half| dacode_terminal::CellPoint {
+                    row,
+                    column,
+                    right_half,
+                };
+                emulator.select(dacode_terminal::SelectKind::Cells, at(r0, c0, false));
+                emulator.extend_selection(at(r1, c1, true));
+            }
+        }
         state.terminal.screen = Some(emulator.screen());
-        state.terminal.title = Some("~/dacode".to_string());
+        // The first tab is the transcript's; any more are named as shells would name them.
+        let count = value("--terminal-tabs")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 12);
+        let others = ["zsh", "cargo watch -x test", "htop", "bash", "pwsh"];
+        state.terminal.tabs = std::iter::once("~/dacode".to_string())
+            .chain((1..count).map(|n| others[(n - 1) % others.len()].to_string()))
+            .collect();
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
@@ -1593,6 +1641,23 @@ struct Glide {
     columns: Option<f32>,
 }
 
+/// What a press on the terminal panel started, followed until the button comes up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalGesture {
+    /// Dragging the panel's top edge.
+    Resize,
+    /// Selecting text, from a press on the grid.
+    Select,
+    /// A press the program asked to be told about. Its drags and its release are the program's
+    /// too, and a drag is reported only when it reaches another cell — a report per pointer event
+    /// would be a write per pixel.
+    Report {
+        button: dacode_terminal::MouseButton,
+        row: usize,
+        column: usize,
+    },
+}
+
 /// What the focused view was when the scroll remainders were last brought up to date.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct View {
@@ -1813,9 +1878,17 @@ struct App {
     /// Raised by the coalescing waker and cleared by `user_event` before it collects. Fresh and
     /// unshared when there is no waker, where nothing ever raises it.
     wake_pending: Arc<std::sync::atomic::AtomicBool>,
-    /// The terminal's shell, while there is one. Here rather than on the state because it is a
-    /// process, and the event loop owns those; `state.terminal` is what drawing reads.
-    terminal: Option<dacode_terminal::Terminal>,
+    /// The terminals' shells, one per tab, in tab order. Here rather than on the state because
+    /// they are processes, and the event loop owns those; `state.terminal` is what drawing reads,
+    /// and its `active` says which of these is shown.
+    terminals: Vec<dacode_terminal::Terminal>,
+    /// What a press on the terminal panel started, while the button is held.
+    terminal_gesture: Option<TerminalGesture>,
+    /// The colours the terminals were last told to answer colour queries with, so a frame only
+    /// tells them again when the theme changed.
+    terminal_palette: Option<dacode_terminal::Palette>,
+    /// Whether the pointer is showing the resize arrows, so the window is told only on a change.
+    resize_pointer: bool,
     /// The shells a new terminal tries, when not the platform's own choice. Tests set it to `sh`
     /// (`cmd` on Windows): a test that started `$SHELL` would be testing the developer's zshrc.
     terminal_shells: Option<Vec<dacode_terminal::ShellCommand>>,
@@ -2063,8 +2136,10 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             WindowEvent::CursorMoved { position, .. } => {
                 let was_over_toolbar = self.over_toolbar();
                 let before = self.state.pointer;
+                let was_over_terminal_header = self.over_terminal_header();
                 self.pointer = (position.x as f32, position.y as f32);
                 self.state.pointer = self.pointer;
+                self.update_pointer_icon();
                 if let Some(welcome) = &mut self.state.welcome {
                     welcome.pointer = self.pointer;
                     self.request_redraw();
@@ -2098,11 +2173,24 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                 }
 
                 // Dragging extends the selection, which is how every editor spells "select this".
-                if self.dragging {
+                // A gesture the terminal started stays the terminal's wherever the pointer goes,
+                // so a selection dragged up over the code does not start selecting the code.
+                if self.terminal_gesture.is_some() {
+                    if self.dragging
+                        || matches!(self.terminal_gesture, Some(TerminalGesture::Report { .. }))
+                    {
+                        self.drag_terminal();
+                        self.request_redraw();
+                    }
+                } else if self.dragging {
                     self.click(true);
                     self.keep_offset_under_pointer();
                     self.request_redraw();
-                } else if was_over_toolbar || self.over_toolbar() {
+                } else if was_over_toolbar
+                    || self.over_toolbar()
+                    || was_over_terminal_header
+                    || self.over_terminal_header()
+                {
                     // Redraw only when a toolbar button lights up or stops being lit. Repainting on
                     // every pointer move would spend a frame per mouse event on a window where
                     // nothing changed — the one rule this editor has.
@@ -2124,17 +2212,33 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                             && self.state.help.is_none()
                             && !self.dropdown_showing();
                         self.click_count = self.count_click();
+                        // A gesture whose release never arrived — the button came up outside the
+                        // window — must not capture this press's drag.
+                        self.terminal_gesture = None;
                         self.click(false);
                         self.keep_offset_under_pointer();
                     }
                     (winit::event::MouseButton::Left, ElementState::Released) => {
                         self.dragging = false;
                         self.block_origin = None;
+                        self.release_terminal(dacode_terminal::MouseButton::Left);
                     }
                     // The context menu, which is where a mouse user looks for cut, copy and "go to
-                    // definition" before they look for a keyboard shortcut.
+                    // definition" before they look for a keyboard shortcut — unless the press is
+                    // over a terminal whose program asked for the mouse, which gets it instead.
                     (winit::event::MouseButton::Right, ElementState::Pressed) => {
-                        self.open_context_menu()
+                        if !self.press_terminal_other(dacode_terminal::MouseButton::Right) {
+                            self.open_context_menu()
+                        }
+                    }
+                    (winit::event::MouseButton::Right, ElementState::Released) => {
+                        self.release_terminal(dacode_terminal::MouseButton::Right);
+                    }
+                    (winit::event::MouseButton::Middle, ElementState::Pressed) => {
+                        self.press_terminal_other(dacode_terminal::MouseButton::Middle);
+                    }
+                    (winit::event::MouseButton::Middle, ElementState::Released) => {
+                        self.release_terminal(dacode_terminal::MouseButton::Middle);
                     }
                     _ => {}
                 }
@@ -2315,7 +2419,10 @@ impl App {
             gestures: Gestures::default(),
             waker,
             wake_pending: Arc::default(),
-            terminal: None,
+            terminals: Vec::new(),
+            terminal_gesture: None,
+            terminal_palette: None,
+            resize_pointer: false,
             terminal_shells: None,
             index: FileIndex::new(root),
             // The project walk is started by `run`, not here: a test wants an editor, not an
@@ -2511,12 +2618,36 @@ impl App {
         }
         // Over the terminal the wheel scrolls its history: up, which is a negative line count
         // here, is back into older output.
-        if layout
+        //
+        // A program that asked for the mouse is sent the wheel as buttons 64 and 65 instead, at the
+        // cell under the pointer — which is how `htop` and `vim` scroll their own lists — unless
+        // shift is held, the same way out of its mouse a press has.
+        if let Some(panel) = layout
             .terminal
-            .is_some_and(|panel| dacode::layout::contains(panel, x, y))
+            .filter(|panel| dacode::layout::contains(*panel, x, y))
         {
-            if let Some(terminal) = &self.terminal {
-                terminal.scroll(-(lines as i32));
+            let rects = dacode::layout::terminal_panel(panel, &self.state.typography, self.scale());
+            let modifiers = self.mouse_modifiers();
+            if let Some(terminal) = self.active_terminal() {
+                if terminal.mouse_modes().reporting() && !modifiers.shift && lines != 0 {
+                    let at = rects.cell_at(x, y);
+                    let button = if lines < 0 {
+                        dacode_terminal::MouseButton::WheelUp
+                    } else {
+                        dacode_terminal::MouseButton::WheelDown
+                    };
+                    for _ in 0..lines.unsigned_abs().min(64) {
+                        terminal.mouse(dacode_terminal::MouseEvent {
+                            button,
+                            action: dacode_terminal::MouseAction::Press,
+                            row: at.row,
+                            column: at.column,
+                            modifiers,
+                        });
+                    }
+                } else {
+                    terminal.scroll(-(lines as i32));
+                }
             }
             return true;
         }
@@ -3227,6 +3358,17 @@ impl App {
         if self.state.settings_showing()
             && dacode::layout::contains(layout.editor, self.pointer.0, self.pointer.1)
         {
+            return;
+        }
+        // Over the terminal, the terminal's own menu: the code's rows would act on the document
+        // hidden behind the panel. Focus follows, so the paste it offers lands where it says.
+        if layout
+            .terminal
+            .is_some_and(|panel| dacode::layout::contains(panel, self.pointer.0, self.pointer.1))
+        {
+            self.state.focus = dacode::focus::Focus::Terminal;
+            self.state
+                .open_menu(dacode::menu::Menu::terminal(self.pointer, self.state.modal));
             return;
         }
         if let Some(sidebar) = layout
@@ -4314,7 +4456,7 @@ impl App {
         //
         // A running shell may print at any moment, and with nothing to wake the loop its output
         // would wait for a key.
-        if self.terminal.is_some() {
+        if !self.terminals.is_empty() {
             return true;
         }
         //
@@ -5452,7 +5594,7 @@ impl App {
                 match dacode::share::run_command(&root) {
                     Some(command) => {
                         if self.show_terminal(true) {
-                            if let Some(terminal) = &self.terminal {
+                            if let Some(terminal) = self.active_terminal() {
                                 terminal.write(format!("{command}\r").into_bytes());
                             }
                         }
@@ -5472,13 +5614,21 @@ impl App {
                 self.show_terminal(true);
             }
             Action::NewTerminal => {
-                // Dropped first, which hangs the old shell up on its own thread; the new one starts
-                // at the panel's current size.
-                self.terminal = None;
-                self.state.terminal.screen = None;
-                self.state.terminal.title = None;
-                self.show_terminal(true);
+                // Shown first, so the new shell starts at the size of the panel it will be drawn
+                // in; the shells already running keep running in their own tabs.
+                let was_open = self.state.terminal.open;
+                self.state.terminal.open = true;
+                self.state.focus = dacode::focus::Focus::Terminal;
+                if !self.spawn_terminal() && self.terminals.is_empty() {
+                    self.state.terminal.open = was_open;
+                    self.state.focus = dacode::focus::Focus::Editor;
+                }
             }
+            Action::NextTerminal => self.step_terminal(1),
+            Action::PreviousTerminal => self.step_terminal(-1),
+            Action::KillTerminal => self.kill_terminal(self.state.terminal.active),
+            Action::TerminalCopy => self.copy_terminal_selection(),
+            Action::TerminalPaste => self.paste_into_terminal(),
             Action::SplitPane { vertical } => {
                 self.save_pane();
                 self.panes.split(if *vertical {
@@ -5720,6 +5870,9 @@ impl App {
     /// loop inside `main`, it was untestable, and the test that would have caught the ordering
     /// defect below had to keep its own copy of the walk — which passes whatever `main` does.
     fn restore_session(&mut self, session: &dacode::session::Session) {
+        if let Some(fraction) = session.terminal_fraction {
+            self.state.terminal.fraction = fraction;
+        }
         let active = session
             .files
             .get(session.active)
@@ -5809,6 +5962,10 @@ impl App {
                 .map(|window| window.inner_size())
                 .filter(|size| size.width > 0 && size.height > 0)
                 .map(|size| (size.width, size.height)),
+            // Only once dragged, so a default that changes later reaches someone who never did.
+            terminal_fraction: Some(self.state.terminal.fraction).filter(|fraction| {
+                (fraction - dacode::terminal::DEFAULT_FRACTION).abs() > f32::EPSILON
+            }),
         }
     }
 
@@ -8139,7 +8296,11 @@ impl App {
             self.state
                 .sidebar_fraction_at(self.last_frame.unwrap_or_else(std::time::Instant::now)),
         )
-        .with_terminal(self.state.terminal.open, self.scale())
+        .with_terminal(
+            self.state.terminal.open,
+            self.state.terminal.fraction,
+            self.scale(),
+        )
         .with_blame(self.state.blame_column(self.panes.active(), self.scale()))
     }
 
@@ -8154,16 +8315,14 @@ impl App {
         ))
     }
 
-    /// Shows the terminal, starting a shell if there is none, and gives it the keys if `focus`.
-    /// Returns whether a shell is running.
-    fn show_terminal(&mut self, focus: bool) -> bool {
-        self.state.terminal.open = true;
-        if focus {
-            self.state.focus = dacode::focus::Focus::Terminal;
-        }
-        if self.terminal.is_some() {
-            return true;
-        }
+    /// The shown tab's shell, if there is one.
+    fn active_terminal(&self) -> Option<&dacode_terminal::Terminal> {
+        self.terminals.get(self.state.terminal.active)
+    }
+
+    /// Starts another shell in a tab of its own and shows it. Returns whether it started; a shell
+    /// that will not start says why on the status line and leaves the other tabs as they were.
+    fn spawn_terminal(&mut self) -> bool {
         let (size, cell) = self
             .terminal_rects()
             .map(|rects| {
@@ -8185,20 +8344,108 @@ impl App {
             directory: self.state.project_root.clone(),
             size,
             cell,
+            // Every shell shares the loop's waker; each has its own dirty flag, so each wakes the
+            // loop once per batch of output however many there are.
             waker: self.waker.clone(),
         }) {
             Ok(terminal) => {
+                terminal.set_palette(dacode::terminal::palette(&self.state.theme));
                 self.state.terminal.screen = Some(terminal.take_screen());
-                self.terminal = Some(terminal);
+                self.terminals.push(terminal);
+                self.state.terminal.active = self.terminals.len() - 1;
+                self.terminal_gesture = None;
+                self.sync_terminal_tabs();
                 true
             }
             Err(error) => {
-                self.state.terminal.open = false;
-                self.state.focus = dacode::focus::Focus::Editor;
                 self.state.hover = Some(format!("the terminal could not start a shell: {error}"));
                 false
             }
         }
+    }
+
+    /// Shows the terminal, starting a shell if there is none, and gives it the keys if `focus`.
+    /// Returns whether a shell is running.
+    fn show_terminal(&mut self, focus: bool) -> bool {
+        self.state.terminal.open = true;
+        if focus {
+            self.state.focus = dacode::focus::Focus::Terminal;
+        }
+        if !self.terminals.is_empty() || self.spawn_terminal() {
+            return true;
+        }
+        self.state.terminal.open = false;
+        self.state.focus = dacode::focus::Focus::Editor;
+        false
+    }
+
+    /// Shows tab `index` and gives it the keys. Its rows are copied afresh for the next frame:
+    /// the screen held is the last tab's.
+    fn switch_terminal(&mut self, index: usize) {
+        if index >= self.terminals.len() {
+            return;
+        }
+        if index != self.state.terminal.active {
+            self.state.terminal.active = index;
+            self.state.terminal.screen = None;
+            self.terminal_gesture = None;
+        }
+        self.show_terminal(true);
+    }
+
+    /// The next tab (`delta` 1) or the previous (-1), wrapping round as tabs do everywhere.
+    fn step_terminal(&mut self, delta: isize) {
+        let count = self.terminals.len();
+        if count == 0 {
+            self.show_terminal(true);
+            return;
+        }
+        let next = (self.state.terminal.active as isize + delta).rem_euclid(count as isize);
+        self.switch_terminal(next as usize);
+    }
+
+    /// Ends tab `index`'s shell and closes the tab. Dropping the terminal hangs its shell up on
+    /// the shell's own thread, so this never waits for it.
+    fn kill_terminal(&mut self, index: usize) {
+        if index >= self.terminals.len() {
+            return;
+        }
+        drop(self.terminals.remove(index));
+        self.terminal_removed(index);
+    }
+
+    /// The bookkeeping after the terminal at `index` has gone, killed or exited. The shown tab
+    /// stays the same shell when it was another one; when it was this one, its right-hand
+    /// neighbour slides into its place, as closing an editor tab does. The last one going hides
+    /// the panel and hands the keys back — its height is kept, for the next one.
+    fn terminal_removed(&mut self, index: usize) {
+        let panel = &mut self.state.terminal;
+        if panel.active > index {
+            panel.active -= 1;
+        } else if panel.active == index {
+            panel.active = index.min(self.terminals.len().saturating_sub(1));
+            panel.screen = None;
+            self.terminal_gesture = None;
+        }
+        if self.terminals.is_empty() {
+            let panel = &mut self.state.terminal;
+            panel.open = false;
+            panel.active = 0;
+            panel.screen = None;
+            if self.state.focus == dacode::focus::Focus::Terminal {
+                self.state.focus = dacode::focus::Focus::Editor;
+            }
+        }
+        self.sync_terminal_tabs();
+    }
+
+    /// The tabs' titles, from the shells. One lock per shell, so bounded by the tabs open.
+    fn sync_terminal_tabs(&mut self) {
+        self.state.terminal.tabs = self
+            .terminals
+            .iter()
+            .map(|terminal| dacode::terminal::tab_title(terminal.title(), terminal.shell()))
+            .collect();
     }
 
     /// `ctrl-``: shows the terminal and gives it the keys; from the terminal, hides it and gives
@@ -8215,22 +8462,24 @@ impl App {
         }
     }
 
-    /// Hides the panel. The shell keeps running, as it does when VSCode's panel is closed: hiding a
-    /// view is not a decision to kill what is running in it.
+    /// Hides the panel. The shells keep running, as they do when VSCode's panel is closed: hiding
+    /// a view is not a decision to kill what is running in it.
     fn hide_terminal(&mut self) {
         self.state.terminal.open = false;
+        self.terminal_gesture = None;
         if self.state.focus == dacode::focus::Focus::Terminal {
             self.state.focus = dacode::focus::Focus::Editor;
         }
     }
 
-    /// Tells the shell the size of the grid on screen. Constant work, and a no-op when nothing
-    /// changed, so it is simply asked whenever the loop looks.
+    /// Tells every shell the size of the grid on screen — the hidden tabs too, so a program in one
+    /// has already redrawn for the panel it will be shown in. Constant work per shell and a no-op
+    /// when nothing changed, so it is simply asked whenever the loop looks.
     fn fit_terminal(&mut self) {
         let Some(rects) = self.terminal_rects() else {
             return;
         };
-        if let Some(terminal) = &mut self.terminal {
+        for terminal in &mut self.terminals {
             terminal.resize(
                 dacode_terminal::GridSize::new(rects.columns, rects.rows),
                 (rects.cell_width as u16, rects.cell_height as u16),
@@ -8238,85 +8487,328 @@ impl App {
         }
     }
 
-    /// The terminal's part of the idle step. Returns whether there is something new to draw.
+    /// The terminals' part of the idle step. Returns whether there is something new to draw.
     ///
-    /// Reads the dirty flag without clearing it: the screen is copied when a frame is drawn
-    /// ([`App::refresh_terminal_screen`]), and the flag stays up until then, so however much output
-    /// arrives between two frames the parser wakes the loop once. A hidden panel draws nothing and
-    /// so is never copied, which leaves the flag up and the loop asleep however busy the shell is.
+    /// Reads the shown shell's dirty flag without clearing it: the screen is copied when a frame
+    /// is drawn ([`App::refresh_terminal_screen`]), and the flag stays up until then, so however
+    /// much output arrives between two frames the parser wakes the loop once. A hidden tab, or a
+    /// hidden panel, draws nothing and so is never copied, which leaves its flag up and the loop
+    /// asleep however busy that shell is.
     fn poll_terminal(&mut self) -> bool {
-        let Some(terminal) = &self.terminal else {
-            return false;
-        };
-        if let Some(exit) = terminal.exit() {
-            // `exit` closes the panel, as it does in VSCode. A failure says so; a clean exit was
+        let mut changed = false;
+        let mut index = 0;
+        while index < self.terminals.len() {
+            let Some(exit) = self.terminals[index].exit() else {
+                index += 1;
+                continue;
+            };
+            // `exit` closes its tab, as it does in VSCode. A failure says so; a clean exit was
             // asked for and needs no message.
-            self.terminal = None;
-            self.state.terminal = dacode::terminal::Panel::default();
-            if self.state.focus == dacode::focus::Focus::Terminal {
-                self.state.focus = dacode::focus::Focus::Editor;
-            }
+            self.terminals.remove(index);
+            self.terminal_removed(index);
             if let Some(code) = exit.code.filter(|code| *code != 0) {
                 self.state.hover = Some(format!("the terminal's shell exited with status {code}"));
             }
-            return true;
+            changed = true;
         }
         if !self.state.terminal.open {
-            return false;
+            return changed;
         }
         self.fit_terminal();
-        self.terminal
-            .as_ref()
-            .is_some_and(dacode_terminal::Terminal::is_dirty)
+        changed
+            || self
+                .active_terminal()
+                .is_some_and(dacode_terminal::Terminal::is_dirty)
     }
 
-    /// Copies the terminal's visible rows for this frame, if they changed. Viewport-sized, whatever
-    /// the scrollback holds.
+    /// Copies the shown terminal's visible rows for this frame, if they changed. Viewport-sized,
+    /// whatever the scrollback holds. The titles and the colour-query palette are brought up to
+    /// date here too: one small lock per tab.
     fn refresh_terminal_screen(&mut self) {
         if !self.state.terminal.open {
             return;
         }
-        let Some(terminal) = &self.terminal else {
+        self.sync_terminal_tabs();
+        let palette = dacode::terminal::palette(&self.state.theme);
+        if self.terminal_palette != Some(palette) {
+            for terminal in &self.terminals {
+                terminal.set_palette(palette);
+            }
+            self.terminal_palette = Some(palette);
+        }
+        let Some(terminal) = self.active_terminal() else {
             return;
         };
         if terminal.is_dirty() || self.state.terminal.screen.is_none() {
             self.state.terminal.screen = Some(terminal.take_screen());
-            self.state.terminal.title = terminal.title();
         }
     }
 
-    /// A key while the terminal has focus. Everything goes to the shell except the three keys
-    /// [`dacode::terminal::route`] keeps for the editor.
+    /// A key while the terminal has focus. Everything goes to the shown shell except the few keys
+    /// [`dacode::terminal::route`] keeps for the editor, which run the action it names.
     fn handle_terminal_key(&mut self, key: Key) -> bool {
         match dacode::terminal::route(key) {
             dacode::terminal::KeyRoute::Shell => {
-                if let Some(terminal) = &self.terminal {
+                if let Some(terminal) = self.active_terminal() {
                     terminal.key(key);
                 }
                 false
             }
-            dacode::terminal::KeyRoute::Editor => match key.code {
-                KeyCode::Char('v') => {
-                    if let (Some(terminal), Some(text)) = (&self.terminal, dacode::clipboard::get())
-                    {
-                        terminal.paste(&text);
-                    }
-                    false
-                }
-                KeyCode::Char('p') => self.run(Action::ToggleCommandPalette),
-                _ => self.run(Action::ToggleTerminal),
-            },
+            dacode::terminal::KeyRoute::Editor(action) => self.run(action),
         }
     }
 
-    /// A press on the terminal panel. Anywhere but its two buttons it only gives the terminal the
-    /// keys, which `route_click` has already done.
+    /// Puts the shown terminal's selection on the clipboard.
+    fn copy_terminal_selection(&mut self) {
+        match self
+            .active_terminal()
+            .and_then(|terminal| terminal.selection_text())
+        {
+            Some(text) => dacode::clipboard::set(&text),
+            None => {
+                self.state.hover =
+                    Some("nothing selected in the terminal — drag over text to select it".into());
+            }
+        }
+    }
+
+    /// Pastes the clipboard into the shown terminal, starting one if there is none.
+    fn paste_into_terminal(&mut self) {
+        if !self.show_terminal(true) {
+            return;
+        }
+        if let (Some(terminal), Some(text)) = (self.active_terminal(), dacode::clipboard::get()) {
+            terminal.paste(&text);
+        }
+    }
+
+    /// The modifiers held, as a mouse report carries them.
+    fn mouse_modifiers(&self) -> dacode_terminal::MouseModifiers {
+        dacode_terminal::MouseModifiers {
+            shift: self.modifiers.shift_key(),
+            alt: self.modifiers.alt_key(),
+            ctrl: self.modifiers.control_key(),
+        }
+    }
+
+    /// A press on the terminal panel: its buttons, its tabs, its grid. Focus is already the
+    /// terminal's — `route_click` decided that — except on the buttons that take it away.
     fn click_terminal(&mut self, panel: Rect, x: f32, y: f32) {
-        let rects = dacode::layout::terminal_panel(panel, &self.state.typography, self.scale());
+        let scale = self.scale();
+        let rects = dacode::layout::terminal_panel(panel, &self.state.typography, scale);
         if dacode::layout::contains(rects.close, x, y) {
             self.hide_terminal();
-        } else if dacode::layout::contains(rects.new, x, y) {
+            return;
+        }
+        if dacode::layout::contains(rects.new, x, y) {
             self.window_action(&Action::NewTerminal);
+            return;
+        }
+        let tabs = dacode::layout::terminal_tabs(
+            &rects,
+            &self.state.terminal.tabs,
+            &self.state.typography,
+            scale,
+        );
+        for (index, tab) in tabs.iter().enumerate() {
+            if dacode::layout::contains(tab.close, x, y) {
+                self.kill_terminal(index);
+                return;
+            }
+            if dacode::layout::contains(tab.tab, x, y) {
+                self.switch_terminal(index);
+                return;
+            }
+        }
+        if !dacode::layout::contains(rects.header, x, y) {
+            self.press_terminal_grid(&rects, x, y, dacode_terminal::MouseButton::Left);
+        }
+    }
+
+    /// A press on the terminal's cells. Returns whether it was used.
+    ///
+    /// A program that asked for the mouse gets the press, and the drags and release after it;
+    /// shift held selects anyway, xterm's convention for getting text out of `htop` or a `vim`
+    /// with `mouse=a`. Otherwise the left button selects — by cell, word or line as the press is
+    /// the first, second or third of a series — and shift extends the selection already there.
+    fn press_terminal_grid(
+        &mut self,
+        rects: &dacode::layout::TerminalRects,
+        x: f32,
+        y: f32,
+        button: dacode_terminal::MouseButton,
+    ) -> bool {
+        let modifiers = self.mouse_modifiers();
+        let click_count = self.click_count;
+        let Some(terminal) = self.active_terminal() else {
+            return false;
+        };
+        let at = rects.cell_at(x, y);
+        if terminal.mouse_modes().reporting() && !modifiers.shift {
+            terminal.mouse(dacode_terminal::MouseEvent {
+                button,
+                action: dacode_terminal::MouseAction::Press,
+                row: at.row,
+                column: at.column,
+                modifiers,
+            });
+            self.terminal_gesture = Some(TerminalGesture::Report {
+                button,
+                row: at.row,
+                column: at.column,
+            });
+            return true;
+        }
+        if button != dacode_terminal::MouseButton::Left {
+            return false;
+        }
+        if modifiers.shift && click_count == 1 && terminal.has_selection() {
+            terminal.extend_selection(at);
+        } else {
+            let kind = match click_count {
+                2 => dacode_terminal::SelectKind::Words,
+                3 => dacode_terminal::SelectKind::Lines,
+                _ => dacode_terminal::SelectKind::Cells,
+            };
+            terminal.select(kind, at);
+        }
+        self.terminal_gesture = Some(TerminalGesture::Select);
+        true
+    }
+
+    /// The pointer moved with a button held during a terminal gesture: the edge follows it, the
+    /// selection extends to it, or the program is told — once per cell, not per pixel.
+    fn drag_terminal(&mut self) {
+        let Some(gesture) = self.terminal_gesture else {
+            return;
+        };
+        let (x, y) = self.pointer;
+        let scale = self.scale();
+        match gesture {
+            TerminalGesture::Resize => {
+                let layout = self.layout();
+                if let Some(panel) = layout.terminal {
+                    let shared = layout.editor.height + panel.height;
+                    self.state.terminal.fraction =
+                        dacode::layout::terminal_fraction_at(shared, panel.bottom(), y, scale);
+                    self.fit_terminal();
+                }
+            }
+            TerminalGesture::Select => {
+                if let (Some(rects), Some(terminal)) =
+                    (self.terminal_rects(), self.active_terminal())
+                {
+                    terminal.extend_selection(rects.cell_at(x, y));
+                }
+            }
+            TerminalGesture::Report {
+                button,
+                row,
+                column,
+            } => {
+                let Some(rects) = self.terminal_rects() else {
+                    return;
+                };
+                let at = rects.cell_at(x, y);
+                if (at.row, at.column) == (row, column) {
+                    return;
+                }
+                let modifiers = self.mouse_modifiers();
+                if let Some(terminal) = self.active_terminal() {
+                    terminal.mouse(dacode_terminal::MouseEvent {
+                        button,
+                        action: dacode_terminal::MouseAction::Drag,
+                        row: at.row,
+                        column: at.column,
+                        modifiers,
+                    });
+                }
+                self.terminal_gesture = Some(TerminalGesture::Report {
+                    button,
+                    row: at.row,
+                    column: at.column,
+                });
+            }
+        }
+    }
+
+    /// A button came up. Ends the terminal gesture it started, telling the program if the press
+    /// was the program's.
+    fn release_terminal(&mut self, button: dacode_terminal::MouseButton) {
+        match self.terminal_gesture {
+            Some(TerminalGesture::Report {
+                button: pressed, ..
+            }) if pressed == button => {
+                let modifiers = self.mouse_modifiers();
+                let (x, y) = self.pointer;
+                if let (Some(rects), Some(terminal)) =
+                    (self.terminal_rects(), self.active_terminal())
+                {
+                    let at = rects.cell_at(x, y);
+                    terminal.mouse(dacode_terminal::MouseEvent {
+                        button,
+                        action: dacode_terminal::MouseAction::Release,
+                        row: at.row,
+                        column: at.column,
+                        modifiers,
+                    });
+                }
+                self.terminal_gesture = None;
+            }
+            Some(TerminalGesture::Resize | TerminalGesture::Select)
+                if button == dacode_terminal::MouseButton::Left =>
+            {
+                self.terminal_gesture = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// A right or middle press over the terminal's cells, for a program that asked for the mouse.
+    /// Returns whether the program took it; a right press it did not take opens the menu.
+    fn press_terminal_other(&mut self, button: dacode_terminal::MouseButton) -> bool {
+        if self.state.menu.is_some()
+            || self.state.palette.is_some()
+            || self.state.help.is_some()
+            || self.state.welcome.is_some()
+        {
+            return false;
+        }
+        let (x, y) = self.pointer;
+        let Some(rects) = self.terminal_rects() else {
+            return false;
+        };
+        if !dacode::layout::contains(rects.panel, x, y)
+            || dacode::layout::contains(rects.header, x, y)
+        {
+            return false;
+        }
+        self.state.focus = dacode::focus::Focus::Terminal;
+        self.press_terminal_grid(&rects, x, y, button)
+    }
+
+    /// Shows the up-and-down arrows over the panel's resizable edge and while it is being dragged,
+    /// so the edge can be found by pointing at it. The window is told only when that changes.
+    fn update_pointer_icon(&mut self) {
+        let (x, y) = self.pointer;
+        let resize = self.terminal_gesture == Some(TerminalGesture::Resize)
+            || (self.state.menu.is_none()
+                && self.state.palette.is_none()
+                && self.state.help.is_none()
+                && self.state.welcome.is_none()
+                && self
+                    .terminal_rects()
+                    .is_some_and(|rects| dacode::layout::contains(rects.border, x, y)));
+        if resize == self.resize_pointer {
+            return;
+        }
+        self.resize_pointer = resize;
+        if let Some(window) = &self.window {
+            window.set_cursor(if resize {
+                winit::window::CursorIcon::NsResize
+            } else {
+                winit::window::CursorIcon::Default
+            });
         }
     }
 
@@ -8375,6 +8867,17 @@ impl App {
             if !extend && self.click_count <= 1 {
                 self.click_dropdown(x, y);
             }
+            return;
+        }
+
+        // The terminal's top edge, before focus: grabbing it to resize is not a decision about
+        // where the keys go, and half of it lies over the code, which would otherwise take them.
+        if !extend
+            && self
+                .terminal_rects()
+                .is_some_and(|rects| dacode::layout::contains(rects.border, x, y))
+        {
+            self.terminal_gesture = Some(TerminalGesture::Resize);
             return;
         }
 
@@ -8656,6 +9159,13 @@ impl App {
     /// They change when the pointer arrives or leaves, so the frame has to be redrawn then; and only
     /// then, because repainting on every pointer move over the code would spend a frame per mouse
     /// event on a window where nothing changed.
+    /// Whether the pointer is over the terminal's header, whose tabs and buttons light up under it.
+    fn over_terminal_header(&self) -> bool {
+        let (x, y) = self.pointer;
+        self.terminal_rects()
+            .is_some_and(|rects| dacode::layout::contains(rects.header, x, y))
+    }
+
     fn over_toolbar(&self) -> bool {
         let (x, y) = self.pointer;
         let layout = self.layout();
@@ -14559,7 +15069,7 @@ mod terminal_tests {
     }
 
     fn shows(app: &App, wanted: &[&str]) -> bool {
-        app.terminal.as_ref().is_some_and(|terminal| {
+        app.active_terminal().is_some_and(|terminal| {
             terminal
                 .screen()
                 .lines()
@@ -14570,7 +15080,7 @@ mod terminal_tests {
 
     /// Ends the shell and proves it ended: no test may leave one behind.
     fn end(app: &mut App) {
-        if let Some(terminal) = app.terminal.take() {
+        for terminal in app.terminals.drain(..) {
             assert!(
                 terminal.shutdown(Duration::from_secs(10)),
                 "the shell's thread ended"
@@ -14591,12 +15101,12 @@ mod terminal_tests {
         app.press(Key::ctrl('`'));
         assert!(app.state.terminal.open, "ctrl-` opens the terminal");
         assert_eq!(app.state.focus, Focus::Terminal, "and gives it the keys");
-        assert!(app.terminal.is_some(), "with a shell in it");
+        assert!(app.active_terminal().is_some(), "with a shell in it");
 
         type_text(&mut app, "echo routed$((6*7))\r");
         let ran = settle(&mut app, |app| shows(app, &["routed42", "routed$((6*7))"]));
         assert_eq!(text(&app), "hello\n", "nothing typed reached the document");
-        let sent = app.terminal.as_ref().unwrap().bytes_sent();
+        let sent = app.active_terminal().unwrap().bytes_sent();
         assert!(sent > 0);
 
         // Out by the same key: the panel hides, the text has the keys again.
@@ -14609,7 +15119,7 @@ mod terminal_tests {
             "xhello\n",
             "the editor's key reached the document"
         );
-        assert_eq!(app.terminal.as_ref().unwrap().bytes_sent(), sent);
+        assert_eq!(app.active_terminal().unwrap().bytes_sent(), sent);
 
         // In again, and out by clicking the code: the escape hatch that needs no key.
         app.press(Key::ctrl('`'));
@@ -14623,10 +15133,10 @@ mod terminal_tests {
             "clicking the code takes the keys back"
         );
         assert!(app.state.terminal.open, "and leaves the terminal showing");
-        let before = app.terminal.as_ref().unwrap().bytes_sent();
+        let before = app.active_terminal().unwrap().bytes_sent();
         type_text(&mut app, "y");
         assert!(text(&app).contains('y'), "{:?}", text(&app));
-        assert_eq!(app.terminal.as_ref().unwrap().bytes_sent(), before);
+        assert_eq!(app.active_terminal().unwrap().bytes_sent(), before);
 
         // And clicking the terminal hands the keys back to it.
         let panel = app.layout().terminal.expect("open");
@@ -14641,7 +15151,7 @@ mod terminal_tests {
     #[test]
     fn the_editors_shortcuts_are_the_shells_while_it_has_focus() {
         // ctrl-w deletes a word in a shell and closes a buffer in the editor. In the terminal it
-        // must be the first: the editor keeps only ctrl-`, ctrl-t, ctrl-shift-v and ctrl-shift-p.
+        // must be the first: the editor keeps only the few keys `dacode::terminal::route` names.
         let dir = scratch("shortcuts");
         let mut app = editor(&dir);
         app.press(Key::ctrl('`'));
@@ -14665,10 +15175,10 @@ mod terminal_tests {
         // ctrl-shift-p is the editor's, and the palette it opens owns the keys while it is open.
         app.press(Key::ctrl('p').with_shift());
         assert!(app.state.palette.is_some(), "the command palette opens");
-        let sent = app.terminal.as_ref().unwrap().bytes_sent();
+        let sent = app.active_terminal().unwrap().bytes_sent();
         type_text(&mut app, "ab");
         assert_eq!(
-            app.terminal.as_ref().unwrap().bytes_sent(),
+            app.active_terminal().unwrap().bytes_sent(),
             sent,
             "typed into the palette, not the shell under it"
         );
@@ -14692,14 +15202,14 @@ mod terminal_tests {
         app.press(Key::ctrl('t'));
         assert!(app.state.terminal.open, "ctrl-t opens the terminal");
         assert_eq!(app.state.focus, Focus::Terminal, "and gives it the keys");
-        assert!(app.terminal.is_some(), "with a shell in it");
-        let sent = app.terminal.as_ref().unwrap().bytes_sent();
+        assert!(app.active_terminal().is_some(), "with a shell in it");
+        let sent = app.active_terminal().unwrap().bytes_sent();
 
         app.press(Key::ctrl('t'));
         assert!(!app.state.terminal.open, "and closes it from inside");
         assert_eq!(app.state.focus, Focus::Editor);
         assert_eq!(
-            app.terminal.as_ref().unwrap().bytes_sent(),
+            app.active_terminal().unwrap().bytes_sent(),
             sent,
             "the shell was not sent a transpose"
         );
@@ -14713,7 +15223,7 @@ mod terminal_tests {
         let mut app = editor(&dir);
         app.press(Key::ctrl('`'));
         type_text(&mut app, "exit\r");
-        let closed = settle(&mut app, |app| app.terminal.is_none());
+        let closed = settle(&mut app, |app| app.terminals.is_empty());
         assert!(closed, "the shell's exit was noticed");
         assert!(!app.state.terminal.open);
         assert_eq!(app.state.focus, Focus::Editor);
@@ -14721,29 +15231,235 @@ mod terminal_tests {
     }
 
     #[test]
-    fn the_panels_buttons_hide_it_and_start_afresh() {
-        // Mouse-reachable both ways, through the same rectangles the header is drawn from.
+    fn the_panels_buttons_add_a_tab_and_hide_it() {
+        // Mouse-reachable both ways, through the same rectangles the header is drawn from. The +
+        // starts another shell beside the first rather than replacing it: whatever ran in the
+        // first is still there to switch back to.
         let dir = scratch("buttons");
         let mut app = editor(&dir);
         app.window_action(&Action::FocusTerminal);
         let rects = app.terminal_rects().expect("shown");
 
         app.pointer = (rects.new.x + 4.0, rects.new.y + 4.0);
-        let first = app.terminal.as_ref().unwrap().bytes_sent();
+        let first = app.active_terminal().unwrap().bytes_sent();
         type_text(&mut app, "echo old\r");
-        assert!(app.terminal.as_ref().unwrap().bytes_sent() > first);
+        assert!(app.active_terminal().unwrap().bytes_sent() > first);
         app.click(false);
+        assert_eq!(app.terminals.len(), 2, "a second shell");
+        assert_eq!(app.state.terminal.active, 1, "shown");
+        assert_eq!(app.state.terminal.tabs.len(), 2, "with a tab each");
         assert_eq!(
-            app.terminal.as_ref().map(|terminal| terminal.bytes_sent()),
+            app.active_terminal().map(|terminal| terminal.bytes_sent()),
             Some(0),
             "a fresh shell"
         );
+        assert!(app.terminals[0].bytes_sent() > first, "the first kept");
 
         app.pointer = (rects.close.x + 4.0, rects.close.y + 4.0);
         app.click(false);
         assert!(!app.state.terminal.open, "hidden");
         assert_eq!(app.state.focus, Focus::Editor);
-        assert!(app.terminal.is_some(), "and still running");
+        assert_eq!(app.terminals.len(), 2, "and both still running");
+        end(&mut app);
+    }
+
+    #[test]
+    fn tabs_switch_by_click_and_key_and_closing_the_last_hides_the_panel() {
+        // The tab lifecycle through the real paths: the header's own rectangles for the mouse,
+        // ctrl-pagedown and ctrl-pageup from inside the terminal, each tab's close ending its shell,
+        // and the last one going taking the panel with it while keeping its height for next time.
+        let dir = scratch("tabs");
+        let mut app = editor(&dir);
+        app.window_action(&Action::FocusTerminal);
+        app.window_action(&Action::NewTerminal);
+        app.window_action(&Action::NewTerminal);
+        assert_eq!(app.terminals.len(), 3);
+        assert_eq!(app.state.terminal.active, 2);
+
+        let rects = app.terminal_rects().expect("shown");
+        let tabs = dacode::layout::terminal_tabs(
+            &rects,
+            &app.state.terminal.tabs,
+            &app.state.typography,
+            app.scale(),
+        );
+        assert_eq!(tabs.len(), 3);
+        app.pointer = (
+            tabs[0].label.x + 2.0,
+            tabs[0].label.y + tabs[0].label.height / 2.0,
+        );
+        app.click(false);
+        assert_eq!(app.state.terminal.active, 0, "a click shows that tab");
+        assert_eq!(app.state.focus, Focus::Terminal);
+
+        app.press(Key::parse_sequence("<c-pageup>")[0]);
+        assert_eq!(
+            app.state.terminal.active, 2,
+            "ctrl-pageup wraps round to the last"
+        );
+        app.press(Key::parse_sequence("<c-pagedown>")[0]);
+        assert_eq!(app.state.terminal.active, 0, "and ctrl-pagedown back");
+        assert_eq!(
+            app.state.document.text().to_string(),
+            "hello\n",
+            "the document was never typed into"
+        );
+
+        // Closing the shown tab shows its neighbour; closing one before it keeps what is shown.
+        app.pointer = (tabs[0].close.x + 2.0, tabs[0].close.y + 2.0);
+        app.click(false);
+        assert_eq!(app.terminals.len(), 2);
+        assert_eq!(app.state.terminal.active, 0, "the neighbour slid in");
+        app.window_action(&Action::NextTerminal);
+        assert_eq!(app.state.terminal.active, 1);
+        app.window_action(&Action::KillTerminal);
+        assert_eq!(app.terminals.len(), 1);
+        assert_eq!(
+            app.state.terminal.active, 0,
+            "the last tab closed, so the one before"
+        );
+
+        app.state.terminal.fraction = 0.55;
+        app.window_action(&Action::KillTerminal);
+        assert!(app.terminals.is_empty());
+        assert!(!app.state.terminal.open, "the last one hides the panel");
+        assert_eq!(app.state.focus, Focus::Editor, "and gives the keys back");
+        assert_eq!(app.state.terminal.fraction, 0.55, "its height is kept");
+        end(&mut app);
+    }
+
+    #[test]
+    fn a_drag_on_the_grid_selects_and_ctrl_shift_c_copies_it() {
+        // Mouse selection end to end: a press on a cell and a drag along the row, through the same
+        // `cell_at` the drawing's `cell` inverts, then the copy key from inside the terminal. The
+        // shell prints a known word at a known place, so which cells were dragged over is known.
+        let dir = scratch("select");
+        let mut app = editor(&dir);
+        app.window_action(&Action::FocusTerminal);
+        type_text(&mut app, "clear; echo selectable\r");
+        let ready = settle(&mut app, |app| shows(app, &["selectable"]));
+        assert!(ready, "the word was printed");
+        let screen = app.active_terminal().unwrap().screen();
+        let row = (0..screen.rows.len())
+            .find(|row| screen.row_text(*row) == "selectable")
+            .expect("on screen");
+
+        let rects = app.terminal_rects().expect("shown");
+        let first = rects.cell(row, 0);
+        let last = rects.cell(row, "selectable".len() - 1);
+        app.pointer = (first.x + 1.0, first.y + first.height / 2.0);
+        app.click_count = 1;
+        app.dragging = true;
+        app.terminal_gesture = None;
+        app.click(false);
+        assert_eq!(app.terminal_gesture, Some(TerminalGesture::Select));
+        app.pointer = (last.right() - 1.0, last.y + last.height / 2.0);
+        app.drag_terminal();
+        app.release_terminal(dacode_terminal::MouseButton::Left);
+        assert_eq!(app.terminal_gesture, None);
+        assert_eq!(
+            app.active_terminal().unwrap().selection_text().as_deref(),
+            Some("selectable")
+        );
+        let sent = app.active_terminal().unwrap().bytes_sent();
+        app.press(Key::ctrl('c').with_shift());
+        assert_eq!(
+            app.active_terminal().unwrap().bytes_sent(),
+            sent,
+            "ctrl-shift-c is the editor's copy, not the shell's interrupt"
+        );
+        assert!(app.state.hover.is_none(), "{:?}", app.state.hover);
+
+        // A right-click over the panel offers the terminal's menu, copy first, and not the code's.
+        app.open_context_menu();
+        let menu = app.state.menu.as_ref().expect("a menu opened");
+        assert_eq!(menu.items[0].action, Action::TerminalCopy);
+        end(&mut app);
+    }
+
+    #[test]
+    fn a_program_that_asked_for_the_mouse_gets_the_click_and_shift_still_selects() {
+        // Through the real press path: once the program turns SGR reporting on, a press on the grid
+        // is sent to it as `ESC [ < 0 ; x ; y M` and selects nothing, its release follows, and a
+        // shift-press selects as it would with no program asking — xterm's way out.
+        let dir = scratch("mouse");
+        let mut app = editor(&dir);
+        app.window_action(&Action::FocusTerminal);
+        type_text(&mut app, "printf '\\033[?1000h\\033[?1006h'\r");
+        let asked = settle(&mut app, |app| {
+            app.active_terminal()
+                .is_some_and(|terminal| terminal.mouse_modes().reporting())
+        });
+        assert!(asked, "the shell turned reporting on");
+
+        let rects = app.terminal_rects().expect("shown");
+        let cell = rects.cell(2, 4);
+        app.pointer = (cell.x + 1.0, cell.y + 1.0);
+        app.click_count = 1;
+        let before = app.active_terminal().unwrap().bytes_sent();
+        app.terminal_gesture = None;
+        app.click(false);
+        app.release_terminal(dacode_terminal::MouseButton::Left);
+        let sent = app.active_terminal().unwrap().bytes_sent() - before;
+        assert_eq!(
+            sent,
+            (b"\x1b[<0;5;3M".len() + b"\x1b[<0;5;3m".len()) as u64,
+            "a press and its release, one-based"
+        );
+        assert!(!app.active_terminal().unwrap().has_selection());
+
+        app.modifiers = ModifiersState::SHIFT;
+        let before = app.active_terminal().unwrap().bytes_sent();
+        app.click(false);
+        assert_eq!(app.terminal_gesture, Some(TerminalGesture::Select));
+        assert_eq!(app.active_terminal().unwrap().bytes_sent(), before);
+        app.modifiers = ModifiersState::empty();
+        end(&mut app);
+    }
+
+    #[test]
+    fn dragging_the_edge_resizes_the_panel_and_the_shells_grid() {
+        // The edge is grabbed through its own rectangle and follows the pointer; the grid the
+        // shell is told it has follows the panel, as `fit_terminal` promises.
+        let dir = scratch("resize");
+        let mut app = editor(&dir);
+        app.window_action(&Action::FocusTerminal);
+        app.collect_background();
+        let before = app.terminal_rects().expect("shown");
+        let rows = app.active_terminal().unwrap().size().rows;
+
+        app.state.focus = Focus::Editor;
+        app.pointer = (before.panel.x + 300.0, before.panel.y);
+        app.dragging = true;
+        app.terminal_gesture = None;
+        app.click(false);
+        assert_eq!(app.terminal_gesture, Some(TerminalGesture::Resize));
+        assert_eq!(
+            app.state.focus,
+            Focus::Editor,
+            "grabbing the edge moved no keys"
+        );
+        app.pointer.1 -= 120.0;
+        app.drag_terminal();
+        app.release_terminal(dacode_terminal::MouseButton::Left);
+
+        let after = app.terminal_rects().expect("shown");
+        assert!(
+            (after.panel.y - (before.panel.y - 120.0)).abs() <= 1.0,
+            "the edge followed the pointer: {} to {}",
+            before.panel.y,
+            after.panel.y
+        );
+        assert_eq!(after.panel.bottom(), before.panel.bottom());
+        app.collect_background();
+        let grid = app.active_terminal().unwrap().size();
+        assert!(grid.rows > rows, "{} rows, then {}", rows, grid.rows);
+        assert_eq!((grid.columns, grid.rows), (after.columns, after.rows));
+
+        // And the height is part of the session.
+        let fraction = app.state.terminal.fraction;
+        let session = app.session_snapshot();
+        assert_eq!(session.terminal_fraction, Some(fraction));
         end(&mut app);
     }
 
@@ -14756,7 +15472,7 @@ mod terminal_tests {
             app.window_action(&Action::FocusTerminal);
             app.collect_background();
             let rects = app.terminal_rects().expect("shown");
-            let grid = app.terminal.as_ref().unwrap().size();
+            let grid = app.active_terminal().unwrap().size();
             assert_eq!(
                 (grid.columns, grid.rows),
                 (rects.columns, rects.rows),

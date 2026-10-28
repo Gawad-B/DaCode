@@ -47,10 +47,24 @@ release, where one exists, lives in `packaging/notes/`.
   clicking the code also takes the keys back. Colours follow the theme — every theme now has the
   sixteen terminal colours, derived from its own accents — and 256-colour and 24-bit colour pass
   through. The wheel scrolls the history (ten thousand lines), or a full-screen program like `less`.
-  Typing `exit` closes the panel; its header has buttons to start a fresh shell and to hide it.
+  Typing `exit` closes that shell; the header's × hides the panel and leaves the shells running.
   The emulation is `alacritty_terminal`, running on its own thread, so a command that prints a
-  great deal does not slow the editor down. Not yet: selecting and copying with the mouse, more
-  than one terminal, and resizing the panel.
+  great deal does not slow the editor down. Not yet: splitting a terminal.
+- **Terminal tabs.** The header's + starts another shell in a tab of its own, named by the title
+  the shell sets or by the shell's name. Click a tab to show it and its × to end that shell;
+  `ctrl-pagedown` and `ctrl-pageup` step through them from inside the terminal (inside Vim those
+  were its own tab keys — `gt` and `gT` still are). New, next, previous and end are under Terminal
+  in the menu bar and in the palette. Closing the last tab hides the panel.
+- **Selecting and copying in the terminal.** Drag to select, double-click for a word, triple-click
+  for a line, shift-click to extend; `ctrl-shift-c` copies, and a right-click on the panel offers
+  copy, paste, a new terminal and ending this one. The selection stays on its text as the history
+  scrolls.
+- **A resizable terminal.** Drag the panel's top edge, where the pointer turns into resize arrows.
+  It keeps about four rows of terminal and six of code, and the height is remembered per project.
+- **The mouse in full-screen programs.** A program that asks for the mouse — `htop`, `vim` with
+  `mouse=a`, `tmux` — gets its clicks, drags, releases and wheel, in the SGR encoding or the older
+  one it asked for. Shift selects and scrolls anyway. A program asking the terminal's colours
+  (`OSC 10`, `11`, `4`) is told the theme's, so it picks light or dark colours to match.
 
 ### Changed
 

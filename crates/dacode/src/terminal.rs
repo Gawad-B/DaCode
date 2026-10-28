@@ -1,27 +1,61 @@
-//! The terminal panel, as the editor sees it: whether it is open, what it last showed, how its
-//! cells are coloured, and which keys it keeps.
+//! The terminal panel, as the editor sees it: whether it is open, how tall it is, its tabs, what
+//! the shown one last showed, how its cells are coloured, and which keys it keeps.
 //!
 //! The shell itself is not here. It is a process, and the executor owns no processes — the event
-//! loop holds the [`dacode_terminal::Terminal`] beside the language servers, and hands this module a
+//! loop holds the [`dacode_terminal::Terminal`]s beside the language servers, and hands this module a
 //! [`Screen`] to draw. That split is also what lets the screenshot harness draw a terminal with no
 //! shell behind it: it fills [`Panel::screen`] from an [`dacode_terminal::Emulator`] fed a fixed
 //! transcript.
 
-use dacode_input::{Key, KeyCode};
+use dacode_input::{Action, Key, KeyCode};
 use dacode_terminal::{Cell, Color, Screen};
-use dacode_theme::{Oklch, Theme};
+use dacode_theme::{Mode, Oklch, Theme};
+
+/// The share of the editor's height the panel opens at: VSCode's.
+pub const DEFAULT_FRACTION: f32 = 0.4;
 
 /// The panel's state on [`crate::chrome::EditorState`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Panel {
-    /// Shown under the editor. Hiding it leaves the shell running, as VSCode does: closing a view
+    /// Shown under the editor. Hiding it leaves the shells running, as VSCode does: closing a view
     /// is not a decision to kill whatever is running in it.
     pub open: bool,
-    /// What the shell last showed, copied out once per frame that needed it. `None` before the
-    /// first copy, which draws as an empty panel.
+    /// What the shown shell last showed, copied out once per frame that needed it. `None` before
+    /// the first copy, which draws as an empty panel.
     pub screen: Option<Screen>,
-    /// The title the shell set (`OSC 0`), shown in the panel's header.
-    pub title: Option<String>,
+    /// One title per shell, in tab order: what the shell set with `OSC 0`, or its program's name.
+    pub tabs: Vec<String>,
+    /// Which tab is shown and has the keys.
+    pub active: usize,
+    /// How much of the editor's height the panel asks for. Dragging its top edge sets it; the
+    /// pixels are [`crate::layout::terminal_height`]'s, which clamps it so neither the panel nor
+    /// the code above it can be squeezed to nothing.
+    pub fraction: f32,
+}
+
+impl Default for Panel {
+    fn default() -> Self {
+        Self {
+            open: false,
+            screen: None,
+            tabs: Vec::new(),
+            active: 0,
+            fraction: DEFAULT_FRACTION,
+        }
+    }
+}
+
+/// What a tab is called: the title the shell set, or else its program's name — `zsh`, `pwsh` —
+/// which is what tells two prompts apart before either has said anything.
+pub fn tab_title(title: Option<String>, shell: &dacode_terminal::ShellCommand) -> String {
+    title
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| {
+            std::path::Path::new(&shell.program)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| shell.program.clone())
+        })
 }
 
 /// The line height of a terminal row, in ems of the code size.
@@ -32,17 +66,17 @@ pub struct Panel {
 pub const LINE_HEIGHT: f32 = 1.35;
 
 /// Where a key pressed while the terminal has focus goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyRoute {
     /// To the shell, spelled as bytes.
     Shell,
-    /// To the editor, which runs it as it would anywhere: the escape hatch.
-    Editor,
+    /// To the editor, as this action: the escape hatch.
+    Editor(Action),
 }
 
 /// Which keys a focused terminal keeps for the editor. Everything else goes to the shell.
 ///
-/// Deliberately four. A terminal that lets the editor's shortcuts through is one where `ctrl-w`
+/// Deliberately few. A terminal that lets the editor's shortcuts through is one where `ctrl-w`
 /// closes a buffer instead of deleting a word and `ctrl-p` opens a file picker instead of recalling
 /// the last command — the shell eating keys, from the other side. So the editor keeps only what
 /// cannot mean anything to a shell, or is how you leave:
@@ -51,26 +85,54 @@ pub enum KeyRoute {
 /// - **`ctrl-t`** toggles it too, for the same reason: it is the other key that opens it. This
 ///   one does cost the shell something — readline's transpose-characters — and it is the one
 ///   trade on the list; a key that opens the panel and cannot close it would be a trap.
-/// - **`ctrl-shift-v`** pastes. A shell has no binding for ctrl-shift anything: a terminal sends
-///   the same control code with and without shift, which is why GNOME Terminal, Konsole and VSCode
-///   all keep that family for themselves.
+/// - **`ctrl-shift-c`** and **`ctrl-shift-v`** copy the mouse selection and paste. A shell has no
+///   binding for ctrl-shift anything: a terminal sends the same control code with and without
+///   shift, which is why GNOME Terminal, Konsole and VSCode all keep that family for themselves —
+///   and why plain `ctrl-c` stays the shell's interrupt.
 /// - **`ctrl-shift-p`** opens the command palette, from which everything else is reachable.
+/// - **`ctrl-pageup`** and **`ctrl-pagedown`** step between terminal tabs, VSCode's keys for the
+///   same thing. The second trade on the list: Vim binds them to its own tab pages, and inside a
+///   Vim running here they now switch terminals instead. `gt` and `gT` still reach Vim's tabs.
 ///
 /// Clicking the code is the other way out, and needs no key at all.
 pub fn route(key: Key) -> KeyRoute {
-    let editor = key.ctrl
-        && !key.alt
-        && match key.code {
-            KeyCode::Char('`') => true,
-            // Not with shift, which is the project's symbol picker and nothing a shell is owed.
-            KeyCode::Char('t') => !key.shift,
-            KeyCode::Char('v') | KeyCode::Char('p') => key.shift,
-            _ => false,
-        };
-    if editor {
-        KeyRoute::Editor
-    } else {
-        KeyRoute::Shell
+    if !key.ctrl || key.alt {
+        return KeyRoute::Shell;
+    }
+    let action = match key.code {
+        KeyCode::Char('`') => Some(Action::ToggleTerminal),
+        // Not with shift, which is the project's symbol picker and nothing a shell is owed.
+        KeyCode::Char('t') if !key.shift => Some(Action::ToggleTerminal),
+        KeyCode::Char('c') if key.shift => Some(Action::TerminalCopy),
+        KeyCode::Char('v') if key.shift => Some(Action::TerminalPaste),
+        KeyCode::Char('p') if key.shift => Some(Action::ToggleCommandPalette),
+        KeyCode::PageDown if !key.shift => Some(Action::NextTerminal),
+        KeyCode::PageUp if !key.shift => Some(Action::PreviousTerminal),
+        _ => None,
+    };
+    match action {
+        Some(action) => KeyRoute::Editor(action),
+        None => KeyRoute::Shell,
+    }
+}
+
+/// The selection's background: the visual-mode accent washed into the panel, the same signal a
+/// selection in the code gives.
+pub fn selection_fill(theme: &Theme) -> Oklch {
+    theme.bg_panel.mix(theme.accent(Mode::Visual), 0.32)
+}
+
+/// The colours a program asking `OSC 10`/`11`/`4` is told, which are the ones it is drawn in.
+pub fn palette(theme: &Theme) -> dacode_terminal::Palette {
+    let rgb = |color: Oklch| {
+        let [r, g, b, _] = color.to_srgb8();
+        [r, g, b]
+    };
+    let ansi = theme.ansi();
+    dacode_terminal::Palette {
+        foreground: rgb(theme.ink),
+        background: rgb(theme.bg_panel),
+        ansi: std::array::from_fn(|index| rgb(ansi[index])),
     }
 }
 
@@ -102,7 +164,12 @@ pub fn paint(theme: &Theme, palette: &[Oklch; 16], cell: &Cell) -> (Oklch, Optio
     };
     // Inverse always fills, even when the colour it fills with is the default: the default
     // foreground as a background is the whole point of it (a selection in `less`, a status bar).
-    let fill = (style.inverse || bg != Color::Background).then(|| color(theme, palette, bg));
+    // The mouse selection fills over whatever the program asked for, as it does in every terminal.
+    let fill = if cell.selected {
+        Some(selection_fill(theme))
+    } else {
+        (style.inverse || bg != Color::Background).then(|| color(theme, palette, bg))
+    };
     let mut ink = color(theme, palette, fg);
     if style.dim {
         ink = ink.mix(fill.unwrap_or(theme.bg_panel), 0.4);
@@ -128,16 +195,28 @@ mod tests {
     }
 
     #[test]
-    fn the_escape_hatch_is_four_keys() {
+    fn the_escape_hatch_is_seven_keys() {
         // `ctrl-t` among them: the editor's second key for the terminal must close it from inside
         // as well, or it opens a panel only the other key can leave.
-        for keys in ["<c-`>", "<c-t>", "<c-s-v>", "<c-s-p>"] {
+        for (keys, action) in [
+            ("<c-`>", Action::ToggleTerminal),
+            ("<c-t>", Action::ToggleTerminal),
+            ("<c-s-c>", Action::TerminalCopy),
+            ("<c-s-v>", Action::TerminalPaste),
+            ("<c-s-p>", Action::ToggleCommandPalette),
+            ("<c-pagedown>", Action::NextTerminal),
+            ("<c-pageup>", Action::PreviousTerminal),
+        ] {
             let key = Key::parse_sequence(keys)[0];
-            assert_eq!(route(key), KeyRoute::Editor, "{keys} is the editor's");
+            assert_eq!(
+                route(key),
+                KeyRoute::Editor(action),
+                "{keys} is the editor's"
+            );
         }
-        // Without shift these are the shell's: ctrl-v is "insert the next key literally" and ctrl-p
-        // is the previous command.
-        for keys in ["<c-v>", "<c-p>"] {
+        // Without shift these are the shell's: ctrl-c interrupts, ctrl-v is "insert the next key
+        // literally" and ctrl-p is the previous command. Without ctrl, page-up scrolls a pager.
+        for keys in ["<c-c>", "<c-v>", "<c-p>", "<pageup>", "<s-pagedown>"] {
             let key = Key::parse_sequence(keys)[0];
             assert_eq!(route(key), KeyRoute::Shell, "{keys} is the shell's");
         }
@@ -164,5 +243,33 @@ mod tests {
         let (fg, fill) = paint(&theme, &palette, &inverse);
         assert_eq!(fg.to_hex(), theme.bg_panel.to_hex());
         assert_eq!(fill.map(|c| c.to_hex()), Some(theme.ink.to_hex()));
+    }
+
+    #[test]
+    fn a_selected_cell_is_filled_whatever_the_program_painted_under_it() {
+        // A selection over a coloured background — a `git diff`'s red, a status bar — has to read
+        // as selected, or copying it is a guess at which cells are in.
+        let theme = Theme::default();
+        let palette = theme.ansi();
+        let cell = Cell {
+            bg: Color::Ansi(1),
+            selected: true,
+            ..Cell::default()
+        };
+        let (_, fill) = paint(&theme, &palette, &cell);
+        assert_eq!(
+            fill.map(|c| c.to_hex()),
+            Some(selection_fill(&theme).to_hex())
+        );
+    }
+
+    #[test]
+    fn a_tab_is_named_by_its_shell_until_the_shell_names_it() {
+        let shell = dacode_terminal::ShellCommand::new("/usr/bin/zsh", &[]);
+        assert_eq!(tab_title(None, &shell), "zsh");
+        assert_eq!(tab_title(Some("  ".into()), &shell), "zsh");
+        assert_eq!(tab_title(Some("~/dacode".into()), &shell), "~/dacode");
+        let windows = dacode_terminal::ShellCommand::new("pwsh.exe", &[]);
+        assert_eq!(tab_title(None, &windows), "pwsh");
     }
 }

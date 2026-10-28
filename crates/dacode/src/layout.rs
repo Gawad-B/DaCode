@@ -49,21 +49,29 @@ pub fn blame_column_width(typography: &dacode_theme::Typography, scale: f32) -> 
         .round()
 }
 
-/// Where everything in the terminal panel is: a header with its title and two buttons, and the
-/// cell grid under it.
+/// Where everything in the terminal panel is: a header with its heading, its tabs and two buttons,
+/// the edge that resizes it, and the cell grid under it.
 ///
 /// Drawing, the mouse and the PTY's size all read this one function, so the grid the shell is told
-/// it has is the grid that is drawn, and a click on the header's close button lands on the button.
+/// it has is the grid that is drawn, a click on the header's close button lands on the button, and
+/// a drag lands on the cell it is drawn over.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerminalRects {
     pub panel: Rect,
     pub header: Rect,
-    /// The header's label, left of the buttons.
+    /// The header's label and tabs, left of the buttons.
     pub title: Rect,
-    /// Starts a fresh shell.
+    /// The word "terminal", at the start of [`TerminalRects::title`].
+    pub heading: Rect,
+    /// Where the tabs go: the rest of the title. [`terminal_tabs`] divides it.
+    pub tabs: Rect,
+    /// Starts another shell, in a tab of its own.
     pub new: Rect,
-    /// Hides the panel; the shell keeps running.
+    /// Hides the panel; the shells keep running.
     pub close: Rect,
+    /// The strip along the panel's top edge that a drag resizes it by. Straddles the edge, half
+    /// over the code, because a target a pixel tall is one nobody can find.
+    pub border: Rect,
     /// The cells, inside the panel's padding.
     pub grid: Rect,
     pub cell_width: f32,
@@ -82,10 +90,117 @@ impl TerminalRects {
             self.cell_height,
         )
     }
+
+    /// The cell under a point, and which half of it — the inverse of [`TerminalRects::cell`], so a
+    /// press selects the cell drawn under the pointer. A point outside the grid is clamped to its
+    /// nearest cell: a drag that runs off the edge keeps selecting to the edge.
+    pub fn cell_at(&self, x: f32, y: f32) -> dacode_terminal::CellPoint {
+        let column = ((x - self.grid.x) / self.cell_width).max(0.0);
+        let row = ((y - self.grid.y) / self.cell_height).max(0.0);
+        let last_column = self.columns.saturating_sub(1);
+        let whole = column.floor() as usize;
+        dacode_terminal::CellPoint {
+            row: (row.floor() as usize).min(self.rows.saturating_sub(1)),
+            column: whole.min(last_column),
+            // Past the right edge is the right half of the last cell, so a drag off it takes it.
+            right_half: whole > last_column || column.fract() >= 0.5,
+        }
+    }
+}
+
+/// One terminal tab in the panel's header: the whole tab, its title, and its close button.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalTab {
+    pub tab: Rect,
+    pub label: Rect,
+    /// Ends that tab's shell.
+    pub close: Rect,
+}
+
+/// The tabs along the header, one per title, left to right.
+///
+/// Each takes the width its title asks for up to a cap, and when they do not all fit they share
+/// what there is equally — a tab narrower than its title elides it, but every shell keeps a tab to
+/// click and a button to close it, because a terminal you cannot reach is one you cannot end.
+pub fn terminal_tabs(
+    rects: &TerminalRects,
+    titles: &[String],
+    typography: &dacode_theme::Typography,
+    scale: f32,
+) -> Vec<TerminalTab> {
+    if titles.is_empty() {
+        return Vec::new();
+    }
+    let advance = measured_advance(typography, dacode_theme::Role::Ui, scale);
+    let close = size::BUTTON * 0.7 * scale;
+    let pad = dacode_theme::space::SM * scale;
+    let gap = 2.0 * scale;
+    let height = (rects.header.height - 6.0 * scale).max(0.0);
+    let y = rects.header.y + (rects.header.height - height) / 2.0;
+    let natural = |title: &String| {
+        (title.chars().count().min(24) as f32 * advance + pad * 2.0 + close).ceil()
+    };
+    let share = ((rects.tabs.width - gap * titles.len() as f32) / titles.len() as f32).max(0.0);
+    let mut x = rects.tabs.x;
+    titles
+        .iter()
+        .map(|title| {
+            let width = natural(title).min(share).max(close.min(share));
+            let tab = Rect::new(x, y, width, height);
+            x += width + gap;
+            let close_rect = Rect::new(
+                tab.right() - close,
+                tab.y + (tab.height - close) / 2.0,
+                close,
+                close,
+            );
+            TerminalTab {
+                tab,
+                label: Rect::new(
+                    tab.x + pad,
+                    tab.y,
+                    (close_rect.x - tab.x - pad).max(0.0),
+                    tab.height,
+                ),
+                close: close_rect,
+            }
+        })
+        .collect()
 }
 
 /// The height of the terminal panel's header, at scale 1.
 pub const TERMINAL_HEADER: f32 = 30.0;
+
+/// The shortest the panel is let be, at scale 1: its header and about four rows.
+pub const TERMINAL_MIN: f32 = 140.0;
+
+/// How much of the editor a tall panel must leave for the code, at scale 1: about six rows.
+pub const TERMINAL_CODE_KEEP: f32 = 160.0;
+
+/// How tall the panel is, given the editor's whole height and the share it asks for.
+///
+/// Clamped both ways, so neither side of the drag can be squeezed out: never shorter than
+/// [`TERMINAL_MIN`], never taller than leaves [`TERMINAL_CODE_KEEP`] of code — and in a window too
+/// small for both, three fifths of the editor at most, so the code still wins the tie. The one
+/// clamp, read by the layout and by the drag alike; a second copy would be a border that stops
+/// following the pointer somewhere the drawing did not.
+pub fn terminal_height(editor_height: f32, fraction: f32, scale: f32) -> f32 {
+    let wanted = editor_height * fraction.clamp(0.0, 1.0);
+    let most = (editor_height - TERMINAL_CODE_KEEP * scale).max(editor_height * 0.6);
+    wanted.max(TERMINAL_MIN * scale).min(most).floor()
+}
+
+/// The share a drag of the top edge to `y` asks for, already clamped as [`terminal_height`]
+/// clamps it: a fraction stored past the limit would leave a dead zone the pointer has to travel
+/// back through before the edge moves again. `bottom` is the panel's bottom edge, which a resize
+/// does not move, and `editor_height` the height the editor and the panel share.
+pub fn terminal_fraction_at(editor_height: f32, bottom: f32, y: f32, scale: f32) -> f32 {
+    if editor_height <= 0.0 {
+        return crate::terminal::DEFAULT_FRACTION;
+    }
+    let wanted = (bottom - y).max(0.0) / editor_height;
+    terminal_height(editor_height, wanted, scale) / editor_height
+}
 
 /// Lays the terminal panel out.
 ///
@@ -110,6 +225,21 @@ pub fn terminal_panel(
         (new.x - header.x - dacode_theme::space::SM * scale).max(0.0),
         header.height,
     );
+    let heading_width = ("terminal".len() as f32 + 2.0)
+        * measured_advance(typography, dacode_theme::Role::Label, scale);
+    let heading = Rect::new(
+        title.x,
+        title.y,
+        heading_width.min(title.width),
+        title.height,
+    );
+    let tabs = Rect::new(
+        heading.right(),
+        title.y,
+        (title.right() - heading.right() - gap).max(0.0),
+        title.height,
+    );
+    let border = Rect::new(panel.x, panel.y - 3.0 * scale, panel.width, 6.0 * scale);
 
     let pad_x = dacode_theme::space::SM * scale;
     let pad_y = 4.0 * scale;
@@ -127,8 +257,11 @@ pub fn terminal_panel(
         panel,
         header,
         title,
+        heading,
+        tabs,
         new,
         close,
+        border,
         grid,
         cell_width,
         cell_height,
@@ -761,17 +894,15 @@ impl Layout {
     /// mouse and the capture — each pass `state.terminal.open`, so none can decide on its own that
     /// the panel is there.
     ///
-    /// Two fifths of the editor's height, the share VSCode opens its panel at, and never less than
-    /// a few rows or more than three fifths: the code above must stay a place you can read.
-    pub fn with_terminal(mut self, open: bool, scale: f32) -> Self {
+    /// `fraction` of the editor's height — two fifths until the edge is dragged, the share VSCode
+    /// opens its panel at — clamped by [`terminal_height`] so the code above stays a place you can
+    /// read and the panel stays a terminal.
+    pub fn with_terminal(mut self, open: bool, fraction: f32, scale: f32) -> Self {
         if !open {
             return self;
         }
         let editor = self.editor;
-        let height = (editor.height * 0.4)
-            .max(140.0 * scale)
-            .min(editor.height * 0.6)
-            .floor();
+        let height = terminal_height(editor.height, fraction, scale);
         let (panel, rest) = editor.split_bottom(height);
         self.editor = rest;
         self.terminal = Some(panel);
@@ -1444,7 +1575,11 @@ mod tests {
             for scale in [1.0_f32, 2.0] {
                 let window = Rect::new(0.0, 0.0, width, height);
                 let without = Layout::of(window, scale, None, 0.0);
-                let with = Layout::of(window, scale, None, 0.0).with_terminal(true, scale);
+                let with = Layout::of(window, scale, None, 0.0).with_terminal(
+                    true,
+                    crate::terminal::DEFAULT_FRACTION,
+                    scale,
+                );
                 let what = format!("{width}x{height} at {scale}");
                 let panel = with.terminal.expect("open");
 
@@ -1506,8 +1641,107 @@ mod tests {
     fn a_closed_terminal_changes_nothing() {
         let window = Rect::new(0.0, 0.0, 1200.0, 800.0);
         let plain = Layout::of(window, 1.0, Some(3), 1.0);
-        let closed = Layout::of(window, 1.0, Some(3), 1.0).with_terminal(false, 1.0);
+        let closed = Layout::of(window, 1.0, Some(3), 1.0).with_terminal(false, 0.4, 1.0);
         assert_eq!(plain.editor, closed.editor);
         assert_eq!(closed.terminal, None);
+    }
+
+    #[test]
+    fn a_dragged_panel_stops_short_of_squeezing_either_side_out() {
+        // Dragged to the very top or the very bottom, the panel keeps about four rows and the code
+        // keeps about six — the clamp is what stops a careless drag from losing either.
+        let typography = dacode_theme::Typography::default();
+        for (width, height, scale) in [
+            (1600.0, 1000.0, 1.0),
+            (800.0, 600.0, 1.0),
+            (1600.0, 1000.0, 2.0),
+        ] {
+            let window = Rect::new(0.0, 0.0, width, height);
+            let plain = Layout::of(window, scale, None, 0.0);
+            let shared = plain.editor.height;
+            for fraction in [0.0, 1.0] {
+                let layout =
+                    Layout::of(window, scale, None, 0.0).with_terminal(true, fraction, scale);
+                let panel = layout.terminal.expect("open");
+                let rects = terminal_panel(panel, &typography, scale);
+                assert!(
+                    rects.rows >= 3,
+                    "{width}x{height}@{scale} at {fraction}: {} rows",
+                    rects.rows
+                );
+                assert!(
+                    layout.editor.height >= (TERMINAL_CODE_KEEP * scale).min(shared * 0.4) - 1.0,
+                    "{width}x{height}@{scale} at {fraction}: {} of code",
+                    layout.editor.height
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_the_edge_moves_it_to_the_pointer_and_no_further() {
+        let scale = 1.0;
+        let editor_height = 800.0;
+        let bottom = 900.0;
+        // Within the limits the edge lands on the pointer.
+        let fraction = terminal_fraction_at(editor_height, bottom, 500.0, scale);
+        assert!((terminal_height(editor_height, fraction, scale) - 400.0).abs() <= 1.0);
+        // Past them it stops at the limit, and the stored share is the limit's: dragging back
+        // moves the edge at once rather than after a dead zone.
+        let top = terminal_fraction_at(editor_height, bottom, 0.0, scale);
+        assert!((top * editor_height - (editor_height - TERMINAL_CODE_KEEP)).abs() <= 1.0);
+        let floor = terminal_fraction_at(editor_height, bottom, 2000.0, scale);
+        assert!((floor * editor_height - TERMINAL_MIN).abs() <= 1.0);
+    }
+
+    #[test]
+    fn a_point_maps_to_the_cell_drawn_under_it() {
+        // The mouse and the drawing must agree on every cell, or a drag selects the character beside
+        // the one under the pointer. Round-trips every cell's centre and both halves of one.
+        let typography = dacode_theme::Typography::default();
+        let panel = Rect::new(40.0, 500.0, 900.0, 320.0);
+        let rects = terminal_panel(panel, &typography, 1.0);
+        for row in 0..rects.rows {
+            for column in 0..rects.columns {
+                let cell = rects.cell(row, column);
+                let at = rects.cell_at(cell.x + cell.width / 2.0 + 0.5, cell.y + cell.height / 2.0);
+                assert_eq!((at.row, at.column), (row, column));
+            }
+        }
+        let cell = rects.cell(2, 5);
+        assert!(!rects.cell_at(cell.x + 1.0, cell.y + 1.0).right_half);
+        assert!(rects.cell_at(cell.right() - 1.0, cell.y + 1.0).right_half);
+        // Off the grid, clamped to its edges.
+        let far = rects.cell_at(panel.right() + 100.0, panel.bottom() + 100.0);
+        assert_eq!(
+            (far.row, far.column, far.right_half),
+            (rects.rows - 1, rects.columns - 1, true)
+        );
+        let near = rects.cell_at(0.0, 0.0);
+        assert_eq!((near.row, near.column, near.right_half), (0, 0, false));
+    }
+
+    #[test]
+    fn every_terminal_tab_keeps_a_close_button_inside_the_header() {
+        // However many shells, each has a tab to click and a button to end it, inside the space
+        // between the heading and the panel's own buttons.
+        let typography = dacode_theme::Typography::default();
+        for width in [600.0, 1600.0] {
+            let panel = Rect::new(0.0, 500.0, width, 300.0);
+            let rects = terminal_panel(panel, &typography, 1.0);
+            for count in [1, 2, 6, 20] {
+                let titles: Vec<String> = (0..count).map(|n| format!("shell number {n}")).collect();
+                let tabs = terminal_tabs(&rects, &titles, &typography, 1.0);
+                assert_eq!(tabs.len(), count);
+                for (n, tab) in tabs.iter().enumerate() {
+                    assert!(tab.tab.x >= rects.tabs.x - 0.01, "{width}/{count}/{n}");
+                    assert!(tab.tab.right() <= rects.new.x + 0.01, "{width}/{count}/{n}");
+                    assert!(tab.close.right() <= tab.tab.right() + 0.01);
+                    if n > 0 {
+                        assert!(tab.tab.x >= tabs[n - 1].tab.right(), "no overlap");
+                    }
+                }
+            }
+        }
     }
 }

@@ -137,7 +137,7 @@ An extension's `main` entry point is inert throughout. No JavaScript is executed
 | In VSCode | In DaCode |
 |---|---|
 | the marketplace | language servers driven over LSP, plus `dacode import` for extension data. Rust, Python, TypeScript, JavaScript, C, C++, Go, Lua and Dart are known out of the box, and the editor will install one for you — see [language servers](language-servers.md) |
-| the integrated terminal | <kbd>ctrl</kbd>+<kbd>`</kbd>, as in VSCode, or <kbd>ctrl</kbd>+<kbd>t</kbd>: a panel under the code running your `$SHELL` (PowerShell on Windows) in the project root. While it has focus every key is the shell's except <kbd>ctrl</kbd>+<kbd>`</kbd>, <kbd>ctrl</kbd>+<kbd>t</kbd>, <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>v</kbd> and <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd>; clicking the code gives the keys back. One terminal, no splits or tabs, and no mouse selection yet — see [keymaps](keymaps.md#the-terminal) |
+| the integrated terminal | <kbd>ctrl</kbd>+<kbd>`</kbd>, as in VSCode, or <kbd>ctrl</kbd>+<kbd>t</kbd>: a panel under the code running your `$SHELL` (PowerShell on Windows) in the project root. While it has focus every key is the shell's except <kbd>ctrl</kbd>+<kbd>`</kbd>, <kbd>ctrl</kbd>+<kbd>t</kbd>, <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>c</kbd>/<kbd>v</kbd>/<kbd>p</kbd> and <kbd>ctrl</kbd>+<kbd>pageup</kbd>/<kbd>pagedown</kbd> for its tabs; clicking the code gives the keys back. Tabs, mouse selection, a draggable height and mouse reporting to full-screen programs, but no splits — see [keymaps](keymaps.md#the-terminal) |
 | debugging | not present. A debug adapter is recognised in a `.vsix` and reported, nothing more |
 | the minimap | not present |
 | code lens | not present; it needs LSP code lenses |

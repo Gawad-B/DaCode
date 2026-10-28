@@ -176,21 +176,41 @@ types the project's run command into it.
 
 While the terminal has the keys, **every key is the shell's** — <kbd>ctrl</kbd>+<kbd>w</kbd> deletes a
 word, <kbd>ctrl</kbd>+<kbd>p</kbd> recalls the last command, <kbd>ctrl</kbd>+<kbd>c</kbd> interrupts,
-<kbd>Esc</kbd> is Escape — with four exceptions:
+<kbd>Esc</kbd> is Escape — with these exceptions:
 
 | Key | Does, from the terminal |
 |---|---|
 | <kbd>ctrl</kbd>+<kbd>`</kbd> · <kbd>ctrl</kbd>+<kbd>t</kbd> | hide the terminal and give the keys back to the code |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>c</kbd> | copy the mouse selection |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>v</kbd> | paste |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> | the command palette, from which everything else is reachable |
+| <kbd>ctrl</kbd>+<kbd>pagedown</kbd> · <kbd>ctrl</kbd>+<kbd>pageup</kbd> | the next or previous terminal tab — inside Vim these used to be its own tab keys; `gt` and `gT` still are |
 
-Clicking the code also gives the keys back, and clicking the terminal hands them to it. The wheel
-over the panel scrolls its history; inside a full-screen program such as `less` it scrolls that
-program instead. Typing `exit` closes the panel. The header's **+** starts a fresh shell and **×**
-hides the panel.
+Clicking the code also gives the keys back, and clicking the terminal hands them to it. Typing
+`exit` closes that terminal.
 
-Not there yet: selecting text in the terminal with the mouse and copying it, more than one terminal,
-and resizing the panel.
+**Tabs.** The header's **+** starts another shell in a tab of its own, beside the ones already
+running; each tab is named by the title its shell sets, or by the shell's name until it sets one.
+Click a tab to show it, or its **×** to end that shell; the header's own **×** only hides the panel,
+and everything keeps running behind it. Closing the last tab hides the panel. The same commands —
+new, next, previous, end — are under **Terminal** in the menu bar and in the command palette.
+
+**The mouse.** Drag over the text to select it; a double-click selects a word and a triple-click a
+line, and shift-click extends the selection. The selection stays on its text as the view scrolls,
+and goes when the program clears the screen under it. <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>c</kbd>
+copies it, and a right-click offers copy, paste, a new terminal and ending this one. The wheel
+scrolls the history; inside a full-screen program such as `less` it scrolls that program instead.
+
+A program that asks for the mouse — `htop`, `vim` with `mouse=a`, `tmux`, `less --mouse` — gets it:
+clicks, drags, releases and the wheel go to the program, not to a selection or the context menu.
+Hold <kbd>shift</kbd> to select and scroll anyway, as in every other terminal.
+
+**Its height.** Drag the panel's top edge — the pointer turns into up-and-down arrows over it — to
+make it taller or shorter. It stops at about four rows of terminal and about six of code, and the
+height is remembered per project, with the open files.
+
+Not there yet: splitting a terminal, dragging a tab to reorder it, and reporting the mouse's
+movement to a program while no button is held.
 
 ### Scrolling and zooming
 

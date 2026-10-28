@@ -170,7 +170,17 @@ const MENUS: [&[&str]; 8] = [
         "previous_diagnostic",
     ],
     &["run", "toggle_terminal"],
-    &["new_terminal", "toggle_terminal", "focus_terminal", "run"],
+    &[
+        "new_terminal",
+        "kill_terminal",
+        "next_terminal",
+        "previous_terminal",
+        "terminal_copy",
+        "terminal_paste",
+        "toggle_terminal",
+        "focus_terminal",
+        "run",
+    ],
     &["help", "command_palette"],
 ];
 
@@ -206,6 +216,19 @@ const CONTEXT: [&str; 14] = [
 /// strictly read-only — which contradicts the rule that a feature reachable only by a key is not
 /// finished, for exactly the audience that rule was written for.
 const TREE: [&str; 4] = ["new_file", "rename_file", "delete_file", "search_project"];
+
+/// What a right-click **on the terminal** offers.
+///
+/// Copy and paste first, for the same reason as the code's menu: they are why anybody right-clicks
+/// a terminal, and with the mouse selection they are the whole of what the mouse can do there.
+/// The text menu's rows would act on the document hidden behind the panel.
+const TERMINAL: [&str; 5] = [
+    "terminal_copy",
+    "terminal_paste",
+    "new_terminal",
+    "kill_terminal",
+    "toggle_terminal",
+];
 
 impl Menu {
     /// The context menu for a file-tree row.
@@ -255,6 +278,18 @@ impl Menu {
         };
         menu.fill(modal);
         menu
+    }
+
+    /// The context menu for the terminal panel.
+    pub fn terminal(at: (f32, f32), modal: bool) -> Self {
+        Self {
+            items: TERMINAL
+                .iter()
+                .filter_map(|name| commands::by_name(name))
+                .map(|command| Item::from_command(command, modal))
+                .collect(),
+            ..Self::context(at, modal)
+        }
     }
 
     /// The context menu, anchored at a point.
@@ -597,7 +632,7 @@ mod tests {
                 );
             }
         }
-        for name in CONTEXT.iter().chain(TREE.iter()) {
+        for name in CONTEXT.iter().chain(TREE.iter()).chain(TERMINAL.iter()) {
             assert!(
                 commands::by_name(name).is_some(),
                 "a context menu offers `{name}`, which is not a command"
@@ -614,6 +649,7 @@ mod tests {
         let named = CONTEXT
             .iter()
             .chain(TREE.iter())
+            .chain(TERMINAL.iter())
             .chain(MENUS.iter().flat_map(|names| names.iter()));
         for name in named {
             let command = commands::by_name(name).expect("checked above");
@@ -637,6 +673,21 @@ mod tests {
     }
 
     #[test]
+    fn a_right_click_on_the_terminal_offers_copy_and_paste_first() {
+        // The mouse's whole vocabulary in a terminal is select, copy and paste; the code's menu
+        // there would cut and format the document hidden behind the panel.
+        let menu = Menu::terminal((10.0, 10.0), false);
+        let actions: Vec<Action> = menu.items.iter().map(|item| item.action.clone()).collect();
+        assert_eq!(actions[..2], [Action::TerminalCopy, Action::TerminalPaste]);
+        assert!(actions.contains(&Action::KillTerminal));
+        assert!(
+            !actions.contains(&Action::from_name("cut").unwrap()),
+            "nothing of the document's"
+        );
+        assert_eq!(menu.kind, Kind::Context);
+    }
+
+    #[test]
     fn the_file_menu_is_where_the_share_button_went() {
         // The title bar's Share button is gone; copying a link to the line is a File entry now,
         // and a command nobody can reach from the mouse is not finished.
@@ -657,7 +708,14 @@ mod tests {
         // editor finds the terminal under Terminal, and the run command under both titles says
         // where it runs.
         let terminal = Menu::bar_at(TITLES.iter().position(|t| *t == "Terminal").unwrap(), false);
-        for action in [Action::NewTerminal, Action::ToggleTerminal] {
+        for action in [
+            Action::NewTerminal,
+            Action::KillTerminal,
+            Action::NextTerminal,
+            Action::TerminalCopy,
+            Action::TerminalPaste,
+            Action::ToggleTerminal,
+        ] {
             assert!(
                 terminal.items.iter().any(|item| item.action == action),
                 "Terminal offers {action:?}"

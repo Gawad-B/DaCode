@@ -1227,7 +1227,7 @@ impl EditorState {
             None,
             0.0,
         )
-        .with_terminal(self.terminal.open, scale)
+        .with_terminal(self.terminal.open, self.terminal.fraction, scale)
         .terminal
         .map_or(0.0, |panel| panel.height);
         (chrome - terminal).max(0.0)
@@ -1831,7 +1831,7 @@ pub fn draw_panes(
         state.results.as_ref().map(|results| results.wanted_rows()),
         state.sidebar_fraction(),
     )
-    .with_terminal(state.terminal.open, scale)
+    .with_terminal(state.terminal.open, state.terminal.fraction, scale)
     .with_blame(state.blame_column(
         panes.iter().position(|pane| pane.focused).unwrap_or(0),
         scale,
@@ -2007,7 +2007,8 @@ pub fn draw_panes(
     frame.set_layer(Layer::Base);
 }
 
-/// The terminal panel: a header with its title and buttons, and the shell's visible rows.
+/// The terminal panel: a header with its heading, tabs and buttons, and the shown shell's visible
+/// rows.
 ///
 /// Reads the [`crate::terminal::Panel::screen`] the event loop copied out, which is the viewport's
 /// cells and nothing more, so this costs the panel's size whatever the scrollback holds. Each row
@@ -2035,27 +2036,49 @@ fn draw_terminal(frame: &mut Frame, state: &EditorState, panel: Rect, scale: f32
         },
         border::BORDER,
     );
-    let heading = "terminal";
-    let heading_width = (heading.chars().count() as f32 + 2.0)
-        * crate::layout::measured_advance(&state.typography, Role::Label, scale);
     frame.text(label(
         state,
-        heading,
-        Rect::new(rects.title.x, header.y, heading_width, header.height),
+        "terminal",
+        rects.heading,
         if focused { theme.ink } else { theme.ink_dim },
         Align::Left,
         scale,
     ));
-    if let Some(title) = &state.terminal.title {
-        let room = (rects.title.width - heading_width).max(0.0);
+    // One tab per shell. The shown one is lifted onto the code's background and keeps its title in
+    // full ink; the others are dim until hovered. Every tab carries its own close, which ends that
+    // shell, where the header's close only hides the panel.
+    let tabs = crate::layout::terminal_tabs(&rects, &state.terminal.tabs, &state.typography, scale);
+    for (index, (tab, title)) in tabs.iter().zip(&state.terminal.tabs).enumerate() {
+        let shown = index == state.terminal.active;
+        let over = hovered(state, tab.tab);
+        if shown {
+            frame.fill_rounded(tab.tab, theme.bg, 6.0 * scale);
+        } else if over {
+            frame.fill_rounded(tab.tab, theme.row_active, 6.0 * scale);
+        }
         frame.text(ui(
             state,
-            elide(state, Role::Ui, title, room, scale),
-            Rect::new(rects.title.x + heading_width, header.y, room, header.height),
-            theme.ink_faint,
+            elide(state, Role::Ui, title, tab.label.width, scale),
+            tab.label,
+            if shown || over {
+                theme.ink
+            } else {
+                theme.ink_faint
+            },
             Align::Left,
             scale,
         ));
+        if tab.close.width >= 8.0 * scale {
+            frame.icon(
+                Icon::Close,
+                centred(tab.close, crate::layout::size::ICON * 0.75 * scale),
+                if hovered(state, tab.close) {
+                    theme.ink
+                } else {
+                    theme.ink_faint
+                },
+            );
+        }
     }
     icon_button(frame, state, rects.new, Icon::Plus, theme.ink_dim, scale);
     icon_button(frame, state, rects.close, Icon::Close, theme.ink_dim, scale);

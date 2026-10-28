@@ -46,8 +46,11 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::tty;
 
+use alacritty_terminal::vte::ansi::{NamedColor, Rgb};
+
 use crate::keys::{self, KeyModes};
-use crate::screen::{GridSize, Screen};
+use crate::mouse::{self, MouseEvent, MouseModes};
+use crate::screen::{self, CellPoint, GridSize, Screen, SelectKind};
 use crate::shell::{self, ShellCommand};
 
 /// Called from the parser thread when there is something new to draw. Cheap and non-blocking.
@@ -72,6 +75,32 @@ pub struct Spawn {
     pub waker: Option<Waker>,
 }
 
+/// The colours the terminal is drawn in, for a program that asks what they are.
+///
+/// `OSC 10 ; ?` and `OSC 11 ; ?` ask for the foreground and background, and a program uses the
+/// answer to decide between its light and dark colours — `vim`'s `background`, `delta`, `bat`. One
+/// that gets no answer waits a moment and guesses, usually dark, which on a light theme is text the
+/// colour of the panel. `OSC 4 ; n ; ?` asks for one of the sixteen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Palette {
+    pub foreground: [u8; 3],
+    pub background: [u8; 3],
+    pub ansi: [[u8; 3]; 16],
+}
+
+impl Palette {
+    /// The colour alacritty's index names: 0–15 the named colours, then its own numbers for the
+    /// foreground and background.
+    fn color(&self, index: usize) -> Option<[u8; 3]> {
+        match index {
+            0..=15 => Some(self.ansi[index]),
+            i if i == NamedColor::Foreground as usize => Some(self.foreground),
+            i if i == NamedColor::Background as usize => Some(self.background),
+            _ => None,
+        }
+    }
+}
+
 /// How the shell ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exit {
@@ -89,6 +118,8 @@ struct Shared {
     /// size. Set once the event loop exists, which is after the listener that needs it.
     sender: OnceLock<EventLoopSender>,
     size: Mutex<WindowSize>,
+    /// What a colour query is answered with; nothing until the editor says.
+    palette: Mutex<Option<Palette>>,
 }
 
 impl Shared {
@@ -142,14 +173,16 @@ impl EventListener for Listener {
                 drop(exited);
                 shared.mark_dirty();
             }
+            Event::ColorRequest(index, format) => {
+                let palette = *shared.palette.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some([r, g, b]) = palette.and_then(|palette| palette.color(index)) {
+                    shared.reply(format(Rgb { r, g, b }));
+                }
+            }
             // Not answered: the clipboard (OSC 52) because a program writing to the system
-            // clipboard unasked is a thing to opt into, not a default; colour queries because a
-            // program that asks waits a moment and carries on with its own guess; the bell because
-            // there is nowhere quiet to ring it.
-            Event::ClipboardStore(..)
-            | Event::ClipboardLoad(..)
-            | Event::ColorRequest(..)
-            | Event::Bell => {}
+            // clipboard unasked is a thing to opt into, not a default; the bell because there is
+            // nowhere quiet to ring it.
+            Event::ClipboardStore(..) | Event::ClipboardLoad(..) | Event::Bell => {}
         }
     }
 }
@@ -200,6 +233,7 @@ impl Terminal {
             waker: spawn.waker.clone(),
             sender: OnceLock::new(),
             size: Mutex::new(window),
+            palette: Mutex::new(None),
         });
         let listener = Listener(shared.clone());
 
@@ -308,22 +342,79 @@ impl Terminal {
         if rows == 0 {
             return;
         }
-        let mode = *self.term.lock().mode();
-        if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
-            && !mode.intersects(TermMode::MOUSE_MODE)
-        {
-            let arrow = if rows > 0 {
-                dacode_input::KeyCode::Up
-            } else {
-                dacode_input::KeyCode::Down
-            };
-            for _ in 0..rows.unsigned_abs().min(64) {
-                self.key(dacode_input::Key::named(arrow));
-            }
+        let modes = self.mouse_modes();
+        if modes.alt_screen && modes.alternate_scroll && !modes.reporting() {
+            self.write(mouse::alternate_scroll(rows, modes.app_cursor));
             return;
         }
         self.term.lock().scroll_display(Scroll::Delta(rows));
         self.shared.mark_dirty();
+    }
+
+    /// What the program asked the mouse to do.
+    pub fn mouse_modes(&self) -> MouseModes {
+        MouseModes::from_mode(*self.term.lock().mode())
+    }
+
+    /// Reports a mouse event to the program, if it asked for that kind. Returns whether it did.
+    ///
+    /// Written straight to the PTY rather than through [`Terminal::write`]: a program with the
+    /// mouse is on the alternate screen, which has no history to jump back from, and a release
+    /// arriving after the shell exited is simply not sent.
+    pub fn mouse(&self, event: MouseEvent) -> bool {
+        let Some(bytes) = mouse::encode(&event, &self.mouse_modes()) else {
+            return false;
+        };
+        if self.exit().is_some() {
+            return false;
+        }
+        self.sent.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        let _ = self.sender.send(Msg::Input(Cow::Owned(bytes)));
+        true
+    }
+
+    /// Starts a mouse selection at a visible cell, replacing any other.
+    pub fn select(&self, kind: SelectKind, at: CellPoint) {
+        screen::select(&mut self.term.lock(), kind, at);
+        self.shared.mark_dirty();
+    }
+
+    /// Moves the selection's far end to a visible cell, as a drag does.
+    pub fn extend_selection(&self, at: CellPoint) {
+        screen::extend_selection(&mut self.term.lock(), at);
+        self.shared.mark_dirty();
+    }
+
+    /// Whether anything is selected.
+    pub fn has_selection(&self) -> bool {
+        self.term.lock().selection.is_some()
+    }
+
+    /// Drops the selection.
+    pub fn clear_selection(&self) {
+        let mut term = self.term.lock();
+        if term.selection.take().is_some() {
+            drop(term);
+            self.shared.mark_dirty();
+        }
+    }
+
+    /// The selected text, as copying puts it on the clipboard. `None` with nothing selected.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term
+            .lock()
+            .selection_to_string()
+            .filter(|text| !text.is_empty())
+    }
+
+    /// The colours to answer a program's colour query with. Cheap; asked whenever the theme may
+    /// have changed.
+    pub fn set_palette(&self, palette: Palette) {
+        *self
+            .shared
+            .palette
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(palette);
     }
 
     /// Changes the grid to `size`, telling the shell so it can re-wrap its prompt. Nothing happens
@@ -535,6 +626,67 @@ mod tests {
         terminal.scroll(1);
         assert_eq!(wakes.load(Ordering::SeqCst), 2);
         assert!(terminal.shutdown(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn a_click_reaches_a_program_only_once_it_asks_for_the_mouse() {
+        // A shell at a prompt has not asked: a click there is a selection, and `ESC [ <` typed at
+        // the prompt would be garbage. The same click after the program turns reporting on is its.
+        if cfg!(windows) {
+            return;
+        }
+        let terminal = spawn(
+            run("sleep 1; printf '\\033[?1000h\\033[?1006h'; sleep 10"),
+            None,
+        );
+        let click = MouseEvent {
+            button: crate::MouseButton::Left,
+            action: crate::MouseAction::Press,
+            row: 0,
+            column: 0,
+            modifiers: Default::default(),
+        };
+        assert!(!terminal.mouse(click), "not before it asked");
+        let before = terminal.bytes_sent();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !terminal.mouse_modes().reporting() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let modes = terminal.mouse_modes();
+        let sent = terminal.mouse(click);
+        let after = terminal.bytes_sent();
+        assert!(terminal.shutdown(Duration::from_secs(10)));
+        assert!(modes.click && modes.sgr, "{modes:?}");
+        assert!(sent);
+        assert_eq!(after - before, b"\x1b[<0;1;1M".len() as u64);
+    }
+
+    #[test]
+    fn a_program_asking_the_background_colour_is_told_the_themes() {
+        // `OSC 11 ; ?` is how a program picks its light or dark colours. The reply is written to
+        // the program's input; `od` prints what it read, so the answer shows up on the screen.
+        if cfg!(windows) {
+            return;
+        }
+        let terminal = spawn(
+            run(
+                "stty -echo -icanon; sleep 1; printf '\\033]11;?\\007'; head -c 13 | od -An -c; sleep 5",
+            ),
+            None,
+        );
+        terminal.set_palette(Palette {
+            foreground: [0xee, 0xee, 0xee],
+            background: [0x12, 0x34, 0x56],
+            ansi: [[0, 0, 0]; 16],
+        });
+        // `od` pads every byte to four columns and the grid wraps at forty, so the rows are read
+        // joined: the reply is `rgb:1212/…`, the background's red twice.
+        let answered = wait_for(&terminal, Duration::from_secs(10), |screen| {
+            screen.lines().concat().contains("b   :   1   2   1   2")
+        });
+        let lines = terminal.screen().lines();
+        assert!(terminal.shutdown(Duration::from_secs(10)));
+        assert!(answered, "the reply was read back: {lines:?}");
     }
 
     #[test]

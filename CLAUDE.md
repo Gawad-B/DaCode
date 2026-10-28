@@ -431,7 +431,8 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
 --transparency PERCENT --help-panel --menu --menu-title TITLE --context-menu --commands
---which-key PREFIX --symbols QUERY --block LINE:COLUMN --terminal`.
+--which-key PREFIX --symbols QUERY --block LINE:COLUMN --terminal --terminal-tabs N
+--terminal-height PERCENT --terminal-select R:C-R:C`.
 
 `--row N` selects a row of the settings tab, which is the only way to see a section below the fold —
 the page scrolls to its selection. `--settings-page NAME` opens it at a page of the tree, and
@@ -562,12 +563,19 @@ key chips, the menu's columns and the palette's and completion's match highlight
 title bar's own measurements, which pad the type scale by hand (1.1x, 1.15x), and the code grid,
 which stays at 0.60 on purpose — moving it moves every glyph of code and every click into it.
 
-From the terminal: no mouse selection or copy in the panel, one terminal rather than tabs, a panel
-of fixed proportion (two fifths of the editor) rather than a draggable one, no mouse reporting to
-full-screen programs, and OSC 10/11 colour queries and OSC 52 clipboard writes go unanswered. Every
-key goes to the shell while it has focus except `` ctrl-` ``, `ctrl-t`, `ctrl-shift-v` and
-`ctrl-shift-p` — see `dacode::terminal::route` before adding a fifth. `ctrl-t` costs the shell
-readline's transpose-characters; `ctrl-w` deliberately stays the shell's word delete.
+From the terminal: tabs, mouse selection (alacritty's own `Selection`, so it follows scrollback and
+is dropped exactly when alacritty drops it), a draggable height and mouse reporting all exist; what
+does not is splitting a terminal, reordering tabs, reporting pointer *movement* with no button held
+(`?1003` gets presses, drags and releases only), and OSC 52 clipboard writes, which go unanswered on
+purpose. OSC 10/11/4 colour queries are answered from the theme. Every key goes to the shell while
+it has focus except `` ctrl-` ``, `ctrl-t`, `ctrl-shift-c`, `ctrl-shift-v`, `ctrl-shift-p`,
+`ctrl-pageup` and `ctrl-pagedown` — see `dacode::terminal::route` before adding another. `ctrl-t`
+costs the shell readline's transpose-characters and `ctrl-pageup`/`pagedown` cost Vim its tab keys;
+`ctrl-w` deliberately stays the shell's word delete. The panel's height is a fraction on
+`terminal::Panel`, persisted in the session rather than as a setting (it is where you left things,
+per project, and a setting would rewrite `init.lua` on every drag); `layout::terminal_height` is the
+one clamp, read by the layout and the drag alike. Each tab's shell has its own dirty flag and the
+shared waker, so a busy hidden tab wakes the loop once and never again until it is shown.
 
 From the motion and scrolling work, each one stated rather than hidden:
 

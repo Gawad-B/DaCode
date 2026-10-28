@@ -8,7 +8,8 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{self, NamedColor};
@@ -84,6 +85,8 @@ pub struct Cell {
     pub wide: bool,
     /// The second half of a double-width character. Drawn as nothing.
     pub spacer: bool,
+    /// Inside the mouse selection.
+    pub selected: bool,
 }
 
 impl Default for Cell {
@@ -95,7 +98,65 @@ impl Default for Cell {
             style: Style::default(),
             wide: false,
             spacer: false,
+            selected: false,
         }
+    }
+}
+
+/// A cell of the visible grid, counted from the top left at zero, and which half of it the pointer
+/// is over — which decides whether a drag that starts there includes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellPoint {
+    pub row: usize,
+    pub column: usize,
+    pub right_half: bool,
+}
+
+/// What a press selects as the pointer moves: the click count, as every terminal reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectKind {
+    /// One click: cell by cell.
+    Cells,
+    /// Two: whole words, stopping at the characters alacritty calls semantic escapes.
+    Words,
+    /// Three: whole lines, following a line the terminal wrapped.
+    Lines,
+}
+
+/// The grid point under a visible cell. The selection is kept in grid coordinates — lines above
+/// the screen are negative — so it stays on the text it covers when the view scrolls or new output
+/// pushes that text up, rather than on the screen position it was made at.
+fn grid_point<T>(term: &Term<T>, at: CellPoint) -> (Point, Side) {
+    let grid = term.grid();
+    let row = at.row.min(grid.screen_lines().saturating_sub(1));
+    let column = at.column.min(grid.columns().saturating_sub(1));
+    let line = Line(row as i32 - grid.display_offset() as i32);
+    let side = if at.right_half {
+        Side::Right
+    } else {
+        Side::Left
+    };
+    (Point::new(line, Column(column)), side)
+}
+
+/// Starts a selection at `at`. alacritty's own [`Selection`], so it is moved by scrolling and
+/// dropped when the text under it is erased exactly as alacritty decides, rather than by a second
+/// set of rules here that would disagree with it.
+pub(crate) fn select<T>(term: &mut Term<T>, kind: SelectKind, at: CellPoint) {
+    let (point, side) = grid_point(term, at);
+    let ty = match kind {
+        SelectKind::Cells => SelectionType::Simple,
+        SelectKind::Words => SelectionType::Semantic,
+        SelectKind::Lines => SelectionType::Lines,
+    };
+    term.selection = Some(Selection::new(ty, point, side));
+}
+
+/// Moves the selection's far end to `at`.
+pub(crate) fn extend_selection<T>(term: &mut Term<T>, at: CellPoint) {
+    let (point, side) = grid_point(term, at);
+    if let Some(selection) = &mut term.selection {
+        selection.update(point, side);
     }
 }
 
@@ -159,6 +220,11 @@ impl Screen {
         let offset = grid.display_offset();
         let colors = term.colors();
         let resolve = |color: ansi::Color| resolve(color, colors);
+        // Once per copy, not per cell: a word or line selection searches outwards for its edges.
+        let selection = term
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(term));
 
         let mut rows = Vec::with_capacity(size.rows);
         for row in 0..size.rows {
@@ -186,6 +252,8 @@ impl Screen {
                     spacer: flags.intersects(
                         CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER,
                     ),
+                    selected: selection
+                        .is_some_and(|range| range.contains(Point::new(line, Column(column)))),
                 });
             }
             rows.push(cells);
@@ -310,6 +378,21 @@ impl Emulator {
     pub fn history(&self) -> usize {
         self.term.grid().history_size()
     }
+
+    /// Starts a mouse selection, as a press on the panel does. See [`crate::Terminal::select`].
+    pub fn select(&mut self, kind: SelectKind, at: CellPoint) {
+        select(&mut self.term, kind, at);
+    }
+
+    /// Moves the selection's far end, as a drag does.
+    pub fn extend_selection(&mut self, at: CellPoint) {
+        extend_selection(&mut self.term, at);
+    }
+
+    /// The selected text, as copying it would put it on the clipboard.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string()
+    }
 }
 
 #[cfg(test)]
@@ -364,6 +447,86 @@ mod tests {
         assert_eq!(xterm_256(231), (255, 255, 255));
         assert_eq!(xterm_256(232), (8, 8, 8));
         assert_eq!(xterm_256(255), (238, 238, 238));
+    }
+
+    fn at(row: usize, column: usize, right_half: bool) -> CellPoint {
+        CellPoint {
+            row,
+            column,
+            right_half,
+        }
+    }
+
+    fn selected_columns(screen: &Screen, row: usize) -> Vec<usize> {
+        screen.rows[row]
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.selected)
+            .map(|(column, _)| column)
+            .collect()
+    }
+
+    #[test]
+    fn a_drag_selects_the_cells_between_its_ends_and_is_drawn_and_copied() {
+        // Pressing on the left half of a cell includes it; releasing on the right half of another
+        // includes that one too — the cells the pointer visibly crossed.
+        let mut emulator = Emulator::new(GridSize::new(20, 3), 100);
+        emulator.feed(b"hello world\r\nsecond");
+        emulator.select(SelectKind::Cells, at(0, 6, false));
+        emulator.extend_selection(at(0, 10, true));
+        assert_eq!(emulator.selection_text().as_deref(), Some("world"));
+        let screen = emulator.screen();
+        assert_eq!(selected_columns(&screen, 0), vec![6, 7, 8, 9, 10]);
+        assert!(selected_columns(&screen, 1).is_empty());
+    }
+
+    #[test]
+    fn a_double_click_takes_the_word_and_a_triple_click_the_line() {
+        let mut emulator = Emulator::new(GridSize::new(30, 3), 100);
+        emulator.feed(b"cargo test --workspace\r\nnext");
+        emulator.select(SelectKind::Words, at(0, 7, false));
+        assert_eq!(emulator.selection_text().as_deref(), Some("test"));
+        emulator.select(SelectKind::Lines, at(0, 2, false));
+        assert_eq!(
+            emulator.selection_text().as_deref(),
+            Some("cargo test --workspace\n")
+        );
+    }
+
+    #[test]
+    fn a_selection_stays_on_its_text_when_the_view_scrolls() {
+        // Kept in grid lines, not screen rows: scrolling back moves the selected word down the
+        // screen with the text, and the copy is still that word — not whatever now sits where the
+        // selection was made.
+        let mut emulator = Emulator::new(GridSize::new(10, 2), 100);
+        for n in 0..6 {
+            emulator.feed(format!("line {n}\r\n").as_bytes());
+        }
+        // The screen's top row is "line 5" now; select its number.
+        assert_eq!(emulator.screen().row_text(0), "line 5");
+        emulator.select(SelectKind::Cells, at(0, 5, false));
+        emulator.extend_selection(at(0, 5, true));
+        emulator.scroll(1);
+        let screen = emulator.screen();
+        assert_eq!(screen.row_text(1), "line 5");
+        assert_eq!(
+            selected_columns(&screen, 1),
+            vec![5],
+            "moved down with its line"
+        );
+        assert!(selected_columns(&screen, 0).is_empty());
+        assert_eq!(emulator.selection_text().as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn clearing_the_screen_drops_a_selection_on_it_as_alacritty_does() {
+        let mut emulator = Emulator::new(GridSize::new(10, 2), 0);
+        emulator.feed(b"abc");
+        emulator.select(SelectKind::Cells, at(0, 0, false));
+        emulator.extend_selection(at(0, 2, true));
+        assert!(emulator.selection_text().is_some());
+        emulator.feed(b"\x1b[2J");
+        assert_eq!(emulator.selection_text(), None);
     }
 
     #[test]

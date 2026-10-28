@@ -357,8 +357,18 @@ pub enum Action {
     ToggleTerminal,
     /// Show the terminal and give it the keys, whatever has them now.
     FocusTerminal,
-    /// End the terminal's shell, if it has one, and start a fresh one.
+    /// Start another shell in a tab of its own beside the others, and show it.
     NewTerminal,
+    /// The next terminal tab. `ctrl-pagedown` while a terminal has the keys.
+    NextTerminal,
+    /// The previous terminal tab. `ctrl-pageup` while a terminal has the keys.
+    PreviousTerminal,
+    /// End the shown terminal's shell and close its tab; closing the last hides the panel.
+    KillTerminal,
+    /// Copy the terminal's mouse selection. `ctrl-shift-c` while a terminal has the keys.
+    TerminalCopy,
+    /// Paste into the terminal, bracketed if the program asked. `ctrl-shift-v` there.
+    TerminalPaste,
 
     /// `za` — fold or unfold the block at the cursor.
     ToggleFold,
@@ -554,6 +564,11 @@ impl Action {
         "toggle_terminal",
         "focus_terminal",
         "new_terminal",
+        "next_terminal",
+        "previous_terminal",
+        "kill_terminal",
+        "terminal_copy",
+        "terminal_paste",
         "toggle_fold",
         "fold_all",
         "unfold_all",
@@ -723,6 +738,11 @@ impl Action {
             "toggle_terminal" => Action::ToggleTerminal,
             "focus_terminal" => Action::FocusTerminal,
             "new_terminal" => Action::NewTerminal,
+            "next_terminal" => Action::NextTerminal,
+            "previous_terminal" => Action::PreviousTerminal,
+            "kill_terminal" => Action::KillTerminal,
+            "terminal_copy" => Action::TerminalCopy,
+            "terminal_paste" => Action::TerminalPaste,
             "toggle_fold" => Action::ToggleFold,
             "fold_all" => Action::FoldAll { close: true },
             "unfold_all" => Action::FoldAll { close: false },

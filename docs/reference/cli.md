@@ -13,7 +13,7 @@ dacode --help | --version
 `--version` / `-V` and `--help` / `-h` are checked at the top of `main()` — after the `import`
 subcommand is dispatched, so `dacode import --help` still reaches the importer's own help, and before
 anything that could open a window. Each prints and exits.
-`--help` renders the `FLAGS` table (43 entries of flag, value placeholder, description) rather than
+`--help` renders the `FLAGS` table (49 entries of flag, value placeholder, description) rather than
 carrying its own prose, so the help text and the flag list cannot disagree — the same one-table
 discipline `dacode_input::commands::COMMANDS` follows. **That table is the source of truth for this
 document**; everything under "Normal use" and "Headless rendering" below is the same set with the
@@ -40,7 +40,7 @@ Verbatim, from a Windows build. The configuration path in the penultimate paragr
 part that varies: it reads `~/.config/dacode` everywhere else.
 
 ```
-dacode 0.4.3 — a code editor that never stalls on your keystroke
+dacode 1.0.0 — a code editor that never stalls on your keystroke
 
 USAGE
     dacode [FILE]              open a file
@@ -49,57 +49,60 @@ USAGE
     dacode import …            bring settings over from VSCode (`dacode import --help`)
 
 OPTIONS
-    --no-session              start empty rather than reopening the last session
-    --no-welcome              skip the first-run questions
-    --version                 print the version and exit
-    --help                    print this and exit
+    --no-session                start empty rather than reopening the last session
+    --no-welcome                skip the first-run questions
+    --version                   print the version and exit
+    --help                      print this and exit
 
 RENDERING WITHOUT A WINDOW
     Renders one frame to a PNG and exits. This is how the design is checked in CI and
     over SSH. Everything below needs --screenshot.
 
-    --screenshot PNG          render one frame to a file and exit
-    --size WxH                the window to render at (default 1600x1000)
-    --light                   the light theme
-    --dark                    the dark theme
-    --theme NAME              any built-in or installed theme
-    --mode NAME               normal, insert, visual …
-    --no-vim                  render with Vim keys off
-    --transparency PERCENT    see-through, over a checkerboard
-    --empty                   no file open
-    --splash                  the cold-start screen
-    --at LINE                 put the cursor on a line
-    --at-column N             and a column
-    --scroll-px N             scroll N more pixels, part-way into a row
-    --at-ms N                 draw the moment N ms into whatever is animating
-    --columns N               wrap width, in columns
-    --no-wrap                 soft wrap off
-    --split N[h]              N panes, `h` for stacked
-    --tree                    the file tree
-    --settings                the settings tab
-    --settings-page NAME      open the settings tab at a page: appearance, editor, keys …
-    --settings-search QUERY   type a search into the settings tab
-    --row N                   select a settings row, scrolling to it
-    --theme-dropdown          the settings tab with its theme list open
-    --welcome STEP            the first-run wizard at one step
-    --folded                  with a block folded
-    --git                     the diff gutter
-    --blame                   the blame column and the caret line's blame
-    --palette QUERY           the file palette, filtered
-    --commands                the command palette
-    --search QUERY            the find box
-    --grep QUERY              the search view, with its results
-    --symbols QUERY           the symbol picker
-    --complete PREFIX         the completion popup
-    --diagnostic L:C:MSG      one diagnostic, inline
-    --diagnostics-list        the problems list
-    --terminal                the terminal panel, showing a fixed transcript
-    --help-panel              the F1 key list
-    --menu                    the menu bar
-    --menu-title TITLE        the menu bar open at a title, or `...`
-    --context-menu            a right-click menu
-    --which-key PREFIX        what can follow a half-typed chord
-    --block LINE:COLUMN       a rectangular selection to that corner
+    --screenshot PNG            render one frame to a file and exit
+    --size WxH                  the window to render at (default 1600x1000)
+    --light                     the light theme
+    --dark                      the dark theme
+    --theme NAME                any built-in or installed theme
+    --mode NAME                 normal, insert, visual …
+    --no-vim                    render with Vim keys off
+    --transparency PERCENT      see-through, over a checkerboard
+    --empty                     no file open
+    --splash                    the cold-start screen
+    --at LINE                   put the cursor on a line
+    --at-column N               and a column
+    --scroll-px N               scroll N more pixels, part-way into a row
+    --at-ms N                   draw the moment N ms into whatever is animating
+    --columns N                 wrap width, in columns
+    --no-wrap                   soft wrap off
+    --split N[h]                N panes, `h` for stacked
+    --tree                      the file tree
+    --settings                  the settings tab
+    --settings-page NAME        open the settings tab at a page: appearance, editor, keys …
+    --settings-search QUERY     type a search into the settings tab
+    --row N                     select a settings row, scrolling to it
+    --theme-dropdown            the settings tab with its theme list open
+    --welcome STEP              the first-run wizard at one step
+    --folded                    with a block folded
+    --git                       the diff gutter
+    --blame                     the blame column and the caret line's blame
+    --palette QUERY             the file palette, filtered
+    --commands                  the command palette
+    --search QUERY              the find box
+    --grep QUERY                the search view, with its results
+    --symbols QUERY             the symbol picker
+    --complete PREFIX           the completion popup
+    --diagnostic L:C:MSG        one diagnostic, inline
+    --diagnostics-list          the problems list
+    --terminal                  the terminal panel, showing a fixed transcript
+    --terminal-tabs N           with --terminal: that many terminal tabs
+    --terminal-height PERCENT   with --terminal: the panel dragged to that share
+    --terminal-select R:C-R:C   with --terminal: a mouse selection
+    --help-panel                the F1 key list
+    --menu                      the menu bar
+    --menu-title TITLE          the menu bar open at a title, or `...`
+    --context-menu              a right-click menu
+    --which-key PREFIX          what can follow a half-typed chord
+    --block LINE:COLUMN         a rectangular selection to that corner
 
 Configuration lives in %APPDATA%\dacode. DACODE_CONFIG_DIR and DACODE_STATE_DIR move it;
 DACODE_NO_SYSTEM_FONTS=1 makes a render reproducible.
@@ -227,7 +230,7 @@ order.
 | 2a | `--blame` | — | The editor with the blame column on and a canned blame — three authors in runs down the file, lines 13 and 14 not committed yet — so neither the column nor the caret line's note depends on who last committed to the file on screen. `--at` puts the caret on the line whose note you want to see. |
 | 3 | `--folded` | — | Every top-level block folded, so the marker and the hidden-line count are visible. |
 | 4 | `--diagnostics-list` | — | The diagnostics sidebar. |
-| 4a | `--terminal` | — | The terminal panel open under the code, with the keys, showing a fixed transcript fed to the same parser a live shell's output goes through — a prompt, a coloured `ls`, a build, `git status`, every attribute the panel draws, the sixteen colours as swatches, 256-colour and 24-bit text, and the cursor waiting at a prompt. No shell is started, so the capture is the same on every machine. |
+| 4a | `--terminal` | — | The terminal panel open under the code, with the keys, showing a fixed transcript fed to the same parser a live shell's output goes through — a prompt, a coloured `ls`, a build, `git status`, every attribute the panel draws, the sixteen colours as swatches, 256-colour and 24-bit text, and the cursor waiting at a prompt. No shell is started, so the capture is the same on every machine. `--terminal-tabs N` shows that many tabs in its header (the first is the transcript's), `--terminal-height PERCENT` the panel as if its edge had been dragged to that share of the editor — clamped as a drag is — and `--terminal-select R:C-R:C` a mouse selection from the first cell to the last, rows and columns counted from zero on the screen. |
 | 5 | `--welcome` | `STEP` | The first-run wizard. `keys` is the first screen, `theme` the second with the third option highlighted, `import` the third. Any other value lands on `theme` without the highlight. Ignores the buffer. |
 | 6 | `--help-panel` | — | The F1 key list. |
 | 7 | `--menu` | — | The menu bar, opened. |
