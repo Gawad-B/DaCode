@@ -372,3 +372,17 @@ fn the_literal_scan_reads_what_the_compiler_would() {
         ]
     );
 }
+
+#[test]
+fn the_terminal_draws_box_and_block_characters_in_the_bundled_face() {
+    // Not the interface's words but nearly: `tree`, `htop`, a test runner's table and every TUI
+    // draw their frames with these, and the terminal's rows only join up into lines when each
+    // character is drawn on the grid's advance. A box-drawing character taken from another face
+    // has that face's advance and width, and the frame comes out ragged.
+    let common = "─│┌┐└┘├┤┬┴┼╭╮╯╰═║╔╗╚╝╠╣╦╩╬━┃█▀▄▌▐░▒▓";
+    let missing = undrawable(common);
+    assert!(
+        missing.is_empty(),
+        "the bundled face lacks {missing:?}, so a terminal drawing them falls back"
+    );
+}

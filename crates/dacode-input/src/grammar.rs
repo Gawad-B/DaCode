@@ -309,6 +309,9 @@ impl Grammar {
                 // Before the plain `ctrl-e` in `feed_editor_chords`, which is the tree's toggle.
                 KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
                 KeyCode::Char('1') => Some(Action::FocusEditor),
+                // VSCode's key for its terminal, and free here: nothing else uses the backtick
+                // with ctrl, and Vim's own backtick (a mark jump) is never chorded.
+                KeyCode::Char('`') => Some(Action::ToggleTerminal),
                 KeyCode::Char(' ') => Some(Action::RequestCompletion),
                 KeyCode::Backspace => Some(Action::DeleteWord { forward: false }),
                 KeyCode::Delete => Some(Action::DeleteWord { forward: true }),
@@ -439,6 +442,7 @@ impl Grammar {
                 KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
                 KeyCode::Char('1') => Some(Action::FocusEditor),
+                KeyCode::Char('`') => Some(Action::ToggleTerminal),
                 // In both grammars. Vim's own answer is `:s/a/b/g`, which is a fine thing to know
                 // and a poor thing to be the only way — and the prompt it opens is the same one, so
                 // there is no second implementation to keep in step.

@@ -629,6 +629,7 @@ dependencies = [
  "dacode-project",
  "dacode-render",
  "dacode-syntax",
+ "dacode-terminal",
  "dacode-text",
  "dacode-theme",
  "lsp-types",

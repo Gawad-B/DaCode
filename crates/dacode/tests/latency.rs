@@ -106,6 +106,7 @@ fn state(lines: usize) -> EditorState {
         blame: Default::default(),
         show_diagnostics: false,
         focus: Default::default(),
+        terminal: Default::default(),
         problems: Default::default(),
         inlay_hints: Vec::new(),
         show_inlay_hints: false,
@@ -680,5 +681,44 @@ fn the_settings_page_lays_out_the_rows_on_screen_and_not_the_whole_list() {
         "laying out the settings page",
         settings_geometry(SMALL / 10),
         settings_geometry(LARGE),
+    );
+}
+
+/// A frame with the terminal open over `history` rows of scrollback, scrolled half-way back: the
+/// copy of the visible rows the event loop makes and the drawing of them, together.
+fn terminal_frame(history: usize) -> Duration {
+    use dacode_terminal::{Emulator, GridSize};
+    let mut emulator = Emulator::new(GridSize::new(120, 20), history);
+    let mut bytes = Vec::new();
+    for n in 0..history {
+        bytes
+            .extend_from_slice(format!("\x1b[32mline\x1b[0m {n} of the scrollback\r\n").as_bytes());
+    }
+    emulator.feed(&bytes);
+    emulator.scroll((history / 2) as i32);
+
+    let mut state = state(SMALL);
+    state.terminal.open = true;
+    let mut frame = Frame::default();
+    let bounds = Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1);
+    median(200, || {
+        state.terminal.screen = Some(emulator.screen());
+        frame.clear();
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    })
+}
+
+/// A terminal that has printed a hundred thousand lines costs a frame what one that has printed a
+/// thousand does. The copy addresses rows from the display offset and never walks the history;
+/// a walk over it, injected to check this guard, failed it at 9.7x (1.9 ms against 200 µs).
+#[test]
+fn the_terminal_copies_and_draws_the_rows_on_screen_and_not_its_history() {
+    let small = terminal_frame(SMALL);
+    let large = terminal_frame(LARGE);
+    assert_flat("a frame with the terminal open", small, large);
+    assert_under(
+        "a frame with the terminal open",
+        large,
+        Duration::from_millis(50),
     );
 }

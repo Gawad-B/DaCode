@@ -11,8 +11,8 @@
 //! are a few small files, and a process spawn is exactly the kind of unbounded wait that must not
 //! happen on the thread drawing the window.
 //!
-//! **Run** has no terminal to run anything in yet. Rather than a button that does nothing, it finds
-//! the command this kind of project is run with and puts it on the clipboard, saying so.
+//! **Run** finds the command this kind of project is run with, and the event loop types it into the
+//! terminal. It went on the clipboard before there was a terminal to type it into.
 
 use std::path::Path;
 

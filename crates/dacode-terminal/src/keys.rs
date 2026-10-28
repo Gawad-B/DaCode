@@ -175,12 +175,12 @@ mod tests {
     fn the_arrows_follow_application_cursor_mode() {
         // Without DECCKM a shell gets CSI; `less` and `vim` turn it on and get SS3. Sending the
         // wrong one is an arrow key that does nothing inside a pager.
-        assert_eq!(bytes("<up><down><right><left>"), b"\x1b[A\x1b[B\x1b[C\x1b[D");
-        let app = KeyModes { app_cursor: true };
         assert_eq!(
-            bytes_for(Key::named(KeyCode::Up), app).unwrap(),
-            b"\x1bOA"
+            bytes("<up><down><right><left>"),
+            b"\x1b[A\x1b[B\x1b[C\x1b[D"
         );
+        let app = KeyModes { app_cursor: true };
+        assert_eq!(bytes_for(Key::named(KeyCode::Up), app).unwrap(), b"\x1bOA");
         assert_eq!(bytes("<home><end>"), b"\x1b[H\x1b[F");
         assert_eq!(bytes("<pageup><pagedown>"), b"\x1b[5~\x1b[6~");
     }

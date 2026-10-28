@@ -159,6 +159,9 @@ pub struct EditorState {
     pub tree: Option<crate::tree::FileTree>,
     /// Where the keys go. A view being open does not make it the target — clicking it does.
     pub focus: crate::focus::Focus,
+    /// The terminal panel: whether it is shown and what it last showed. The shell itself belongs to
+    /// the event loop, which owns every process.
+    pub terminal: crate::terminal::Panel,
     /// Write the file a moment after typing stops, rather than waiting to be asked.
     ///
     /// Off by default, because writing someone's file without being told to is not a default an
@@ -733,6 +736,7 @@ impl EditorState {
         let stale = match self.focus {
             Focus::Sidebar => !self.sidebar_takes_keys(),
             Focus::Panel => self.results.is_none(),
+            Focus::Terminal => !self.terminal.open,
             Focus::Editor => false,
         };
         if stale {
@@ -1162,7 +1166,20 @@ impl EditorState {
 
     /// Height of the code area, given the whole window — the chrome's vertical stack in reverse.
     pub fn code_height(&self, window_height: f32, scale: f32) -> f32 {
-        (window_height - (72.0 + 34.0 + 34.0) * scale).max(0.0)
+        let chrome = (window_height - (72.0 + 34.0 + 34.0) * scale).max(0.0);
+        // The terminal takes its share from the bottom of the code, and the caret has to be revealed
+        // above it rather than underneath. Its height is the layout's, which depends on the window's
+        // height alone, so any width will do here.
+        let terminal = crate::layout::Layout::of(
+            Rect::new(0.0, 0.0, 1000.0 * scale, window_height),
+            scale,
+            None,
+            0.0,
+        )
+        .with_terminal(self.terminal.open, scale)
+        .terminal
+        .map_or(0.0, |panel| panel.height);
+        (chrome - terminal).max(0.0)
     }
 }
 
@@ -1763,6 +1780,7 @@ pub fn draw_panes(
         state.results.as_ref().map(|results| results.wanted_rows()),
         state.sidebar_fraction(),
     )
+    .with_terminal(state.terminal.open, scale)
     .with_blame(state.blame_column(
         panes.iter().position(|pane| pane.focused).unwrap_or(0),
         scale,
@@ -1863,6 +1881,9 @@ pub fn draw_panes(
     if let (Some(results), Some(area)) = (&state.results, regions.results) {
         draw_results(frame, state, results, area, scale);
     }
+    if let Some(panel) = regions.terminal {
+        draw_terminal(frame, state, panel, scale);
+    }
     draw_statusline(frame, state, regions.status, scale);
 
     // Info boxes sit above the code but below the palette: a hover is contextual, a palette is
@@ -1933,6 +1954,172 @@ pub fn draw_panes(
         draw_tooltip(frame, state, &regions, bounds, scale);
     }
     frame.set_layer(Layer::Base);
+}
+
+/// The terminal panel: a header with its title and buttons, and the shell's visible rows.
+///
+/// Reads the [`crate::terminal::Panel::screen`] the event loop copied out, which is the viewport's
+/// cells and nothing more, so this costs the panel's size whatever the scrollback holds. Each row
+/// is drawn as runs of one colour, each placed at its own column, rather than one run per row: a
+/// run has one colour, and placing every span at its column keeps a line of mixed colours on the
+/// grid the cursor and the shell both count in.
+fn draw_terminal(frame: &mut Frame, state: &EditorState, panel: Rect, scale: f32) {
+    use dacode_terminal::Screen;
+
+    let theme = &state.theme;
+    let rects = crate::layout::terminal_panel(panel, &state.typography, scale);
+    let focused = state.focus == crate::focus::Focus::Terminal;
+    frame.fill(panel, theme.bg_panel);
+    frame.rule_top(panel, theme.rule, border::BORDER);
+
+    // The header says what this is and offers the two things you can do to it. Its rule takes the
+    // mode accent while the terminal has the keys, the one place to look to know where typing goes.
+    let header = rects.header;
+    frame.rule_bottom(
+        header,
+        if focused {
+            theme.accent(state.mode)
+        } else {
+            theme.rule_soft
+        },
+        border::BORDER,
+    );
+    let heading = "terminal";
+    let heading_width = (heading.chars().count() as f32 + 2.0)
+        * crate::layout::measured_advance(&state.typography, Role::Label, scale);
+    frame.text(label(
+        state,
+        heading,
+        Rect::new(rects.title.x, header.y, heading_width, header.height),
+        if focused { theme.ink } else { theme.ink_dim },
+        Align::Left,
+        scale,
+    ));
+    if let Some(title) = &state.terminal.title {
+        let room = (rects.title.width - heading_width).max(0.0);
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, title, room, scale),
+            Rect::new(rects.title.x + heading_width, header.y, room, header.height),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    }
+    icon_button(frame, state, rects.new, Icon::Plus, theme.ink_dim, scale);
+    icon_button(frame, state, rects.close, Icon::Close, theme.ink_dim, scale);
+
+    let blank;
+    let screen = match &state.terminal.screen {
+        Some(screen) => screen,
+        None => {
+            blank = Screen::blank(dacode_terminal::GridSize::new(rects.columns, rects.rows));
+            &blank
+        }
+    };
+    let palette = theme.ansi();
+    let mut spec = state.typography.spec(Role::Code);
+    spec.size_px *= scale;
+    spec.line_height = crate::terminal::LINE_HEIGHT;
+    let cursor = screen.cursor;
+    let line = (scale).max(1.0).round();
+
+    // Only the rows the panel has room for, however many the copy holds: a resize reaches the
+    // shell a frame after the panel changes, and the rows it has not yet re-wrapped are cut here
+    // rather than drawn over the status bar.
+    for (row, cells) in screen.rows.iter().enumerate().take(rects.rows) {
+        let columns = cells.len().min(rects.columns);
+        let mut column = 0;
+        while column < columns {
+            let cell = &cells[column];
+            if cell.spacer {
+                column += 1;
+                continue;
+            }
+            let on_cursor = cursor.is_some_and(|at| at.row == row && at.column == column);
+            let (ink, fill) = crate::terminal::paint(theme, &palette, cell);
+            let style = cell.style;
+
+            // A span: this cell and every following one painted the same way. The cursor's cell and
+            // a double-width character are spans of their own, the first because it is drawn
+            // differently and the second because a fallback face's advance is not the grid's.
+            let mut end = column + 1;
+            if !on_cursor && !cell.wide {
+                while end < columns {
+                    let next = &cells[end];
+                    if next.spacer
+                        || next.wide
+                        || cursor.is_some_and(|at| at.row == row && at.column == end)
+                        || next.style.underline != style.underline
+                        || next.style.strikeout != style.strikeout
+                        || next.style.hidden != style.hidden
+                        || crate::terminal::paint(theme, &palette, next) != (ink, fill)
+                    {
+                        break;
+                    }
+                    end += 1;
+                }
+            }
+            let width_cells = if cell.wide { 2 } else { end - column };
+            let first = rects.cell(row, column);
+            let span = Rect::new(
+                first.x,
+                first.y,
+                rects.cell_width * width_cells as f32,
+                rects.cell_height,
+            )
+            .intersect(rects.grid);
+
+            if let Some(fill) = fill {
+                frame.fill(span, fill);
+            }
+            let mut ink = ink;
+            if on_cursor && focused {
+                // A block in the text's colour, with the character under it in the panel's: the
+                // cursor every terminal draws, and the one shape that reads at any size.
+                frame.fill(span, theme.ink);
+                ink = fill.unwrap_or(theme.bg_panel);
+            } else if on_cursor {
+                // Unfocused, an outline: the shell still has a cursor, but the keys are elsewhere.
+                frame.outline_rounded(span, theme.ink_dim, 0.0, line);
+            }
+            if style.underline {
+                frame.fill(
+                    Rect::new(span.x, span.bottom() - 3.0 * scale, span.width, line),
+                    ink,
+                );
+            }
+            if style.strikeout {
+                frame.fill(
+                    Rect::new(span.x, span.y + span.height / 2.0, span.width, line),
+                    ink,
+                );
+            }
+
+            let text: String = cells[column..end]
+                .iter()
+                .filter(|cell| !cell.spacer)
+                .map(|cell| cell.c)
+                .collect();
+            if !style.hidden && !text.trim().is_empty() {
+                frame.text(TextRun {
+                    text: text.trim_end().to_string(),
+                    spec,
+                    color: ink,
+                    // A cell of slack on the right, so the last glyph of a span is not shaved by a
+                    // clip measured in the grid's arithmetic rather than the shaper's.
+                    rect: Rect::new(span.x, span.y, span.width + rects.cell_width, span.height)
+                        .intersect(rects.panel),
+                    align: Align::Left,
+                    center_vertically: true,
+                    wrap: false,
+                    layer: Layer::default(),
+                    clip: None,
+                });
+            }
+            column = end.max(column + 1);
+        }
+    }
 }
 
 /// How far an overlay has faded in, and how far it has travelled (grown), at the frame's instant.
@@ -4076,8 +4263,8 @@ fn fit_keys(state: &EditorState, keys: &str, width: f32, scale: f32) -> String {
 /// Every problem in the **project**, as a list.
 ///
 /// The underlines say *where* in this file; this says what is wrong anywhere. Both are needed: `]d`
-/// walks one file's problems one at a time, which cannot answer "did my change break anything?" —
-/// and DaCode has no terminal to ask that from either.
+/// walks one file's problems one at a time, which cannot answer "did my change break anything?"
+/// without a build in the terminal.
 ///
 /// Ordered by [`crate::problems::Store::ordered`]: the file you are in first, then files with an
 /// error, then the rest. Grouping by file is what makes it scannable, because going somewhere means

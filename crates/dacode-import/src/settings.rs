@@ -109,7 +109,7 @@ const KNOWN_UNSUPPORTED: &[(&str, &str)] = &[
     ),
     (
         "terminal.integrated.shell",
-        "no integrated terminal yet (M7)",
+        "the terminal starts $SHELL, or PowerShell on Windows; choosing another is not a setting yet",
     ),
 ];
 

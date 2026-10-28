@@ -93,6 +93,7 @@ RENDERING WITHOUT A WINDOW
     --complete PREFIX         the completion popup
     --diagnostic L:C:MSG      one diagnostic, inline
     --diagnostics-list        the problems list
+    --terminal                the terminal panel, showing a fixed transcript
     --help-panel              the F1 key list
     --menu                    the menu bar
     --menu-title TITLE        the menu bar open at a title, or `...`
@@ -226,6 +227,7 @@ order.
 | 2a | `--blame` | — | The editor with the blame column on and a canned blame — three authors in runs down the file, lines 13 and 14 not committed yet — so neither the column nor the caret line's note depends on who last committed to the file on screen. `--at` puts the caret on the line whose note you want to see. |
 | 3 | `--folded` | — | Every top-level block folded, so the marker and the hidden-line count are visible. |
 | 4 | `--diagnostics-list` | — | The diagnostics sidebar. |
+| 4a | `--terminal` | — | The terminal panel open under the code, with the keys, showing a fixed transcript fed to the same parser a live shell's output goes through — a prompt, a coloured `ls`, a build, `git status`, every attribute the panel draws, the sixteen colours as swatches, 256-colour and 24-bit text, and the cursor waiting at a prompt. No shell is started, so the capture is the same on every machine. |
 | 5 | `--welcome` | `STEP` | The first-run wizard. `keys` is the first screen, `theme` the second with the third option highlighted, `import` the third. Any other value lands on `theme` without the highlight. Ignores the buffer. |
 | 6 | `--help-panel` | — | The F1 key list. |
 | 7 | `--menu` | — | The menu bar, opened. |

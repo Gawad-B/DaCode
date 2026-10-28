@@ -31,6 +31,9 @@ pub struct Layout {
     pub editor: Rect,
     /// The search-results panel, when it is open.
     pub results: Option<Rect>,
+    /// The terminal panel, when it is open: under the editor, taken from its height by
+    /// [`Layout::with_terminal`]. Header and cell grid are [`terminal_panel`]'s.
+    pub terminal: Option<Rect>,
     /// The pane that carries a blame column, and how wide the column wants to be. Set by
     /// [`Layout::with_blame`]; `None` is no column.
     pub blame: Option<(usize, f32)>,
@@ -44,6 +47,94 @@ pub struct Layout {
 pub fn blame_column_width(typography: &dacode_theme::Typography, scale: f32) -> f32 {
     (measured_advance(typography, dacode_theme::Role::LineNumber, scale) * 17.0 + 16.0 * scale)
         .round()
+}
+
+/// Where everything in the terminal panel is: a header with its title and two buttons, and the
+/// cell grid under it.
+///
+/// Drawing, the mouse and the PTY's size all read this one function, so the grid the shell is told
+/// it has is the grid that is drawn, and a click on the header's close button lands on the button.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalRects {
+    pub panel: Rect,
+    pub header: Rect,
+    /// The header's label, left of the buttons.
+    pub title: Rect,
+    /// Starts a fresh shell.
+    pub new: Rect,
+    /// Hides the panel; the shell keeps running.
+    pub close: Rect,
+    /// The cells, inside the panel's padding.
+    pub grid: Rect,
+    pub cell_width: f32,
+    pub cell_height: f32,
+    pub columns: usize,
+    pub rows: usize,
+}
+
+impl TerminalRects {
+    /// The rectangle of one cell.
+    pub fn cell(&self, row: usize, column: usize) -> Rect {
+        Rect::new(
+            self.grid.x + column as f32 * self.cell_width,
+            self.grid.y + row as f32 * self.cell_height,
+            self.cell_width,
+            self.cell_height,
+        )
+    }
+}
+
+/// The height of the terminal panel's header, at scale 1.
+pub const TERMINAL_HEADER: f32 = 30.0;
+
+/// Lays the terminal panel out.
+///
+/// The cell is the bundled face's real advance ([`FACE_EM`]), not the type scale's 0.60 that the
+/// code grid keeps for its own reasons: each colour span is placed at its column, and the glyphs
+/// inside it are advanced by the shaper, so a cell narrower than the glyphs would push the end of a
+/// long span past where the next one starts.
+pub fn terminal_panel(
+    panel: Rect,
+    typography: &dacode_theme::Typography,
+    scale: f32,
+) -> TerminalRects {
+    let (header, body) = panel.split_top((TERMINAL_HEADER * scale).min(panel.height));
+    let button = size::BUTTON * scale;
+    let gap = 4.0 * scale;
+    let y = header.y + ((header.height - button) / 2.0).max(0.0);
+    let close = Rect::new(header.right() - button - gap * 2.0, y, button, button);
+    let new = Rect::new(close.x - button - gap, y, button, button);
+    let title = Rect::new(
+        header.x + dacode_theme::space::SM * scale,
+        header.y,
+        (new.x - header.x - dacode_theme::space::SM * scale).max(0.0),
+        header.height,
+    );
+
+    let pad_x = dacode_theme::space::SM * scale;
+    let pad_y = 4.0 * scale;
+    let grid = Rect::new(
+        body.x + pad_x,
+        body.y + pad_y,
+        (body.width - pad_x * 2.0).max(0.0),
+        (body.height - pad_y * 2.0).max(0.0),
+    );
+    let cell_width = typography.code_size * FACE_EM * scale;
+    let cell_height = (typography.code_size * crate::terminal::LINE_HEIGHT * scale).round();
+    let columns = ((grid.width / cell_width).floor() as usize).max(2);
+    let rows = ((grid.height / cell_height).floor() as usize).max(1);
+    TerminalRects {
+        panel,
+        header,
+        title,
+        new,
+        close,
+        grid,
+        cell_width,
+        cell_height,
+        columns,
+        rows,
+    }
 }
 
 /// Sizes of the chrome, in logical pixels.
@@ -658,8 +749,33 @@ impl Layout {
             status,
             editor,
             results,
+            terminal: None,
             blame: None,
         }
+    }
+
+    /// The same layout with the terminal panel under the editor, when it is open.
+    ///
+    /// A step rather than a parameter of [`Layout::of`], as [`Layout::with_blame`] is: most callers
+    /// want only the chrome's stack. The three that draw or hit-test the editor area — drawing, the
+    /// mouse and the capture — each pass `state.terminal.open`, so none can decide on its own that
+    /// the panel is there.
+    ///
+    /// Two fifths of the editor's height, the share VSCode opens its panel at, and never less than
+    /// a few rows or more than three fifths: the code above must stay a place you can read.
+    pub fn with_terminal(mut self, open: bool, scale: f32) -> Self {
+        if !open {
+            return self;
+        }
+        let editor = self.editor;
+        let height = (editor.height * 0.4)
+            .max(140.0 * scale)
+            .min(editor.height * 0.6)
+            .floor();
+        let (panel, rest) = editor.split_bottom(height);
+        self.editor = rest;
+        self.terminal = Some(panel);
+        self
     }
 
     /// The same layout with a blame column in pane `pane`, when there is one.
@@ -1311,5 +1427,87 @@ mod tests {
             assert_eq!(grid.row_at(area.code.y + ROW / 2.0), 0);
             assert_eq!(grid.row_at(area.code.y + ROW * 1.5), 1);
         }
+    }
+
+    #[test]
+    fn the_terminal_panel_fits_at_every_window_size() {
+        // The panel takes its height from the editor's, and the grid the shell is told it has must
+        // be the grid that is drawn — at the smallest window too, where a few pixels of rounding
+        // is a row that hangs off the bottom over the status bar.
+        let typography = dacode_theme::Typography::default();
+        for (width, height) in [
+            (640.0, 480.0),
+            (800.0, 600.0),
+            (1600.0, 1000.0),
+            (2560.0, 1440.0),
+        ] {
+            for scale in [1.0_f32, 2.0] {
+                let window = Rect::new(0.0, 0.0, width, height);
+                let without = Layout::of(window, scale, None, 0.0);
+                let with = Layout::of(window, scale, None, 0.0).with_terminal(true, scale);
+                let what = format!("{width}x{height} at {scale}");
+                let panel = with.terminal.expect("open");
+
+                assert_eq!(with.editor.y, without.editor.y, "{what}");
+                assert!(
+                    (with.editor.height + panel.height - without.editor.height).abs() < 0.01,
+                    "{what}: the editor and the panel share the editor's height"
+                );
+                assert_eq!(panel.y, with.editor.bottom(), "{what}");
+                assert!(
+                    panel.bottom() <= with.status.y + 0.01,
+                    "{what}: above the status bar"
+                );
+                assert!(
+                    with.editor.height >= panel.height * 0.6,
+                    "{what}: code stays readable"
+                );
+
+                let rects = terminal_panel(panel, &typography, scale);
+                for (name, button) in [("new", rects.new), ("close", rects.close)] {
+                    assert!(
+                        contains(rects.header, button.x + 1.0, button.y + 1.0),
+                        "{what}: {name}"
+                    );
+                    assert!(button.right() <= rects.header.right(), "{what}: {name}");
+                }
+                assert!(
+                    rects.new.right() <= rects.close.x,
+                    "{what}: the buttons do not overlap"
+                );
+                assert!(
+                    rects.title.right() <= rects.new.x + 0.01,
+                    "{what}: the title stops short"
+                );
+
+                let last = rects.cell(rects.rows - 1, rects.columns - 1);
+                // From the smallest window the editor is drawn at; 640x480 at scale 2 is a 320x240
+                // window, where a row or two is all there is room for and fitting is what matters.
+                if width / scale >= 640.0 {
+                    assert!(
+                        rects.rows >= 3,
+                        "{what}: {} rows is not a terminal",
+                        rects.rows
+                    );
+                }
+                assert!(
+                    last.right() <= rects.grid.right() + 0.01,
+                    "{what}: the last column fits"
+                );
+                assert!(
+                    last.bottom() <= panel.bottom() + 0.01,
+                    "{what}: the last row fits"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_closed_terminal_changes_nothing() {
+        let window = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let plain = Layout::of(window, 1.0, Some(3), 1.0);
+        let closed = Layout::of(window, 1.0, Some(3), 1.0).with_terminal(false, 1.0);
+        assert_eq!(plain.editor, closed.editor);
+        assert_eq!(closed.terminal, None);
     }
 }

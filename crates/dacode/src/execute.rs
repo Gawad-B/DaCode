@@ -311,6 +311,10 @@ pub fn execute(
         }
         // Both need the machine: the clipboard, and the files a link is read from.
         Action::Share | Action::Run => return Outcome::Window(action.clone()),
+        // The shell is a process, and processes are the event loop's.
+        Action::ToggleTerminal | Action::FocusTerminal | Action::NewTerminal => {
+            return Outcome::Window(action.clone());
+        }
         Action::ToggleInlayHints => {
             state.show_inlay_hints = !state.show_inlay_hints;
             state.inlay_hints.clear();

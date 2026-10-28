@@ -544,6 +544,9 @@ mod tests {
         let screen = terminal.screen();
         assert_eq!(screen.size, GridSize::new(60, 7));
         assert_eq!(screen.rows.len(), 7);
-        assert!(terminal.shutdown(Duration::from_secs(10)), "sleep was ended");
+        assert!(
+            terminal.shutdown(Duration::from_secs(10)),
+            "sleep was ended"
+        );
     }
 }

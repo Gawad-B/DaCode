@@ -26,6 +26,8 @@ dacode-import.workspace = true
 dacode-project.workspace = true
 dacode-lsp.workspace = true
 dacode-lua.workspace = true
+# By path: the workspace's dependency table is in the root manifest, and this crate is new.
+dacode-terminal = { path = "../dacode-terminal" }
 serde_json.workspace = true
 
 winit.workspace = true

@@ -21,6 +21,8 @@ pub enum Focus {
     Sidebar,
     /// The results panel under the editor.
     Panel,
+    /// The terminal under the editor. Takes every key but three — see [`crate::terminal::route`].
+    Terminal,
 }
 
 /// What a press at `(x, y)` focuses, or `None` for chrome that should leave focus where it was.
@@ -34,6 +36,8 @@ pub fn focus_for(layout: &Layout, x: f32, y: f32) -> Option<Focus> {
         Some(Focus::Sidebar)
     } else if layout.results.is_some_and(|rect| contains(rect, x, y)) {
         Some(Focus::Panel)
+    } else if layout.terminal.is_some_and(|rect| contains(rect, x, y)) {
+        Some(Focus::Terminal)
     } else if contains(layout.editor, x, y) {
         Some(Focus::Editor)
     } else {
@@ -68,5 +72,24 @@ mod tests {
             None,
             "the title bar leaves focus where it was"
         );
+    }
+
+    #[test]
+    fn clicking_the_terminal_gives_it_the_keys_and_clicking_the_code_takes_them_back() {
+        // The way out of a focused terminal that needs no key at all, at the smallest window this
+        // editor is drawn at as well as an ordinary one.
+        for (width, height) in [(640.0, 480.0), (1400.0, 900.0)] {
+            let layout = Layout::of(Rect::new(0.0, 0.0, width, height), 1.0, None, 0.0)
+                .with_terminal(true, 1.0);
+            let terminal = layout.terminal.expect("asked for one");
+            assert_eq!(
+                focus_for(&layout, terminal.x + 20.0, terminal.bottom() - 5.0),
+                Some(Focus::Terminal)
+            );
+            assert_eq!(
+                focus_for(&layout, layout.editor.x + 50.0, layout.editor.y + 20.0),
+                Some(Focus::Editor)
+            );
+        }
     }
 }

@@ -79,6 +79,7 @@ fn state(lines: usize) -> EditorState {
         blame: Default::default(),
         show_diagnostics: false,
         focus: Default::default(),
+        terminal: Default::default(),
         problems: Default::default(),
         inlay_hints: Vec::new(),
         show_inlay_hints: false,

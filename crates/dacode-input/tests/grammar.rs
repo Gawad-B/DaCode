@@ -1073,3 +1073,28 @@ fn every_prefix_says_on_screen_that_it_is_waiting() {
         grammar.feed(Mode::Normal, Key::named(KeyCode::Escape));
     }
 }
+
+#[test]
+fn ctrl_backtick_reaches_the_terminal_from_every_mode_and_both_grammars() {
+    // The terminal's key has to work wherever you are, or getting to the shell depends on first
+    // getting out of whatever mode you were in. And it must be the *only* thing it does: a
+    // backtick with ctrl held typing a backtick into the file would be a key that edits text on
+    // its way to somewhere else.
+    for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+        assert_eq!(
+            action(mode, "<c-`>"),
+            Action::ToggleTerminal,
+            "modal, {mode:?}"
+        );
+    }
+    let mut grammar = flat();
+    assert_eq!(
+        grammar.feed(Mode::Insert, Key::ctrl('`')),
+        Resolution::Action(Action::ToggleTerminal)
+    );
+    // Vim's own backtick, unchorded, is still the mark jump it always was.
+    assert!(!matches!(
+        Grammar::new().feed(Mode::Normal, Key::char('`')),
+        Resolution::Action(Action::ToggleTerminal)
+    ));
+}

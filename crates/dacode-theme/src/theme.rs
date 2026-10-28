@@ -758,7 +758,12 @@ impl Theme {
                 self.ink,
             )
         } else {
-            (self.ink, self.ink_dim, grey(self.bg.l - 0.14), grey(self.bg.l - 0.07))
+            (
+                self.ink,
+                self.ink_dim,
+                grey(self.bg.l - 0.14),
+                grey(self.bg.l - 0.07),
+            )
         };
 
         let mut palette = [black; 16];

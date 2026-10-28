@@ -196,12 +196,11 @@ impl Screen {
         let visible_row = point.line.0 + offset as i32;
         let shown = term.mode().contains(TermMode::SHOW_CURSOR)
             && content.cursor.shape != ansi::CursorShape::Hidden;
-        let cursor = (shown && visible_row >= 0 && (visible_row as usize) < size.rows).then(|| {
-            Cursor {
+        let cursor =
+            (shown && visible_row >= 0 && (visible_row as usize) < size.rows).then(|| Cursor {
                 row: visible_row as usize,
                 column: point.column.0.min(size.columns - 1),
-            }
-        });
+            });
 
         Self {
             size,
@@ -213,7 +212,10 @@ impl Screen {
 }
 
 /// A colour from the grid, and whether it was one of the "dim" named colours.
-fn resolve(color: ansi::Color, overrides: &alacritty_terminal::term::color::Colors) -> (Color, bool) {
+fn resolve(
+    color: ansi::Color,
+    overrides: &alacritty_terminal::term::color::Colors,
+) -> (Color, bool) {
     match color {
         ansi::Color::Spec(rgb) => (Color::Rgb(rgb.r, rgb.g, rgb.b), false),
         ansi::Color::Indexed(index) => match overrides[index as usize] {
@@ -324,7 +326,11 @@ mod tests {
         assert_eq!(row[0].fg, Color::Ansi(1));
         assert!(row[0].style.bold);
         assert_eq!(row[3].fg, Color::Foreground, "reset by SGR 0");
-        assert_eq!(row[4].fg, Color::Rgb(255, 0, 0), "index 196 is the cube's red");
+        assert_eq!(
+            row[4].fg,
+            Color::Rgb(255, 0, 0),
+            "index 196 is the cube's red"
+        );
         assert_eq!(row[5].fg, Color::Rgb(1, 2, 3), "truecolor passes through");
         assert!(row[6].style.inverse);
     }
@@ -362,6 +368,12 @@ mod tests {
 
     #[test]
     fn a_grid_is_never_empty() {
-        assert_eq!(GridSize::new(0, 0), GridSize { columns: 2, rows: 1 });
+        assert_eq!(
+            GridSize::new(0, 0),
+            GridSize {
+                columns: 2,
+                rows: 1
+            }
+        );
     }
 }

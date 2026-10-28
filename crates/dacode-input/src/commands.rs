@@ -613,7 +613,16 @@ pub const COMMANDS: &[Command] = &[
     command("source_control", "show source control", View, "", ""),
     command("notifications", "show recent messages", View, "", ""),
     command("share", "copy link to line", Files, "", ""),
-    command("run", "copy the run command", Files, "", ""),
+    command("run", "run the project in the terminal", Files, "", ""),
+    command(
+        "toggle_terminal",
+        "show or hide the terminal",
+        View,
+        "<c-`>",
+        "<c-`>",
+    ),
+    command("focus_terminal", "go to the terminal", View, "", ""),
+    command("new_terminal", "start a new terminal", View, "", ""),
     command(
         "toggle_inlay_hints",
         "show or hide inlay hints",

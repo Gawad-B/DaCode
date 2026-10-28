@@ -171,7 +171,7 @@ fn helper_processes_are_spawned_without_a_console_window() {
             .unwrap_or(&text)
             .to_string();
         for (number, line) in source.lines().enumerate() {
-            if line.contains("Command::new(") {
+            if spawns_bare(line) {
                 offenders.push(format!("{relative}:{}: {}", number + 1, line.trim()));
             }
         }
@@ -183,6 +183,29 @@ fn helper_processes_are_spawned_without_a_console_window() {
          console child gets a console window of its own, in front of the editor:\n{}",
         offenders.join("\n")
     );
+}
+
+/// Whether a line calls `Command::new` — std's, bare or by path — rather than the constructor of
+/// some other type whose name ends in `Command`. `ShellCommand::new` builds a value describing a
+/// shell and spawns nothing; a substring match flagged it, and a guard that cries wolf is one
+/// somebody eventually teaches to look away.
+fn spawns_bare(line: &str) -> bool {
+    line.match_indices("Command::new(").any(|(at, _)| {
+        line[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|before| !(before.is_alphanumeric() || before == '_'))
+    })
+}
+
+#[test]
+fn the_spawn_guard_knows_std_from_a_type_named_like_it() {
+    // Verified the way every guard here must be: against the violations it exists to catch.
+    assert!(spawns_bare("    let child = Command::new(\"git\")"));
+    assert!(spawns_bare("std::process::Command::new(program)"));
+    assert!(spawns_bare("(Command::new(\"sh\"))"));
+    assert!(!spawns_bare("shells.push(ShellCommand::new(\"/bin/sh\", &[]))"));
+    assert!(!spawns_bare("process::command(\"git\")"));
 }
 
 #[test]

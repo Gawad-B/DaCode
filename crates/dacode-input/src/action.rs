@@ -338,8 +338,15 @@ pub enum Action {
     /// Copy a reference to the cursor's line — a link to it on the repository's host when there is
     /// one, `path:line` when there is not.
     Share,
-    /// Run the project.
+    /// Run the project: its run command, typed into the terminal.
     Run,
+    /// `ctrl-`` — show the terminal and give it the keys, or, from the terminal, hide it and give
+    /// them back. The one key a focused terminal does not send to the shell.
+    ToggleTerminal,
+    /// Show the terminal and give it the keys, whatever has them now.
+    FocusTerminal,
+    /// End the terminal's shell, if it has one, and start a fresh one.
+    NewTerminal,
 
     /// `za` — fold or unfold the block at the cursor.
     ToggleFold,
@@ -531,6 +538,9 @@ impl Action {
         "notifications",
         "share",
         "run",
+        "toggle_terminal",
+        "focus_terminal",
+        "new_terminal",
         "toggle_fold",
         "fold_all",
         "unfold_all",
@@ -696,6 +706,9 @@ impl Action {
             "notifications" => Action::ToggleNotifications,
             "share" => Action::Share,
             "run" => Action::Run,
+            "toggle_terminal" => Action::ToggleTerminal,
+            "focus_terminal" => Action::FocusTerminal,
+            "new_terminal" => Action::NewTerminal,
             "toggle_fold" => Action::ToggleFold,
             "fold_all" => Action::FoldAll { close: true },
             "unfold_all" => Action::FoldAll { close: false },

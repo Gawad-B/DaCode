@@ -64,12 +64,12 @@ pub struct Item {
 ///
 /// VSCode's rule, kept short on purpose: an explanation under *every* row is a menu twice as tall
 /// that nobody reads, so only the entries a careful reader would still get wrong have one. "Copy
-/// link to line" does not say where the link goes; "copy the run command" does not say why it is
-/// not simply "run"; "what can be done about this?" does not say who answers.
+/// link to line" does not say where the link goes; "what can be done about this?" does not say who
+/// answers.
 pub fn note(name: &str) -> Option<&'static str> {
     match name {
         "share" => Some("a link to this line on the repository's host"),
-        "run" => Some("no terminal yet, so it goes on the clipboard"),
+        "run" => Some("its run command, typed into the terminal"),
         "code_action" => Some("fixes and refactorings from the language server"),
         "open_folder" => Some("the folder becomes the project the tree shows"),
         _ => None,
@@ -109,8 +109,8 @@ pub const TITLES: [&str; 8] = [
 
 /// What is in each menu, by command name, in the order of [`TITLES`].
 ///
-/// Run and Terminal hold what exists today — copying the run command, since there is no terminal
-/// to run it in — and fill in as those features land.
+/// Run holds the project's run command; Terminal the terminal panel, and the same run command, since
+/// that is where it runs.
 const MENUS: [&[&str]; 8] = [
     &[
         "new_file",
@@ -169,8 +169,8 @@ const MENUS: [&[&str]; 8] = [
         "next_diagnostic",
         "previous_diagnostic",
     ],
-    &["run"],
-    &["run"],
+    &["run", "toggle_terminal"],
+    &["new_terminal", "toggle_terminal", "focus_terminal", "run"],
     &["help", "command_palette"],
 ];
 
@@ -652,9 +652,17 @@ mod tests {
     }
 
     #[test]
-    fn the_run_entries_say_what_they_really_do() {
-        // There is no terminal yet, and `run` copies the command for one. An entry reading "run the
-        // project", under Run or Terminal, would promise something that does not happen.
+    fn the_terminal_is_reachable_from_the_menu_bar() {
+        // A feature reachable only by a key is not finished: someone who chose the conventional
+        // editor finds the terminal under Terminal, and the run command under both titles says
+        // where it runs.
+        let terminal = Menu::bar_at(TITLES.iter().position(|t| *t == "Terminal").unwrap(), false);
+        for action in [Action::NewTerminal, Action::ToggleTerminal] {
+            assert!(
+                terminal.items.iter().any(|item| item.action == action),
+                "Terminal offers {action:?}"
+            );
+        }
         for title in ["Run", "Terminal"] {
             let menu = Menu::bar_at(TITLES.iter().position(|t| *t == title).unwrap(), false);
             let run = menu
@@ -662,7 +670,11 @@ mod tests {
                 .iter()
                 .find(|item| item.action == Action::Run)
                 .unwrap_or_else(|| panic!("{title} offers run"));
-            assert_eq!(run.label, "copy the run command", "under {title}");
+            assert!(
+                run.label.contains("terminal"),
+                "under {title}: {}",
+                run.label
+            );
         }
     }
 
