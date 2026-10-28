@@ -17429,12 +17429,18 @@ mod terminal_tests {
         let dir = scratch("select");
         let mut app = editor(&dir);
         app.window_action(&Action::FocusTerminal);
-        type_text(&mut app, "clear; echo selectable\r");
+        // No `clear` first: it is a different command in each of the shells the panel may start,
+        // and the row is found by its whole text anyway, which the typed command never matches.
+        type_text(&mut app, "echo selectable\r");
         let ready = settle(&mut app, |app| shows(app, &["selectable"]));
-        assert!(ready, "the word was printed");
+        assert!(
+            ready,
+            "the word was printed: {:?}",
+            app.active_terminal().map(|t| t.screen().lines())
+        );
         let screen = app.active_terminal().unwrap().screen();
         let row = (0..screen.rows.len())
-            .find(|row| screen.row_text(*row) == "selectable")
+            .find(|row| screen.row_text(*row).trim() == "selectable")
             .expect("on screen");
 
         let rects = app.terminal_rects().expect("shown");
@@ -17605,6 +17611,8 @@ mod source_control_tests {
     /// A repository with `notes.txt` committed, or `None` where git is missing — a skip, as
     /// CLAUDE.md asks, not a failure that tests the machine. Signing and hooks are turned off in the
     /// repository itself, so a developer's global config cannot make a commit here ask for a key.
+    /// Line-ending conversion is off for the same reason: Git for Windows defaults to
+    /// `core.autocrlf=true` and put back `one\r\ntwo\r\n` where `one\ntwo\n` was committed.
     fn repository(label: &str) -> Option<std::path::PathBuf> {
         if git(std::path::Path::new("."), &["--version"]).is_none() {
             eprintln!("skipping: no git on this machine");
@@ -17618,6 +17626,7 @@ mod source_control_tests {
             && git(&dir, &["config", "user.name", "Ann Example"]).is_some()
             && git(&dir, &["config", "commit.gpgsign", "false"]).is_some()
             && git(&dir, &["config", "core.hooksPath", ".git-hooks-none"]).is_some()
+            && git(&dir, &["config", "core.autocrlf", "false"]).is_some()
             && git(&dir, &["add", "notes.txt"]).is_some()
             && git(&dir, &["commit", "-q", "-m", "write the notes"]).is_some();
         if !built {

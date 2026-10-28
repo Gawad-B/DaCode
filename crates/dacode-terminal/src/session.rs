@@ -583,11 +583,13 @@ mod tests {
                 terminal.key(key);
             }
         }
+        // Ends with, not equals: the tty echoes the typed line before the shell has printed its
+        // first prompt, so on a fast runner that prompt lands in front of the output ("$ typed42").
         let seen = wait_for(&terminal, Duration::from_secs(10), |screen| {
-            screen
-                .lines()
-                .iter()
-                .any(|line| line.trim() == "typed42" || line.trim() == "typed$((40+2))")
+            screen.lines().iter().any(|line| {
+                let line = line.trim();
+                line.ends_with("typed42") || line == "typed$((40+2))"
+            })
         });
         let lines = terminal.screen().lines();
         assert!(terminal.bytes_sent() > 0);
