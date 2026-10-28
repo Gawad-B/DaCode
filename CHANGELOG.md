@@ -30,9 +30,23 @@ release, where one exists, lives in `packaging/notes/`.
   again until the next save. Outside a repository, for an untracked file, or with no `git` installed
   there is simply no blame. The new `inline_blame` setting (Editor → Display, on by default) turns
   the note off.
+- **An integrated terminal.** `` ctrl-` `` — in both keymaps, and under Terminal in the menu bar —
+  opens a panel under the code running your `$SHELL` (PowerShell on Windows) in the project root,
+  and gives it the keys; the same key hides it again and gives them back, and the shell keeps
+  running while it is hidden. While it has the keys every key is the shell's, `ctrl-w` and `ctrl-p`
+  included, except `` ctrl-` ``, `ctrl-shift-v` to paste and `ctrl-shift-p` for the command palette;
+  clicking the code also takes the keys back. Colours follow the theme — every theme now has the
+  sixteen terminal colours, derived from its own accents — and 256-colour and 24-bit colour pass
+  through. The wheel scrolls the history (ten thousand lines), or a full-screen program like `less`.
+  Typing `exit` closes the panel; its header has buttons to start a fresh shell and to hide it.
+  The emulation is `alacritty_terminal`, running on its own thread, so a command that prints a
+  great deal does not slow the editor down. Not yet: selecting and copying with the mouse, more
+  than one terminal, and resizing the panel.
 
 ### Changed
 
+- **Run** (the ▶ button, and Run → "run the project in the terminal") now types the project's run
+  command into the terminal and runs it, instead of copying it to the clipboard.
 - **Enter indents from the syntax tree** when the tree is up to date: after a call whose arguments
   were aligned under its parenthesis, the next line goes back to the block's level instead of
   copying sixteen columns of alignment, and a Python line after the last statement of a block stays

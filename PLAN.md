@@ -184,7 +184,7 @@ Do **not** embed Neovim or Vimscript. Do not aim for plugin compatibility.
 Each milestone has a demo and an acceptance bar. Do not advance until the bar is met — this is
 what prevents a half-working engine with ten half-working features on top.
 
-> **Status.** M0–M7 done but for an integrated terminal, and M8's config hot-reload, plus the VSCode
+> **Status.** M0–M7 done — the integrated terminal last of all — but for M8's config hot-reload, plus the VSCode
 > importer, a measured optimization pass, Lua configuration and the logo. 452 tests, zero clippy
 > warnings.
 > Crates:
@@ -198,6 +198,7 @@ what prevents a half-working engine with ten half-working features on top.
 > `dacode-import` (VSCode settings/keys/themes/snippets, `.vsix` reading — 19 tests),
 > `dacode-project` (gitignore-aware discovery, fuzzy ranking, ripgrep search, file watching — 25 tests),
 > `dacode-lsp` (JSON-RPC framing, process lifecycle, UTF-16 positions, diagnostics, rename, formatting — 17 tests),
+> `dacode-terminal` (a shell on a PTY through `alacritty_terminal`, xterm key encoding, viewport-sized screen copies — 26 tests),
 > `dacode-lua` (`init.lua`: options, theme tokens, key bindings, error reporting — 14 tests),
 > `dacode` (window, chrome, executor, config, panes, file tree, git gutter, sessions, snippets, edit
 > application, `dacode import` — 154 tests).
@@ -518,13 +519,67 @@ integrated terminal, session restore, jumplist, macros, autopairs, snippets, sti
 inlay hints.
 **Bar:** two weeks with no reaching for another editor.
 
-> **Everything in M7 is done except the integrated terminal**, which is
-> deferred deliberately rather than half-built. A terminal is a PTY, a VT-sequence parser and a
-> second rendering path with its own scrollback, selection and colour model — a subsystem the size of
-> several crates here, whose failure mode when done badly is a shell that eats your keystrokes. The
-> editor already sits in a terminal for anyone who wants one, and `ctrl-z` is not a worse answer than
-> a bad terminal emulator. It gets built when it is the thing actually blocking use, which is the bar
-> this milestone sets.
+> **The integrated terminal was the last of M7, and was deferred until it was asked for.** The
+> reasoning then still describes the risk: a terminal is a PTY, a VT-sequence parser and a second
+> rendering path with its own scrollback, selection and colour model — a subsystem the size of
+> several crates here, whose failure mode when done badly is a shell that eats your keystrokes. It
+> was built when it became the thing blocking use, and each of those parts was answered as follows.
+>
+> **The emulation is `alacritty_terminal` (0.26), not ours.** It owns the grid, the scrollback, the
+> parser (vte) and the PTY on both platforms — `openpty` and a `setsid` child on Unix, ConPTY on
+> Windows — and runs reading and parsing on its own thread. `portable-pty` plus `vte` was the
+> alternative and was rejected: it supplies the two easy parts and leaves the grid, cursor, modes,
+> scroll regions and alternate screen to be written by hand, which is most of a terminal and the
+> part that goes wrong. `dacode-terminal` is the editor's side of the contract and nothing more:
+> keys spelled as xterm spells them, the shell chosen with the platform as a parameter (`$SHELL` then
+> `/bin/sh`; PowerShell then `%COMSPEC%`), `TERM`/`COLORTERM` handed to the child rather than set on
+> this process, and a `Screen` copied out of the grid for drawing.
+>
+> **The one rule holds by construction.** The UI thread sends bytes (a channel push), copies the
+> visible rows under alacritty's lock (`Screen::capture` addresses rows from the display offset and
+> walks `rows × columns` cells, never the history), and reads an atomic. `latency.rs` holds a frame
+> with the terminal open over a hundred thousand rows of history, scrolled half-way back, to the
+> cost of one over a thousand; a history walk injected into the copy failed it at 9.7x. The parser's
+> `Wakeup` fires per batch read, thousands of times a second under `yes`; the terminal's dirty flag
+> calls the waker only on its way from clear to set and is cleared only when a frame copies the
+> screen, so a flood wakes the loop once per frame drawn. A hidden panel is never copied, so a busy
+> shell behind it wakes the loop once and then not at all.
+>
+> **The shell is the one child not started through `process::command`.** alacritty spawns it, and
+> on Windows that is `CreateProcessW` attached to a pseudoconsole: the pseudoconsole *is* the child's
+> console, so there is no window to suppress — the mechanism Windows Terminal and VSCode use. It is
+> also owned by the event loop and not the executor, like every process: `toggle_terminal`,
+> `focus_terminal`, `new_terminal` and `run` return `Outcome::Window`. Dropping a terminal sends its
+> loop `Shutdown`, and the PTY is hung up and reaped on alacritty's thread, never the UI's.
+>
+> **Keys: everything goes to the shell, except three.** `Focus::Terminal` is set by clicking the
+> panel or by `` ctrl-` ``, and while it holds, the router hands the key to the shell before
+> completion, the hover box or the grammar see it — after the overlays only, so a palette opened
+> from the terminal is typed into. The editor keeps `` ctrl-` `` (the way back), `ctrl-shift-v` (paste)
+> and `ctrl-shift-p` (the palette), the family GNOME Terminal and VSCode keep for themselves because
+> a terminal sends the same byte with and without shift. Letting the editor's other shortcuts through
+> was rejected: it is the keystroke-eating failure from the other side, `ctrl-w` closing a buffer
+> instead of deleting a word. Clicking the code is the other way out. The routing tests drive the
+> real `App::press` and count the bytes the shell was sent, so "the editor's key did not reach the
+> shell" is asserted exactly rather than inferred.
+>
+> **Drawing reads a copy, on the base layer, in the one face.** The panel is a region of the layout
+> like the results panel — `Layout::with_terminal` takes two fifths of the editor's height, and
+> `layout::terminal_panel` is the single source for the header, its two buttons, the cell size and the
+> grid the PTY is told about. Cells are runs of one colour placed at their own column, at the face's
+> real advance (`FACE_EM`) rather than the code grid's 0.60, so a span's glyphs end where the next
+> span begins. One weight is bundled, so bold is shown as bright, as terminals did before bold
+> faces; italic is drawn upright. The sixteen colours are `Theme::ansi`, derived from each theme's
+> mode accents rather than stored, so no theme — imported ones included — lacks them; a test holds
+> them to 3:1 against every built-in canvas. Box drawing and block elements are in Fira Code, so a
+> TUI's frames join up on the grid; a test checks the common ones.
+>
+> **Not done, stated:** no mouse selection or copy in the panel (a selection is alacritty's to
+> hold, but it needs drag routing and a copy key that is not the shell's `ctrl-c`), one terminal
+> rather than tabs, a panel of fixed proportion rather than a draggable one, no mouse reporting to
+> full-screen programs, and colour queries (OSC 10/11) and OSC 52 clipboard writes are not answered.
+> The Windows half type-checks and its rules are tested from Linux, but nobody has typed into it on
+> Windows.
 
 > **Blame is taken against the buffer and followed through edits by a log, not by re-running it.**
 > `git blame --porcelain --contents -` reads the snapshot on stdin, so a line typed since the last

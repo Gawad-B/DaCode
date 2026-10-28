@@ -46,7 +46,7 @@ Background and reasoning. Read when you want to understand rather than to act.
 
 | | |
 |---|---|
-| [Architecture](explanation/architecture.md) | the twelve crates, the one rule, and how the design follows from it |
+| [Architecture](explanation/architecture.md) | the thirteen crates, the one rule, and how the design follows from it |
 | [PLAN.md](../PLAN.md) | the full decision record, including the decisions that turned out wrong |
 | [CLAUDE.md](../CLAUDE.md) | working notes for changing the code: the invariants and what breaking each one looked like |
 

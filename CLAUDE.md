@@ -6,7 +6,7 @@ disagree, `PLAN.md` is the reasoning and this is the summary.
 
 ## What this is
 
-A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Twelve crates, ~68,000 lines,
+A code editor in Rust: `winit` + `wgpu` + `glyphon`, no GUI framework. Thirteen crates, ~68,000 lines,
 1039 tests, clippy clean.
 
 ## Commands
@@ -42,8 +42,8 @@ If you add a background producer, give it a `Version`, a `poll()` that never blo
 polled on a timer: a producer without a waker has its result read on the next keypress, which is how
 syntax colours once came to appear only after a click. Work with a deadline instead of a thread, like
 autosave and the settings write, adds that deadline to the loop's `WaitUntil`. The crates below the
-binary cannot name `dacode::wake::Waker`, so `dacode-syntax`, `dacode-project` and `dacode-lsp` keep
-private copies of the alias, which must stay identical to it.
+binary cannot name `dacode::wake::Waker`, so `dacode-syntax`, `dacode-project`, `dacode-lsp` and
+`dacode-terminal` keep private copies of the alias, which must stay identical to it.
 
 **`crates/dacode/tests/latency.rs` is the rule as a test that fails the build.** It asserts *flatness*,
 not milliseconds: a hundredfold larger document may cost at most 3x more, which is machine-
@@ -66,6 +66,7 @@ dacode-render   Frame -> quads/glyphs/marks, paint Layers, Headless capture
 dacode-project  FileIndex, FileWalk, ProjectSearch, FileWatcher
 dacode-lsp      transport, client, Diagnostics
 dacode-lua      init.lua -> Config
+dacode-terminal a shell on a PTY (alacritty_terminal), xterm key bytes, viewport-sized Screen
 dacode-import   VSCode data, .vsix, colour schemes in four formats
 dacode          the binary: chrome, execute, panes, layout, settings, session, welcome,
              palette, help, menu, clipboard, process
@@ -424,7 +425,7 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
 --transparency PERCENT --help-panel --menu --menu-title TITLE --context-menu --commands
---which-key PREFIX --symbols QUERY --block LINE:COLUMN`.
+--which-key PREFIX --symbols QUERY --block LINE:COLUMN --terminal`.
 
 `--row N` selects a row of the settings tab, which is the only way to see a section below the fold —
 the page scrolls to its selection. `--settings-page NAME` opens it at a page of the tree, and
@@ -477,7 +478,9 @@ anything platform-shaped:
   application with no console, so Windows gives every console child — git, powershell, a language
   server — a brand new console window, in front of the editor. `CREATE_NO_WINDOW` is what suppresses
   it. `dacode-lsp` keeps its own copy of the helper because it sits below the binary; `crates/dacode/tests/
-  conventions.rs` enforces both.
+  conventions.rs` enforces both. The terminal's shell is the one exception: `alacritty_terminal`
+  spawns it attached to a ConPTY pseudoconsole, which *is* its console, so there is no window to
+  suppress.
 - **Anything platform-shaped gets the platform as a parameter**, like `paths::resolve` and
   `position::encode_uri(path, windows)`. Then the Windows rules have tests that run here. A
   `cfg!(windows)` branch inside the function is untestable from Linux, which is how the URI bug
@@ -517,6 +520,7 @@ anything platform-shaped:
 | What survives an edit | `crates/dacode/src/chrome.rs` — `EditorState::mutate` |
 | Indentation on Enter, and `af`/`it`/`aa`/`ic` | `crates/dacode-syntax/src/structure.rs`, its queries in `crates/dacode-syntax/queries/`; the lexical fallback is `dacode-buffer`'s `pairs.rs` |
 | How a file is written | `crates/dacode/src/save.rs` — `write`, and `App::write_active` for buffers |
+| The terminal | `crates/dacode-terminal` for the shell, keys and `Screen`; `crates/dacode/src/terminal.rs` for which keys it keeps and its colours; `layout::terminal_panel` for where it is; `App::handle_terminal_key` and `poll_terminal` in `main.rs` |
 | Who changed a line | `crates/dacode/src/blame.rs` — the porcelain reader, the edit log, `Tracker` and `BlameWorker`; `App::sync_blame` asks and collects, `chrome::line_note` decides between a diagnostic and the inline blame |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
@@ -524,8 +528,8 @@ settings page. If you add it to fewer, it will silently not work somewhere.
 
 ## Known gaps
 
-Deliberate, with reasons in `PLAN.md`: no integrated terminal, column advance derived
-from the type scale rather than measured from the shaper, no macOS packaging. Cross-file rename is not
+Deliberate, with reasons in `PLAN.md`: column advance derived from the type scale rather than
+measured from the shaper, no macOS packaging. Cross-file rename is not
 undoable and says so.
 
 From the syntax-tree work: indentation and the structural text objects read the tree only while its
@@ -548,6 +552,12 @@ tabs, the tree, the statusline and the settings rows elide a little sooner than 
 key chips, the menu's columns and the palette's and completion's match highlights. Not yet: the
 title bar's own measurements, which pad the type scale by hand (1.1x, 1.15x), and the code grid,
 which stays at 0.60 on purpose — moving it moves every glyph of code and every click into it.
+
+From the terminal: no mouse selection or copy in the panel, one terminal rather than tabs, a panel
+of fixed proportion (two fifths of the editor) rather than a draggable one, no mouse reporting to
+full-screen programs, and OSC 10/11 colour queries and OSC 52 clipboard writes go unanswered. Every
+key goes to the shell while it has focus except `` ctrl-` ``, `ctrl-shift-v` and `ctrl-shift-p` —
+see `dacode::terminal::route` before adding a fourth.
 
 From the motion and scrolling work, each one stated rather than hidden:
 

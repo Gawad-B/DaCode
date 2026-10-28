@@ -207,6 +207,20 @@ Every open file has a tab along the top: click one to switch, click its `x` to c
 the name means unsaved changes, and closing a file with unsaved changes warns once — pressing close
 again discards them. `ctrl-w` is the pane prefix here, which is why closing a file is `ctrl-f4`.
 
+## Terminal
+
+| Key | Does |
+|---|---|
+| ``ctrl-` `` | the terminal: open it under the code and give it the keys; from the terminal, hide it and give them back |
+| ``ctrl-` `` with the terminal showing | give it the keys, without hiding anything |
+
+The shell is your `$SHELL` (PowerShell on Windows), started in the project root. While the terminal
+has the keys **every key is the shell's** — `ctrl-w`, `ctrl-p`, `ctrl-c`, `esc` and the rest mean what
+they mean in a shell — except ``ctrl-` ``, `ctrl-shift-v` (paste) and `ctrl-shift-p` (the command
+palette). Clicking the code gives the keys back. The wheel over the panel scrolls its history,
+`exit` closes it, and its header's `+` and `×` start a fresh shell and hide it. The ▶ button types
+the project's run command into it.
+
 ## Language server
 
 | Key | Does |

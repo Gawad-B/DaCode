@@ -89,9 +89,9 @@ it exists to catch. A document-length walk added to `chrome::draw` fails it at *
 the start of the file looking for a matching brace, fails it at **96x**. A guard nobody has watched
 fail is a guard nobody knows works.
 
-## The twelve crates
+## The thirteen crates
 
-DaCode is a Cargo workspace of twelve crates, arranged so that dependencies only ever point one way —
+DaCode is a Cargo workspace of thirteen crates, arranged so that dependencies only ever point one way —
 down this list. Nothing below reaches back up.
 
 | Crate | What it owns |
@@ -106,6 +106,7 @@ down this list. Nothing below reaches back up.
 | `dacode-project` | `FileIndex`, `FileWalk`, `ProjectSearch`, `FileWatcher` — gitignore-aware discovery and search. |
 | `dacode-lsp` | The JSON-RPC transport, the client, diagnostics, and the language table. |
 | `dacode-lua` | Reads `init.lua` and hands back a plain `Config` value. |
+| `dacode-terminal` | The integrated terminal: a shell on a PTY through `alacritty_terminal`, keys spelled as xterm spells them, and the visible rows copied out for drawing. |
 | `dacode-import` | VSCode data, `.vsix` packages, colour schemes in four formats. |
 | `dacode` | The binary: chrome, execute, panes, layout, settings, session, welcome, palette, help, menu, clipboard, process. |
 
@@ -244,8 +245,11 @@ What is portable is extension **data**, and `dacode import` takes it: themes, sn
 language configuration. What most valuable extensions really wrap is a language server, and DaCode
 drives those over LSP directly, so the loss is smaller than the omission sounds.
 
-**No integrated terminal.** It is deferred with reasoning rather than forgotten; `PLAN.md` has the
-account, and the reasoning for how git blame follows edits beside it.
+**The terminal is alacritty's, not ours.** `dacode-terminal` wraps `alacritty_terminal`, which owns
+the PTY, the VT parser, the grid and the scrollback and runs them on its own thread; the editor sends
+bytes, copies the visible rows out once per frame, and is woken when there is output. `PLAN.md` has
+the account of why it was deferred, how it was then built, and how git blame follows edits beside
+it.
 
 And the limitations that are stated rather than hidden, because an honest limitation is better than
 a clever workaround:

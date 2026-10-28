@@ -120,6 +120,7 @@ These are the editor's, not Vim's, and they work in both keymaps:
 | <kbd>F10</kbd> · right-click | open the menu bar (it is always on the title bar to click) · context menu |
 | <kbd>ctrl</kbd>+<kbd>p</kbd> · <kbd>ctrl</kbd>+<kbd>b</kbd> | file palette · buffer palette |
 | <kbd>ctrl</kbd>+<kbd>e</kbd> | file tree |
+| <kbd>ctrl</kbd>+<kbd>`</kbd> | the terminal — and back out of it |
 | <kbd>ctrl</kbd>+<kbd>,</kbd> | settings |
 | <kbd>ctrl</kbd>+<kbd>h</kbd> | find and replace in this file |
 | <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>o</kbd> | open a folder |
@@ -140,6 +141,33 @@ key, and the which-key popup still says what can follow.
 A few commands have no key at all in either keymap — toggling the theme and changing the font size
 among them, and installing a language server. They are in the command palette, which is why the
 palette exists.
+
+### The terminal
+
+<kbd>ctrl</kbd>+<kbd>`</kbd> opens a terminal under the code, running your `$SHELL` (PowerShell on
+Windows) in the project's root, and gives it the keys. The same key takes them back and hides the
+panel; the shell keeps running behind it, and opening the panel again finds it where you left it.
+With the panel showing and the keys elsewhere, <kbd>ctrl</kbd>+<kbd>`</kbd> gives the terminal the
+keys without hiding anything. It is also under **Terminal** in the menu bar, and the ▶ run button
+types the project's run command into it.
+
+While the terminal has the keys, **every key is the shell's** — <kbd>ctrl</kbd>+<kbd>w</kbd> deletes a
+word, <kbd>ctrl</kbd>+<kbd>p</kbd> recalls the last command, <kbd>ctrl</kbd>+<kbd>c</kbd> interrupts,
+<kbd>Esc</kbd> is Escape — with three exceptions, all ones a shell has no use for:
+
+| Key | Does, from the terminal |
+|---|---|
+| <kbd>ctrl</kbd>+<kbd>`</kbd> | hide the terminal and give the keys back to the code |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>v</kbd> | paste |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> | the command palette, from which everything else is reachable |
+
+Clicking the code also gives the keys back, and clicking the terminal hands them to it. The wheel
+over the panel scrolls its history; inside a full-screen program such as `less` it scrolls that
+program instead. Typing `exit` closes the panel. The header's **+** starts a fresh shell and **×**
+hides the panel.
+
+Not there yet: selecting text in the terminal with the mouse and copying it, more than one terminal,
+and resizing the panel.
 
 ### Scrolling and zooming
 

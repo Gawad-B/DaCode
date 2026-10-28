@@ -137,7 +137,7 @@ An extension's `main` entry point is inert throughout. No JavaScript is executed
 | In VSCode | In DaCode |
 |---|---|
 | the marketplace | language servers driven over LSP, plus `dacode import` for extension data. Rust, Python, TypeScript, JavaScript, C, C++, Go, Lua and Dart are known out of the box, and the editor will install one for you — see [language servers](language-servers.md) |
-| the integrated terminal | not present, deliberately. The end of M7 in [PLAN.md](../../PLAN.md) says why it is deferred rather than forgotten |
+| the integrated terminal | <kbd>ctrl</kbd>+<kbd>`</kbd>, as in VSCode: a panel under the code running your `$SHELL` (PowerShell on Windows) in the project root. While it has focus every key is the shell's except <kbd>ctrl</kbd>+<kbd>`</kbd>, <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>v</kbd> and <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd>; clicking the code gives the keys back. One terminal, no splits or tabs, and no mouse selection yet — see [keymaps](keymaps.md#the-terminal) |
 | debugging | not present. A debug adapter is recognised in a `.vsix` and reported, nothing more |
 | the minimap | not present |
 | code lens | not present; it needs LSP code lenses |
@@ -148,7 +148,7 @@ An extension's `main` entry point is inert throughout. No JavaScript is executed
 | git blame | the caret line's author, age and summary after its end, as GitLens does (`inline_blame`, on by default); `gb` / <kbd>alt</kbd>+<kbd>b</kbd> for a gutter column, `gB` / <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>b</kbd> for the whole commit |
 
 The ones that are `settings.json` keys — the minimap, code lens, inline suggestions, icon themes,
-cursor blinking, ligatures and the integrated terminal — are named individually in the import report
+cursor blinking, ligatures and the terminal's shell setting — are named individually in the import report
 when your settings mention them, each with its reason, rather than being lumped into "unknown".
 
 Two more worth knowing, stated plainly because they are limitations rather than choices: buffer
