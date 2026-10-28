@@ -1,0 +1,16 @@
+[package]
+name = "dacode-terminal"
+version = "1.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The integrated terminal of the dacode editor: a shell on a PTY, parsed off the UI thread"
+
+[dependencies]
+dacode-input = { path = "../dacode-input" }
+
+# The grid, the scrollback, the VT parser (vte) and the PTY — `openpty` on Unix, ConPTY on Windows —
+# with its own I/O thread. A terminal emulator is the largest thing an editor can choose to write by
+# hand and the one whose bugs cost the most, so it is taken whole from the emulator that has had the
+# most people typing into it. Default features off: `serde` is for alacritty's own config files.
+alacritty_terminal = { version = "0.26", default-features = false }
