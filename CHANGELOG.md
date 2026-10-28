@@ -11,6 +11,18 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Added
 
+- **Rebind keys from the settings tab.** On the Keys page, click a command (or press Enter on it)
+  and press the new keys: any ctrl, alt or function-key chord, or `ctrl-k` and a second key. Esc
+  cancels, Backspace leaves the command with no key, and a key another command already has is
+  named on the row and moved only when pressed again — nothing runs while the row waits. The new
+  key replaces the command's built-in shortcuts in both grammars (Vim's own keys, like `u`, stay),
+  works at once, and is shown everywhere a key is printed: the palette, F1, the menus, the
+  which-key popup, the tooltips and the page. A ⟲ on a changed row, Delete, or "Reset every key to
+  the built-in" puts keys back, and a search finds a command by its key as `ctrl-w`, `Ctrl+W` or
+  `<c-w>`. The page writes a `dacode.keys { close_buffer = "<c-s-w>", … }` block into `init.lua`,
+  the same form you can write by hand, and reads it back at start. The terminal's own keys
+  (`ctrl-pageup`/`pagedown`, `ctrl-shift-c`/`v`) are now shown for their commands too, and moving
+  one moves it in the terminal panel. `--capture-key NAME[=KEYS]` captures the page mid-rebind.
 - **Text objects from the syntax tree**: `af`/`if` for a function, `at`/`it` for a type (class,
   struct, enum, trait, impl, interface), `aa`/`ia` for an argument or parameter and `ac`/`ic` for a
   comment, in Rust, Python, JavaScript, TypeScript, C and C++ (comments in HTML and CSS too). They
@@ -68,6 +80,9 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Changed
 
+- **`dacode.map` bindings now work with Vim's keys off.** The non-modal grammar never asked the
+  keymap, so every binding in `init.lua` did nothing for anyone who had turned Vim off; with it off
+  the mode is `insert`, which is the mode to bind.
 - **Run** (the ▶ button, and Run → "run the project in the terminal") now types the project's run
   command into the terminal and runs it, instead of copying it to the clipboard.
 - **Enter indents from the syntax tree** when the tree is up to date: after a call whose arguments

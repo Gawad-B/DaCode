@@ -614,6 +614,99 @@ pub fn write_touched(
     }
 }
 
+/// The marker the Keys page's block is written under: a `dacode.keys { … }` of its own, apart from
+/// the settings block, so either can be rewritten without reading the other.
+const KEYS_MARKER: &str = "-- dacode: keys set on the Keys page (ctrl-,). Edit freely — rewritten when a key changes there.";
+
+/// A string as Lua reads it back: a key can be `<c-\>` or `<c-">`.
+fn lua_string(text: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in text.chars() {
+        if matches!(c, '"' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// Rewrites `init.lua` so its keys block says exactly `shortcuts`, one command a line, in the form
+/// someone would write by hand:
+///
+/// ```lua
+/// dacode.keys {
+///   close_buffer = "<c-s-w>",
+///   toggle_blame = { "<a-b>", "<c-k><c-b>" },
+///   quit = "",
+/// }
+/// ```
+///
+/// The whole set rather than what changed, unlike [`write_touched`]: a key moved here can take
+/// itself from another command, so one change can be two lines, and the set the page holds was
+/// read from this block in the first place (through `dacode-lua`, the reader every start uses).
+/// An empty set removes the block. Everything outside it is kept verbatim, and a block not there
+/// yet goes at the end, where it is read last and so wins over a `dacode.keys` written above it.
+pub fn write_keys(existing: &str, shortcuts: &dacode_input::Shortcuts) -> String {
+    let found = existing.find(KEYS_MARKER).map(|at| {
+        let rest = &existing[at..];
+        let end = rest
+            .find("\n}\n")
+            .map(|i| at + i + 3)
+            .unwrap_or(existing.len());
+        (at, end)
+    });
+
+    let mut block = String::new();
+    if !shortcuts.is_empty() {
+        block.push_str(KEYS_MARKER);
+        block.push_str("\ndacode.keys {\n");
+        for (name, keys) in shortcuts.iter() {
+            let value = match keys.as_slice() {
+                [] => "\"\"".to_string(),
+                [one] => lua_string(one),
+                many => format!(
+                    "{{ {} }}",
+                    many.iter()
+                        .map(|keys| lua_string(keys))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            block.push_str(&format!("  {name} = {value},\n"));
+        }
+        block.push_str("}\n");
+    }
+
+    match found {
+        Some((at, end)) => {
+            let before = &existing[..at];
+            let after = &existing[end..];
+            if block.is_empty() {
+                // The blank line the block was appended after goes with it.
+                let before = before
+                    .strip_suffix("\n\n")
+                    .map_or(before, |trimmed| &before[..trimmed.len() + 1]);
+                format!("{before}{after}")
+            } else {
+                format!("{before}{block}{after}")
+            }
+        }
+        None if block.is_empty() => existing.to_string(),
+        None => {
+            let mut out = existing.to_string();
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(&block);
+            out
+        }
+    }
+}
+
 // ---- the settings page --------------------------------------------------------------------------
 //
 // JetBrains' category tree on the left, VSCode's rows on the right — a setting's name, a sentence
@@ -627,6 +720,7 @@ pub fn write_touched(
 // it; the explanation says the first, and a ● against the default says the second.
 
 use dacode_input::commands::{self, Command, Group};
+use dacode_input::{Key, KeyCode};
 use dacode_theme::Role;
 use std::cell::{Ref, RefCell};
 
@@ -1044,23 +1138,25 @@ pub enum Entry {
     Link(Link),
 }
 
-/// Where a link row goes.
+/// Where a link row goes, or what it does to the whole page.
 ///
 /// A variant of its own rather than another [`Line`], because it is not an import or a report and
 /// the page treats it differently from both: it has no control, it is chosen like an action, and
-/// what choosing it does — opening a file — belongs to the editor rather than to the page.
+/// what choosing it does belongs to the editor rather than to the page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Link {
-    /// The Keys page's way to change a shortcut, which the page itself does not offer: rebinding from
-    /// the list is out of scope, and a list of keys with no word on how to change one reads as a
-    /// list of keys that cannot be changed.
+    /// Every command back on the keys it was built with.
+    ResetKeys,
+    /// `init.lua`, for what the rows do not do: a binding for one mode, or for a key that is not a
+    /// shortcut — `dacode.map`.
     RebindKeys,
 }
 
 impl Link {
     pub fn label(self) -> &'static str {
         match self {
-            Link::RebindKeys => "Rebind a key in init.lua",
+            Link::ResetKeys => "Reset every key to the built-in",
+            Link::RebindKeys => "Bind a key for one mode in init.lua",
         }
     }
 
@@ -1069,7 +1165,111 @@ impl Link {
     /// so "dacode.map" finds the row.
     pub fn explanation(self) -> &'static str {
         match self {
-            Link::RebindKeys => "a key is rebound with dacode.map(mode, keys, command) in init.lua",
+            Link::ResetKeys => {
+                "every command is back on its built-in keys; click a command, or press Enter on it, \
+                 to give it another"
+            }
+            Link::RebindKeys => {
+                "click a command, or press Enter on it, to give it a new key; dacode.map(mode, keys, \
+                 command) in init.lua binds a key for one mode"
+            }
+        }
+    }
+}
+
+/// A command row waiting for its new key, after a click or Enter on it.
+///
+/// Every key goes here while it waits — `App::route_key` asks before the grammar — so the key being
+/// captured cannot also run whatever it runs now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capture {
+    pub command: &'static Command,
+    /// `ctrl-k`, pressed and waiting for the second key of a sequence. The one prefix, for the
+    /// reason `dacode_input::shortcuts` gives.
+    prefix: Option<Key>,
+    /// Keys that already run another command, waiting to be pressed again before they are moved.
+    conflict: Option<(Vec<Key>, &'static Command)>,
+}
+
+/// What a key pressed during a [`Capture`] decided.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CaptureStep {
+    /// Still waiting: a prefix was pressed, or a key that is taken was, once.
+    Waiting,
+    /// Escape: nothing changes.
+    Cancelled,
+    /// Backspace or Delete: the command is left with no shortcut.
+    Unbind(&'static Command),
+    /// These keys are the command's now, taken from whatever had them.
+    Assign(&'static Command, Vec<Key>),
+    /// A key that cannot be a shortcut — a letter, an arrow. Still waiting.
+    NotAShortcut,
+}
+
+impl Capture {
+    /// What the row says while it waits, in the notation of the grammar in use.
+    pub fn text(&self, modal: bool) -> String {
+        let shown = |keys: &str| {
+            if modal {
+                keys.to_string()
+            } else {
+                commands::pretty(keys)
+            }
+        };
+        if let Some((keys, other)) = &self.conflict {
+            return format!(
+                "{} already runs \u{201c}{}\u{201d} — press it again to move it here, Esc to cancel",
+                shown(&dacode_input::shortcuts::notation(keys)),
+                other.what
+            );
+        }
+        match self.prefix {
+            Some(prefix) => format!(
+                "{} and then a second key — Esc cancels",
+                shown(&prefix.to_display())
+            ),
+            None => "Press the new keys — Esc cancels, Backspace leaves it with none".to_string(),
+        }
+    }
+
+    /// What the captured key means. `modal` decides which grammar's keys a conflict is looked up
+    /// in — an override applies to both, but the one being typed in is the one that warns.
+    pub fn take(&mut self, key: Key, modal: bool) -> CaptureStep {
+        let plain = !key.ctrl && !key.alt;
+        match key.code {
+            KeyCode::Escape if plain => return CaptureStep::Cancelled,
+            KeyCode::Backspace | KeyCode::Delete if plain => {
+                return CaptureStep::Unbind(self.command);
+            }
+            _ => {}
+        }
+        let keys = match self.prefix {
+            Some(prefix) => vec![prefix, key],
+            None if !key.is_shortcut() => return CaptureStep::NotAShortcut,
+            // `ctrl-k` alone begins a sequence; with shift it is a key of its own (`ctrl-shift-k`).
+            None if key.ctrl && !key.alt && !key.shift && key.code == KeyCode::Char('k') => {
+                self.prefix = Some(key);
+                self.conflict = None;
+                return CaptureStep::Waiting;
+            }
+            None => vec![key],
+        };
+        self.prefix = None;
+        let owner = dacode_input::shortcuts::current().owner(&keys, modal);
+        match owner {
+            Some(other) if other.name != self.command.name => {
+                let again = self
+                    .conflict
+                    .as_ref()
+                    .is_some_and(|(pending, _)| *pending == keys);
+                if again {
+                    CaptureStep::Assign(self.command, keys)
+                } else {
+                    self.conflict = Some((keys, other));
+                    CaptureStep::Waiting
+                }
+            }
+            _ => CaptureStep::Assign(self.command, keys),
         }
     }
 }
@@ -1123,6 +1323,8 @@ pub struct Page {
     /// The theme dropdown, while it is open. On the page because it hangs from the page's theme
     /// row, and a page that is closed takes it with it.
     dropdown: Option<Dropdown>,
+    /// A command row waiting for a key, on the Keys page.
+    capture: Option<Capture>,
     flow: RefCell<Option<Flow>>,
 }
 
@@ -1379,13 +1581,28 @@ impl Metrics {
     /// button already names the page, and those pixels are the difference between a setting fitting
     /// under the search box and not. A search's first heading is kept, folded or not: the button
     /// then says "All results", and only the heading says which page "Soft wrap" came from.
-    fn height(&self, entry: Entry, leading: bool, folded: bool, inner: f32, modal: bool) -> Slot {
+    fn height(
+        &self,
+        entry: Entry,
+        leading: bool,
+        folded: bool,
+        inner: f32,
+        modal: bool,
+        waiting: Option<&str>,
+    ) -> Slot {
         let explained = |text: Option<&str>| text.map_or(0, |text| self.lines(text, inner));
         let (height, lines) = match entry {
             Entry::Heading { category: None, .. } if leading && folded => (0.0, 0),
             Entry::Heading { .. } if leading => (self.label_line + self.small, 0),
             Entry::Heading { .. } => (self.heading_space + self.label_line, 0),
-            Entry::Command(_) => (self.label_line + self.gap, 0),
+            // A row waiting for a key says what it is waiting for under its name.
+            Entry::Command(_) => match waiting.map(|text| self.lines(text, inner)) {
+                Some(lines) if lines > 0 => (
+                    self.label_line + self.gap + self.small + lines as f32 * self.text_line,
+                    lines,
+                ),
+                _ => (self.label_line + self.gap, 0),
+            },
             Entry::Line(Line::Server(_) | Line::Formatter(_)) => {
                 (self.gap * 2.0 + self.label_line + self.text_line, 1)
             }
@@ -1506,6 +1723,11 @@ struct FlowKey {
     category: Category,
     query: String,
     modal: bool,
+    /// Which set of user keys the Keys page was laid out for: a search by key finds other rows
+    /// once a key moves.
+    shortcuts: u64,
+    /// The waiting row's sentence, which takes lines under its name.
+    capture: Option<(&'static str, String)>,
     scale: f32,
     code_size: f32,
     width: f32,
@@ -1537,8 +1759,37 @@ impl Page {
             formatters: Vec::new(),
             ticked: Vec::new(),
             dropdown: None,
+            capture: None,
             flow: RefCell::new(None),
         }
+    }
+
+    /// The command row waiting for a key, if one is.
+    pub fn capture(&self) -> Option<&Capture> {
+        self.capture.as_ref()
+    }
+
+    /// Starts waiting for a key for `command`, in place of any other row that was.
+    pub fn start_capture(&mut self, command: &'static Command) {
+        self.capture = Some(Capture {
+            command,
+            prefix: None,
+            conflict: None,
+        });
+    }
+
+    pub fn cancel_capture(&mut self) {
+        self.capture = None;
+    }
+
+    /// Hands a key to the row waiting for one. Anything but [`CaptureStep::Waiting`] and
+    /// [`CaptureStep::NotAShortcut`] ends the wait; the caller carries the change out.
+    pub fn capture_key(&mut self, key: Key, modal: bool) -> Option<CaptureStep> {
+        let step = self.capture.as_mut()?.take(key, modal);
+        if !matches!(step, CaptureStep::Waiting | CaptureStep::NotAShortcut) {
+            self.capture = None;
+        }
+        Some(step)
     }
 
     pub fn category(&self) -> Category {
@@ -1636,8 +1887,9 @@ impl Page {
     }
 
     fn restart(&mut self, modal: bool) {
-        // The row it hangs from may be gone from the new list.
+        // The row it hangs from may be gone from the new list — and so may a row waiting for a key.
         self.dropdown = None;
+        self.capture = None;
         self.scroll = 0.0;
         self.selected = 0;
         self.move_selection(0, modal);
@@ -1666,17 +1918,20 @@ impl Page {
             // mode to list a key for.
             // The way to change a key first, where someone who came to change one looks; then every
             // command under the help panel's groups.
-            Category::Keys => std::iter::once(("Rebinding", vec![Entry::Link(Link::RebindKeys)]))
-                .chain(Group::ALL.into_iter().map(|group| {
-                    (
-                        group_title(group),
-                        commands::available(modal)
-                            .filter(|command| command.group == group)
-                            .map(Entry::Command)
-                            .collect(),
-                    )
-                }))
-                .collect(),
+            Category::Keys => std::iter::once((
+                "Rebinding",
+                vec![Entry::Link(Link::ResetKeys), Entry::Link(Link::RebindKeys)],
+            ))
+            .chain(Group::ALL.into_iter().map(|group| {
+                (
+                    group_title(group),
+                    commands::available(modal)
+                        .filter(|command| command.group == group)
+                        .map(Entry::Command)
+                        .collect(),
+                )
+            }))
+            .collect(),
             Category::Languages => vec![
                 (
                     "Language servers",
@@ -1740,8 +1995,12 @@ impl Page {
                     || field.explanation(modal).is_some_and(found)
                     || found(field.name())
             }
+            // By its keys as written in any of the ways people write them — `<c-w>`, `Ctrl+W` and
+            // `ctrl-w` all find close_buffer — and as they are now, not as they were built.
             Entry::Command(command) => {
-                found(command.name) || found(command.what) || found(&command.shown(modal))
+                found(command.name)
+                    || found(command.what)
+                    || found(&commands::searchable(&command.keys_for(modal)))
             }
             Entry::Link(link) => found(link.label()) || found(link.explanation()),
             Entry::Line(line) => {
@@ -1878,6 +2137,11 @@ impl Page {
             category: self.category,
             query: self.query.clone(),
             modal,
+            shortcuts: dacode_input::shortcuts::current().generation(),
+            capture: self
+                .capture
+                .as_ref()
+                .map(|capture| (capture.command.name, capture.text(modal))),
             scale: skeleton.metrics.scale,
             code_size: typography.code_size,
             width: skeleton.list.width,
@@ -1910,9 +2174,15 @@ impl Page {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
+                let waiting = match (entry, &key.capture) {
+                    (Entry::Command(command), Some((name, text))) if command.name == *name => {
+                        Some(text.as_str())
+                    }
+                    _ => None,
+                };
                 let slot = Slot {
                     top,
-                    ..metrics.height(*entry, index == 0, key.folded, inner, key.modal)
+                    ..metrics.height(*entry, index == 0, key.folded, inner, key.modal, waiting)
                 };
                 top += slot.height;
                 slot
@@ -2134,11 +2404,24 @@ impl Layout<'_> {
                     &command.shown(self.modal),
                     metrics.scale,
                 );
+                // The ⟲, when its keys are not the ones it was built with — given others, left with
+                // none, or one taken from it by another command.
+                let reset = dacode_input::shortcuts::current().differs(command, self.modal);
+                let side = metrics.label_line;
+                let reserve = if reset { side + metrics.gap } else { 0.0 };
                 // A command with no key in this grammar has nothing to draw there; the palette is
                 // its only way in, and the empty space says so.
-                row.control = (keys > 0.0).then(|| right(y, keys, metrics.label_line, 0.0));
-                let end = row.control.map_or(x + inner, |keys| keys.x - metrics.gap);
+                row.control = (keys > 0.0).then(|| right(y, keys, metrics.label_line, reserve));
+                row.reset = reset.then(|| {
+                    let at = row.control.map_or(x + inner, |keys| keys.x) - metrics.gap - side;
+                    Rect::new(at, y, side, side)
+                });
+                let end = row
+                    .reset
+                    .or(row.control)
+                    .map_or(x + inner, |left| left.x - metrics.gap);
                 row.label = Rect::new(x, y, (end - x).max(0.0), metrics.label_line);
+                row.explanation = text(y + metrics.label_line + metrics.small);
             }
             Entry::Line(Line::Server(_) | Line::Formatter(_)) => {
                 let y = rect.y + metrics.gap;
@@ -2907,6 +3190,51 @@ mod tests {
         assert_eq!(
             config.font_size.map(|size| format!("{size:.1}")),
             Some(original.get(Field::FontSize))
+        );
+    }
+
+    fn moved_keys() -> dacode_input::Shortcuts {
+        let mut shortcuts = dacode_input::Shortcuts::new();
+        shortcuts.set("close_buffer", &["<c-s-w>"]).unwrap();
+        shortcuts.set("toggle_blame", &["<a-b>", "<c-\\>"]).unwrap();
+        shortcuts.set("quit", &[]).unwrap();
+        shortcuts
+    }
+
+    #[test]
+    fn the_keys_block_is_lua_a_person_would_write_and_reads_back_the_same() {
+        // One command a line, the way the Keys page shows them — and a key with a backslash in it
+        // escaped, or the file would stop parsing at the next start and lose every key.
+        let shortcuts = moved_keys();
+        let source = write_keys("", &shortcuts);
+        assert!(
+            source.contains(
+                "dacode.keys {\n  close_buffer = \"<c-s-w>\",\n  quit = \"\",\n  toggle_blame = { \"<a-b>\", \"<c-\\\\>\" },\n}\n"
+            ),
+            "{source}"
+        );
+        let config = dacode_lua::eval(&source, "init.lua");
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        assert_eq!(
+            config.shortcuts.iter().collect::<Vec<_>>(),
+            shortcuts.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_keys_block_is_replaced_in_place_and_leaves_the_settings_block_alone() {
+        let settings = write_back("-- mine\n", &values());
+        let once = write_keys(&settings, &moved_keys());
+        let mut fewer = moved_keys();
+        fewer.forget("quit");
+        let twice = write_keys(&once, &fewer);
+        assert_eq!(twice.matches("dacode.keys").count(), 1, "{twice}");
+        assert!(!twice.contains("quit ="), "{twice}");
+        assert!(twice.starts_with(&settings), "{twice}");
+        // And emptied, it goes, leaving the file as it was before the page wrote a key.
+        assert_eq!(
+            write_keys(&twice, &dacode_input::Shortcuts::new()),
+            settings
         );
     }
 
@@ -3824,17 +4152,18 @@ mod tab_tests {
     }
 
     #[test]
-    fn the_keys_page_says_how_to_rebind_from_a_row_that_scrolls_with_the_list() {
-        // Rebinding from the list is out of scope, and a list of keys with no word on how to change
-        // one reads as keys that cannot be changed. The way is a row: it is selected, scrolled and
-        // clicked like any other, rather than a box drawn somewhere the mouse was not told about.
+    fn the_keys_pages_own_actions_are_rows_that_scroll_with_the_list() {
+        // "Reset every key" and the way to a per-mode binding in init.lua are rows: selected,
+        // scrolled and clicked like any other, rather than boxes drawn somewhere the mouse was not
+        // told about. Resetting comes first, being the one that acts on this page.
         let modal = true;
         let mut page = Page::new();
         page.set_category(Category::Keys, modal);
+        let reset = Entry::Link(Link::ResetKeys);
         let link = Entry::Link(Link::RebindKeys);
         assert_eq!(
             page.selected_entry(modal),
-            Some(link),
+            Some(reset),
             "it is the first thing on the page"
         );
 
@@ -3842,27 +4171,31 @@ mod tab_tests {
         let values = Values::defaults(modal);
         let typography = Typography::default();
         let at_top = page.geometry(rect, 1.0, &values, modal, &typography);
-        let row = at_top
-            .rows
-            .iter()
-            .find(|row| row.entry == link)
-            .expect("on screen at the top");
         let middle = |rect: Rect| (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-        let (x, y) = middle(row.label);
-        assert_eq!(at_top.hit(x, y), Some((row.index, Part::Row)));
+        for entry in [reset, link] {
+            let row = at_top
+                .rows
+                .iter()
+                .find(|row| row.entry == entry)
+                .expect("on screen at the top");
+            let (x, y) = middle(row.label);
+            assert_eq!(at_top.hit(x, y), Some((row.index, Part::Row)));
+        }
 
         page.scroll_by(10_000.0, rect, 1.0, modal, &typography);
         let scrolled = page.geometry(rect, 1.0, &values, modal, &typography);
         assert!(
             scrolled.rows.iter().all(|row| row.entry != link),
-            "and it scrolls away with the list"
+            "and they scroll away with the list"
         );
 
-        page.set_query("rebind", modal);
+        page.set_query("dacode.map", modal);
         assert!(
             page.entries(modal).contains(&link),
-            "a search for how to rebind finds it"
+            "a search for the per-mode binding finds the way to it"
         );
+        page.set_query("reset every", modal);
+        assert!(page.entries(modal).contains(&reset));
     }
 
     #[test]

@@ -159,7 +159,22 @@ headlessly. Adding a user-visible operation means adding an `Action`, a name in 
 that name in `Action::NAMES`, and a row in `dacode_input::commands::COMMANDS` — the name is public API
 that config depends on, and three tests fail until all four exist.
 
-**`commands::COMMANDS` is the only description of what the keys are.** The command palette, the help
+**What the keys are *now* is `dacode_input::shortcuts`, read through `Command::keys_for` and
+`shown`.** The Keys page edits a per-command override layer (`Shortcuts`): a command given keys there
+loses its built-in *shortcuts* (ctrl/alt/function keys) and keeps Vim's grammar keys, in both
+grammars. The grammar asks it before `dacode.map` and before the built-ins, and drops a built-in
+shortcut whose command was moved (`Grammar::unless_moved`, only for a command *begun* with a
+shortcut, so `u` still undoes); `terminal::route` asks it too, and the App's pre-grammar intercepts
+step aside for a key it claims. The live set is a **thread-local** (`shortcuts::install`/`current`)
+rather than a parameter: the palette, help, menus, which-key, tooltips and the page all print keys
+through `Command::shown`, and threading a reference through every builder — a dozen in `menu.rs`
+alone — was a hundred signatures that could each be handed the wrong one. Per-thread, so tests,
+which cargo runs one to a thread, cannot see each other's. `App::new` installs from its `Settings`
+(tests pass the default), `App::change_shortcuts` is the one way the App changes it, and the set is
+written to `init.lua` as `dacode.keys { … }` by `settings_ui::write_keys` on the settings pause.
+While a row waits for a key, `App::route_key` hands it every key before the grammar.
+
+**`commands::COMMANDS` is the only description of what the keys are built as.** The command palette, the help
 panel (F1), the menu bar and the which-key popup all read that one table, and a test feeds every
 non-modal key in it through the real grammar. Four features that each maintained their own list would
 disagree within a month, and a discoverability feature that lies is worse than none — it teaches a key
@@ -431,7 +446,7 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
 --transparency PERCENT --help-panel --menu --menu-title TITLE --context-menu --commands
---which-key PREFIX --symbols QUERY --block LINE:COLUMN --terminal --terminal-tabs N
+--which-key PREFIX --symbols QUERY --block LINE:COLUMN --capture-key NAME[=KEYS] --terminal --terminal-tabs N
 --terminal-height PERCENT --terminal-select R:C-R:C`.
 
 `--row N` selects a row of the settings tab, which is the only way to see a section below the fold —
@@ -512,7 +527,8 @@ anything platform-shaped:
 | Scrolling | `crates/dacode/src/scroll.rs` — `ScrollInput` and `by_pixels`; the remainder lives on `state.chrome`, and `layout::CodeGrid::with_sub_row` is the only place it enters pixel arithmetic |
 | Which surface has the keys | `crates/dacode/src/focus.rs` — `Focus` and `focus_for`; a click sets it, and the key router asks it rather than which panel is open |
 | Waking the event loop | `crates/dacode/src/wake.rs` — `Waker`, `Wake` and `coalescing`; `App::collect_background` is the one idle step, and `services_busy` is what still needs a timer |
-| The settings tab | `crates/dacode/src/settings_ui.rs` — `Page` is the model (categories, search, scroll, selection), `Page::geometry_at` its rectangles; `App::save_settings_if_due` and `settings_ui::write_touched` are the auto-save |
+| The settings tab | `crates/dacode/src/settings_ui.rs` — `Page` is the model (categories, search, scroll, selection, a row's key `Capture`), `Page::geometry_at` its rectangles; `App::save_settings_if_due` and `settings_ui::write_touched`/`write_keys` are the auto-save |
+| A command's keys as the user changed them | `crates/dacode-input/src/shortcuts.rs` — `Shortcuts`, `install`/`current`, `TERMINAL_KEYS`; `dacode.keys` in `dacode-lua` |
 | Which face a run is drawn in | `crates/dacode-render/src/text.rs` — `attrs`, `shaped_weight`, `fira_code_draws` |
 | An icon | `crates/dacode-render/src/icon.rs` — geometry on a 24-unit grid, drawn by `shape.wgsl` |
 | The logo | `crates/dacode-render/assets/mark*.png` — coverage masks; `examples/icons.rs` builds every icon from them |
@@ -594,9 +610,12 @@ From the motion and scrolling work, each one stated rather than hidden:
   two panes part-way into a row, and a touchpad stream in one pane never shifts another.
 - **Pinch-to-zoom works only where winit delivers `PinchGesture`**, which is macOS. On Wayland and
   Windows, ctrl-scroll is the way, and the keymaps guide says so.
-- **Search on the settings page filters and highlights, and the Keys page cannot rebind.** A row for a
-  command shows its shortcut and nothing more; the page links to `init.lua`, which is where a binding
-  is written.
+- **The Keys page moves shortcuts, not Vim's keys, and does not show `dacode.map`.** An override
+  replaces a command's ctrl/alt/function-key bindings and leaves `u`, `dd` and the rest alone; a
+  sequence must start with `ctrl-k`; and per-mode `dacode.map` bindings run but are printed nowhere.
+  The App's own intercepts for `ctrl-p` and `ctrl-b` are not commands, so giving one of those keys
+  away is not warned about. A `dacode.keys` written outside the page's block is copied into it, and
+  resetting it on the page leaves the hand-written line to apply again at the next start.
 - **Restoring `init.lua`'s recovery copy after a quit brings back the old settings block.** A setting
   held for an `init.lua` with unsaved edits is written to the file on disk at quit, while those edits go
   to the recovery file, so restoring that copy puts the block from before the change back over it.

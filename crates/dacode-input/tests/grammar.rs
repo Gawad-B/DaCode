@@ -1289,3 +1289,116 @@ fn shift_alt_left_shrinks_and_shift_alt_right_still_expands() {
         Some(Action::ShrinkSelection)
     );
 }
+
+// ---- keys given on the Keys page --------------------------------------------------------------
+
+/// Installs a set of user shortcuts for this test's thread, which is where the grammar reads them.
+fn with_shortcuts(build: impl FnOnce(&mut dacode_input::Shortcuts)) {
+    let mut shortcuts = dacode_input::Shortcuts::new();
+    build(&mut shortcuts);
+    dacode_input::shortcuts::install(shortcuts);
+}
+
+fn command(name: &str) -> &'static dacode_input::Command {
+    dacode_input::commands::by_name(name).unwrap()
+}
+
+#[test]
+fn a_key_given_on_the_keys_page_runs_its_command_in_both_grammars_and_every_mode() {
+    // The page edits one table for everyone: someone who switches Vim on after moving a key must
+    // find it where they put it, in insert mode as much as in normal.
+    with_shortcuts(|s| s.assign(command("toggle_comment"), Key::parse_sequence("<c-a-m>")));
+    let mut flat = Grammar::new();
+    flat.set_modal(false);
+    for (grammar, mode) in [
+        (&mut flat, Mode::Insert),
+        (&mut Grammar::new(), Mode::Normal),
+        (&mut Grammar::new(), Mode::Insert),
+        (&mut Grammar::new(), Mode::Visual),
+    ] {
+        assert_eq!(
+            feed(grammar, mode, "<c-a-m>"),
+            vec![Action::ToggleComment],
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn the_built_in_shortcut_a_command_was_moved_off_stops_running_it() {
+    // A move, not an addition. `ctrl-/` toggled comments until the user gave that job to another
+    // key; still toggling them would be a key the palette no longer admits to.
+    with_shortcuts(|s| s.assign(command("toggle_comment"), Key::parse_sequence("<c-a-m>")));
+    let mut flat = Grammar::new();
+    flat.set_modal(false);
+    assert_eq!(feed(&mut flat, Mode::Insert, "<c-/>"), vec![]);
+    // And typing is untouched by it.
+    assert_eq!(
+        feed(&mut flat, Mode::Insert, "x"),
+        vec![Action::InsertText("x".into())]
+    );
+}
+
+#[test]
+fn moving_a_command_off_a_key_leaves_vims_keys_for_it_working() {
+    // `u` is a word of Vim's grammar, not a shortcut the page moved.
+    with_shortcuts(|s| s.assign(command("undo"), Key::parse_sequence("<c-a-z>")));
+    assert_eq!(normal("u"), Action::Undo);
+    assert_eq!(normal("<c-a-z>"), Action::Undo);
+}
+
+#[test]
+fn a_key_taken_from_one_command_runs_the_one_it_was_given_to() {
+    with_shortcuts(|s| s.assign(command("toggle_comment"), Key::parse_sequence("<c-w>")));
+    let mut flat = Grammar::new();
+    flat.set_modal(false);
+    assert_eq!(
+        feed(&mut flat, Mode::Insert, "<c-w>"),
+        vec![Action::ToggleComment]
+    );
+}
+
+#[test]
+fn a_ctrl_k_sequence_waits_for_its_second_key_and_gives_back_the_ones_it_does_not_match() {
+    // `ctrl-k o` opens a folder whether or not some `ctrl-k` sequence is bound: a partial match is
+    // replayed through the built-ins rather than swallowed.
+    with_shortcuts(|s| s.assign(command("toggle_comment"), Key::parse_sequence("<c-k><c-c>")));
+    let mut flat = Grammar::new();
+    flat.set_modal(false);
+    assert_eq!(
+        flat.feed(Mode::Insert, Key::ctrl('k')),
+        Resolution::Pending("<c-k>".into())
+    );
+    assert_eq!(
+        flat.feed(Mode::Insert, Key::ctrl('c')),
+        Resolution::Action(Action::ToggleComment)
+    );
+    assert_eq!(
+        feed(&mut flat, Mode::Insert, "<c-k>o"),
+        vec![Action::OpenFolder]
+    );
+    assert_eq!(
+        feed(&mut Grammar::new(), Mode::Normal, "<c-k>o"),
+        vec![Action::OpenFolder]
+    );
+}
+
+#[test]
+fn a_dacode_map_binding_reaches_the_grammar_with_vim_off() {
+    // It never did: `feed_flat` did not ask the keymap, so every binding in init.lua was dead for
+    // someone who had turned Vim off. Their mode is insert, which is the mode they write.
+    with_shortcuts(|_| {});
+    let mut grammar = Grammar::new();
+    grammar.set_modal(false);
+    let mut keymap = Keymap::new();
+    keymap.bind("insert", "<c-a-s>", "save").unwrap();
+    grammar.set_keymap(keymap);
+    assert_eq!(
+        feed(&mut grammar, Mode::Insert, "<c-a-s>"),
+        vec![Action::Save]
+    );
+    assert_eq!(
+        feed(&mut grammar, Mode::Insert, "s"),
+        vec![Action::InsertText("s".into())]
+    );
+}

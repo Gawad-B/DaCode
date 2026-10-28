@@ -80,6 +80,7 @@ RENDERING WITHOUT A WINDOW
     --settings-page NAME        open the settings tab at a page: appearance, editor, keys …
     --settings-search QUERY     type a search into the settings tab
     --row N                     select a settings row, scrolling to it
+    --capture-key NAME[=KEYS]   a Keys page row waiting for a key, KEYS pressed into it
     --theme-dropdown            the settings tab with its theme list open
     --welcome STEP              the first-run wizard at one step
     --folded                    with a block folded
@@ -243,6 +244,7 @@ order.
 | 12a | `--settings-page` | `NAME` | The page the tab opens at, by its name in the tree: `appearance`, `editor`, `files`, `keys`, `languages`, `import`. Implies `--settings`. |
 | 12b | `--settings-search` | `QUERY` | A search typed into the tab, so its results from every page can be captured. Implies `--settings`. |
 | 12c | `--row` | `N` | Which entry of the page is selected, headings counted, as ↓ would select it. Implies `--settings`; the page scrolls to its selection, which is the only way to capture a row below the fold. |
+| 12c′ | `--capture-key` | `NAME[=KEYS]` | The Keys page with the row of command `NAME` waiting for its new key, as a click leaves it. `=KEYS`, in config notation, presses those keys into it through the page's own capture: a key another command has leaves the row asking to confirm (`toggle_comment=<c-w>`), any other moves it and leaves the row with its ⟲ (`toggle_comment=<c-a-m>`). Implies `--settings`. |
 | 12d | `--theme-dropdown` | — | The Appearance page with the theme row's dropdown open on the theme in use, scrolled to it — combine with `--size 640x480` to see the list scroll. Implies `--settings`. |
 | 13 | `--tree` | — | The file tree, revealing `crates/dacode-text/src/anchor.rs`. Indexes inline, waiting up to two seconds. |
 | 14 | `--split` | `N[h]` | N panes on one buffer, clamped to 1–4, defaulting to 2 if unparseable. A trailing `h` stacks them horizontally; anything else is vertical. Each pane looks at a different place in the file, because identical panes would hide a scroll bug. |

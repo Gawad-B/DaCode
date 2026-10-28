@@ -3028,7 +3028,9 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
     if state.pending.is_empty() {
         return;
     }
-    let entries = dacode_input::commands::continuations(&state.pending, state.modal);
+    // What the prefix leads to *now*: a continuation the user moved elsewhere is not offered, and
+    // one they bound under it is.
+    let entries = dacode_input::shortcuts::continuations(&state.pending, state.modal);
     if entries.is_empty() {
         return;
     }
@@ -3041,11 +3043,11 @@ fn draw_which_key(frame: &mut Frame, state: &EditorState, code: Rect, scale: f32
         .iter()
         .map(|(key, what)| {
             let key = if state.modal {
-                (*key).to_string()
+                key.clone()
             } else {
                 dacode_input::commands::pretty(key)
             };
-            (key, *what)
+            (key, what.as_str())
         })
         .collect();
 
@@ -3775,6 +3777,39 @@ fn draw_page_heading(
 }
 
 /// A row of the list that is not a heading: a setting, a command, an import or a report.
+/// The ● in the margin of a row that differs from its default, and the ⟲ that puts it back — the
+/// same pair on a setting and on a command whose keys were moved.
+fn draw_row_reset(
+    frame: &mut Frame,
+    state: &EditorState,
+    row: &crate::settings_ui::PageRow,
+    reset: Rect,
+    accent: Oklch,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    // The ● says "changed" in the margin, where the eye scanning the names meets it; the ⟲ beside
+    // the control is what puts it back.
+    let inset = row.label.x - row.rect.x;
+    frame.disc(
+        [
+            row.rect.x + inset / 2.0,
+            row.label.y + row.label.height / 2.0,
+        ],
+        3.0 * scale,
+        accent,
+    );
+    let over = hovered(state, reset);
+    if over {
+        frame.fill_rounded(reset, theme.ink.with_alpha(0.08), 5.0 * scale);
+    }
+    frame.icon(
+        Icon::Reset,
+        centred(reset, 14.0 * scale),
+        if over { theme.ink } else { theme.ink_dim },
+    );
+}
+
 fn draw_page_row(
     frame: &mut Frame,
     state: &EditorState,
@@ -3879,30 +3914,30 @@ fn draw_page_row(
                 draw_control(frame, state, field, values, row, control, scale);
             }
             if let Some(reset) = row.reset {
-                // The ● says "changed" in the margin, where the eye scanning the names meets it; the
-                // ⟲ beside the control is what puts it back.
-                let inset = row.label.x - row.rect.x;
-                frame.disc(
-                    [
-                        row.rect.x + inset / 2.0,
-                        row.label.y + row.label.height / 2.0,
-                    ],
-                    3.0 * scale,
-                    accent,
-                );
-                let over = hovered(state, reset);
-                if over {
-                    frame.fill_rounded(reset, theme.ink.with_alpha(0.08), 5.0 * scale);
-                }
-                frame.icon(
-                    Icon::Reset,
-                    centred(reset, 14.0 * scale),
-                    if over { theme.ink } else { theme.ink_dim },
-                );
+                draw_row_reset(frame, state, row, reset, accent, scale);
             }
         }
         Entry::Command(command) => {
-            name(frame, command.what, theme.ink_dim);
+            // A row waiting for its key is lit as a change is, and says what it is waiting for
+            // under its name; the keys it has now stay where they were until the new ones land.
+            let waiting = page
+                .capture()
+                .filter(|capture| capture.command.name == command.name);
+            if waiting.is_some() {
+                frame.fill_rounded(row.rect, accent.with_alpha(0.16), 5.0 * scale);
+            }
+            name(
+                frame,
+                command.what,
+                if waiting.is_some() {
+                    theme.ink
+                } else {
+                    theme.ink_dim
+                },
+            );
+            if let Some(capture) = waiting {
+                explain(frame, &capture.text(state.modal), theme.ink);
+            }
             if let Some(keys) = row.control {
                 let shown = fit_keys(state, &command.shown(state.modal), keys.width, scale);
                 key_chip(
@@ -3914,6 +3949,9 @@ fn draw_page_row(
                     keys.height,
                     scale,
                 );
+            }
+            if let Some(reset) = row.reset {
+                draw_row_reset(frame, state, row, reset, accent, scale);
             }
         }
         Entry::Link(link) => name(frame, link.label(), accent),

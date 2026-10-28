@@ -95,7 +95,37 @@ pub enum KeyRoute {
 ///   Vim running here they now switch terminals instead. `gt` and `gT` still reach Vim's tabs.
 ///
 /// Clicking the code is the other way out, and needs no key at all.
+///
+/// **The Keys page moves these too.** A key the user gave one of the commands above is kept for it
+/// here, and a key of the list above whose command was given another is the shell's again — so
+/// the terminal rows of the Keys page, which print [`dacode_input::shortcuts::TERMINAL_KEYS`], are
+/// as true in the panel as the rest are in the code. Nothing else the user binds is taken from
+/// the shell: that would be the shell eating keys from the editor's side.
 pub fn route(key: Key) -> KeyRoute {
+    let shortcuts = dacode_input::shortcuts::current();
+    if let dacode_input::Match::Exact(action) = shortcuts.lookup(&[key]) {
+        if TERMINAL_COMMANDS.contains(&action) {
+            return KeyRoute::Editor(action);
+        }
+    }
+    let route = built_in(key);
+    match &route {
+        KeyRoute::Editor(action) if shortcuts.suppresses(action) => KeyRoute::Shell,
+        _ => route,
+    }
+}
+
+/// The commands a focused terminal keeps a key for.
+const TERMINAL_COMMANDS: [Action; 6] = [
+    Action::ToggleTerminal,
+    Action::TerminalCopy,
+    Action::TerminalPaste,
+    Action::ToggleCommandPalette,
+    Action::NextTerminal,
+    Action::PreviousTerminal,
+];
+
+fn built_in(key: Key) -> KeyRoute {
     if !key.ctrl || key.alt {
         return KeyRoute::Shell;
     }
@@ -220,6 +250,38 @@ mod tests {
             let key = Key::parse_sequence(keys)[0];
             assert_eq!(route(key), KeyRoute::Shell, "{keys} is the shell's");
         }
+    }
+
+    #[test]
+    fn every_terminal_key_the_keys_page_prints_is_one_the_panel_answers() {
+        // The command table's columns are tested against the grammar; these keys live outside it,
+        // so this is what keeps the help panel and the Keys page from printing one that is not
+        // the terminal's.
+        dacode_input::shortcuts::install(dacode_input::Shortcuts::new());
+        for (name, keys) in dacode_input::shortcuts::TERMINAL_KEYS {
+            let key = Key::parse_sequence(keys)[0];
+            let action = Action::from_name(name).expect("a command");
+            assert_eq!(route(key), KeyRoute::Editor(action), "{keys} runs {name}");
+        }
+    }
+
+    #[test]
+    fn a_terminal_key_moved_on_the_keys_page_is_the_panels_and_the_old_one_the_shells() {
+        let mut shortcuts = dacode_input::Shortcuts::new();
+        shortcuts.assign(
+            dacode_input::commands::by_name("next_terminal").unwrap(),
+            Key::parse_sequence("<a-n>"),
+        );
+        dacode_input::shortcuts::install(shortcuts);
+        assert_eq!(
+            route(Key::parse_sequence("<a-n>")[0]),
+            KeyRoute::Editor(Action::NextTerminal)
+        );
+        assert_eq!(
+            route(Key::parse_sequence("<c-pagedown>")[0]),
+            KeyRoute::Shell
+        );
+        dacode_input::shortcuts::install(dacode_input::Shortcuts::new());
     }
 
     #[test]

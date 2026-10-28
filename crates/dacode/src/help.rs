@@ -51,7 +51,8 @@ pub enum Line {
     Binding {
         /// The command it runs, by the name the palette and config know it by.
         name: &'static str,
-        keys: &'static str,
+        /// The keys that run it now — the user's, where they moved one on the Keys page.
+        keys: String,
         what: &'static str,
     },
 }
@@ -274,7 +275,7 @@ fn matches(command: &Command, query: &str, modal: bool) -> bool {
     // does ctrl-d do again".
     command.what.to_lowercase().contains(query)
         || command.name.contains(query)
-        || command.keys_for(modal).contains(query)
+        || commands::searchable(&command.keys_for(modal)).contains(query)
 }
 
 #[cfg(test)]
@@ -291,7 +292,7 @@ mod tests {
 
         assert!(flat.contains(&Line::Binding {
             name: "toggle_comment",
-            keys: "<c-/>",
+            keys: "<c-/>".to_string(),
             what: "comment or uncomment these lines"
         }));
         assert!(

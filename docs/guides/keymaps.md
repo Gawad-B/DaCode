@@ -225,6 +225,53 @@ built on, does not deliver the gesture on Wayland, X11 or Windows, so on Linux a
 
 ## Rebinding
 
+### On the Keys page
+
+Open the settings tab (<kbd>ctrl</kbd>+<kbd>,</kbd>) at **Keys**, click a command — or select it
+and press <kbd>Enter</kbd> — and press the keys you want. That is the whole of it:
+
+- **Any shortcut**: a key held with <kbd>ctrl</kbd> or <kbd>alt</kbd> (shift too, if you like), or a
+  function key. A letter or an arrow on its own is typing, or a word of Vim's grammar, and is
+  refused with a sentence; `dacode.map` below binds those, per mode.
+- **Two keys, if the first is <kbd>ctrl</kbd>+<kbd>k</kbd>.** It is already the prefix of
+  <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>o</kbd> and the pane commands, so the row waits for a second key
+  after it — <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>ctrl</kbd>+<kbd>x</kbd>. No other key starts a
+  sequence: it would have to be held back to see what followed.
+- <kbd>Esc</kbd> cancels; <kbd>Backspace</kbd> or <kbd>Delete</kbd> leaves the command with no key.
+  Clicking anywhere also cancels.
+- **A key another command has is asked about first.** The row says which command has it; press it
+  again to move it, or <kbd>Esc</kbd> to leave things as they were. While a row waits, no key runs
+  anything — <kbd>ctrl</kbd>+<kbd>w</kbd> does not close the tab you are on.
+
+A new key **replaces** the command's built-in shortcuts — give toggle-comment
+<kbd>ctrl</kbd>+<kbd>alt</kbd>+<kbd>m</kbd> and <kbd>ctrl</kbd>+<kbd>/</kbd> stops toggling
+comments — in both grammars and every mode. Vim's own keys for it stay: undo given
+<kbd>ctrl</kbd>+<kbd>alt</kbd>+<kbd>z</kbd> still undoes on `u`, because `u` is part of a language
+rather than a shortcut that could be moved. A changed row shows a ● and a ⟲ that puts it back
+(<kbd>Delete</kbd> on the row does the same), and **Reset every key to the built-in** at the top
+of the page puts back the lot.
+
+It applies at once, and everywhere a key is printed — the palette, F1, the menus, the which-key
+popup, the toolbar's tooltips — shows the new one. A moment later it is written into `init.lua` as
+a block of its own, in the form you would write by hand:
+
+```lua
+-- dacode: keys set on the Keys page (ctrl-,). Edit freely — rewritten when a key changes there.
+dacode.keys {
+  close_buffer = "<c-s-w>",
+  toggle_comment = "<c-k><c-c>",
+  quit = "",
+}
+```
+
+One command a line, by the name `dacode.actions` lists: a key, a list of them
+(`{ "<a-b>", "<f6>" }`), or `""` for none. Hand-written `dacode.keys` calls work the same way, and
+the file stays the one place keys are kept — the page reads its block back at the next start
+through the same reader. Search on the page finds a command by its key in any spelling:
+`ctrl-w`, `Ctrl+W` and `<c-w>` all find "close this file".
+
+### In `init.lua`, per mode
+
 `dacode.map(mode, keys, action)` in `init.lua`:
 
 ```lua
@@ -252,6 +299,8 @@ change it before the `dacode.map` calls that use it.
 
 **Bindings are consulted before the built-in grammar, but only when no command is half-typed.** So
 `d<leader>` stays the grammar's business, and a config file can never leave an operator dangling.
+With Vim's keys off, the mode you are always in is `insert`, so that is the mode to bind. The Keys
+page's keys are asked before `dacode.map`'s, and unlike them they are shown wherever a key is.
 
 **In insert mode only modified and named keys can be bound.** A binding on a bare letter would have
 to hold that letter back to see what came next, and typing would stutter. <kbd>ctrl</kbd>+<kbd>s</kbd>

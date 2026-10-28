@@ -79,6 +79,9 @@ pub struct Grammar {
     keymap: Keymap,
     /// Keys collected while a user binding is still only a prefix.
     user_keys: Vec<Key>,
+    /// Whether the command being typed began with a shortcut — what decides whether a built-in
+    /// that the user moved to another key is dropped. See [`Grammar::unless_moved`].
+    chorded: bool,
     stage: Stage,
     count: Option<usize>,
     /// A count typed *after* the operator — `d3w`. Multiplies with the first.
@@ -101,6 +104,7 @@ impl Grammar {
             modal: true,
             keymap: Keymap::new(),
             user_keys: Vec::new(),
+            chorded: false,
             stage: Stage::Start,
             count: None,
             operator_count: None,
@@ -191,6 +195,25 @@ impl Grammar {
             };
         }
 
+        // The user's keys come before the built-ins, in both grammars and every mode — the Keys
+        // page's and `dacode.map`'s. With the grammar off they were never asked at all, so a
+        // binding in `init.lua` did nothing for anyone who had turned Vim off.
+        if let Some(resolution) = self.feed_user_binding(mode, key) {
+            return resolution;
+        }
+
+        let chorded = if self.is_idle() {
+            key.is_shortcut()
+        } else {
+            self.chorded
+        };
+        self.chorded = chorded;
+        let resolution = self.dispatch(mode, key);
+        self.unless_moved(resolution, chorded)
+    }
+
+    /// The built-in grammars, without the user's layer.
+    fn dispatch(&mut self, mode: Mode, key: Key) -> Resolution {
         // Function keys are the editor's, not the grammar's: F2 renames and F12 goes to a
         // definition in both modes, the way they do in every other editor. Checked only when
         // nothing is half-typed, so they cannot land in the middle of `d3` or `f`.
@@ -209,7 +232,24 @@ impl Grammar {
 
         match mode {
             Mode::Insert | Mode::Replace => self.feed_insert(mode, key),
-            Mode::Normal | Mode::Visual => self.feed_normal(mode, key),
+            Mode::Normal | Mode::Visual => self.feed_builtin(mode, key),
+        }
+    }
+
+    /// Drops a built-in shortcut's command when the user gave that command other keys on the Keys
+    /// page: moving a key is a move, and the old one going on working would make it an addition.
+    ///
+    /// Only for a command *begun* with a shortcut (`chorded`). Vim's `u` is not a key the page can
+    /// move, so undo given `ctrl-alt-z` still undoes on `u` — see [`crate::shortcuts`].
+    fn unless_moved(&mut self, resolution: Resolution, chorded: bool) -> Resolution {
+        match &resolution {
+            Resolution::Action(action)
+                if chorded && crate::shortcuts::current().suppresses(action) =>
+            {
+                self.clear();
+                Resolution::Unhandled
+            }
+            _ => resolution,
         }
     }
 
@@ -396,16 +436,6 @@ impl Grammar {
 
     /// Insert and replace mode: text goes in, with no grammar to parse.
     fn feed_insert(&mut self, mode: Mode, key: Key) -> Resolution {
-        // Bindings apply here too, but only to keys that could not be text: a multi-key binding on
-        // a letter would have to hold that letter back to see what follows, which means typing
-        // stutters. Modified and named keys have no such cost.
-        let bindable = key.ctrl || key.alt || !matches!(key.code, KeyCode::Char(_));
-        if bindable && !self.keymap.is_empty() {
-            if let Match::Exact(action) = self.keymap.lookup(mode, &[key]) {
-                return Resolution::Action(action);
-            }
-        }
-
         if let Some(action) = self.editing_key(key) {
             return Resolution::Action(action);
         }
@@ -486,38 +516,57 @@ impl Grammar {
         Some(Action::Move { motion, count: 1 })
     }
 
-    fn feed_normal(&mut self, mode: Mode, key: Key) -> Resolution {
-        if let Some(resolution) = self.feed_user_binding(mode, key) {
-            return resolution;
-        }
-        self.feed_builtin(mode, key)
-    }
-
-    /// Tries the user's bindings, and only while the grammar is idle — a binding that fired with an
-    /// operator or count pending could leave the grammar mid-command.
+    /// Tries the user's bindings — the Keys page's, then `dacode.map`'s for this mode — and only
+    /// while the grammar is idle: a binding that fired with an operator or count pending could
+    /// leave the grammar mid-command.
+    ///
+    /// Where letters are text — insert mode, or the grammar off — only a key that cannot be text
+    /// starts a binding: a multi-key binding on a letter would have to hold that letter back to see
+    /// what follows, which means typing stutters. Modified and named keys have no such cost.
     ///
     /// Returns `None` to mean "not mine, use the built-ins".
     fn feed_user_binding(&mut self, mode: Mode, key: Key) -> Option<Resolution> {
-        if self.keymap.is_empty() || (self.user_keys.is_empty() && !self.is_idle()) {
+        let shortcuts = crate::shortcuts::current();
+        if self.keymap.is_empty() && shortcuts.is_empty() {
             return None;
+        }
+        if self.user_keys.is_empty() {
+            let typing = !self.modal || matches!(mode, Mode::Insert | Mode::Replace);
+            let bindable = key.ctrl || key.alt || !matches!(key.code, KeyCode::Char(_));
+            if !self.is_idle() || (typing && !bindable) {
+                return None;
+            }
         }
 
         self.user_keys.push(key);
-        match self.keymap.lookup(mode, &self.user_keys) {
+        // An exact match in either layer wins over a longer binding the other is still waiting
+        // on; the page's layer first, being the one whose keys every surface prints.
+        let found = match shortcuts.lookup(&self.user_keys) {
+            Match::Exact(action) => Match::Exact(action),
+            page => match (page, self.keymap.lookup(mode, &self.user_keys)) {
+                (_, Match::Exact(action)) => Match::Exact(action),
+                (Match::Prefix, _) | (_, Match::Prefix) => Match::Prefix,
+                _ => Match::None,
+            },
+        };
+        match found {
             Match::Exact(action) => Some(self.emit(action)),
             Match::Prefix => {
                 self.push_display(&key);
                 Some(Resolution::Pending(self.display.clone()))
             }
             // The sequence died. Replay it through the built-ins, so a partial match of a user
-            // binding does not swallow keys that mean something on their own.
+            // binding does not swallow keys that mean something on their own — `ctrl-k o` still
+            // opens a folder when `ctrl-k ctrl-c` is bound.
             Match::None => {
                 let replay = std::mem::take(&mut self.user_keys);
                 self.display.clear();
+                let chorded = replay.first().is_some_and(|key| key.is_shortcut());
+                self.chorded = chorded;
 
                 let mut last = Resolution::Unhandled;
                 for key in replay {
-                    last = self.feed_builtin(mode, key);
+                    last = self.dispatch(mode, key);
                     // A resolved action mid-replay is returned as-is; anything after it belongs to
                     // the next command and would need queueing the caller cannot express. Bindings
                     // whose prefix is itself a complete command are the user's own ambiguity.
@@ -525,7 +574,7 @@ impl Grammar {
                         break;
                     }
                 }
-                Some(last)
+                Some(self.unless_moved(last, chorded))
             }
         }
     }

@@ -41,19 +41,25 @@ pub struct Command {
 }
 
 impl Command {
-    /// The keys to show for the mode the editor is in.
-    pub fn keys_for(&self, modal: bool) -> &'static str {
+    /// The keys the command was built with in this grammar — the table's own column, before anything
+    /// the user changed. Only the Keys page's "differs from the built-in" wants this; everything
+    /// that *prints* a key wants [`Command::keys_for`].
+    pub fn default_keys(&self, modal: bool) -> &'static str {
         if modal { self.keys } else { self.flat }
     }
 
+    /// The keys that run the command now, in the table's notation: the built-in ones, less any the
+    /// user moved, plus the ones they gave it on the Keys page (see [`crate::shortcuts`]).
+    pub fn keys_for(&self, modal: bool) -> String {
+        crate::shortcuts::current().keys(self, modal)
+    }
+
     /// The keys as a person reads them: Vim's notation for someone using Vim's grammar, and
-    /// `Ctrl+Shift+P` for everyone else (see [`pretty`]).
+    /// `Ctrl+Shift+P` for everyone else (see [`pretty`]). The keys that run it *now* — a command
+    /// given another key on the Keys page is printed with that one, wherever it is printed.
     pub fn shown(&self, modal: bool) -> String {
-        if modal {
-            self.keys.to_string()
-        } else {
-            pretty(self.flat)
-        }
+        let keys = self.keys_for(modal);
+        if modal { keys } else { pretty(&keys) }
     }
 
     /// The action this command runs.
@@ -107,6 +113,18 @@ pub fn pretty(keys: &str) -> String {
     out
 }
 
+/// Keys in every spelling someone might search for them by, lower case: the table's `<c-w>`, the
+/// desktop's `ctrl+w`, and the `ctrl-w` people type when they mean either. The help panel and the
+/// Keys page match a query against this, so the one key is found however it is asked for.
+pub fn searchable(keys: &str) -> String {
+    let pretty = pretty(keys).to_lowercase();
+    format!(
+        "{}\n{pretty}\n{}",
+        keys.to_lowercase(),
+        pretty.replace('+', "-")
+    )
+}
+
 fn chord(inner: &str) -> String {
     let parts: Vec<&str> = inner.split('-').collect();
     // `<c-->` would split into an empty last part; the key there is the dash itself.
@@ -137,8 +155,8 @@ fn chord(inner: &str) -> String {
         "space" => "Space".to_string(),
         "home" => "Home".to_string(),
         "end" => "End".to_string(),
-        "pageup" => "PageUp".to_string(),
-        "pagedown" => "PageDown".to_string(),
+        "pageup" | "pgup" => "PageUp".to_string(),
+        "pagedown" | "pgdn" => "PageDown".to_string(),
         other if other.starts_with('f') && other[1..].parse::<u8>().is_ok() => other.to_uppercase(),
         other => other.to_uppercase(),
     };

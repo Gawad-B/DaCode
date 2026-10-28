@@ -72,6 +72,17 @@ impl Key {
         self
     }
 
+    /// Whether the key is a *shortcut* rather than part of the text or of Vim's grammar: something
+    /// held with ctrl or alt, or a function key.
+    ///
+    /// The line the Keys page draws. A shortcut means the same thing in every mode, so it can be
+    /// handed to another command without touching anything else; a letter, an arrow or `Enter` is
+    /// typing, or a word of Vim's language, and taking one away would break the language rather than
+    /// move a key.
+    pub fn is_shortcut(self) -> bool {
+        self.ctrl || self.alt || matches!(self.code, KeyCode::Function(_))
+    }
+
     /// Builds a key from what the window system reported, normalising the character.
     ///
     /// **A character with ctrl or alt held is a binding, not text.** Window systems apply shift to

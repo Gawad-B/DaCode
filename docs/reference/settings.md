@@ -145,6 +145,37 @@ are readable from Lua as `dacode.tokens`:
 `scrim`, `shadow`, `keyword`, `type`, `function`, `attribute`, `comment`, `string`, `number`,
 `constant`.
 
+## `dacode.keys { command = keys, … }`
+
+```lua
+dacode.keys {
+  close_buffer = "<c-s-w>",
+  toggle_blame = { "<a-b>", "<c-k><c-b>" },
+  quit = "",
+}
+```
+
+What the Keys page writes, and what anyone may write by hand. Each entry gives a command — by its
+`dacode.actions` name — exactly these keys, **in place of its built-in shortcuts**, in both grammars
+and every mode. The value is one key sequence, a list of them, or `""` (also `{}` or `false`) for
+none. A later call changes only the commands it names.
+
+Every sequence must begin with a *shortcut* — a key held with `ctrl` or `alt`, or a function key —
+because only those mean the same thing in every mode; anything else is refused with a sentence and
+belongs to `dacode.map`. Vim's own keys for a command (`u` for undo) are not shortcuts and are not
+replaced. A key given to one command is taken from whichever command had it built in. An unknown
+command name is reported with a did-you-mean.
+
+The page writes its block under its own marker — separate from the `dacode.set` block — and rewrites
+the whole of it on each change, about a second after the last one. Resetting every key removes it.
+Anything you write inside it survives as long as it is a `name = keys,` line; a comment does not.
+
+These keys are asked before `dacode.map`'s, and they are the ones every surface prints: the palette,
+the help panel, the menus, the which-key popup and the Keys page itself. A `dacode.keys` call written
+*outside* the block is read too, and is copied into the block the first time a key is changed on the
+page; after that, resetting that command on the page removes it from the block but not from your
+own line, which applies again at the next start.
+
 ## `dacode.map(mode, keys, action)`
 
 | Argument | Type | Notes |
@@ -160,8 +191,10 @@ mode and an unknown action are each reported, the last with a did-you-mean.
 `leader` affects bindings added *afterwards*, so a config that changes it must do so before the
 `dacode.map` calls that use it.
 
-Bindings are consulted before the built-in grammar, but only when no command is half-typed:
-`d<leader>` is the grammar's business, so a config file can never leave an operator dangling. In
+Bindings are consulted before the built-in grammar — in both grammars; with Vim's keys off the mode
+is always `insert` — but only when no command is half-typed:
+`d<leader>` is the grammar's business, so a config file can never leave an operator dangling. They
+are not shown in the palette or the help panel; `dacode.keys` is. In
 insert mode only modified and named keys can be bound — a letter binding would have to hold the
 letter back to see what came next, and typing would stutter.
 
@@ -250,10 +283,10 @@ do not:
 | `appearance` | yes | yes | **no row** |
 | `leader` | yes | yes (into the keymap) | **no row** |
 
-Both are arguably deliberate — the page has no key capturer, and `appearance` is subsumed by the
-theme row it would sit next to — but neither says so. The Keys page lists every command and its
-shortcut and can search them, but it cannot rebind one; it has a row that opens `init.lua`, which is
-where `leader` and `dacode.map` live.
+Both are arguably deliberate — `leader` belongs to `dacode.map`, which the page does not edit, and
+`appearance` is subsumed by the theme row it would sit next to — but neither says so. The Keys page
+rebinds any command's shortcut and writes `dacode.keys`; it has a row that opens `init.lua`, which
+is where `leader` and per-mode `dacode.map` bindings live.
 
 The page's font-size bounds used to be a third disagreement, and they are worth recording because of
 how long it lasted. `settings_ui` clamped to 8.0–32.0 and wrapped a click at 32, while the value is

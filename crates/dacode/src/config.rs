@@ -174,6 +174,8 @@ pub struct Settings {
     pub theme_source: Option<String>,
     /// User key bindings from `init.lua`.
     pub keymap: Keymap,
+    /// Commands given keys of their own by `dacode.keys` — the Keys page's layer.
+    pub shortcuts: dacode_input::Shortcuts,
     /// Language servers named by `dacode.server(...)`, tried before the ones DaCode knows about.
     pub servers: Vec<dacode_lsp::Configured>,
     /// Formatters named by `dacode.formatter(...)`, likewise.
@@ -220,6 +222,7 @@ impl Default for Settings {
             line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
+            shortcuts: dacode_input::Shortcuts::new(),
             servers: Vec::new(),
             formatters: Vec::new(),
             sources: std::collections::HashMap::new(),
@@ -431,6 +434,7 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
 
     config.paint(&mut settings.theme);
     settings.keymap = config.keymap;
+    settings.shortcuts = config.shortcuts;
     settings.problems.extend(config.problems);
 }
 

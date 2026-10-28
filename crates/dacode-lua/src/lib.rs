@@ -18,7 +18,7 @@
 //! diagnostic, and startup continues with defaults for the rest. An editor that refuses to open
 //! because of a typo in its own config is an editor you cannot use to fix the typo.
 
-use dacode_input::Keymap;
+use dacode_input::{Keymap, Shortcuts};
 use dacode_theme::{Appearance, Oklch, Theme};
 use mlua::{Lua, Table, Value};
 use std::path::Path;
@@ -56,6 +56,9 @@ pub struct Config {
     /// Token overrides from `dacode.theme{...}`, in the order they were written.
     pub colors: Vec<(String, Oklch)>,
     pub keymap: Keymap,
+    /// Commands given keys of their own by `dacode.keys { … }` — what the Keys page writes. Replaces
+    /// a command's built-in shortcuts in both grammars; see [`dacode_input::shortcuts`].
+    pub shortcuts: Shortcuts,
     /// Language servers named by `dacode.server(...)`, in the order they were written.
     pub servers: Vec<Server>,
     /// Formatters named by `dacode.formatter(...)`. Described exactly as a server is — a language, a
@@ -109,6 +112,7 @@ impl Config {
             && self.theme_name.is_none()
             && self.colors.is_empty()
             && self.keymap.is_empty()
+            && self.shortcuts.is_empty()
             // A file whose only content is `dacode.server(...)` is not a default config, and leaving
             // this out would have had the caller skip it entirely — the config would be read,
             // parsed, and then thrown away for looking empty.
@@ -314,6 +318,60 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
                 config.problems.push(format!(
                     "dacode.map(\"{mode}\", \"{keys}\", …): {error}{hint}"
                 ));
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // `dacode.keys { command = "<c-s-w>", other = { "<f5>", "<c-k><c-o>" }, quit = "" }` — the
+    // keys each named command now has, in place of its built-in shortcuts. Keyed by command so it
+    // reads as the Keys page shows it, one row a line; a later call changes only the commands it
+    // names. `""`, `{}` or `false` leave a command with no shortcut at all.
+    let target = state.clone();
+    dacode.set(
+        "keys",
+        lua.create_function(move |_, keys: Table| {
+            let mut config = target.borrow_mut();
+            for pair in keys.pairs::<String, Value>() {
+                let (name, value) = pair?;
+                let written: Vec<String> = match value {
+                    Value::String(text) => {
+                        let text = text.to_string_lossy();
+                        if text.trim().is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![text.to_string()]
+                        }
+                    }
+                    Value::Table(list) => list
+                        .sequence_values::<String>()
+                        .filter_map(Result::ok)
+                        .collect(),
+                    Value::Boolean(false) | Value::Nil => Vec::new(),
+                    _ => {
+                        config.problems.push(format!(
+                            "dacode.keys: `{name}` must be a key like \"<c-s>\", a list of them, or \"\""
+                        ));
+                        continue;
+                    }
+                };
+                let written: Vec<&str> = written.iter().map(String::as_str).collect();
+                if let Err(error) = config.shortcuts.set(&name, &written) {
+                    let hint = match &error {
+                        dacode_input::ShortcutError::UnknownCommand(_) => {
+                            let names: Vec<&str> =
+                                dacode_input::COMMANDS.iter().map(|c| c.name).collect();
+                            match nearest(&name, &names) {
+                                Some(guess) if guess != name => {
+                                    format!(" — did you mean `{guess}`?")
+                                }
+                                _ => String::new(),
+                            }
+                        }
+                        _ => String::new(),
+                    };
+                    config.problems.push(format!("dacode.keys: {error}{hint}"));
+                }
             }
             Ok(())
         })?,
@@ -603,6 +661,52 @@ mod tests {
                 .keymap
                 .lookup(Mode::Normal, &Key::parse_sequence(",w")),
             Match::Exact(Action::Save)
+        );
+    }
+
+    #[test]
+    fn keys_given_by_command_reach_the_shortcuts() {
+        // The form the Keys page writes, read by the reader every start goes through — a page that
+        // wrote something this did not read back would lose every key at the next start.
+        let config = run(r##"
+            dacode.keys {
+              close_buffer = "<c-s-w>",
+              toggle_blame = { "<a-b>", "<c-k><c-b>" },
+              quit = "",
+            }
+        "##);
+
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        let shortcuts = &config.shortcuts;
+        assert_eq!(
+            shortcuts.lookup(&Key::parse_sequence("<c-s-w>")),
+            Match::Exact(Action::CloseBuffer)
+        );
+        assert_eq!(
+            shortcuts.lookup(&Key::parse_sequence("<c-k><c-b>")),
+            Match::Exact(Action::ToggleBlame)
+        );
+        assert_eq!(shortcuts.get("quit"), Some(&[][..]));
+        assert!(
+            !config.is_default(),
+            "a file of keys alone is not an empty config"
+        );
+    }
+
+    #[test]
+    fn a_mistyped_command_or_a_bare_letter_in_dacode_keys_is_reported() {
+        let config = run(r##"
+            dacode.keys { close_bufer = "<c-s-w>", save = "w" }
+        "##);
+        assert!(config.shortcuts.is_empty());
+        assert_eq!(config.problems.len(), 2, "{:?}", config.problems);
+        assert!(
+            config
+                .problems
+                .iter()
+                .any(|problem| problem.contains("did you mean `close_buffer`")),
+            "{:?}",
+            config.problems
         );
     }
 

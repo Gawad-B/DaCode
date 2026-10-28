@@ -372,7 +372,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 27] = [
+const VALUE_FLAGS: [&str; 28] = [
     "--which-key",
     "--menu-title",
     "--screenshot",
@@ -392,6 +392,7 @@ const VALUE_FLAGS: [&str; 27] = [
     "--row",
     "--settings-page",
     "--settings-search",
+    "--capture-key",
     "--symbols",
     "--block",
     "--transparency",
@@ -411,7 +412,7 @@ const VALUE_FLAGS: [&str; 27] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 49] = [
+const FLAGS: [(&str, &str, &str); 50] = [
     // Opening.
     (
         "--no-session",
@@ -468,6 +469,11 @@ const FLAGS: [(&str, &str, &str); 49] = [
         "type a search into the settings tab",
     ),
     ("--row", "N", "select a settings row, scrolling to it"),
+    (
+        "--capture-key",
+        "NAME[=KEYS]",
+        "a Keys page row waiting for a key, KEYS pressed into it",
+    ),
     (
         "--theme-dropdown",
         "",
@@ -807,6 +813,8 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
 
     let root = find_root(&std::path::PathBuf::from("."));
     let (mut state, _keymap) = new_state(text, crumbs, file_path, mode, theme, root);
+    // The capture prints the keys the user's config gives commands, as the editor would.
+    dacode_input::shortcuts::install(config::load().shortcuts);
 
     // Land somewhere with content so the cursor line, the coordinate panel and the cursor shape
     // are all exercised rather than sitting at 0:0.
@@ -1382,6 +1390,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         || value("--settings-page").is_some()
         || value("--settings-search").is_some()
         || value("--row").is_some()
+        || value("--capture-key").is_some()
         || flag("--theme-dropdown")
     {
         use dacode::settings_ui::{Category, Entry};
@@ -1416,6 +1425,37 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         if let Some(row) = value("--row").and_then(|at| at.parse::<usize>().ok()) {
             page.select(row, modal);
             page.reveal(editor, 1.0, modal, &state.typography);
+        }
+        // A command row waiting for its key, as a click leaves it — and with `=KEYS`, those keys
+        // pressed into it, as the real key path presses them: a taken key leaves it asking, any
+        // other moves the key and leaves the row with its ⟲.
+        if let Some(spec) = value("--capture-key") {
+            let (name, keys) = spec.split_once('=').unwrap_or((spec.as_str(), ""));
+            if let Some(command) = dacode_input::commands::by_name(name) {
+                page.set_category(Category::Keys, modal);
+                if let Some(at) = page.entries(modal).iter().position(
+                    |entry| matches!(entry, Entry::Command(row) if row.name == command.name),
+                ) {
+                    page.select(at, modal);
+                }
+                page.reveal(editor, 1.0, modal, &state.typography);
+                page.start_capture(command);
+                for key in Key::parse_sequence(keys) {
+                    let step = page.capture_key(key, modal);
+                    let mut shortcuts = (*dacode_input::shortcuts::current()).clone();
+                    match step {
+                        Some(dacode::settings_ui::CaptureStep::Assign(command, keys)) => {
+                            shortcuts.assign(command, keys);
+                        }
+                        Some(dacode::settings_ui::CaptureStep::Unbind(command)) => {
+                            shortcuts.unbind(command);
+                        }
+                        _ => continue,
+                    }
+                    dacode_input::shortcuts::install(shortcuts);
+                }
+                page.reveal(editor, 1.0, modal, &state.typography);
+            }
         }
         // The theme row's list, opened as a click on its control opens it: on the theme in use and
         // scrolled to it, which at a small size is the only way to see that the list scrolls.
@@ -1854,6 +1894,9 @@ struct App {
     /// A settings write is waiting for an open `init.lua` buffer with unsaved edits to be saved or
     /// closed: writing under it would lose one side or the other.
     settings_blocked: bool,
+    /// A key was moved on the Keys page since the last write: the next write rewrites the keys block
+    /// from the live set ([`dacode_input::shortcuts::current`]), on the same pause as a setting.
+    keys_touched: bool,
     /// Where `init.lua` lives. A field rather than a call to `config::config_dir` at each use, so a
     /// test hands the editor a directory of its own instead of writing the user's real config — the
     /// same reason `config::load_from` takes one.
@@ -2331,6 +2374,9 @@ impl App {
         settings: &dacode::config::Settings,
         waker: Option<dacode::wake::Waker>,
     ) -> Self {
+        // The keys `dacode.keys` gave commands, made the ones this thread runs and prints. Here
+        // rather than in `new_state`, which reads the real config even under test.
+        dacode_input::shortcuts::install(settings.shortcuts.clone());
         Self {
             window: None,
             renderer: None,
@@ -2411,6 +2457,7 @@ impl App {
             file_values: state.setting_values(),
             page_wrote: None,
             settings_blocked: false,
+            keys_touched: false,
             config_dir: dacode::config::config_dir(),
             wakes: 0,
             was_animating: false,
@@ -3157,6 +3204,12 @@ impl App {
         if self.handle_welcome_key(key) {
             return false;
         }
+        // A Keys page row waiting for its new key takes every key, ctrl and alt included: the key
+        // being given to a command must not also run whatever it runs now.
+        if self.capturing_key() {
+            self.handle_capture_key(key);
+            return false;
+        }
         // The theme dropdown is an overlay on the settings tab, so it is asked before anything the
         // page or the text would do with the key.
         if self.dropdown_showing() && self.handle_dropdown_key(key) {
@@ -3216,10 +3269,14 @@ impl App {
             return false;
         }
 
+        // The intercepts below run ahead of the grammar, so they are skipped for a key the user's
+        // bindings claim — or while a command is half-typed — or the key given to a command on the
+        // Keys page would open a palette instead.
+        let intercept = self.grammar.is_idle() && !self.user_claims(key);
         // Opening a palette is a Ctrl binding, so it works from any mode. Shift matters here:
         // `ctrl-shift-p` is the *command* palette and must not be eaten by the file one — which it
         // was, because this intercept ran before the grammar and ignored the modifier.
-        if key.ctrl && !key.shift {
+        if intercept && key.ctrl && !key.shift {
             match key.code {
                 KeyCode::Char('p') => {
                     self.open_palette(PaletteKind::Files);
@@ -3235,15 +3292,18 @@ impl App {
         // `ctrl-f` finds in this file and `ctrl-shift-f` across the project, as everywhere else.
         // They were the same key, and it was the project one — so the most-pressed shortcut in
         // computing opened a background search of every file instead of a search box.
-        if key.ctrl && key.code == KeyCode::Char('f') {
-            let rows = self.code_rows();
+        if intercept && key.ctrl && key.code == KeyCode::Char('f') {
             let action = if key.shift {
                 Action::SearchProject
             } else {
                 Action::StartSearch { forward: true }
             };
-            execute(&mut self.state, &mut self.registers, &action, rows);
-            return false;
+            // Moved to another key on the Keys page: the grammar drops it too.
+            if !dacode_input::shortcuts::current().suppresses(&action) {
+                let rows = self.code_rows();
+                execute(&mut self.state, &mut self.registers, &action, rows);
+                return false;
+            }
         }
 
         let resolution = self.grammar.feed(self.state.mode, key);
@@ -6487,11 +6547,11 @@ impl App {
                     self.choose_page_entry(entry);
                 }
             }
-            KeyCode::Delete => {
-                if let Some(Entry::Field(field)) = entry {
-                    self.reset_setting(field);
-                }
-            }
+            KeyCode::Delete => match entry {
+                Some(Entry::Field(field)) => self.reset_setting(field),
+                Some(Entry::Command(command)) => self.restore_keys(command),
+                _ => {}
+            },
             KeyCode::Backspace => {
                 let mut shorter = query;
                 if shorter.pop().is_some() {
@@ -6557,7 +6617,8 @@ impl App {
     fn choose_page_entry(&mut self, entry: dacode::settings_ui::Entry) {
         use dacode::settings_ui::{Entry, Line, Link};
         match entry {
-            Entry::Heading { .. } | Entry::Command(_) => {}
+            Entry::Heading { .. } => {}
+            Entry::Command(command) => self.start_key_capture(command),
             // Thirteen themes are too many to step through one click at a time: the row opens the
             // list of them instead.
             Entry::Field(dacode::settings_ui::Field::Theme) => self.open_theme_dropdown(),
@@ -6583,6 +6644,105 @@ impl App {
                 }
             }
             Entry::Link(Link::RebindKeys) => self.open_init_lua(),
+            Entry::Link(Link::ResetKeys) => {
+                if dacode_input::shortcuts::current().is_empty() {
+                    self.state.hover = Some("every key is already the built-in".to_string());
+                } else {
+                    self.change_shortcuts(dacode_input::Shortcuts::clear);
+                    self.state.hover = Some(Link::ResetKeys.explanation().to_string());
+                }
+            }
+        }
+    }
+
+    /// Whether a Keys page row is waiting for a key — and is on screen with the keys, so a hidden
+    /// tab cannot eat them.
+    fn capturing_key(&self) -> bool {
+        self.state.settings_showing()
+            && self.state.focus == dacode::focus::Focus::Editor
+            && self
+                .state
+                .settings_page
+                .as_ref()
+                .is_some_and(|page| page.capture().is_some())
+    }
+
+    /// A click or Enter on a command row: it waits for its new key.
+    fn start_key_capture(&mut self, command: &'static dacode_input::Command) {
+        if let Some(page) = &mut self.state.settings_page {
+            page.start_capture(command);
+        }
+        self.state.pending.clear();
+    }
+
+    /// A key pressed while a command row waits for one.
+    fn handle_capture_key(&mut self, key: Key) {
+        use dacode::settings_ui::CaptureStep;
+        let modal = self.state.modal;
+        let Some(step) = self
+            .state
+            .settings_page
+            .as_mut()
+            .and_then(|page| page.capture_key(key, modal))
+        else {
+            return;
+        };
+        let say = |keys: &str| {
+            if modal {
+                keys.to_string()
+            } else {
+                dacode_input::commands::pretty(keys)
+            }
+        };
+        match step {
+            CaptureStep::Waiting | CaptureStep::Cancelled => {}
+            CaptureStep::NotAShortcut => {
+                self.state.hover = Some(
+                    "a shortcut starts with ctrl, alt or a function key — Esc cancels".to_string(),
+                );
+            }
+            CaptureStep::Unbind(command) => {
+                self.change_shortcuts(|shortcuts| shortcuts.unbind(command));
+                self.state.hover = Some(format!("\u{201c}{}\u{201d} has no key now", command.what));
+            }
+            CaptureStep::Assign(command, keys) => {
+                let written = dacode_input::shortcuts::notation(&keys);
+                self.change_shortcuts(|shortcuts| shortcuts.assign(command, keys));
+                self.state.hover = Some(format!(
+                    "{} now runs \u{201c}{}\u{201d}",
+                    say(&written),
+                    command.what
+                ));
+            }
+        }
+    }
+
+    /// Changes the keys commands have, at once — the grammar and every surface that prints a key
+    /// read the installed set — and has the keys block of `init.lua` rewritten after the same pause
+    /// a setting waits.
+    fn change_shortcuts(&mut self, change: impl FnOnce(&mut dacode_input::Shortcuts)) {
+        let mut shortcuts = (*dacode_input::shortcuts::current()).clone();
+        change(&mut shortcuts);
+        dacode_input::shortcuts::install(shortcuts);
+        self.keys_touched = true;
+        self.settings_changed_at = Some(std::time::Instant::now());
+        self.grammar.clear();
+        self.state.pending.clear();
+    }
+
+    /// Whether `key` begins one of the user's bindings: the Keys page's, or `dacode.map`'s in this
+    /// mode.
+    fn user_claims(&self, key: Key) -> bool {
+        use dacode_input::Match;
+        dacode_input::shortcuts::current().lookup(&[key]) != Match::None
+            || self.grammar.keymap().lookup(self.state.mode, &[key]) != Match::None
+    }
+
+    /// Puts a command back on the keys it was built with: the ⟲ on its row, or Delete.
+    fn restore_keys(&mut self, command: &'static dacode_input::Command) {
+        let modal = self.state.modal;
+        if dacode_input::shortcuts::current().differs(command, modal) {
+            self.change_shortcuts(|shortcuts| shortcuts.restore(command));
         }
     }
 
@@ -6658,6 +6818,9 @@ impl App {
     fn hide_settings_tab(&mut self) {
         self.state.settings_active = false;
         self.close_dropdown();
+        if let Some(page) = &mut self.state.settings_page {
+            page.cancel_capture();
+        }
     }
 
     /// Closes the settings tab: its close button, or `ctrl-w` while it is the tab on screen. A change
@@ -6862,6 +7025,7 @@ impl App {
             Ok(()) => {
                 self.settings_touched.clear();
                 self.settings_reset.clear();
+                self.keys_touched = false;
             }
             Err(message) => {
                 eprintln!("dacode: {message}");
@@ -6885,6 +7049,7 @@ impl App {
                 Ok(()) => {
                     self.settings_touched.clear();
                     self.settings_reset.clear();
+                    self.keys_touched = false;
                 }
                 Err(message) => eprintln!("dacode: {message}"),
             }
@@ -7033,12 +7198,21 @@ impl App {
                 ));
             }
         };
-        let updated = dacode::settings_ui::write_touched(
-            &existing,
-            &self.state.setting_values(),
-            &self.settings_touched,
-            &self.settings_reset,
-        );
+        // Only the blocks something changed: a key moved on its own must not leave an empty
+        // `dacode.set {}` in a file that had none, nor a setting rewrite the keys.
+        let mut updated = existing.clone();
+        if !self.settings_touched.is_empty() || !self.settings_reset.is_empty() {
+            updated = dacode::settings_ui::write_touched(
+                &updated,
+                &self.state.setting_values(),
+                &self.settings_touched,
+                &self.settings_reset,
+            );
+        }
+        if self.keys_touched {
+            updated =
+                dacode::settings_ui::write_keys(&updated, &dacode_input::shortcuts::current());
+        }
 
         std::fs::create_dir_all(&directory).map_err(|error| {
             format!(
@@ -8819,6 +8993,11 @@ impl App {
     /// click that gave the tree or the results the keys closes a completion popup the text has
     /// stopped owning.
     fn click(&mut self, extend: bool) {
+        // A click anywhere ends a Keys page row's wait for a key — clicking away is how every
+        // "press a key" box is left — and a click on a command row starts another.
+        if let Some(page) = &mut self.state.settings_page {
+            page.cancel_capture();
+        }
         self.route_click(extend);
         self.state.settle_focus();
     }
@@ -9802,12 +9981,14 @@ impl App {
         };
         match (part, entry) {
             (Part::Reset, Entry::Field(field)) => self.reset_setting(field),
+            (Part::Reset, Entry::Command(command)) => self.restore_keys(command),
+            (_, Entry::Command(command)) => self.start_key_capture(command),
             (Part::Decrease, Entry::Field(field)) => self.adjust_setting(field, -1),
             (Part::Increase, Entry::Field(field)) => self.adjust_setting(field, 1),
             (Part::Control, Entry::Field(field)) => self.choose_page_entry(Entry::Field(field)),
             // A setting's row away from its control only selects it, so a click to read its
             // explanation does not change it.
-            (_, Entry::Field(_) | Entry::Command(_) | Entry::Heading { .. }) => {}
+            (_, Entry::Field(_) | Entry::Heading { .. }) => {}
             (_, Entry::Line(Line::Import(item))) => self.tick_import(item),
             (_, entry) => self.choose_page_entry(entry),
         }
@@ -9891,7 +10072,8 @@ impl App {
                 self.apply_setting(field, &kept);
             }
         }
-        if self.settings_touched.is_empty() && self.settings_reset.is_empty() {
+        if self.settings_touched.is_empty() && self.settings_reset.is_empty() && !self.keys_touched
+        {
             self.settings_changed_at = None;
             self.settings_blocked = false;
         }
@@ -9925,6 +10107,11 @@ impl App {
         self.set_transparency(settings.transparency);
         self.state.chrome.motion.set_animations(settings.animations);
         self.grammar.set_keymap(settings.keymap);
+        // A key moved on the page and not yet written wins over the file it is about to be written
+        // into, as a pending setting does.
+        if !self.keys_touched {
+            dacode_input::shortcuts::install(settings.shortcuts);
+        }
 
         // Servers already running are left alone — a reload is not a reason to throw away minutes
         // of rust-analyzer's indexing. The new table takes effect the next time one is started,
@@ -11830,6 +12017,305 @@ mod wiring_tests {
         assert!(config.problems.is_empty(), "{:?}", config.problems);
         assert_eq!(config.font_size, Some(size + 3.0));
         assert_eq!(written.matches("dacode.set").count(), 1, "{written}");
+    }
+
+    // ---- the Keys page -----------------------------------------------------------------------
+
+    /// The Keys page with Vim off, which is the grammar whose keys the page's tests name. Set on
+    /// both halves here rather than read from the machine's config, which `new_state` would.
+    fn keys_page(label: &str) -> (std::path::PathBuf, App) {
+        let dir = scratch(label);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Keys);
+        app.grammar.set_modal(false);
+        app.state.modal = false;
+        app.state.mode = Mode::Insert;
+        dacode_input::shortcuts::install(dacode_input::Shortcuts::new());
+        (dir, app)
+    }
+
+    /// A command's row as the mouse sees it: selected, scrolled onto the screen, and laid out by
+    /// the geometry the drawing reads.
+    fn key_row(app: &mut App, name: &str) -> dacode::settings_ui::PageRow {
+        use dacode::settings_ui::Entry;
+        let modal = app.state.modal;
+        let (rect, scale, typography) = (app.layout().editor, app.scale(), app.state.typography);
+        let page = app.state.settings_page.as_mut().expect("the tab is open");
+        let index = page
+            .entries(modal)
+            .iter()
+            .position(|entry| matches!(entry, Entry::Command(command) if command.name == name))
+            .expect("the command is on the page");
+        page.select(index, modal);
+        page.reveal(rect, scale, modal, &typography);
+        app.state.snap_settings_scroll();
+        app.settings_page_geometry()
+            .expect("the page is showing")
+            .rows
+            .into_iter()
+            .find(|row| row.index == index)
+            .expect("revealed, so on screen")
+    }
+
+    fn chord(text: &str) -> Key {
+        Key::parse_sequence(text)[0]
+    }
+
+    fn keys_of(name: &str) -> String {
+        dacode_input::commands::by_name(name)
+            .unwrap()
+            .keys_for(false)
+    }
+
+    fn waiting(app: &App) -> bool {
+        app.state
+            .settings_page
+            .as_ref()
+            .is_some_and(|page| page.capture().is_some())
+    }
+
+    #[test]
+    fn a_key_captured_on_the_keys_page_runs_its_command_through_the_real_key_path() {
+        // The whole loop, by the mouse and the keyboard: click the row, press the chord, go back to
+        // the code, press it — and the old key no longer does it.
+        let (_dir, mut app) = keys_page("keys-capture");
+        let row = key_row(&mut app, "toggle_comment");
+        app.pointer = middle(row.label);
+        app.click(false);
+        assert!(waiting(&app), "a click on a command row waits for its key");
+
+        app.press(Key {
+            code: KeyCode::Char('m'),
+            ctrl: true,
+            alt: true,
+            shift: false,
+        });
+        assert!(!waiting(&app), "a shortcut ends the wait");
+        assert_eq!(keys_of("toggle_comment"), "<c-a-m>");
+
+        app.hide_settings_tab();
+        let before = app.state.document.text().to_string();
+        app.press(chord("<c-/>"));
+        assert_eq!(
+            app.state.document.text().to_string(),
+            before,
+            "the key it was moved off no longer runs it"
+        );
+        app.press(chord("<c-a-m>"));
+        assert!(
+            app.state.document.text().to_string().starts_with("//"),
+            "{}",
+            app.state.document.text()
+        );
+    }
+
+    #[test]
+    fn a_key_taken_from_another_command_asks_first_and_runs_nothing_while_it_waits() {
+        // `ctrl-w` closes the tab the page is on. Pressed while a row waits, it must do neither —
+        // close the tab or move the key — until it is pressed again.
+        let (_dir, mut app) = keys_page("keys-conflict");
+        key_row(&mut app, "toggle_comment");
+        app.press(Key::named(KeyCode::Enter));
+        assert!(
+            waiting(&app),
+            "Enter on a command row waits for its key, as a click does"
+        );
+
+        app.press(chord("<c-w>"));
+        assert!(app.state.settings_page.is_some(), "the tab is still open");
+        assert!(waiting(&app), "still waiting");
+        let text = app
+            .state
+            .settings_page
+            .as_ref()
+            .and_then(|page| page.capture())
+            .map(|capture| capture.text(false))
+            .unwrap();
+        assert!(text.contains("close this file"), "{text}");
+        assert_eq!(
+            keys_of("close_buffer"),
+            "<c-w>  <c-f4>",
+            "nothing moved yet"
+        );
+
+        app.press(chord("<c-w>"));
+        assert!(!waiting(&app));
+        assert_eq!(keys_of("toggle_comment"), "<c-w>");
+        assert_eq!(keys_of("close_buffer"), "<c-f4>");
+
+        // And Escape leaves a row as it was.
+        key_row(&mut app, "save");
+        app.press(Key::named(KeyCode::Enter));
+        app.press(Key::named(KeyCode::Escape));
+        assert!(!waiting(&app));
+        assert!(
+            app.state.settings_page.is_some(),
+            "Escape ended the wait, not the tab"
+        );
+        assert_eq!(keys_of("save"), "<c-s>");
+    }
+
+    #[test]
+    fn every_surface_that_prints_a_key_prints_the_moved_one() {
+        // A key moved on the page and still printed in the menus or the palette under its old
+        // command teaches a key that now does something else.
+        let (_dir, mut app) = keys_page("keys-shown");
+        key_row(&mut app, "toggle_comment");
+        app.press(Key::named(KeyCode::Enter));
+        app.press(chord("<c-w>"));
+        app.press(chord("<c-w>"));
+
+        let file = dacode::menu::Menu::bar_at(0, false);
+        let close = file
+            .items
+            .iter()
+            .find(|item| item.label == "close this file")
+            .expect("in the File menu");
+        assert_eq!(close.keys, "Ctrl+F4");
+
+        app.open_palette(PaletteKind::Commands);
+        let palette = app.state.palette.as_ref().expect("open");
+        let row = |what: &str| {
+            palette
+                .rows
+                .iter()
+                .find(|row| row.name == what)
+                .map(|row| row.context.clone())
+        };
+        assert_eq!(row("close this file").as_deref(), Some("Ctrl+F4"));
+        assert_eq!(
+            row("comment or uncomment these lines").as_deref(),
+            Some("Ctrl+W")
+        );
+
+        let help = dacode::help::Help::new(false);
+        assert!(help.lines().contains(&dacode::help::Line::Binding {
+            name: "toggle_comment",
+            keys: "<c-w>".to_string(),
+            what: "comment or uncomment these lines",
+        }));
+    }
+
+    #[test]
+    fn backspace_leaves_a_command_with_no_key_and_the_reset_puts_it_back() {
+        let (_dir, mut app) = keys_page("keys-reset");
+        key_row(&mut app, "close_buffer");
+        app.press(Key::named(KeyCode::Enter));
+        app.press(Key::named(KeyCode::Backspace));
+        assert_eq!(keys_of("close_buffer"), "");
+        app.press(chord("<c-w>"));
+        assert!(
+            app.state.settings_page.is_some(),
+            "ctrl-w no longer closes the tab either"
+        );
+
+        // The ⟲ is drawn only on a row whose keys differ, and a click on it lands on it.
+        let row = key_row(&mut app, "close_buffer");
+        let reset = row.reset.expect("a moved row offers its reset");
+        app.pointer = middle(reset);
+        app.click(false);
+        assert_eq!(keys_of("close_buffer"), "<c-w>  <c-f4>");
+        assert!(
+            !waiting(&app),
+            "the ⟲ puts the keys back without waiting for one"
+        );
+        assert!(key_row(&mut app, "close_buffer").reset.is_none());
+
+        // "Reset every key" takes the whole set back.
+        key_row(&mut app, "save");
+        app.press(Key::named(KeyCode::Enter));
+        app.press(chord("<f5>"));
+        assert_eq!(keys_of("save"), "<f5>");
+        let modal = app.state.modal;
+        let page = app.state.settings_page.as_mut().unwrap();
+        let link = page
+            .entries(modal)
+            .iter()
+            .position(|entry| {
+                *entry == dacode::settings_ui::Entry::Link(dacode::settings_ui::Link::ResetKeys)
+            })
+            .unwrap();
+        page.select(link, modal);
+        app.press(Key::named(KeyCode::Enter));
+        assert!(dacode_input::shortcuts::current().is_empty());
+        assert_eq!(keys_of("save"), "<c-s>");
+    }
+
+    #[test]
+    fn a_search_on_the_keys_page_finds_a_command_by_its_key_however_it_is_written() {
+        let (_dir, mut app) = keys_page("keys-search");
+        let modal = app.state.modal;
+        for query in ["ctrl-w", "Ctrl+W", "<c-w>"] {
+            let page = app.state.settings_page.as_mut().unwrap();
+            page.set_query(query, modal);
+            assert!(
+                page.entries(modal).iter().any(|entry| matches!(
+                    entry,
+                    dacode::settings_ui::Entry::Command(command) if command.name == "close_buffer"
+                )),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_moved_key_is_written_to_init_lua_as_dacode_keys_and_read_back_on_start() {
+        // `init.lua` stays the one place keys are kept: what the page wrote is read by the reader
+        // every start goes through, and the lines a person wrote around it are left alone.
+        let (dir, mut app) = keys_page("keys-persist");
+        let init = app.config_dir.join("init.lua");
+        std::fs::create_dir_all(&app.config_dir).unwrap();
+        std::fs::write(
+            &init,
+            "-- mine\ndacode.map(\"normal\", \"<space>w\", \"save\")\n",
+        )
+        .unwrap();
+
+        key_row(&mut app, "toggle_comment");
+        app.press(Key::named(KeyCode::Enter));
+        app.press(chord("<c-k>"));
+        app.press(chord("<c-c>"));
+        assert_eq!(keys_of("toggle_comment"), "<c-k><c-c>");
+        let changed = app.settings_changed_at.expect("a write is waiting");
+        assert!(app.save_settings_if_due(changed + SETTINGS_SAVE_AFTER));
+
+        let written = std::fs::read_to_string(&init).unwrap();
+        assert!(written.starts_with("-- mine\ndacode.map("), "{written}");
+        assert!(
+            written.contains("dacode.keys {\n  toggle_comment = \"<c-k><c-c>\",\n}\n"),
+            "{written}"
+        );
+        assert!(
+            !written.contains("dacode.set"),
+            "a key alone writes no settings block: {written}"
+        );
+
+        let read = dacode::config::load_from(&app.config_dir);
+        assert!(read.problems.is_empty(), "{:?}", read.problems);
+        assert_eq!(
+            read.shortcuts.lookup(&Key::parse_sequence("<c-k><c-c>")),
+            dacode_input::Match::Exact(Action::ToggleComment)
+        );
+
+        // A second start installs it, and the key works with nothing done on the page.
+        let mut next = editor(&dir, "b.rs", "fn b() {}\n");
+        next.config_dir = app.config_dir.clone();
+        drop(app);
+        dacode_input::shortcuts::install(read.shortcuts.clone());
+        next.grammar.set_modal(false);
+        next.state.modal = false;
+        next.state.mode = Mode::Insert;
+        next.press(chord("<c-k>"));
+        next.press(chord("<c-c>"));
+        assert!(next.state.document.text().to_string().starts_with("//"));
+
+        // Reset every key, and the block goes rather than staying behind empty.
+        next.change_shortcuts(dacode_input::Shortcuts::clear);
+        assert!(next.save_settings_if_due(
+            std::time::Instant::now() + SETTINGS_SAVE_AFTER + std::time::Duration::from_secs(1)
+        ));
+        let cleared = std::fs::read_to_string(&init).unwrap();
+        assert!(!cleared.contains("dacode.keys"), "{cleared}");
+        assert!(cleared.contains("-- mine"), "{cleared}");
     }
 
     #[test]
