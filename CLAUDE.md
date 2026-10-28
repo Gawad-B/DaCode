@@ -132,8 +132,19 @@ nor cleared by `mutate`: it carries the version it was parsed from, and every re
 `fresh_structure`, which refuses it once an edit has moved the buffer on. Moving a tree by hand would
 be re-implementing tree-sitter's incremental edit on the UI thread. It *is* cleared on a buffer
 change, because a version is a number in one document's sequence and another document can reach the
-same number. If you add a sixth, transform it in `mutate` beside the spans, clear it, or version-gate
-it, and say which.
+same number.
+
+The blame (`EditorState::blame`, `crate::blame`) is the sixth, and is the lazy move the search
+matches are waiting for. It is per line of the *file*, so moving it per keystroke would be a
+document-sized walk per Enter; instead `mutate` appends each change's line arithmetic to an edit log
+— constant work, never looking at the blame — and a line is looked up by walking that log back to
+where it was when the blame was taken. Only drawing looks up, and only the rows on screen, so the
+cost is viewport × the log's cap (256 steps; past it every line reads as unknown and a fresh blame
+is asked for). A request in flight keeps a log of its own, so its answer lands with the edits made
+while git ran already applied. `latency.rs` holds both halves: a document walk injected into the
+recording fails it at 10.6x, and one injected into the column's drawing at 112x. If you add a
+seventh, transform it in `mutate` beside the spans, clear it, version-gate it or log it, and say
+which.
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
@@ -506,13 +517,14 @@ anything platform-shaped:
 | What survives an edit | `crates/dacode/src/chrome.rs` — `EditorState::mutate` |
 | Indentation on Enter, and `af`/`it`/`aa`/`ic` | `crates/dacode-syntax/src/structure.rs`, its queries in `crates/dacode-syntax/queries/`; the lexical fallback is `dacode-buffer`'s `pairs.rs` |
 | How a file is written | `crates/dacode/src/save.rs` — `write`, and `App::write_active` for buffers |
+| Who changed a line | `crates/dacode/src/blame.rs` — the porcelain reader, the edit log, `Tracker` and `BlameWorker`; `App::sync_blame` asks and collects, `chrome::line_note` decides between a diagnostic and the inline blame |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
 settings page. If you add it to fewer, it will silently not work somewhere.
 
 ## Known gaps
 
-Deliberate, with reasons in `PLAN.md`: no integrated terminal, no git blame, column advance derived
+Deliberate, with reasons in `PLAN.md`: no integrated terminal, column advance derived
 from the type scale rather than measured from the shaper, no macOS packaging. Cross-file rename is not
 undoable and says so.
 

@@ -84,6 +84,7 @@ RENDERING WITHOUT A WINDOW
     --welcome STEP            the first-run wizard at one step
     --folded                  with a block folded
     --git                     the diff gutter
+    --blame                   the blame column and the caret line's blame
     --palette QUERY           the file palette, filtered
     --commands                the command palette
     --search QUERY            the find box
@@ -222,6 +223,7 @@ order.
 |---|---|---|---|
 | 1 | `--splash` | — | The cold-start splash. Ignores the buffer entirely. |
 | 2 | `--git` | — | The editor with a canned diff — two added lines, two modified, one removed — so the gutter marks do not depend on what happens to be uncommitted. |
+| 2a | `--blame` | — | The editor with the blame column on and a canned blame — three authors in runs down the file, lines 13 and 14 not committed yet — so neither the column nor the caret line's note depends on who last committed to the file on screen. `--at` puts the caret on the line whose note you want to see. |
 | 3 | `--folded` | — | Every top-level block folded, so the marker and the hidden-line count are visible. |
 | 4 | `--diagnostics-list` | — | The diagnostics sidebar. |
 | 5 | `--welcome` | `STEP` | The first-run wizard. `keys` is the first screen, `theme` the second with the third option highlighted, `import` the third. Any other value lands on `theme` without the highlight. Ignores the buffer. |

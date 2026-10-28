@@ -518,14 +518,27 @@ integrated terminal, session restore, jumplist, macros, autopairs, snippets, sti
 inlay hints.
 **Bar:** two weeks with no reaching for another editor.
 
-> **Everything in M7 is done except the integrated terminal and git blame**, and the terminal is
+> **Everything in M7 is done except the integrated terminal**, which is
 > deferred deliberately rather than half-built. A terminal is a PTY, a VT-sequence parser and a
 > second rendering path with its own scrollback, selection and colour model — a subsystem the size of
 > several crates here, whose failure mode when done badly is a shell that eats your keystrokes. The
 > editor already sits in a terminal for anyone who wants one, and `ctrl-z` is not a worse answer than
 > a bad terminal emulator. It gets built when it is the thing actually blocking use, which is the bar
-> this milestone sets. Blame is a smaller gap: the gutter machinery is there and `git blame --porcelain`
-> would feed it, but per-line authorship earns its screen space far less often than per-line change.
+> this milestone sets.
+
+> **Blame is taken against the buffer and followed through edits by a log, not by re-running it.**
+> `git blame --porcelain --contents -` reads the snapshot on stdin, so a line typed since the last
+> commit comes back as "not committed yet" instead of borrowing the commit of whatever line used to
+> have its number. Re-running blame per keystroke was rejected: unlike the diff's `git show`, it walks
+> history, which on a long-lived file is hundreds of milliseconds of another process per character.
+> Moving a per-line table in `mutate` was rejected too — it is a document-sized shift per Enter, and
+> it cannot carry an answer that was computed while typing continued. Instead `mutate` records each
+> change's line arithmetic (constant work), drawing walks that log back for the rows on screen, and a
+> request in flight keeps its own log so its answer lands already up to date. Blame is asked for on
+> opening a file, on saving, when the file changes outside, and when the log fills; never per key.
+> The inline note on the caret's line is on by default and yields to a diagnostic on that line —
+> a problem is something to act on, an author is something to know. The column is off by default:
+> per-line authorship earns its screen space far less often than per-line change.
 
 > **The folder chooser shells out.** DaCode draws its own interface with `wgpu` and has no GTK or Qt in
 > it; linking one — or `rfd`, which links one for you — to show a single dialog would add a second UI

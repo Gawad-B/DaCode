@@ -145,7 +145,7 @@ An extension's `main` entry point is inert throughout. No JavaScript is executed
 | icon themes | DaCode uses no icons — every graphic element is text or a rectangle |
 | `editor.cursorBlinking` | the cursor's shape and blink are defined by the editing mode, not by a setting |
 | `editor.fontLigatures` | ligatures follow the font, and are on when it has them |
-| git blame | not present |
+| git blame | the caret line's author, age and summary after its end, as GitLens does (`inline_blame`, on by default); `gb` / <kbd>alt</kbd>+<kbd>b</kbd> for a gutter column, `gB` / <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>b</kbd> for the whole commit |
 
 The ones that are `settings.json` keys — the minimap, code lens, inline suggestions, icon themes,
 cursor blinking, ligatures and the integrated terminal — are named individually in the import report

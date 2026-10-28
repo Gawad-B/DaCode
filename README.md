@@ -161,7 +161,7 @@ and brings its import with it; formatting works through the server when it can a
 passes its tests on Windows, where real use has found things no test could. **Nobody has ever run
 DaCode on macOS.**
 
-Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no integrated terminal, no git blame, no
+Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no integrated terminal, no
 structural text objects, no macOS packaging. Known limitations, stated rather than hidden: buffer
 search is still linear in the document, opening a file is still synchronous (though bounded), only
 the *active* buffer gets a file watcher, a git diff and a language server, and replacing across the

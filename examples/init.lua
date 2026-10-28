@@ -40,6 +40,10 @@ dacode.set {
   -- Ask the language server for inferred types and parameter names, shown inline.
   inlay_hints = false,
 
+  -- Who last changed the caret's line, and when, written dimly after its end. `gb` (alt-b without
+  -- Vim keys) shows the same for every line in a gutter column.
+  inline_blame = true,
+
   -- What the gutter counts: "absolute", "relative" (vim's, so `12j` can be read off the screen),
   -- or "off". Unset, it follows vim_keys — relative with the grammar on, plain numbers without it,
   -- so this line is the one setting here that is *not* the default: with vim_keys above, the

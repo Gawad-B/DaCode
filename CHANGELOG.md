@@ -20,6 +20,16 @@ release, where one exists, lives in `packaging/notes/`.
 - With Vim keys off: `alt-f`, `alt-t` and `alt-a` select the enclosing function, type and argument,
   and `shift-alt-→` grows the selection to the enclosing piece of syntax. All four are in the
   Selection menu and the command palette.
+- **Git blame.** The caret's line says who last changed it, how long ago and the commit's summary,
+  dimly after its end — unless a diagnostic is on that line, which takes the place. `gb` (`alt-b`
+  without Vim keys, or View → "show or hide who changed each line") adds a column to the gutter with
+  the author and age of every visible line, once per run of lines from the same commit; clicking an
+  entry, or `gB` (`shift-alt-b`), shows the whole commit — hash, author, date and full message — in
+  the info card. Lines changed since the last commit say "not committed yet", including ones typed
+  a moment ago: blame is taken against the buffer, and followed through edits without asking git
+  again until the next save. Outside a repository, for an untracked file, or with no `git` installed
+  there is simply no blame. The new `inline_blame` setting (Editor → Display, on by default) turns
+  the note off.
 
 ### Changed
 

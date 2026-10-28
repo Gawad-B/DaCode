@@ -126,6 +126,8 @@ These are the editor's, not Vim's, and they work in both keymaps:
 | <kbd>ctrl</kbd>+<kbd>w</kbd> <kbd>v</kbd> · <kbd>ctrl</kbd>+<kbd>w</kbd> <kbd>w</kbd> | split · move between panes |
 | <kbd>ctrl</kbd>+<kbd>s</kbd> · <kbd>ctrl</kbd>+<kbd>q</kbd> | save · quit |
 | <kbd>ctrl</kbd>+<kbd>F4</kbd> | close this file |
+| `gb`, or <kbd>alt</kbd>+<kbd>b</kbd> without Vim keys | who changed each line, as a column in the gutter |
+| `gB`, or <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>b</kbd> without Vim keys | the whole commit that changed this line |
 
 Plain **find** is one of the few that differ: `/` with the grammar on, <kbd>ctrl</kbd>+<kbd>f</kbd>
 with it off. Project-wide search is <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>f</kbd> without the
