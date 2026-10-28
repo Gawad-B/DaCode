@@ -204,7 +204,9 @@ fn the_spawn_guard_knows_std_from_a_type_named_like_it() {
     assert!(spawns_bare("    let child = Command::new(\"git\")"));
     assert!(spawns_bare("std::process::Command::new(program)"));
     assert!(spawns_bare("(Command::new(\"sh\"))"));
-    assert!(!spawns_bare("shells.push(ShellCommand::new(\"/bin/sh\", &[]))"));
+    assert!(!spawns_bare(
+        "shells.push(ShellCommand::new(\"/bin/sh\", &[]))"
+    ));
     assert!(!spawns_bare("process::command(\"git\")"));
 }
 
