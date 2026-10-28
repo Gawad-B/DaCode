@@ -315,6 +315,16 @@ pub fn execute(
             state.show_inlay_hints = !state.show_inlay_hints;
             state.inlay_hints.clear();
         }
+        // The column is the executor's to flip; asking git for a blame to fill it is the event
+        // loop's, which notices the column wanting one on its next idle step.
+        Action::ToggleBlame => {
+            state.blame.column = !state.blame.column;
+            if state.blame.column && state.file_path.is_none() {
+                state.hover = Some("a scratch buffer has no history to blame".into());
+            }
+        }
+        // The full message needs `git show`, which the event loop's worker runs.
+        Action::ShowCommit => return Outcome::Window(action.clone()),
         Action::Rename => {
             // Pre-filled with the symbol under the cursor, because a rename is nearly always an edit
             // of the existing name rather than a fresh one.

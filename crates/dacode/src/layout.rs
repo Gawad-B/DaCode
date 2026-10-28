@@ -31,6 +31,19 @@ pub struct Layout {
     pub editor: Rect,
     /// The search-results panel, when it is open.
     pub results: Option<Rect>,
+    /// The pane that carries a blame column, and how wide the column wants to be. Set by
+    /// [`Layout::with_blame`]; `None` is no column.
+    pub blame: Option<(usize, f32)>,
+}
+
+/// How wide the gutter's blame column wants to be: a short author and a terse age, `Ann Exam… 3d`.
+///
+/// Measured with [`measured_advance`] like everything that must fit, at the line numbers' size since
+/// it sits beside them. Seventeen characters is a first name and a surname's start; the entries are
+/// elided to whatever the pane can actually give, so this is a request rather than a promise.
+pub fn blame_column_width(typography: &dacode_theme::Typography, scale: f32) -> f32 {
+    (measured_advance(typography, dacode_theme::Role::LineNumber, scale) * 17.0 + 16.0 * scale)
+        .round()
 }
 
 /// Sizes of the chrome, in logical pixels.
@@ -645,7 +658,19 @@ impl Layout {
             status,
             editor,
             results,
+            blame: None,
         }
+    }
+
+    /// The same layout with a blame column in pane `pane`, when there is one.
+    ///
+    /// A separate step rather than a parameter of [`Layout::of`], whose many callers only want the
+    /// chrome's stack and none of whom draw code. The three that do — drawing, the mouse and the
+    /// capture — each pass the editor's own answer, `EditorState::blame_column`, so none of them can
+    /// decide on its own that the column is there.
+    pub fn with_blame(mut self, column: Option<(usize, f32)>) -> Self {
+        self.blame = column;
+        self
     }
 
     /// The slot a pane occupies, and its gutter and code areas.
@@ -701,11 +726,26 @@ impl Layout {
             (None, slot)
         };
 
-        let gutter_width = (78.0 * scale).min(slot.width * 0.22);
-        let (gutter, code) = slot.split_left(gutter_width);
+        // The blame column, left of the line numbers, in the pane that has one. It gives way
+        // entirely in a pane too narrow to spare it: a column squeezed to a few characters says
+        // nothing, and the code beside it would lose the room it needs to be read.
+        let wanted = match self.blame {
+            Some((pane, width)) if pane == index => width.min(slot.width * 0.3),
+            _ => 0.0,
+        };
+        let (blame, rest) = if wanted >= 1.0 && slot.width - wanted >= 300.0 * scale {
+            let (blame, rest) = slot.split_left(wanted);
+            (Some(blame), rest)
+        } else {
+            (None, slot)
+        };
+
+        let gutter_width = (78.0 * scale).min(rest.width * 0.22);
+        let (gutter, code) = rest.split_left(gutter_width);
 
         PaneRects {
             slot,
+            blame,
             gutter,
             code,
             footer,
@@ -734,6 +774,10 @@ impl Layout {
 pub struct PaneRects {
     /// Everything but the footer.
     pub slot: Rect,
+    /// Who changed each line, left of the line numbers, when the column is on in this pane. Its
+    /// rows are the code grid's, so a click in it is turned into a line the way a click in the code
+    /// is.
+    pub blame: Option<Rect>,
     pub gutter: Rect,
     pub code: Rect,
     pub footer: Option<Rect>,

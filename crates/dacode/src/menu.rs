@@ -149,6 +149,8 @@ const MENUS: [&[&str]; 8] = [
         "command_palette",
         "toggle_tree",
         "toggle_diagnostics",
+        "toggle_blame",
+        "show_commit",
         "notifications",
         "toggle_soft_wrap",
         "split_vertical",

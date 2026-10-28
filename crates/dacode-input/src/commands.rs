@@ -621,6 +621,20 @@ pub const COMMANDS: &[Command] = &[
         "",
         "",
     ),
+    command(
+        "toggle_blame",
+        "show or hide who changed each line",
+        View,
+        "gb",
+        "<a-b>",
+    ),
+    command(
+        "show_commit",
+        "show the commit that changed this line",
+        View,
+        "gB",
+        "<a-s-b>",
+    ),
     // ---- the view ----------------------------------------------------------------------
     command("settings", "settings", View, "<c-,>", "<c-,>"),
     command(

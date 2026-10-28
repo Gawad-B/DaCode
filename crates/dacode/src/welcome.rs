@@ -439,6 +439,7 @@ pub fn config_from(answers: &Answers, existing: &str) -> String {
         animations: crate::motion::Animations::Full,
         sticky_scroll: true,
         inlay_hints: false,
+        inline_blame: true,
         // Chosen for them, and it is the right choice: a person who picks the conventional editor is
         // telling you they do not think about saving, and losing their work to that would be the
         // editor's fault, not theirs. Someone who picked Vim knows where `:w` is.

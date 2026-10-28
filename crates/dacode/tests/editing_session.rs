@@ -63,6 +63,7 @@ impl Session {
                 search: None,
                 recording: None,
                 diff: dacode::git::Diff::default(),
+                blame: Default::default(),
                 show_diagnostics: false,
                 focus: Default::default(),
                 problems: Default::default(),

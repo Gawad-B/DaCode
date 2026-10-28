@@ -324,6 +324,10 @@ pub enum Action {
     GotoSymbolInProject,
     /// Show or hide inlay hints.
     ToggleInlayHints,
+    /// `gb` — a column in the gutter saying who last changed each visible line, and when.
+    ToggleBlame,
+    /// `gB` — the whole commit that last changed the caret's line: hash, author, date, message.
+    ShowCommit,
     /// `gD` — list every diagnostic in the file, rather than walking them one at a time.
     ToggleDiagnosticsList,
     /// The source-control view in the sidebar.
@@ -520,6 +524,8 @@ impl Action {
         "previous_change",
         "revert_hunk",
         "toggle_inlay_hints",
+        "toggle_blame",
+        "show_commit",
         "toggle_diagnostics",
         "source_control",
         "notifications",
@@ -683,6 +689,8 @@ impl Action {
             "goto_symbol" => Action::GotoSymbol,
             "goto_symbol_in_project" => Action::GotoSymbolInProject,
             "toggle_inlay_hints" => Action::ToggleInlayHints,
+            "toggle_blame" => Action::ToggleBlame,
+            "show_commit" => Action::ShowCommit,
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
             "source_control" => Action::ShowSourceControl,
             "notifications" => Action::ToggleNotifications,

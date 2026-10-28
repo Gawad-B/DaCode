@@ -38,6 +38,8 @@ pub struct Config {
     pub modal: Option<bool>,
     pub sticky_scroll: Option<bool>,
     pub inlay_hints: Option<bool>,
+    /// Who last changed the caret's line, written after its end.
+    pub inline_blame: Option<bool>,
     /// Write the file a moment after typing stops.
     pub autosave: Option<bool>,
     /// How much of the desktop shows through the window, as a percentage: 0 is opaque.
@@ -98,6 +100,7 @@ impl Config {
             && self.modal.is_none()
             && self.sticky_scroll.is_none()
             && self.inlay_hints.is_none()
+            && self.inline_blame.is_none()
             && self.autosave.is_none()
             && self.transparency.is_none()
             && self.animations.is_none()
@@ -192,6 +195,9 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(hints) = boolean(&options, "inlay_hints") {
                 config.inlay_hints = Some(hints);
+            }
+            if let Some(blame) = boolean(&options, "inline_blame") {
+                config.inline_blame = Some(blame);
             }
             if let Some(autosave) = boolean(&options, "autosave") {
                 config.autosave = Some(autosave);

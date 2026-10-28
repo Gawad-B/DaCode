@@ -54,6 +54,8 @@ pub enum Field {
     LineNumbers,
     StickyScroll,
     InlayHints,
+    /// Who last changed the caret's line, after its end.
+    InlineBlame,
     Autosave,
     Transparency,
     /// How much the interface moves: full, reduced or off.
@@ -70,7 +72,7 @@ pub fn glow_index(field: Field) -> u32 {
 }
 
 impl Field {
-    pub const ALL: [Field; 12] = [
+    pub const ALL: [Field; 13] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -80,6 +82,7 @@ impl Field {
         Field::LineNumbers,
         Field::StickyScroll,
         Field::InlayHints,
+        Field::InlineBlame,
         Field::Autosave,
         Field::Transparency,
         Field::Animations,
@@ -96,6 +99,7 @@ impl Field {
             Field::LineNumbers => "line_numbers",
             Field::StickyScroll => "sticky_scroll",
             Field::InlayHints => "inlay_hints",
+            Field::InlineBlame => "inline_blame",
             Field::Autosave => "autosave",
             Field::Transparency => "transparency",
             Field::Animations => "animations",
@@ -317,6 +321,7 @@ pub struct Values {
     pub theme: Option<&'static str>,
     pub sticky_scroll: bool,
     pub inlay_hints: bool,
+    pub inline_blame: bool,
     pub autosave: bool,
     pub line_numbers: crate::config::LineNumbers,
     /// Percent, in steps of [`Values::TRANSPARENCY_STEP`].
@@ -352,6 +357,7 @@ impl Values {
             Field::LineNumbers => self.line_numbers.name().to_string(),
             Field::StickyScroll => on_off(self.sticky_scroll),
             Field::InlayHints => on_off(self.inlay_hints),
+            Field::InlineBlame => on_off(self.inline_blame),
             Field::Autosave => on_off(self.autosave),
             Field::Transparency => match self.transparency {
                 0 => "off".into(),
@@ -441,6 +447,7 @@ impl Values {
             }
             Field::StickyScroll => self.sticky_scroll = !self.sticky_scroll,
             Field::InlayHints => self.inlay_hints = !self.inlay_hints,
+            Field::InlineBlame => self.inline_blame = !self.inline_blame,
             Field::Autosave => self.autosave = !self.autosave,
             Field::Animations => {
                 let all = crate::motion::Animations::ALL;
@@ -498,6 +505,7 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
         Field::LineNumbers => format!("\"{}\"", values.line_numbers.name()),
         Field::StickyScroll => values.sticky_scroll.to_string(),
         Field::InlayHints => values.inlay_hints.to_string(),
+        Field::InlineBlame => values.inline_blame.to_string(),
         Field::Autosave => values.autosave.to_string(),
         Field::Transparency => values.transparency.to_string(),
         Field::Animations => format!("\"{}\"", values.animations.name()),
@@ -702,7 +710,12 @@ const EDITOR: &[Section] = &[
     },
     Section {
         title: "Display",
-        fields: &[Field::LineNumbers, Field::StickyScroll, Field::InlayHints],
+        fields: &[
+            Field::LineNumbers,
+            Field::StickyScroll,
+            Field::InlayHints,
+            Field::InlineBlame,
+        ],
     },
 ];
 
@@ -806,6 +819,7 @@ impl Field {
             Field::LineNumbers => "Line numbers",
             Field::StickyScroll => "Sticky scroll",
             Field::InlayHints => "Inlay hints",
+            Field::InlineBlame => "Inline blame",
             Field::Autosave => "Autosave",
             Field::Transparency => "Transparency",
             Field::Animations => "Animations",
@@ -852,6 +866,10 @@ impl Field {
                 "Shows the types and parameter names the language server works out, inline beside \
                  the code. Needs a server that offers them."
             }
+            Field::InlineBlame => {
+                "Writes who last changed the caret's line, how long ago and why, dimly after its \
+                 end. Only in a git repository; a problem on that line is shown instead."
+            }
             Field::Autosave => {
                 "Saves the file a moment after you stop typing. Off: nothing is written until you \
                  save."
@@ -874,6 +892,7 @@ impl Field {
             | Field::FormatOnSave
             | Field::StickyScroll
             | Field::InlayHints
+            | Field::InlineBlame
             | Field::Autosave => Control::Switch,
             Field::FontSize | Field::TabWidth | Field::Transparency => Control::Stepper,
             Field::Theme => Control::Dropdown(&THEMES),
@@ -918,6 +937,7 @@ impl Values {
             theme: settings.theme.name(),
             sticky_scroll: settings.sticky_scroll,
             inlay_hints: settings.inlay_hints,
+            inline_blame: settings.inline_blame,
             autosave: settings.autosave,
             line_numbers: crate::config::LineNumbers::default_for(modal),
             transparency: settings.transparency,
@@ -937,6 +957,7 @@ impl Values {
             Field::LineNumbers => self.line_numbers != defaults.line_numbers,
             Field::StickyScroll => self.sticky_scroll != defaults.sticky_scroll,
             Field::InlayHints => self.inlay_hints != defaults.inlay_hints,
+            Field::InlineBlame => self.inline_blame != defaults.inline_blame,
             Field::Autosave => self.autosave != defaults.autosave,
             Field::Transparency => self.transparency != defaults.transparency,
             Field::Animations => self.animations != defaults.animations,
@@ -962,6 +983,7 @@ impl Values {
             Field::LineNumbers => self.line_numbers = defaults.line_numbers,
             Field::StickyScroll => self.sticky_scroll = defaults.sticky_scroll,
             Field::InlayHints => self.inlay_hints = defaults.inlay_hints,
+            Field::InlineBlame => self.inline_blame = defaults.inline_blame,
             Field::Autosave => self.autosave = defaults.autosave,
             Field::Transparency => self.transparency = defaults.transparency,
             Field::Animations => self.animations = defaults.animations,
@@ -2579,6 +2601,7 @@ mod tests {
             animations: crate::motion::Animations::Full,
             sticky_scroll: true,
             inlay_hints: false,
+            inline_blame: true,
             autosave: false,
         };
 
@@ -2654,6 +2677,7 @@ mod tests {
             animations: crate::motion::Animations::Full,
             sticky_scroll: true,
             inlay_hints: false,
+            inline_blame: true,
             autosave: false,
         }
     }
@@ -2920,6 +2944,7 @@ mod click_tests {
             animations: crate::motion::Animations::Full,
             sticky_scroll: true,
             inlay_hints: false,
+            inline_blame: true,
             autosave: false,
         }
     }

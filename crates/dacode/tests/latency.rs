@@ -103,6 +103,7 @@ fn state(lines: usize) -> EditorState {
         search: None,
         recording: None,
         diff: dacode::git::Diff::default(),
+        blame: Default::default(),
         show_diagnostics: false,
         focus: Default::default(),
         problems: Default::default(),
@@ -257,6 +258,57 @@ fn keystroke_with_diagnostics(lines: usize, count: usize) -> Duration {
     })
 }
 
+/// A blame of every line of `state`'s document: three commits in runs, the shape a real file has.
+fn blame_everything(state: &mut EditorState) {
+    let lines = state.document.text().len_lines();
+    let commit = |hash: char, author: &str| dacode::blame::Commit {
+        hash: std::iter::repeat_n(hash, 40).collect(),
+        author: author.into(),
+        mail: String::new(),
+        time: 1_700_000_000,
+        summary: "a change".into(),
+    };
+    let parsed = dacode::blame::Parsed {
+        commits: vec![commit('a', "Ann"), commit('b', "Bob"), commit('c', "Cy")],
+        lines: (0..lines).map(|line| ((line / 7) % 3) as u32).collect(),
+    };
+    state.blame.inline = true;
+    state.blame.column = true;
+    state
+        .blame
+        .show(dacode::blame::Blame::new("big.rs".into(), parsed));
+}
+
+/// A keystroke that adds a line and one that takes a character away, with a whole file's blame
+/// held.
+///
+/// The blame is per line of the file, and the obvious way to keep it right across an edit is to
+/// move every entry below the edit — a walk of the document per Enter. It is instead left where it
+/// is and the edit's line arithmetic appended to a log, which costs the same whatever the file. Few
+/// enough iterations that the log never reaches its cap: past it, recording returns at once, and a
+/// guard measuring that early return would pass whatever recording cost.
+fn keystroke_with_blame(lines: usize) -> Duration {
+    use dacode_input::KeyCode;
+
+    let mut state = state(lines);
+    blame_everything(&mut state);
+    let mut grammar = Grammar::new();
+    let mut registers = Registers::new();
+
+    let taken = median(100, || {
+        for key in [Key::named(KeyCode::Enter), Key::named(KeyCode::Backspace)] {
+            if let Resolution::Action(action) = grammar.feed(state.mode, key) {
+                execute(&mut state, &mut registers, &action, 40);
+            }
+        }
+    });
+    assert!(
+        state.blame.blame().is_some_and(|blame| !blame.is_lost()),
+        "the log reached its cap, so this measured the early return and not the recording"
+    );
+    taken
+}
+
 fn frame_build(lines: usize) -> Duration {
     let state = state(lines);
     let mut frame = Frame::default();
@@ -322,6 +374,19 @@ fn a_keystroke_with_a_search_live_stays_bounded() {
     );
 }
 
+/// Keeping a blame right across edits follows the edit, never the file.
+#[test]
+fn a_keystroke_with_a_blame_held_costs_the_same_in_a_huge_file_as_in_a_small_one() {
+    let small = keystroke_with_blame(SMALL);
+    let large = keystroke_with_blame(LARGE);
+    assert_flat("typing with a blame held", small, large);
+    assert_under(
+        "typing with a blame held",
+        large,
+        Duration::from_micros(500),
+    );
+}
+
 #[test]
 fn building_a_frame_is_bounded_by_the_viewport_and_not_by_the_file() {
     // The defect this exists for, exactly: a sidebar walked 512 display rows to compute one
@@ -373,7 +438,7 @@ fn every_frame_a_panel_adds_is_still_bounded_by_the_viewport() {
     /// A named way of putting the editor into a state that draws one more thing.
     type Panel = (&'static str, fn(&mut EditorState));
 
-    let panels: [Panel; 4] = [
+    let panels: [Panel; 5] = [
         ("the settings tab", |state| {
             state.settings_page = Some(dacode::settings_ui::Page::new());
             state.settings_active = true;
@@ -392,6 +457,16 @@ fn every_frame_a_panel_adds_is_still_bounded_by_the_viewport() {
                 row * 0.5,
                 row,
             );
+        }),
+        ("the blame column and the caret line's blame", |state| {
+            blame_everything(state);
+            // A log near its cap, so every row's lookup walks the most it ever will.
+            let text = state.document.text().clone();
+            for _ in 0..dacode::blame::EditLog::CAP - 8 {
+                state
+                    .blame
+                    .record(&text, &[dacode_text::Edit::insert(CharOffset(0), "\n")]);
+            }
         }),
         ("a search with matches on screen", |state| {
             let text = state.document.text().clone();

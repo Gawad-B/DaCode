@@ -252,6 +252,10 @@ impl Grammar {
                 KeyCode::Char('f') => Some(Action::select_syntax(SyntaxObject::Function)),
                 KeyCode::Char('t') => Some(Action::select_syntax(SyntaxObject::Type)),
                 KeyCode::Char('a') => Some(Action::select_syntax(SyntaxObject::Argument)),
+                // GitLens's key for file blame. Before the plain `b`: a shifted binding written
+                // after the unshifted one never matches.
+                KeyCode::Char('b') if key.shift => Some(Action::ShowCommit),
+                KeyCode::Char('b') => Some(Action::ToggleBlame),
                 _ => None,
             };
             if let Some(action) = action {
@@ -1082,6 +1086,10 @@ impl Grammar {
             's' => self.emit(Action::GotoSymbol),
             'S' => self.emit(Action::GotoSymbolInProject),
             'i' => self.emit(Action::ToggleInlayHints),
+            // Blame: `b` for the column, and the shifted key for the one commit under the caret —
+            // the same pairing as `]c` and `]C`. Vim leaves both free.
+            'b' => self.emit(Action::ToggleBlame),
+            'B' => self.emit(Action::ShowCommit),
             'D' => self.emit(Action::ToggleDiagnosticsList),
             '%' => self.emit(Action::SelectAll),
             't' => self.emit(Action::ToggleTheme),

@@ -160,6 +160,8 @@ pub struct Settings {
     pub sticky_scroll: bool,
     /// Ask the language server for inlay hints.
     pub inlay_hints: bool,
+    /// Write who last changed the caret's line after its end.
+    pub inline_blame: bool,
     /// Write the file a moment after typing stops.
     pub autosave: bool,
     /// How much of the desktop shows through the window, as a percentage. 0 is opaque.
@@ -203,6 +205,10 @@ impl Default for Settings {
             // code that followed the scroll, which looked like a selection nobody had made.
             sticky_scroll: false,
             inlay_hints: false,
+            // On: it is one dim line of text, on one row, past the end of the code, and it is the
+            // answer to "why is this line like this?" without leaving the file. It costs nothing
+            // outside a repository — no blame, no text.
+            inline_blame: true,
             // Off by default for the same reason `format_on_save` is: writing someone's file
             // without being asked is not a decision to make on their behalf. It is one switch away
             // for the many people who have never pressed ctrl-s and should not lose work for it.
@@ -332,6 +338,10 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     if let Some(hints) = config.inlay_hints {
         settings.inlay_hints = hints;
         settings.sources.insert("inlay_hints".into(), from_config);
+    }
+    if let Some(blame) = config.inline_blame {
+        settings.inline_blame = blame;
+        settings.sources.insert("inline_blame".into(), from_config);
     }
     if let Some(autosave) = config.autosave {
         settings.autosave = autosave;

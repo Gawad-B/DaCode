@@ -123,6 +123,11 @@ pub struct EditorState {
     pub recording: Option<char>,
     /// What changed since the last commit, per line.
     pub diff: crate::git::Diff,
+    /// Who last changed each line, and whether to show it. **Neither moved nor cleared** by
+    /// [`EditorState::mutate`], which only appends each change's line arithmetic to its log: a line is
+    /// looked up by walking that log back to where it was when the blame was taken. See
+    /// [`crate::blame`] for why that, rather than moving every entry per keystroke.
+    pub blame: crate::blame::Tracker,
     /// Whether the sidebar shows the diagnostics list instead of the structure panel.
     pub show_diagnostics: bool,
     /// Every problem the language server has reported, across the project.
@@ -605,6 +610,23 @@ impl EditorState {
         self.settings_active && self.settings_page.is_some()
     }
 
+    /// The blame column for [`crate::layout::Layout::with_blame`]: in the focused pane, at its
+    /// wanted width, while it is switched on and there is a blame for it — or one on its way.
+    ///
+    /// The one answer drawing, the mouse and the capture all build their layout from. A column that
+    /// one of them reserved and another did not would be the click-lands-elsewhere defect
+    /// `layout.rs` exists to prevent, by a column's width. Absent where git has nothing to say, so an
+    /// untracked file is not given an empty strip.
+    pub fn blame_column(&self, focused: usize, scale: f32) -> Option<(usize, f32)> {
+        let has = self.blame.blame().is_some() || self.blame.is_pending();
+        (self.blame.column && has && !self.settings_showing()).then(|| {
+            (
+                focused,
+                crate::layout::blame_column_width(&self.typography, scale),
+            )
+        })
+    }
+
     /// The settings tab's place in the tab strip, while it is open: after every file, one past the
     /// last buffer's number. A number the buffer list never hands out, so a tab carrying it cannot
     /// be mistaken for a file by anything that switches to or closes one.
@@ -688,6 +710,7 @@ impl EditorState {
             line_numbers: self.line_numbers,
             sticky_scroll: self.sticky_scroll,
             inlay_hints: self.show_inlay_hints,
+            inline_blame: self.blame.inline,
             autosave: self.autosave,
             transparency: (self.chrome.transparency * 100.0).round() as u8,
             animations: self.chrome.motion.animations(),
@@ -1026,6 +1049,7 @@ impl EditorState {
         if self.display.folds.is_empty()
             && self.highlights.is_empty()
             && self.diagnostics.is_empty()
+            && !self.blame.is_tracking()
         {
             return change(&mut self.document);
         }
@@ -1045,6 +1069,7 @@ impl EditorState {
                 .transform(&before, &applied.text, &applied.edits);
             shift_highlights(&mut self.highlights, &applied.edits);
             self.diagnostics.transform(&before, &applied.edits);
+            self.blame.record(&before, &applied.edits);
             before = applied.text.clone();
             replayed = true;
         }
@@ -1056,6 +1081,7 @@ impl EditorState {
             self.display.folds.clear();
             self.highlights.clear();
             self.diagnostics.clear();
+            self.blame.lose();
         }
         outcome
     }
@@ -1736,7 +1762,11 @@ pub fn draw_panes(
         scale,
         state.results.as_ref().map(|results| results.wanted_rows()),
         state.sidebar_fraction(),
-    );
+    )
+    .with_blame(state.blame_column(
+        panes.iter().position(|pane| pane.focused).unwrap_or(0),
+        scale,
+    ));
 
     draw_title(frame, state, regions.title, scale);
     draw_activity(frame, state, regions.activity, scale);
@@ -1782,7 +1812,16 @@ pub fn draw_panes(
             state.sticky_heads(pane.document.text(), pane.scroll.line, pane.focused),
             row_height,
         );
-        draw_code(frame, state, pane, rects.gutter, &area, row_height, scale);
+        draw_code(
+            frame,
+            state,
+            pane,
+            rects.blame,
+            rects.gutter,
+            &area,
+            row_height,
+            scale,
+        );
 
         // With more than one pane, each takes a footer naming its file. A reserved strip rather than
         // a label floating over the text: an overlay would sit on top of the last row of code, which
@@ -2129,18 +2168,24 @@ fn draw_info(
 ) {
     let theme = &state.theme;
 
-    let (text, accent) = match (&state.hover, diagnostic_at_cursor(state)) {
-        (Some(hover), _) => (hover.clone(), theme.accent(state.mode)),
-        (None, Some((message, is_error))) => {
-            let colour = if is_error {
-                theme.over_budget()
-            } else {
-                theme.stale()
+    let (text, accent) = match &state.hover {
+        Some(hover) => (hover.clone(), theme.accent(state.mode)),
+        None => {
+            let (message, colour) = match line_note(state, crate::blame::now()) {
+                Some(LineNote::Diagnostic { message, is_error }) => (
+                    message,
+                    if is_error {
+                        theme.over_budget()
+                    } else {
+                        theme.stale()
+                    },
+                ),
+                Some(LineNote::Blame(text)) => (text, theme.ink_faint),
+                None => return,
             };
-            draw_inline_diagnostic(frame, state, code, row_height, scale, &message, colour);
+            draw_after_line(frame, state, code, row_height, scale, &message, colour);
             return;
         }
-        (None, None) => return,
     };
 
     // A cap on *rendered* rows, not source lines. It used to be `.take(6)` over `str::lines`, which
@@ -2233,13 +2278,104 @@ fn draw_info(
     }
 }
 
-/// The message of the diagnostic under the caret, written after the end of the caret's line.
+/// What is written after the end of the caret's line, when anything is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineNote {
+    /// The problem under the caret.
+    Diagnostic { message: String, is_error: bool },
+    /// Who last changed the line, when, and why: GitLens's inline blame.
+    Blame(String),
+}
+
+/// The note for the caret's line: its diagnostic if it has one, otherwise its blame.
+///
+/// **The diagnostic always wins.** Both want the same place, and a problem is something to act on
+/// while a blame is something to know; hiding the error behind its author would be the wrong way
+/// round. One function decides, and drawing reads it, so the rule cannot be applied in one place
+/// and forgotten in another. `now` is seconds since the epoch, a parameter so the relative date can
+/// be tested.
+pub fn line_note(state: &EditorState, now: i64) -> Option<LineNote> {
+    if let Some((message, is_error)) = diagnostic_at_cursor(state) {
+        return Some(LineNote::Diagnostic { message, is_error });
+    }
+    if !state.blame.inline {
+        return None;
+    }
+    let attribution = state.blame.at(state.cursor_point().line)?;
+    Some(LineNote::Blame(crate::blame::inline_text(attribution, now)))
+}
+
+/// One entry of the gutter's blame column: the author on the left, how long ago on the right.
+///
+/// Elided to the column rather than clipped by it, so a long name ends in an ellipsis rather than
+/// mid-letter. The age is kept whole — it is the shorter half and the one read at a glance.
+fn draw_blame_entry(
+    frame: &mut Frame,
+    state: &EditorState,
+    attribution: crate::blame::Attribution<'_>,
+    cell: Rect,
+    on_cursor_line: bool,
+    now: i64,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let colour = if on_cursor_line {
+        theme.ink_dim
+    } else {
+        theme.ink_faint
+    };
+    let pad = space::SM * scale;
+    let inner = Rect::new(
+        cell.x + pad,
+        cell.y,
+        (cell.width - pad * 1.5).max(0.0),
+        cell.height,
+    );
+    let (author, age) = match attribution {
+        crate::blame::Attribution::Commit(commit) => (
+            commit.author.clone(),
+            crate::blame::ago_short(commit.time, now),
+        ),
+        crate::blame::Attribution::Uncommitted => ("not committed".to_string(), String::new()),
+    };
+    let advance = crate::layout::measured_advance(&state.typography, Role::LineNumber, scale);
+    let age_width = age.chars().count() as f32 * advance;
+    let room = (inner.width - age_width - if age.is_empty() { 0.0 } else { advance }).max(0.0);
+    frame.text(run(
+        state,
+        Role::LineNumber,
+        elide(state, Role::LineNumber, &author, room, scale),
+        Rect::new(inner.x, inner.y, room, inner.height),
+        colour,
+        Align::Left,
+        scale,
+    ));
+    if !age.is_empty() && inner.width > age_width {
+        frame.text(run(
+            state,
+            Role::LineNumber,
+            age,
+            // A character of slack on the left, so the estimate being a hair short clips nothing.
+            Rect::new(
+                inner.right() - age_width - advance,
+                inner.y,
+                age_width + advance,
+                inner.height,
+            ),
+            colour,
+            Align::Right,
+            scale,
+        ));
+    }
+}
+
+/// A note written after the end of the caret's line: the diagnostic under the caret, or its blame.
 ///
 /// It was a card on the row below the caret, which hid that row — the line under an unused import
 /// is usually the next import, and it vanished while the caret sat there. On the line's own row,
 /// past its last character, it covers nothing. The cost is length: a message longer than the room
 /// left on the row is elided, and the whole of it is in the problems list and in a hover.
-fn draw_inline_diagnostic(
+fn draw_after_line(
     frame: &mut Frame,
     state: &EditorState,
     code: Rect,
@@ -5241,10 +5377,12 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_code(
     frame: &mut Frame,
     state: &EditorState,
     pane: &PaneView<'_>,
+    blame: Option<Rect>,
     gutter: Rect,
     area: &crate::layout::CodeArea,
     row_height: f32,
@@ -5339,12 +5477,15 @@ fn draw_code(
     // part-scrolled that row starts above the code area: its band, its line number and its glyphs
     // would paint over the pinned strip or the tab bar. Gutter and code together, so the number
     // stays beside its line.
+    let left = blame.map_or(gutter.x, |column| column.x);
     frame.set_clip(Some(Rect::new(
-        gutter.x,
+        left,
         code.y,
-        (code.right() - gutter.x).max(0.0),
+        (code.right() - left).max(0.0),
         code.height,
     )));
+    // The relative dates are measured from one instant per frame, not one per row.
+    let now = crate::blame::now();
     let text_left = grid.x_of(0);
     let em = state.typography.code_size * scale;
 
@@ -5427,7 +5568,7 @@ fn draw_code(
             // Mixed in OKLCH and drawn as part of the backdrop, not blended as a faint wash: five
             // percent of ink blended in linear light comes out several times lighter than five
             // percent looks, and a backdrop stays as see-through as the surface around it.
-            let band = Rect::new(gutter.x, y, code.right() - gutter.x, row_height);
+            let band = Rect::new(left, y, code.right() - left, row_height);
             if state.modal {
                 frame.fill_backdrop(
                     band,
@@ -5552,6 +5693,28 @@ fn draw_code(
                     ),
                     color,
                 );
+            }
+        }
+
+        // Who changed it, once per run of lines from the same commit: a column repeating one name
+        // forty times is a column nobody reads. The first row on screen always says, so scrolling
+        // into the middle of a run does not leave the top of the view unattributed.
+        if let (Some(column), true, true) = (blame, pane.focused, row.is_first()) {
+            if let Some(attribution) = state.blame.at(row.line) {
+                let previous = (index > 0 && row.line > 0)
+                    .then(|| state.blame.at(row.line - 1))
+                    .flatten();
+                if previous != Some(attribution) {
+                    draw_blame_entry(
+                        frame,
+                        state,
+                        attribution,
+                        Rect::new(column.x, y, column.width, row_height),
+                        on_cursor_line,
+                        now,
+                        scale,
+                    );
+                }
             }
         }
 

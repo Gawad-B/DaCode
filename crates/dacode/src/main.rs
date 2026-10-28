@@ -303,6 +303,7 @@ fn new_state(
         search: None,
         recording: None,
         diff: dacode::git::Diff::default(),
+        blame: dacode::blame::Tracker::new(settings.inline_blame),
         show_diagnostics: false,
         focus: Default::default(),
         problems,
@@ -405,7 +406,7 @@ const VALUE_FLAGS: [&str; 24] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 44] = [
+const FLAGS: [(&str, &str, &str); 45] = [
     // Opening.
     (
         "--no-session",
@@ -470,6 +471,7 @@ const FLAGS: [(&str, &str, &str); 44] = [
     ("--welcome", "STEP", "the first-run wizard at one step"),
     ("--folded", "", "with a block folded"),
     ("--git", "", "the diff gutter"),
+    ("--blame", "", "the blame column and the caret line's blame"),
     ("--palette", "QUERY", "the file palette, filtered"),
     ("--commands", "", "the command palette"),
     ("--search", "QUERY", "the find box"),
@@ -1141,6 +1143,15 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--blame") {
+        // A canned blame, for the same reason as `--git`'s canned diff: what a capture shows must
+        // not depend on whoever last committed to the file on screen. Runs of lines from three
+        // commits, and a stretch not committed yet, so both kinds of entry are on screen.
+        state.blame.column = true;
+        state.blame.show(canned_blame(&state));
+        refit(&mut state);
+        start(&mut state);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--folded") {
         // Fold every top-level block, so the marker and the hidden-line count are inspectable.
         let mut line = 0;
@@ -1409,6 +1420,57 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     Ok(())
 }
 
+/// The blame `--blame` draws: three authors in runs down the file, and lines 12 and 13 not committed.
+fn canned_blame(state: &EditorState) -> dacode::blame::Blame {
+    let now = dacode::blame::now();
+    let day = 86_400;
+    let commit = |hash: char, author: &str, age: i64, summary: &str| dacode::blame::Commit {
+        hash: std::iter::repeat_n(hash, 40).collect(),
+        author: author.into(),
+        mail: String::new(),
+        time: now - age,
+        summary: summary.into(),
+    };
+    let commits = vec![
+        commit(
+            'a',
+            "Ada Lovelace",
+            400 * day,
+            "Lay out the first draft of the module",
+        ),
+        commit(
+            'b',
+            "Grace Hopper",
+            3 * day,
+            "Handle the empty input before parsing",
+        ),
+        commit(
+            'c',
+            "Linus Torvalds",
+            5 * 3_600,
+            "Name the error after what the user did",
+        ),
+        commit(
+            '0',
+            "Not Committed Yet",
+            0,
+            "Version of the file from standard input",
+        ),
+    ];
+    let lines = (0..state.document.text().len_lines())
+        .map(|line| match line {
+            12 | 13 => 3,
+            line if line % 17 < 6 => 0,
+            line if line % 17 < 11 => 1,
+            _ => 2,
+        })
+        .collect();
+    dacode::blame::Blame::new(
+        std::path::PathBuf::from(state.file_path.clone().unwrap_or_default()),
+        dacode::blame::Parsed { commits, lines },
+    )
+}
+
 /// Whether an offset falls inside a non-empty selection.
 ///
 /// A free function so it can be tested without a window: the rule it encodes — a right-click inside
@@ -1438,7 +1500,10 @@ fn fit_wrap_columns(state: &mut EditorState, window_width: f32, scale: f32) {
         // Where the sidebar is going, not where its slide has got to: the text is wrapped once for
         // the width it will have, rather than rewrapped on every frame of the slide.
         if state.sidebar_open() { 1.0 } else { 0.0 },
-    );
+    )
+    // The blame column takes its width from the code, so the wrap has to know about it — or soft
+    // wrapped lines run under the right edge by exactly the column's width.
+    .with_blame(state.blame_column(0, scale));
     let grid = dacode::layout::CodeGrid::new(
         regions.pane(0, 1, true, scale).code,
         state.typography.code_size * 0.6 * scale,
@@ -1608,6 +1673,19 @@ struct App {
     git: dacode::git::GitWorker,
     /// The version the last diff was asked for, so typing does not spawn a `git show` per keystroke.
     diffed_version: Option<dacode_text::Version>,
+    /// Runs `git blame` and `git show` for the active file, off the UI thread.
+    blame_worker: dacode::blame::BlameWorker,
+    /// Something happened that a fresh blame should follow: a file opened or reloaded, a save, an
+    /// outside change. Spent only when a request is actually sent, so a blame turned on later — the
+    /// column toggled on with the inline note off — still gets the one it missed.
+    ///
+    /// Not raised per keystroke. A blame walks history, which on a long-lived file is hundreds of
+    /// milliseconds of another process's time, and between these moments the edit log in
+    /// [`dacode::blame`] keeps the one held correct.
+    blame_wanted: bool,
+    /// Whether the soft wrap was last fitted with the blame column taking its width, so the wrap
+    /// is refitted when the column comes or goes rather than every idle step.
+    blame_fitted: bool,
     /// Watches open files for changes made outside the editor.
     watcher: Option<dacode_project::FileWatcher>,
     /// Paths this editor is about to write, so its own saves are not mistaken for someone else's
@@ -2147,6 +2225,9 @@ impl App {
             server_hover: None,
             git: dacode::git::GitWorker::spawn_with(waker.clone()),
             diffed_version: None,
+            blame_worker: dacode::blame::BlameWorker::spawn_with(waker.clone()),
+            blame_wanted: true,
+            blame_fitted: false,
             watcher: match dacode_project::FileWatcher::with_waker(waker.clone()) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
@@ -4165,6 +4246,9 @@ impl App {
         if self.git.busy() {
             return true;
         }
+        if self.blame_worker.busy() {
+            return true;
+        }
         // And for an install. It is the longest-running of them by far, and its whole point is to
         // report back — a reply left sitting in the channel would make a minute-long install look
         // like nothing happened.
@@ -4645,6 +4729,7 @@ impl App {
         changed |= self.poll_formatter();
         changed |= self.poll_installer();
         changed |= self.sync_git();
+        changed |= self.sync_blame();
         changed
     }
 
@@ -5424,6 +5509,7 @@ impl App {
                 self.reveal_cursor();
             }
             Action::RevertHunk => self.request_revert(),
+            Action::ShowCommit => self.show_commit(self.state.cursor_point().line),
             Action::ToggleTree => {
                 if self.state.tree.is_some() {
                     self.state.tree = None;
@@ -6392,6 +6478,10 @@ impl App {
                 self.state.inlay_hints.clear();
                 self.hinted_version = None;
             }
+            Field::InlineBlame => {
+                self.state.blame.inline = values.inline_blame;
+                self.blame_wanted = true;
+            }
             Field::Autosave => self.state.autosave = values.autosave,
             Field::Transparency => self.set_transparency(values.transparency),
             Field::Animations => self.state.chrome.motion.set_animations(values.animations),
@@ -7000,6 +7090,9 @@ impl App {
                 self.self_written.insert(dacode_project::canonical(file));
                 self.remember_disk(&path);
                 self.state.document.mark_saved();
+                // A save is the moment the buffer and the blame's idea of it are re-aligned: the
+                // edit log's pessimism about split lines ends here.
+                self.blame_wanted = true;
                 // The file on disk is authoritative now, so the recovery copy must go — otherwise it
                 // would be offered again on the next open.
                 self.recovery.discard(file);
@@ -7725,6 +7818,98 @@ impl App {
             .is_some_and(|open| std::path::Path::new(open) == path)
     }
 
+    /// Keeps the blame in step with the buffer: asks for one when something called for it, and takes
+    /// the answer if it is the one being waited for.
+    ///
+    /// Nothing here is per keystroke. The blame held is moved through edits by its own log (see
+    /// [`dacode::blame`]), so the only reasons to ask git again are the ones that set
+    /// `blame_wanted`, and the log having given up.
+    fn sync_blame(&mut self) -> bool {
+        let blame = &self.state.blame;
+        if blame.wanted() && (self.blame_wanted || blame.needs_refresh()) {
+            if let Some(path) = &self.state.file_path {
+                let path = std::path::PathBuf::from(path);
+                let version = self.state.document.version();
+                self.blame_worker.request(dacode::blame::Request::Blame {
+                    path: path.clone(),
+                    text: self.state.document.text().to_string(),
+                    version,
+                });
+                self.state.blame.requested(path, version);
+            }
+            self.blame_wanted = false;
+        }
+
+        let mut changed = false;
+        while let Some(result) = self.blame_worker.poll() {
+            match result {
+                dacode::blame::BlameResult::Blame {
+                    path,
+                    version,
+                    blame,
+                } => {
+                    // `accept` refuses an answer for another file or an older request itself; the
+                    // path check here is for the buffer having changed underneath both.
+                    if self.is_active_file(&path) {
+                        changed |= self.state.blame.accept(&path, version, blame);
+                    }
+                }
+                dacode::blame::BlameResult::Commit { path, text } => {
+                    if self.is_active_file(&path) {
+                        self.state.hover = Some(text);
+                        changed = true;
+                    }
+                }
+                dacode::blame::BlameResult::Superseded => {}
+            }
+        }
+
+        // The column takes its width from the code, so soft wrap has to be refitted when it comes
+        // or goes — a toggle, or git answering that this file has no history.
+        let column = self.state.blame_column(0, 1.0).is_some();
+        if column != self.blame_fitted {
+            self.blame_fitted = column;
+            if self.window.is_some() {
+                let (width, scale) = (self.window_width(), self.scale());
+                fit_wrap_columns(&mut self.state, width, scale);
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// Shows the whole commit that last changed `line`, in the info card.
+    ///
+    /// The summary is already held; the body is not, because porcelain blame gives only the first
+    /// line of each message, so the rest is one `git show` on the worker.
+    fn show_commit(&mut self, line: usize) {
+        let Some(path) = self.state.file_path.clone() else {
+            self.state.hover = Some("a scratch buffer has no history".into());
+            return;
+        };
+        match self.state.blame.at(line) {
+            Some(dacode::blame::Attribution::Commit(commit)) => {
+                let hash = commit.hash.clone();
+                self.blame_worker.request(dacode::blame::Request::Show {
+                    path: std::path::PathBuf::from(path),
+                    hash,
+                });
+            }
+            Some(dacode::blame::Attribution::Uncommitted) => {
+                self.state.hover = Some("this line is not committed yet".into());
+            }
+            None if self.state.blame.is_pending() => {
+                self.state.hover = Some("still asking git who changed this line".into());
+            }
+            None => {
+                // Ask for one, so a second try finds it — unless git has nothing to say, which is
+                // the same sentence either way.
+                self.blame_wanted = true;
+                self.state.hover = Some("no history for this line — is the file in git?".into());
+            }
+        }
+    }
+
     /// Asks the git worker what undoing the change under the cursor would put back.
     ///
     /// Not done here: it needs the committed file, a diff against it, and the hunk containing one
@@ -7849,6 +8034,7 @@ impl App {
             self.state
                 .sidebar_fraction_at(self.last_frame.unwrap_or_else(std::time::Instant::now)),
         )
+        .with_blame(self.state.blame_column(self.panes.active(), self.scale()))
     }
 
     /// Handles a click, or a drag when `extend` is set.
@@ -7984,6 +8170,19 @@ impl App {
 
         let rects = layout.pane(index, count, vertical, scale);
         let offset = self.offset_at(rects.code, x, y, scale);
+
+        // A click on the blame column asks for that line's commit. The row is found the way a click
+        // in the code finds one — through the code grid, at the column's x clamped to the first
+        // character — so the entry under the pointer and the line asked about cannot disagree.
+        if !extend
+            && rects
+                .blame
+                .is_some_and(|column| dacode::layout::contains(column, x, y))
+        {
+            let line = self.state.document.text().char_to_line(offset);
+            self.show_commit(line);
+            return;
+        }
 
         // Alt-drag draws a rectangle. Held before the button goes down it means "another cursor";
         // held while the pointer moves it means "a cursor on every line between these two columns",
@@ -8917,6 +9116,10 @@ impl App {
         }
         self.state.sticky_scroll = settings.sticky_scroll;
         self.state.show_inlay_hints = settings.inlay_hints;
+        if self.state.blame.inline != settings.inline_blame {
+            self.state.blame.inline = settings.inline_blame;
+            self.blame_wanted = true;
+        }
         self.set_transparency(settings.transparency);
         self.state.chrome.motion.set_animations(settings.animations);
         self.grammar.set_keymap(settings.keymap);
@@ -9104,6 +9307,9 @@ impl App {
                         if let Some(open) = self.state.file_path.clone() {
                             self.remember_disk(&open);
                         }
+                        // The text is the same but the history may not be: a commit, a checkout or
+                        // a rebase touches the file without changing what is in it.
+                        self.blame_wanted = true;
                         continue;
                     }
                     // The cursor is kept by offset rather than reset: a formatter run should not
@@ -9269,6 +9475,9 @@ impl App {
         // The diff describes the document that just left.
         self.state.diff = dacode::git::Diff::default();
         self.diffed_version = None;
+        // So does the blame, and its line numbers mean nothing in the new one.
+        self.state.blame.clear();
+        self.blame_wanted = true;
 
         // Folds describe the document that just left. Keeping them would hide unrelated lines in
         // the new one, since they are line numbers and nothing more.
@@ -12985,6 +13194,195 @@ mod wiring_tests {
             app.state.document.text().to_string(),
             "one\nCHANGED\nthree\n"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A repository at `dir` with `notes.txt` committed, or `None` (and a note) where git is not
+    /// available — the skip CLAUDE.md asks for, rather than a failure that tests the machine.
+    fn committed_notes(dir: &std::path::Path, contents: &str) -> Option<()> {
+        if dacode::process::command("git")
+            .arg("--version")
+            .output()
+            .map(|out| !out.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("skipping: no git on this machine");
+            return None;
+        }
+        let git = |args: &[&str]| {
+            dacode::process::command("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+        };
+        std::fs::write(dir.join("notes.txt"), contents).unwrap();
+        let built = git(&["init", "-q"]).is_some()
+            && git(&["config", "user.email", "ann@example.invalid"]).is_some()
+            && git(&["config", "user.name", "Ann Example"]).is_some()
+            && git(&["add", "."]).is_some()
+            && git(&[
+                "commit",
+                "-q",
+                "-m",
+                "write the notes",
+                "-m",
+                "With a body.",
+            ])
+            .is_some();
+        if !built {
+            eprintln!("skipping: could not build a repository here");
+        }
+        built.then_some(())
+    }
+
+    #[test]
+    fn blame_is_toggled_by_its_keys_and_fills_a_column_from_the_real_repository() {
+        // The whole path: a key, through the grammar and the executor, to the event loop asking
+        // git, to a column the layout reserves — in both grammars, since the column is a feature
+        // and a feature reachable only from Vim's keys is not one a conventional user has.
+        let dir = scratch("blame-keys");
+        if committed_notes(&dir, "one\ntwo\nthree\n").is_none() {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\nthree\n");
+        app.state.modal = true;
+        app.grammar.set_modal(true);
+        app.state.mode = Mode::Normal;
+
+        assert!(!app.state.blame.column);
+        app.press(Key::char('g'));
+        app.press(Key::char('b'));
+        assert!(app.state.blame.column, "gb turns the column on");
+        assert!(
+            settle(&mut app, |app| app.state.blame.blame().is_some()),
+            "the blame never arrived"
+        );
+        assert!(matches!(
+            app.state.blame.at(1),
+            Some(dacode::blame::Attribution::Commit(commit)) if commit.author == "Ann Example"
+        ));
+        let scale = app.scale();
+        assert!(
+            app.layout().pane(0, 1, true, scale).blame.is_some(),
+            "and the layout the mouse reads has the column the drawing has"
+        );
+
+        // `gB`: the whole commit, body and all, in the info card.
+        app.press(Key::char('g'));
+        app.press(Key::char('B'));
+        assert!(
+            settle(&mut app, |app| app
+                .state
+                .hover
+                .as_ref()
+                .is_some_and(|text| text.contains("With a body."))),
+            "the commit never arrived: {:?}",
+            app.state.hover
+        );
+
+        // The conventional editor's spelling turns it off again.
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app.state.mode = Mode::Insert;
+        app.press(Key {
+            code: KeyCode::Char('b'),
+            ctrl: false,
+            alt: true,
+            shift: false,
+        });
+        assert!(!app.state.blame.column, "alt-b turns it off");
+        assert!(app.layout().pane(0, 1, true, scale).blame.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_caret_lines_blame_follows_typing_and_yields_to_a_diagnostic() {
+        // Through the real edit path, so it is `mutate` that keeps the blame right: a line added
+        // above must move every attribution below it, or the note names the commit of the line that
+        // used to be there.
+        let dir = scratch("blame-inline");
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\nthree\n");
+        let commit = dacode::blame::Commit {
+            hash: "a".repeat(40),
+            author: "Ann Example".into(),
+            mail: String::new(),
+            time: 1_000_000,
+            summary: "write the notes".into(),
+        };
+        let other = dacode::blame::Commit {
+            hash: "b".repeat(40),
+            author: "Bob Example".into(),
+            ..commit.clone()
+        };
+        app.state.blame.inline = true;
+        app.state.blame.show(dacode::blame::Blame::new(
+            dir.join("notes.txt"),
+            dacode::blame::Parsed {
+                commits: vec![commit, other],
+                lines: vec![0, 1, 0],
+            },
+        ));
+        let now = 1_000_000 + 3 * 86_400;
+
+        app.state.document.set_primary_caret(CharOffset(4));
+        assert_eq!(
+            chrome::line_note(&app.state, now),
+            Some(chrome::LineNote::Blame(
+                "Bob Example, 3 days ago · write the notes".into()
+            ))
+        );
+
+        app.state.document.set_primary_caret(CharOffset(0));
+        app.press(Key::char('x'));
+        app.press(Key::named(KeyCode::Enter));
+        assert_eq!(
+            app.state.document.text().to_string(),
+            "x\none\ntwo\nthree\n"
+        );
+        assert!(
+            matches!(
+                app.state.blame.at(2),
+                Some(dacode::blame::Attribution::Commit(c)) if c.author == "Bob Example"
+            ),
+            "`two` moved down a line and kept its author"
+        );
+        assert_eq!(
+            chrome::line_note(&app.state, now),
+            Some(chrome::LineNote::Blame("not committed yet".into())),
+            "the caret's line was touched by the edit"
+        );
+
+        // A problem on the line takes the place. A blame is something to know; an error is
+        // something to act on, and hiding it behind its author would be the wrong way round.
+        let version = app.state.document.version();
+        let line = app.state.cursor_point().line as u32;
+        app.state.diagnostics.apply(
+            vec![dacode_lsp::lsp_types::Diagnostic {
+                range: dacode_lsp::lsp_types::Range {
+                    start: dacode_lsp::lsp_types::Position { line, character: 0 },
+                    end: dacode_lsp::lsp_types::Position { line, character: 3 },
+                },
+                message: "unused".into(),
+                ..Default::default()
+            }],
+            None,
+            version,
+        );
+        assert!(matches!(
+            chrome::line_note(&app.state, now),
+            Some(chrome::LineNote::Diagnostic { message, .. }) if message == "unused"
+        ));
+
+        // And the setting turns it off without touching the diagnostic's turn.
+        app.state.diagnostics.clear();
+        app.state.blame.inline = false;
+        assert_eq!(chrome::line_note(&app.state, now), None);
 
         std::fs::remove_dir_all(&dir).ok();
     }

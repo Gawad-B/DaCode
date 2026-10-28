@@ -4,6 +4,7 @@
 //! document text out, with no window and no GPU. That is the payoff of the `Action` design —
 //! the same path the keyboard drives is the path the tests drive.
 
+pub mod blame;
 pub mod chrome;
 pub mod clipboard;
 pub mod completion;
