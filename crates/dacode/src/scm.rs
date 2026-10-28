@@ -1244,6 +1244,8 @@ mod tests {
 
     /// A repository of this test's own, or `None` where there is no git — a skip, not a failure.
     /// Signing and hooks are off in the repository, so a developer's global config cannot reach in.
+    /// So is line-ending conversion: Git for Windows ships with `core.autocrlf=true`, which checked
+    /// `one\n` back out as `one\r\n` and failed the release build on the Windows runner alone.
     fn repository(label: &str, commit: bool) -> Option<PathBuf> {
         let dir =
             std::env::temp_dir().join(format!("dacode-scm-worker-{}-{label}", std::process::id()));
@@ -1254,7 +1256,8 @@ mod tests {
             && ok(&["config", "user.email", "ann@example.invalid"])
             && ok(&["config", "user.name", "Ann Example"])
             && ok(&["config", "commit.gpgsign", "false"])
-            && ok(&["config", "core.hooksPath", "hooks-none"]))
+            && ok(&["config", "core.hooksPath", "hooks-none"])
+            && ok(&["config", "core.autocrlf", "false"]))
         {
             eprintln!("skipping: no git to build a repository with");
             return None;
