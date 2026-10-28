@@ -304,6 +304,12 @@ pub fn execute(
         }
         // Both need the machine: the clipboard, and the files a link is read from.
         Action::Share | Action::Run => return Outcome::Window(action.clone()),
+        // The updater is a process and a thread the event loop owns, as the language server is.
+        Action::CheckForUpdates
+        | Action::DownloadUpdate
+        | Action::RestartToUpdate
+        | Action::UpdateReleaseNotes
+        | Action::SkipUpdate => return Outcome::Window(action.clone()),
         // The shell is a process, and processes are the event loop's.
         Action::ToggleTerminal
         | Action::FocusTerminal

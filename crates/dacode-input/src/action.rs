@@ -347,6 +347,16 @@ pub enum Action {
     /// Every message the editor has shown, newest first — so one that vanished at the next
     /// keystroke can still be read.
     ToggleNotifications,
+    /// Ask GitHub whether a newer release exists, whatever the `updates` setting says.
+    CheckForUpdates,
+    /// Fetch and verify the release on offer — or, for a system package, open its download.
+    DownloadUpdate,
+    /// Save everything as quitting does, install the verified release, and start it.
+    RestartToUpdate,
+    /// The release on offer's page, in the browser.
+    UpdateReleaseNotes,
+    /// Stop offering the release on offer; a later one is still offered.
+    SkipUpdate,
     /// Copy a reference to the cursor's line — a link to it on the repository's host when there is
     /// one, `path:line` when there is not.
     Share,
@@ -661,6 +671,11 @@ impl Action {
         "toggle_diagnostics",
         "source_control",
         "notifications",
+        "check_for_updates",
+        "download_update",
+        "restart_to_update",
+        "update_release_notes",
+        "skip_update",
         "share",
         "run",
         "toggle_terminal",
@@ -857,6 +872,11 @@ impl Action {
             "toggle_diagnostics" => Action::ToggleDiagnosticsList,
             "source_control" => Action::ShowSourceControl,
             "notifications" => Action::ToggleNotifications,
+            "check_for_updates" => Action::CheckForUpdates,
+            "download_update" => Action::DownloadUpdate,
+            "restart_to_update" => Action::RestartToUpdate,
+            "update_release_notes" => Action::UpdateReleaseNotes,
+            "skip_update" => Action::SkipUpdate,
             "share" => Action::Share,
             "run" => Action::Run,
             "toggle_terminal" => Action::ToggleTerminal,

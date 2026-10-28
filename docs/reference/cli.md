@@ -103,6 +103,7 @@ RENDERING WITHOUT A WINDOW
     --terminal-height PERCENT   with --terminal: the panel dragged to that share
     --terminal-select R:C-R:C   with --terminal: a mouse selection
     --help-panel                the F1 key list
+    --update-offer KIND         the bell offering an update: ready, available or package
     --menu                      the menu bar
     --menu-title TITLE          the menu bar open at a title, or `...`
     --context-menu              a right-click menu
@@ -242,6 +243,7 @@ order.
 | 4a | `--terminal` | — | The terminal panel open under the code, with the keys, showing a fixed transcript fed to the same parser a live shell's output goes through — a prompt, a coloured `ls`, a build, `git status`, every attribute the panel draws, the sixteen colours as swatches, 256-colour and 24-bit text, and the cursor waiting at a prompt. No shell is started, so the capture is the same on every machine. `--terminal-tabs N` shows that many tabs in its header (the first is the transcript's), `--terminal-height PERCENT` the panel as if its edge had been dragged to that share of the editor — clamped as a drag is — and `--terminal-select R:C-R:C` a mouse selection from the first cell to the last, rows and columns counted from zero on the screen. |
 | 5 | `--welcome` | `STEP` | The first-run wizard. `keys` is the first screen, `theme` the second with the third option highlighted, `import` the third. Any other value lands on `theme` without the highlight. Ignores the buffer. |
 | 6 | `--help-panel` | — | The F1 key list. |
+| 6a | `--update-offer` | `KIND` | The bell's panel open over a canned DaCode 1.2.0: `ready` (the default) offers **Restart now**, `available` the **Update** a `notify` setting waits on, and `package` the `sudo dnf install` command and **Download** an `.rpm` install is given. Nothing is fetched. |
 | 7 | `--menu` | — | The menu bar, opened. |
 | 7a | `--menu-title` | `TITLE` | The menu bar open at one title, named as on the bar (`Help`). A title the window is too narrow to show opens as F10 reaches it, under "…" with its name as a header; `...` opens the overflow's list of hidden titles. |
 | 8 | `--context-menu` | — | A right-click menu at (420, 300). |

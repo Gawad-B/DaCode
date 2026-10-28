@@ -479,7 +479,7 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --settings-search Q --theme-dropdown --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
---transparency PERCENT --help-panel --menu --menu-title TITLE --context-menu --commands
+--transparency PERCENT --help-panel --update-offer KIND --menu --menu-title TITLE --context-menu --commands
 --which-key PREFIX --symbols QUERY --block LINE:COLUMN --capture-key NAME[=KEYS] --terminal --terminal-tabs N
 --terminal-height PERCENT --terminal-select R:C-R:C`.
 
@@ -581,6 +581,7 @@ anything platform-shaped:
 | The source-control view | `crates/dacode/src/source_control.rs` — `View` (rows, message box, selection, questions) and `View::geometry`/`hit`, read by `chrome::draw_source_control` and `App::click_source_control`; keys in `App::handle_scm_key` |
 | What git is asked, and how | `crates/dacode/src/scm.rs` — `parse_status` (porcelain v2), `parse_branches`, `Op`, `Worker`; `App::sync_scm` collects, `App::git_action` dispatches every `Action::Git` |
 | A diff tab | `App::show_review` opens it, `EditorState::review` marks it, `EditorState::mutate` keeps it read-only, `chrome::diff_line_kind` colours it |
+| Updating DaCode | `crates/dacode/src/update.rs` — the release JSON, `install_kind`, `SHA256SUMS`, staging and `apply`, behind a `Fetch` trait so tests never reach the network; `App::poll_updates`, `update_action` and `restart_for_update` in `main.rs`; `chrome::notifications_panel` for the offer's buttons; `.github/workflows/release.yml` writes the sums |
 | Who changed a line | `crates/dacode/src/blame.rs` — the porcelain reader, the edit log, `Tracker` and `BlameWorker`; `App::sync_blame` asks and collects, `chrome::line_note` decides between a diagnostic and the inline blame |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
@@ -675,6 +676,18 @@ of which stash to pop. A pull or push in flight cannot be cancelled; it runs off
 nothing waits on it, but it has to finish or fail. The message box keeps its caret but has no
 selection or undo of its own. The Run title is gone from the menu bar — Git took its place, since a
 ninth title pushed Help off at 1600px — and the run command is under Terminal and on the tab bar's ▶.
+
+From the updater: **there is no code signing.** A download is checked against `SHA256SUMS` from the
+same GitHub release over HTTPS, which catches corruption and a swapped asset but not a compromised
+release — whoever can replace the tarball can replace the sums. Releases made before the updater
+carry no `SHA256SUMS` and are refused for self-install, so the first updater release must be
+installed by hand. HTTP goes through `curl` rather than a TLS crate, so a machine without it is told
+so instead of updated. "Restart now" runs the release's own `install.sh` on the UI thread as the
+editor leaves — a few file copies, after the session and recovery are written; on Windows the setup
+runs with `/SILENT` and its "Start dacode" entry is `skipifsilent`, so DaCode is not reopened there.
+A `/usr/local` or `/opt` install, or one in a prefix outside the home directory, is told the release
+exists and nothing more. The automatic check is skipped for a cargo build (it would never offer
+anything), and `resumed` is the only caller, so no test or capture reaches the network.
 
 Only the *active* buffer gets a file watcher, a git diff, and a language server. Background buffers
 get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused buffer is

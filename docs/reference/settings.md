@@ -56,6 +56,7 @@ than logged.
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |
 | `transparency` | number, 0–90 | `0` | How much of the desktop shows through the window, in percent. Backgrounds go see-through; text, highlights and popups stay solid. Needs a compositor, and turning it on from `0` takes effect at the next start. |
 | `animations` | `"full"` \| `"reduced"` \| `"off"` | `"full"` | How much the interface moves. See below. |
+| `updates` | `"automatic"` \| `"notify"` \| `"off"` | `"automatic"` | Whether new releases are checked for once a day, and downloaded. See below. |
 | `leader` | string | `"<space>"` | What `<leader>` expands to in `dacode.map`. |
 
 Anything not named in a `dacode.set` call is left alone, and unset is not the same as false: reading a
@@ -63,7 +64,7 @@ boolean naively would have made every `dacode.set` that omitted `soft_wrap` turn
 Lua coerces a missing key to `false`. So a boolean is taken **only** when the value really is a
 boolean — which also means `soft_wrap = "yes"` reads as absent and is not reported. Numbers and
 strings go through mlua's own coercion, so `tab_width = "2"` works and `theme = 5` becomes `"5"`.
-Bad *values* for `appearance`, `line_numbers` and `animations` are reported by name.
+Bad *values* for `appearance`, `line_numbers`, `animations` and `updates` are reported by name.
 
 ### Notes on the ones that are not obvious
 
@@ -78,6 +79,17 @@ finishes whatever was in flight at once. Switching *to* `reduced` does not re-ba
 running, which finish as they were. Typing, the cursor, selections and scrolling that follows the
 cursor never animate, whatever this says. Any other spelling is reported by name rather than read as
 `full`, and so is `animations = false`, which is the obvious way to write "off" and is not one.
+
+**`updates` decides what DaCode does about new releases, never whether you can ask.** `automatic`
+checks GitHub at most once a day, and for a copy that can update itself — the tarball's `install.sh`
+into your home directory, or the Windows installer — downloads the release, checks it against the
+release's `SHA256SUMS`, and offers **Restart now** in the bell. Nothing is installed until that is
+pressed. `notify` checks and tells you, and downloads only when you press **Update**. `off` never
+checks by itself. In all three, **Help ▸ Check for updates** asks at once. A `.deb` or `.rpm`
+install is told the command to run, never updated in place, and a cargo build is never offered
+anything. **Skip this version** stops that version being offered; a later one still is. The stamp
+and the skipped version are kept in `updates/` under the state directory. `updates = false` is
+reported, like `animations = false`, rather than read as "off".
 
 **`line_numbers` has no fixed default.** It follows the grammar: `relative` with `vim_keys` on,
 `absolute` with it off. Relative numbering exists so `12j` can be read off the screen, and with the
@@ -266,7 +278,7 @@ imported theme has to work without anyone having hand-authored a Lua file.
 | `theme.appearance` | `"light"` | flips to the light built-in, unless `theme.name` already resolved |
 
 Six keys, against fifteen in Lua. `vim_keys`, `line_numbers`, `sticky_scroll`, `inlay_hints`,
-`inline_blame`, `autosave`, `transparency`, `animations` and `leader` have no TOML spelling and can only be set from
+`inline_blame`, `autosave`, `transparency`, `animations`, `updates` and `leader` have no TOML spelling and can only be set from
 `init.lua` or the settings tab.
 
 A leading byte-order mark is stripped from both formats. Notepad and PowerShell's `Set-Content` both

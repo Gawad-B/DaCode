@@ -437,6 +437,7 @@ pub fn config_from(answers: &Answers, existing: &str) -> String {
         line_numbers: crate::config::LineNumbers::default_for(answers.modal),
         transparency: 0,
         animations: crate::motion::Animations::Full,
+        updates: crate::update::Policy::Automatic,
         sticky_scroll: true,
         inlay_hints: false,
         inline_blame: true,

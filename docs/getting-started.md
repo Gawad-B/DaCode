@@ -71,6 +71,30 @@ cargo build --release
 packaging/linux/install.sh     # packaging/linux/uninstall.sh removes it
 ```
 
+### Staying up to date
+
+Once a day DaCode asks GitHub whether there is a newer release. How it updates depends on how you
+installed it:
+
+- **The tarball's `install.sh`** (into `~/.local`, or any prefix in your home directory), and the
+  **Windows installer**: the new version is downloaded in the background and checked against the
+  release's `SHA256SUMS`. The bell then says *DaCode X is ready — restart to update*, with **Restart
+  now**, **Release notes** and **Skip this version**. Restart saves your session and any unsaved
+  work exactly as quitting does, installs the new version over the old one, and reopens it on the
+  same folder. On Windows the setup runs silently and you start DaCode again yourself.
+- **The `.deb` or `.rpm`**: DaCode never touches files a package manager owns. The bell gives you the
+  command — `sudo apt install ./dacode_….deb` or `sudo dnf install ./dacode-….rpm` — and a
+  **Download** button for the package.
+- **Built from source with cargo**: never offered an update. `git pull` and build again.
+
+**Help ▸ Check for updates** (`check for updates` in the palette) asks at once. The `updates`
+setting is `"automatic"` by default; `"notify"` only tells you, and `"off"` never asks by itself —
+see [settings](reference/settings.md). The check needs `curl`, which every Linux desktop and
+Windows 10 and later already have.
+
+The first release with the updater has to be installed by hand, as before; every one after it
+arrives this way.
+
 ### Check it worked
 
 ```sh

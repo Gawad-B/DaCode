@@ -69,7 +69,11 @@ tar xzf dacode-1.0.0-x86_64-linux.tar.gz
 cargo build --release && packaging/linux/install.sh
 ```
 
-Every artifact is on the [releases page](https://github.com/Gawad-B/DaCode/releases/latest).
+Every artifact is on the [releases page](https://github.com/Gawad-B/DaCode/releases/latest). After
+that, a tarball or Windows install updates itself: DaCode checks once a day, downloads and verifies
+the new release, and offers **Restart now** in the bell. A `.deb` or `.rpm` install is told the
+command to run instead — [Staying up to date](docs/getting-started.md#staying-up-to-date) has the
+details.
 [Getting started](docs/getting-started.md) walks through the rest.
 
 ## Start

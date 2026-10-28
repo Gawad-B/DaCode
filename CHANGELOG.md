@@ -11,6 +11,19 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Added
 
+- **DaCode updates itself.** Once a day it asks GitHub for the latest release. A copy installed by
+  the tarball's `install.sh` or the Windows installer downloads it in the background, checks it
+  against the release's new `SHA256SUMS` file, and the bell offers **Restart now**, **Release
+  notes** and **Skip this version**; restarting saves the session and unsaved work as quitting does,
+  installs over the old copy and reopens the same folder (on Windows the setup runs silently and
+  you reopen DaCode yourself). A `.deb` or `.rpm` install is never changed behind its package
+  manager: the bell gives the exact `sudo apt install ./…` or `sudo dnf install ./…` command and a
+  **Download** button. A cargo build is never offered an update. **Help ▸ Check for updates** asks
+  at once, and the new `updates` setting (`"automatic"`, `"notify"` or `"off"`) is in `init.lua`
+  and on the settings tab's Files page. It needs `curl`, and says so when it is missing. Releases
+  before this one carry no `SHA256SUMS` and are not installed automatically, so this one has to be
+  installed by hand.
+
 - **Source control, as in VSCode.** `ctrl-shift-g` (or the branch icon, or the new **Git** menu)
   opens a view with the branch and how far it is ahead of and behind its upstream, a commit message
   box (`ctrl-enter` commits), and the changes in **Merge Changes**, **Staged Changes** and

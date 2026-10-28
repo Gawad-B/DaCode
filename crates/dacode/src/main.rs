@@ -327,6 +327,7 @@ fn new_state(
         chrome: dacode::chrome::Chrome {
             transparency: f32::from(settings.transparency) / 100.0,
             motion: dacode::motion::Motion::new(settings.animations),
+            updates: settings.updates,
             ..Default::default()
         },
     };
@@ -376,7 +377,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 28] = [
+const VALUE_FLAGS: [&str; 29] = [
     "--which-key",
     "--menu-title",
     "--screenshot",
@@ -405,6 +406,7 @@ const VALUE_FLAGS: [&str; 28] = [
     "--terminal-tabs",
     "--terminal-height",
     "--terminal-select",
+    "--update-offer",
 ];
 
 /// Every flag `dacode` accepts, grouped, as the one description of its command line.
@@ -416,7 +418,7 @@ const VALUE_FLAGS: [&str; 28] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 54] = [
+const FLAGS: [(&str, &str, &str); 55] = [
     // Opening.
     (
         "--no-session",
@@ -528,6 +530,11 @@ const FLAGS: [(&str, &str, &str); 54] = [
         "with --terminal: a mouse selection",
     ),
     ("--help-panel", "", "the F1 key list"),
+    (
+        "--update-offer",
+        "KIND",
+        "the bell offering an update: ready, available or package",
+    ),
     ("--menu", "", "the menu bar"),
     (
         "--menu-title",
@@ -1371,6 +1378,37 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             1.0,
             arrival,
         );
+    } else if let Some(kind) = value("--update-offer") {
+        // A canned release, so the offer's wrapping and buttons can be looked at without a newer
+        // release existing — and without the capture reaching the network.
+        use dacode::update::{Install, Package, Pending, Stage, Staged};
+        let release = dacode::update::parse_release(
+            r#"{"tag_name": "v1.2.0", "html_url": "https://github.com/Gawad-B/DaCode",
+                "assets": [{"name": "dacode-1.2.0-1.x86_64.rpm", "browser_download_url": "x"},
+                           {"name": "SHA256SUMS", "browser_download_url": "x"}]}"#,
+        )
+        .expect("canned release");
+        let (install, stage) = match kind.as_str() {
+            "package" => (Install::System, Stage::Available),
+            "available" => (Install::WindowsInstaller, Stage::Available),
+            _ => (
+                Install::WindowsInstaller,
+                Stage::Ready(Staged {
+                    version: "1.2.0".into(),
+                    installer: "dacode-setup.exe".into(),
+                }),
+            ),
+        };
+        let pending = Pending { release, stage };
+        state.chrome.update = Some(pending.offer(&install, Some(Package::Rpm)));
+        state.chrome.notify("saved src/main.rs");
+        state
+            .chrome
+            .notify(&pending.offer(&install, Some(Package::Rpm)).message);
+        state.chrome.show_notifications = true;
+        refit(&mut state);
+        start(&mut state);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--help-panel") {
         state.help = Some(dacode::help::Help::new(state.modal));
         refit(&mut state);
@@ -1980,6 +2018,19 @@ struct App {
     scm: dacode::scm::Worker,
     /// The branches the picker lists, as git last gave them.
     branches: Vec<dacode::scm::Branch>,
+    /// Asks GitHub about releases and downloads them, off the UI thread.
+    updater: dacode::update::Worker,
+    /// How this copy was installed, read once from where the executable is.
+    install: dacode::update::Install,
+    /// The machine's package format, for a copy a package manager installed.
+    package: Option<dacode::update::Package>,
+    /// Where the daily stamp, the skipped version and downloads are kept. A field for the same
+    /// reason `config_dir` is: a test gives the editor a directory of its own.
+    update_dir: std::path::PathBuf,
+    /// A newer release the editor knows about, and how far it has got.
+    pending_update: Option<dacode::update::Pending>,
+    /// "Restart now" was chosen; the idle step, which can end the loop, carries it out.
+    restart_requested: bool,
     /// Watches open files for changes made outside the editor.
     watcher: Option<dacode_project::FileWatcher>,
     /// Paths this editor is about to write, so its own saves are not mistaken for someone else's
@@ -2217,6 +2268,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             }
         }
         self.restore_recovery();
+        self.check_for_updates_if_due();
         self.sync_syntax();
         self.start_language_server();
     }
@@ -2267,6 +2319,11 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         }
         self.hold_lifeline();
         self.record_notice();
+
+        if std::mem::take(&mut self.restart_requested) && self.restart_for_update() {
+            event_loop.exit();
+            return;
+        }
 
         event_loop.set_control_flow(self.control_flow(now));
     }
@@ -2529,6 +2586,10 @@ impl App {
         // The keys `dacode.keys` gave commands, made the ones this thread runs and prints. Here
         // rather than in `new_state`, which reads the real config even under test.
         dacode_input::shortcuts::install(settings.shortcuts.clone());
+        let install = this_install();
+        let package = (install == dacode::update::Install::System)
+            .then(this_package)
+            .flatten();
         Self {
             window: None,
             renderer: None,
@@ -2586,6 +2647,16 @@ impl App {
             blame_fitted: false,
             scm: dacode::scm::Worker::spawn_with(waker.clone()),
             branches: Vec::new(),
+            updater: dacode::update::Worker::spawn_with(
+                Box::new(dacode::update::Curl),
+                env!("CARGO_PKG_VERSION"),
+                waker.clone(),
+            ),
+            install,
+            package,
+            update_dir: dacode::paths::state_dir().join("updates"),
+            pending_update: None,
+            restart_requested: false,
             watcher: match dacode_project::FileWatcher::with_waker(waker.clone()) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
@@ -3628,7 +3699,11 @@ impl App {
         // Not for the action that consumes the arm, or the second press could never get through.
         let consuming = matches!(
             action,
-            Action::Quit | Action::CloseBuffer | Action::DeleteFile | Action::InstallLanguageServer
+            Action::Quit
+                | Action::CloseBuffer
+                | Action::DeleteFile
+                | Action::InstallLanguageServer
+                | Action::RestartToUpdate
         );
         // The source-control view's questions expire the same way, except for the press that
         // answers one.
@@ -4077,6 +4152,276 @@ impl App {
     }
 
     /// Collects an install when it finishes, and starts the server it just put on disk.
+    /// Asks about releases at startup, when the setting allows it and a day has passed since the
+    /// last time. Never for a cargo build, which is not offered updates and so has no reason to
+    /// reach the network. Called from `resumed`, so neither a test nor a `--screenshot` asks.
+    fn check_for_updates_if_due(&mut self) {
+        use dacode::update;
+        if self.state.chrome.updates == update::Policy::Off
+            || self.install == update::Install::Cargo
+        {
+            return;
+        }
+        let now = update::now_seconds();
+        if !update::due(update::last_check(&self.update_dir), now) {
+            return;
+        }
+        // Stamped when asked rather than when answered, so a check that fails offline is not
+        // retried on every start of the day.
+        update::record_check(&self.update_dir, now);
+        self.updater
+            .request(update::Request::Check { manual: false });
+    }
+
+    /// Collects the updater's answers. Returns whether anything on screen changed.
+    fn poll_updates(&mut self) -> bool {
+        use dacode::update::{Reply, Stage};
+        let mut changed = false;
+        while let Some(reply) = self.updater.poll() {
+            changed = true;
+            match reply {
+                Reply::Checked {
+                    manual,
+                    result: Err(error),
+                } => {
+                    // A failed check nobody asked for is not news: the network being down is
+                    // not something the editor needs to say once a day.
+                    if manual {
+                        self.state.hover = Some(error);
+                    } else {
+                        eprintln!("dacode: update check: {error}");
+                    }
+                }
+                Reply::Checked {
+                    manual,
+                    result: Ok(None),
+                } => {
+                    if manual {
+                        self.state.hover = Some(format!(
+                            "DaCode {} is the latest version",
+                            env!("CARGO_PKG_VERSION")
+                        ));
+                    }
+                }
+                Reply::Checked {
+                    manual,
+                    result: Ok(Some(release)),
+                } => self.offer_release(release, manual),
+                Reply::Staged(result) => {
+                    let Some(pending) = &mut self.pending_update else {
+                        continue;
+                    };
+                    match result {
+                        Ok(staged) if staged.version == pending.release.version => {
+                            let message =
+                                format!("DaCode {} is ready — restart to update", staged.version);
+                            pending.stage = Stage::Ready(staged);
+                            self.state.chrome.notify(&message);
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            pending.stage = Stage::Manual(error.clone());
+                            self.state.chrome.notify(&error);
+                        }
+                    }
+                }
+            }
+        }
+        if changed {
+            self.refresh_offer();
+        }
+        changed
+    }
+
+    /// A newer release has been found: offered, downloaded or said, by how this copy was installed.
+    fn offer_release(&mut self, release: dacode::update::Release, manual: bool) {
+        use dacode::update::{self, Install, Stage};
+        let version = release.version.clone();
+        // A skipped version stays skipped until something newer comes — unless asked for by
+        // name, through the command.
+        if !manual && update::skipped(&self.update_dir).as_deref() == Some(version.as_str()) {
+            return;
+        }
+        if self.install == Install::Cargo {
+            if manual {
+                self.state.hover = Some(format!(
+                    "DaCode {version} is out — this copy was built with cargo, so update it from                      its source"
+                ));
+            }
+            return;
+        }
+        // Already on its way or ready: a second check must not start it again.
+        if let Some(pending) = &self.pending_update {
+            if pending.release.version == version
+                && matches!(pending.stage, Stage::Downloading | Stage::Ready(_))
+            {
+                if manual {
+                    self.state.chrome.show_notifications = true;
+                }
+                return;
+            }
+        }
+        let Some(pending) = update::found(
+            release,
+            &self.install,
+            self.package,
+            self.state.chrome.updates,
+        ) else {
+            return;
+        };
+        if pending.stage == Stage::Downloading {
+            self.start_download(&pending.release);
+        }
+        let message = pending.offer(&self.install, self.package).message;
+        self.pending_update = Some(pending);
+        self.state.chrome.notify(&message);
+        if manual {
+            self.state.chrome.show_notifications = true;
+        }
+    }
+
+    fn start_download(&mut self, release: &dacode::update::Release) {
+        use dacode::update;
+        if let Some(asset) = update::pick_asset(release, &self.install, self.package) {
+            self.updater.request(update::Request::Stage {
+                release: release.clone(),
+                asset: asset.clone(),
+                dir: self.update_dir.clone(),
+            });
+        }
+    }
+
+    /// What the bell's panel offers, from the pending update.
+    fn refresh_offer(&mut self) {
+        self.state.chrome.update = self
+            .pending_update
+            .as_ref()
+            .map(|pending| pending.offer(&self.install, self.package));
+    }
+
+    /// The update commands and the offer's buttons.
+    fn update_action(&mut self, action: &Action) {
+        use dacode::update::{self, Install, Stage};
+        match action {
+            Action::CheckForUpdates => {
+                update::record_check(&self.update_dir, update::now_seconds());
+                self.updater
+                    .request(update::Request::Check { manual: true });
+                self.state.hover = Some("checking for updates…".to_string());
+            }
+            Action::DownloadUpdate => {
+                let Some(pending) = self.pending_update.clone() else {
+                    self.state.hover = Some("no update is on offer".to_string());
+                    return;
+                };
+                if self.install == Install::System {
+                    // The package is root's to install. The browser downloads it to where the
+                    // printed command expects to find it.
+                    let url = update::pick_asset(&pending.release, &self.install, self.package)
+                        .map_or(pending.release.page.clone(), |asset| asset.url.clone());
+                    self.open_in_browser(&url);
+                } else if pending.stage == Stage::Available && self.install.updates_itself() {
+                    self.start_download(&pending.release);
+                    if let Some(pending) = &mut self.pending_update {
+                        pending.stage = Stage::Downloading;
+                    }
+                    self.refresh_offer();
+                }
+            }
+            Action::UpdateReleaseNotes => {
+                let url = self.pending_update.as_ref().map_or_else(
+                    || "https://github.com/Gawad-B/DaCode/releases".to_string(),
+                    |pending| pending.release.page.clone(),
+                );
+                self.open_in_browser(&url);
+            }
+            Action::SkipUpdate => {
+                let Some(pending) = self.pending_update.take() else {
+                    return;
+                };
+                let version = pending.release.version;
+                self.state.hover = Some(match update::skip(&self.update_dir, &version) {
+                    Ok(()) => {
+                        format!("DaCode {version} skipped — a later version will still be offered")
+                    }
+                    Err(error) => format!("could not remember skipping {version}: {error}"),
+                });
+                self.refresh_offer();
+            }
+            Action::RestartToUpdate => {
+                if matches!(
+                    self.pending_update.as_ref().map(|pending| &pending.stage),
+                    Some(Stage::Ready(_))
+                ) {
+                    self.restart_requested = true;
+                } else {
+                    self.state.hover = Some("no update is ready to install yet".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Opens a page in the user's browser. The child is waited for on a thread of its own, so it
+    /// does not linger as a zombie and the UI thread never waits on it.
+    fn open_in_browser(&mut self, url: &str) {
+        let (program, args) = dacode::update::browser(url, cfg!(windows));
+        match dacode::process::command(program).args(&args).spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            Err(error) => {
+                self.state.hover = Some(format!("could not open {url}: {error}"));
+            }
+        }
+    }
+
+    /// "Restart now": the quit path, then the new version. Returns whether the editor should exit.
+    ///
+    /// Refuses once with unsaved work, exactly as quitting does, so the second press means it.
+    /// Then the session and every dirty buffer's recovery copy are written — the same as any quit,
+    /// which the new version restores — and only then is the update installed. If that fails, the
+    /// editor stays open as it was and says why.
+    fn restart_for_update(&mut self) -> bool {
+        use dacode::update::{self, Stage};
+        let Some(Stage::Ready(staged)) = self
+            .pending_update
+            .as_ref()
+            .map(|pending| pending.stage.clone())
+        else {
+            return false;
+        };
+        let unsaved = self.unsaved_count();
+        if unsaved > 0 && !self.confirm_quit {
+            self.confirm_quit = true;
+            self.state.hover = Some(format!(
+                "{unsaved} unsaved file{} — {} saves this one, or Restart now again to leave them \
+                 in the recovery file",
+                if unsaved == 1 { "" } else { "s" },
+                self.key_for("save")
+            ));
+            self.request_redraw();
+            return false;
+        }
+        self.write_before_leaving();
+        self.save_session();
+        let relaunch = update::Relaunch {
+            args: std::env::args_os().skip(1).collect(),
+            dir: std::env::current_dir().unwrap_or_else(|_| self.index.root().to_path_buf()),
+        };
+        match update::apply(&staged, &self.install, Some(&relaunch)) {
+            Ok(()) => true,
+            Err(error) => {
+                self.state.chrome.notify(&error);
+                self.state.hover = Some(error);
+                self.request_redraw();
+                false
+            }
+        }
+    }
+
     fn poll_installer(&mut self) -> bool {
         let Some(installed) = self.installer.poll() else {
             return false;
@@ -4694,6 +5039,11 @@ impl App {
             return true;
         }
         //
+        // A check or a download, whose answer would otherwise wait for a key.
+        if self.updater.busy() {
+            return true;
+        }
+        //
         // A format in flight, or its result would sit in the channel until the next keypress —
         // which for `format_on_save` means the save that follows it never happens.
         if self.formatting_version.is_some() {
@@ -5195,6 +5545,7 @@ impl App {
         changed |= self.sync_blame();
         changed |= self.sync_scm();
         changed |= self.poll_terminal();
+        changed |= self.poll_updates();
         changed
     }
 
@@ -5805,6 +6156,28 @@ fn is_placeholder(buffer: &Buffer) -> bool {
         && buffer.document.text().len_chars() == dacode_text::CharOffset(0)
 }
 
+/// How the running copy was installed, from where its executable is.
+fn this_install() -> dacode::update::Install {
+    let Ok(exe) = std::env::current_exe() else {
+        return dacode::update::Install::Unknown;
+    };
+    let local = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from);
+    dacode::update::install_kind(
+        &exe,
+        cfg!(windows),
+        &dacode::paths::home(),
+        local.as_deref(),
+    )
+}
+
+/// The machine's package format: `/etc/os-release`, then whichever package tool is installed.
+fn this_package() -> Option<dacode::update::Package> {
+    let release = std::fs::read_to_string("/etc/os-release").ok();
+    dacode::update::package_family(release.as_deref(), |tool| {
+        dacode_lsp::resolve(tool).is_some()
+    })
+}
+
 fn buffer_key(file_path: Option<&str>) -> Option<std::path::PathBuf> {
     file_path.map(|path| dacode_project::canonical(std::path::Path::new(path)))
 }
@@ -5832,6 +6205,14 @@ impl App {
     /// Carries out a window action.
     fn window_action(&mut self, action: &Action) {
         match action {
+            Action::CheckForUpdates
+            | Action::DownloadUpdate
+            | Action::RestartToUpdate
+            | Action::UpdateReleaseNotes
+            | Action::SkipUpdate => {
+                self.update_action(action);
+                return;
+            }
             Action::ShowSourceControl => {
                 // A second press closes it, as the activity icons do in every editor that has them.
                 if self.state.source_control_showing() {
@@ -7131,6 +7512,7 @@ impl App {
             Field::Autosave => self.state.autosave = values.autosave,
             Field::Transparency => self.set_transparency(values.transparency),
             Field::Animations => self.state.chrome.motion.set_animations(values.animations),
+            Field::Updates => self.state.chrome.updates = values.updates,
         }
     }
 
@@ -9977,6 +10359,27 @@ impl App {
             }
             return;
         }
+        // The bell's panel: its buttons run their commands, and the rest of the card is not a click
+        // on whatever is under it.
+        if !extend && self.state.chrome.show_notifications {
+            let bounds = self.window_bounds();
+            let panel =
+                dacode::chrome::notifications_panel(&self.state, layout.title, bounds, scale);
+            if dacode::layout::contains(panel.card, x, y) {
+                let command = dacode::chrome::notifications_button_at(
+                    &self.state,
+                    layout.title,
+                    bounds,
+                    scale,
+                    x,
+                    y,
+                );
+                if let Some(action) = command.and_then(Action::from_name) {
+                    let _ = self.run(action);
+                }
+                return;
+            }
+        }
         // The theme dropdown, like the menu, takes the click wherever it lands. Only the first press
         // of a series: the second press of a double-click on the control that opened it lands on the
         // control again, outside the card, and would close the list it had just opened.
@@ -11067,6 +11470,7 @@ impl App {
         }
         self.set_transparency(settings.transparency);
         self.state.chrome.motion.set_animations(settings.animations);
+        self.state.chrome.updates = settings.updates;
         self.grammar.set_keymap(settings.keymap);
         // A key moved on the page and not yet written wins over the file it is about to be written
         // into, as a pending setting does.
@@ -11845,6 +12249,8 @@ mod wiring_tests {
         );
         // Never the user's own config: a test that changed a setting would otherwise write it.
         app.config_dir = dir.join("config");
+        // Nor the real updates directory, whose stamp and skipped version are the user's.
+        app.update_dir = dir.join("updates");
         app
     }
 
@@ -13518,10 +13924,14 @@ mod wiring_tests {
         use dacode::settings_ui::Field;
         let dir = scratch("theme-dropdown-keys");
         let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
-        app.press(Key::named(KeyCode::Enter));
-        let start = app.state.theme.name().expect("a built-in");
+        // The theme a fresh editor starts in is whatever this machine's own `init.lua` says, and
+        // when that was the last in the list there was no theme below it to pick. Set here, so
+        // the test reads the same on every machine.
         let order = dacode_theme::Theme::grouped();
-        let next = order[order.iter().position(|name| *name == start).unwrap() + 1];
+        let start = order[0];
+        app.state.theme = dacode_theme::Theme::by_name(start).expect("a built-in");
+        let next = order[1];
+        app.press(Key::named(KeyCode::Enter));
 
         app.press(Key::named(KeyCode::Down));
         assert_eq!(
@@ -14651,6 +15061,236 @@ mod wiring_tests {
                 "{title} is not drawn with the fading card"
             );
         }
+    }
+
+    /// GitHub, as far as the updater can tell: the release answer and every file, by URL.
+    struct FakeReleases(std::collections::HashMap<String, Vec<u8>>);
+
+    impl dacode::update::Fetch for FakeReleases {
+        fn text(&self, url: &str) -> Result<String, String> {
+            self.0
+                .get(url)
+                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                .ok_or_else(|| format!("nothing at {url}"))
+        }
+        fn file(&self, url: &str, to: &std::path::Path) -> Result<(), String> {
+            let bytes = self.0.get(url).ok_or_else(|| format!("nothing at {url}"))?;
+            std::fs::write(to, bytes).map_err(|error| error.to_string())
+        }
+    }
+
+    /// A release of `version` carrying `files` and their `SHA256SUMS`, served by a fake.
+    fn releases(version: &str, files: &[(&str, &[u8])]) -> FakeReleases {
+        let url = |name: &str| format!("https://example.invalid/{name}");
+        let mut served = std::collections::HashMap::new();
+        let mut sums = String::new();
+        let mut assets = Vec::new();
+        for (name, bytes) in files {
+            let mut hasher = dacode::update::Sha256::default();
+            hasher.update(bytes);
+            sums.push_str(&format!(
+                "{}  {name}\n",
+                dacode::update::hex(&hasher.finish())
+            ));
+            served.insert(url(name), bytes.to_vec());
+            assets.push(serde_json::json!({ "name": name, "browser_download_url": url(name) }));
+        }
+        served.insert(url("SHA256SUMS"), sums.into_bytes());
+        assets.push(serde_json::json!({
+            "name": "SHA256SUMS",
+            "browser_download_url": url("SHA256SUMS"),
+        }));
+        let json = serde_json::json!({
+            "tag_name": format!("v{version}"),
+            "html_url": format!("https://github.com/Gawad-B/DaCode/releases/tag/v{version}"),
+            "draft": false,
+            "prerelease": false,
+            "assets": assets,
+        });
+        served.insert(
+            dacode::update::LATEST.to_string(),
+            json.to_string().into_bytes(),
+        );
+        FakeReleases(served)
+    }
+
+    /// An editor that believes it is `current`, installed as `install`, asking `fake` for releases.
+    fn updating(
+        dir: &std::path::Path,
+        install: dacode::update::Install,
+        policy: dacode::update::Policy,
+        fake: FakeReleases,
+    ) -> App {
+        let mut app = editor(dir, "a.rs", "fn main() {}\n");
+        app.headless_size = (1280, 820);
+        app.install = install;
+        app.state.chrome.updates = policy;
+        app.updater = dacode::update::Worker::spawn_with(Box::new(fake), "1.0.0", None);
+        app
+    }
+
+    /// The centre of the offer's button that runs `command`, from the panel's own geometry.
+    fn offer_button(app: &App, command: &str) -> (f32, f32) {
+        let layout = app.layout();
+        let panel = dacode::chrome::notifications_panel(
+            &app.state,
+            layout.title,
+            app.window_bounds(),
+            app.scale(),
+        );
+        let (rect, _) = panel
+            .offer
+            .expect("an offer on the panel")
+            .buttons
+            .into_iter()
+            .find(|(_, button)| button.command == command)
+            .unwrap_or_else(|| panic!("no {command} button"));
+        (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+    }
+
+    #[test]
+    fn a_newer_release_is_offered_in_the_bell_and_skipping_it_is_remembered() {
+        use dacode::update::{Install, Policy};
+        let dir = scratch("update-offer");
+        let fake = releases("1.2.0", &[("dacode-1.2.0-x86_64-linux.tar.gz", b"tar")]);
+        let prefix = dir.join("prefix");
+        let mut app = updating(&dir, Install::Tarball { prefix }, Policy::Notify, fake);
+
+        let _ = app.run(Action::CheckForUpdates);
+        assert!(settle(&mut app, |app| app.state.chrome.update.is_some()));
+        let offer = app.state.chrome.update.clone().unwrap();
+        assert_eq!(offer.message, "DaCode 1.2.0 is available");
+        let labels: Vec<_> = offer.buttons.iter().map(|button| button.label).collect();
+        assert_eq!(labels, ["Update", "Release notes", "Skip this version"]);
+        // Asked for by hand, so the answer is put in front of the person who asked.
+        assert!(app.state.chrome.show_notifications);
+        assert!(
+            app.state
+                .chrome
+                .notifications
+                .iter()
+                .any(|message| message.contains("1.2.0")),
+            "{:?}",
+            app.state.chrome.notifications
+        );
+
+        // A click on the drawn button, through the same routing every click takes.
+        app.pointer = offer_button(&app, "skip_update");
+        app.state.pointer = app.pointer;
+        app.click(false);
+        assert!(app.state.chrome.update.is_none(), "the offer is gone");
+        assert_eq!(
+            dacode::update::skipped(&app.update_dir).as_deref(),
+            Some("1.2.0")
+        );
+
+        // The daily check does not bring a skipped version back.
+        app.updater
+            .request(dacode::update::Request::Check { manual: false });
+        assert!(settle(&mut app, |app| !app.updater.busy()));
+        assert!(app.state.chrome.update.is_none());
+        assert!(app.pending_update.is_none());
+    }
+
+    #[test]
+    fn an_automatic_update_is_downloaded_verified_and_offered_as_a_restart() {
+        use dacode::update::{Install, Policy, Stage};
+        let dir = scratch("update-ready");
+        let fake = releases("1.2.0", &[("dacode-setup.exe", b"setup")]);
+        let mut app = updating(&dir, Install::WindowsInstaller, Policy::Automatic, fake);
+
+        let _ = app.run(Action::CheckForUpdates);
+        assert!(settle(&mut app, |app| {
+            app.pending_update
+                .as_ref()
+                .is_some_and(|pending| matches!(pending.stage, Stage::Ready(_)))
+        }));
+        let offer = app.state.chrome.update.clone().unwrap();
+        assert_eq!(offer.message, "DaCode 1.2.0 is ready — restart to update");
+        assert_eq!(offer.buttons[0].label, "Restart now");
+        assert_eq!(
+            std::fs::read(app.update_dir.join("1.2.0").join("dacode-setup.exe")).unwrap(),
+            b"setup"
+        );
+    }
+
+    #[test]
+    fn restarting_to_update_with_unsaved_work_refuses_once_as_quitting_does() {
+        // Restart is a quit, and a quit with three dirty buffers must not be one click from
+        // leaving them. Refused before anything is written or installed.
+        use dacode::update::{Install, Pending, Policy, Stage, Staged};
+        let dir = scratch("update-unsaved");
+        let fake = releases("1.2.0", &[]);
+        let mut app = updating(&dir, Install::WindowsInstaller, Policy::Automatic, fake);
+        app.pending_update = Some(Pending {
+            release: dacode::update::parse_release(
+                r#"{"tag_name": "v1.2.0", "html_url": "https://x", "assets": []}"#,
+            )
+            .unwrap(),
+            stage: Stage::Ready(Staged {
+                version: "1.2.0".into(),
+                installer: dir.join("never-run.exe"),
+            }),
+        });
+        let _ = app.run(Action::InsertText("x".into()));
+        assert!(app.state.document.is_dirty());
+
+        let _ = app.run(Action::RestartToUpdate);
+        assert!(app.restart_requested);
+        app.restart_requested = false;
+        assert!(!app.restart_for_update(), "refused");
+        assert!(app.confirm_quit, "armed for the second press");
+        let said = app.state.hover.clone().unwrap_or_default();
+        assert!(said.contains("1 unsaved file"), "{said}");
+        assert!(said.contains("Restart now again"), "{said}");
+    }
+
+    #[test]
+    fn the_startup_check_runs_once_a_day_and_never_for_a_build_or_with_updates_off() {
+        use dacode::update::{Install, Policy};
+        let dir = scratch("update-daily");
+        let fake = releases("1.0.0", &[]);
+        let prefix = dir.join("prefix");
+        let mut app = updating(&dir, Install::Tarball { prefix }, Policy::Automatic, fake);
+
+        app.check_for_updates_if_due();
+        assert!(app.updater.busy(), "asked");
+        assert!(settle(&mut app, |app| !app.updater.busy()));
+        assert!(app.state.chrome.update.is_none(), "1.0.0 is not newer");
+        // Up to date, and not asked: nothing said.
+        assert!(app.state.hover.is_none());
+        app.check_for_updates_if_due();
+        assert!(!app.updater.busy(), "not again the same day");
+
+        for (install, policy) in [
+            (Install::Cargo, Policy::Automatic),
+            (Install::WindowsInstaller, Policy::Off),
+        ] {
+            let other = scratch("update-never");
+            let mut app = updating(&other, install, policy, releases("1.0.0", &[]));
+            app.check_for_updates_if_due();
+            assert!(!app.updater.busy());
+            assert_eq!(dacode::update::last_check(&app.update_dir), None);
+        }
+
+        // With updates off, the command still asks.
+        let other = scratch("update-off-command");
+        let mut app = updating(
+            &other,
+            Install::WindowsInstaller,
+            Policy::Off,
+            releases("1.0.0", &[]),
+        );
+        let _ = app.run(Action::CheckForUpdates);
+        assert!(settle(&mut app, |app| !app.updater.busy()));
+        assert_eq!(
+            app.state.hover.as_deref(),
+            Some(concat!(
+                "DaCode ",
+                env!("CARGO_PKG_VERSION"),
+                " is the latest version"
+            ))
+        );
     }
 
     #[test]

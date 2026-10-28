@@ -64,6 +64,10 @@ dacode.set {
   -- rather than a quiet "full".
   animations = "full",
 
+  -- New releases: "automatic" checks once a day, downloads and verifies one, and offers a restart;
+  -- "notify" only says one is out; "off" never checks unless you ask (Help > Check for updates).
+  updates = "automatic",
+
   -- What <leader> means in the bindings below.
   leader = "<space>",
 }

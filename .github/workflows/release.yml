@@ -75,6 +75,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Checksum every asset
+        # What the editor's updater checks a download against before it will install it
+        # (`crates/dacode/src/update.rs`). Over every file the release carries, by bare name — the
+        # updater looks an asset up by the name GitHub gives it. A release without this file is one
+        # the updater refuses to install by itself, so it is made here rather than by hand.
+        run: |
+          set -eu
+          mkdir -p sums
+          for file in artifacts/*/*; do
+            ( cd "$(dirname "$file")" && sha256sum "$(basename "$file")" ) >> sums/SHA256SUMS
+          done
+          cat sums/SHA256SUMS
       - name: Write the release notes
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -135,7 +147,7 @@ jobs:
           # Created if it is not there, updated if it is, so re-running a failed publish is safe.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "dacode ${TAG#v}" --notes-file notes.md
-            gh release upload "$TAG" artifacts/*/* --clobber
+            gh release upload "$TAG" artifacts/*/* sums/SHA256SUMS --clobber
           else
-            gh release create "$TAG" --title "dacode ${TAG#v}" --notes-file notes.md artifacts/*/*
+            gh release create "$TAG" --title "dacode ${TAG#v}" --notes-file notes.md artifacts/*/* sums/SHA256SUMS
           fi

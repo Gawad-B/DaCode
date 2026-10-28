@@ -168,6 +168,8 @@ pub struct Settings {
     pub transparency: u8,
     /// How much the interface moves.
     pub animations: crate::motion::Animations,
+    /// Whether new releases are checked for, downloaded and offered.
+    pub updates: crate::update::Policy,
     /// What the gutter counts.
     pub line_numbers: LineNumbers,
     /// Which theme file was loaded, for reporting.
@@ -219,6 +221,9 @@ impl Default for Settings {
             // available at all.
             transparency: 0,
             animations: crate::motion::Animations::Full,
+            // On: reinstalling by hand for every release is the thing this exists to end, and
+            // nothing is installed without a restart the user presses.
+            updates: crate::update::Policy::Automatic,
             line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
@@ -360,6 +365,12 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
         if let Some(animations) = crate::motion::Animations::from_name(name) {
             settings.animations = animations;
             settings.sources.insert("animations".into(), from_config);
+        }
+    }
+    if let Some(name) = &config.updates {
+        if let Some(policy) = crate::update::Policy::from_name(name) {
+            settings.updates = policy;
+            settings.sources.insert("updates".into(), from_config);
         }
     }
     // The gutter's default follows the grammar, so it has to be settled *after* `vim_keys` — which
@@ -657,6 +668,26 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn every_update_policy_the_enum_prints_is_one_lua_accepts() {
+        // `dacode-lua` keeps its own list of spellings; a name in one and not the other would be a
+        // setting the page writes and the next start refuses.
+        assert_eq!(crate::update::Policy::ALL.len(), dacode_lua::UPDATES.len());
+        for policy in crate::update::Policy::ALL {
+            let dir = scratch(&format!("updates-{}", policy.name()));
+            std::fs::write(
+                dir.join("init.lua"),
+                format!("dacode.set {{ updates = \"{}\" }}\n", policy.name()),
+            )
+            .unwrap();
+            assert_eq!(load_from(&dir).updates, policy);
+        }
+        assert_eq!(
+            load_from(&scratch("updates-default")).updates,
+            crate::update::Policy::Automatic
+        );
     }
 
     #[test]

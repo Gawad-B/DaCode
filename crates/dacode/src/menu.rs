@@ -200,7 +200,7 @@ const MENUS: [&[&str]; 8] = [
         "focus_terminal",
         "run",
     ],
-    &["help", "command_palette"],
+    &["help", "command_palette", "check_for_updates"],
 ];
 
 /// What a right-click offers.

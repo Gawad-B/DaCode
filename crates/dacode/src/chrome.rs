@@ -272,6 +272,11 @@ pub struct Chrome {
     /// How many of them arrived since the bell was last opened.
     pub unread: usize,
     pub show_notifications: bool,
+    /// The `updates` setting.
+    pub updates: crate::update::Policy,
+    /// An update on offer, drawn at the top of the bell's panel with its buttons. Set by the event
+    /// loop, which owns the updater; drawing and the click both read [`notifications_panel`].
+    pub update: Option<crate::update::Offer>,
     /// How see-through the window's backgrounds are: 0 is opaque.
     pub transparency: f32,
     /// Every animated quantity. Drawing reads it at [`EditorState::now`]; the executor and the event
@@ -787,6 +792,7 @@ impl EditorState {
             autosave: self.autosave,
             transparency: (self.chrome.transparency * 100.0).round() as u8,
             animations: self.chrome.motion.animations(),
+            updates: self.chrome.updates,
         }
     }
 
@@ -6047,7 +6053,130 @@ fn draw_tooltip(
     frame.text(ui(state, text, tip, theme.ink, Align::Center, scale));
 }
 
-/// The bell's panel: the editor's recent messages, newest first.
+/// How many messages the bell's panel lists.
+const NOTIFICATIONS_SHOWN: usize = 12;
+
+/// Where the bell's panel and everything on it are: an update on offer and its buttons at the top,
+/// then the recent messages. Read by drawing and by [`notifications_button_at`], so a click lands on
+/// the button drawn under it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotificationsPanel {
+    pub card: Rect,
+    pub heading: Rect,
+    pub rows: Vec<Rect>,
+    pub offer: Option<OfferBox>,
+}
+
+/// The update offer's part of the panel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OfferBox {
+    pub rect: Rect,
+    pub lines: Vec<(String, Rect)>,
+    pub buttons: Vec<(Rect, crate::update::Button)>,
+}
+
+pub fn notifications_panel(
+    state: &EditorState,
+    title: Rect,
+    bounds: Rect,
+    scale: f32,
+) -> NotificationsPanel {
+    let typography = &state.typography;
+    let bar = crate::layout::title_bar(title, scale, typography);
+    // Wider while an update is on offer, so its three buttons sit on one row at any usual size.
+    let wide = if state.chrome.update.is_some() {
+        440.0
+    } else {
+        380.0
+    };
+    let width = (wide * scale).min(bounds.width - 16.0 * scale);
+    let line = 22.0 * scale;
+    let pad = 12.0 * scale;
+    let x = (bar.bell.right() - width).max(bounds.x + 8.0 * scale);
+    let top = title.bottom() + 6.0 * scale;
+    let inner = Rect::new(x + pad, top, width - 2.0 * pad, 0.0);
+    let mut y = top + 6.0 * scale;
+
+    let offer = state.chrome.update.as_ref().map(|offer| {
+        let start = y;
+        let advance = crate::layout::measured_advance(typography, Role::Ui, scale);
+        let lines: Vec<(String, Rect)> = wrap_lines(&offer.message, inner.width, advance, 3)
+            .into_iter()
+            .map(|text| {
+                let rect = Rect::new(inner.x, y, inner.width, line);
+                y += line;
+                (text, rect)
+            })
+            .collect();
+        y += 6.0 * scale;
+        let height = 26.0 * scale;
+        let gap = 6.0 * scale;
+        let mut at = inner.x;
+        let buttons = offer
+            .buttons
+            .iter()
+            .map(|button| {
+                let want = button.label.chars().count() as f32 * advance + 20.0 * scale;
+                let w = want.min(inner.width);
+                // Onto a row of its own when it does not fit beside the last: a narrow window
+                // gets a column of buttons rather than one cut off at the card's edge.
+                if at > inner.x && at + w > inner.right() {
+                    at = inner.x;
+                    y += height + gap;
+                }
+                let rect = Rect::new(at, y, w, height);
+                at += w + gap;
+                (rect, *button)
+            })
+            .collect();
+        y += height + 10.0 * scale;
+        OfferBox {
+            rect: Rect::new(inner.x, start, inner.width, y - start - 4.0 * scale),
+            lines,
+            buttons,
+        }
+    });
+
+    let heading = Rect::new(inner.x, y, inner.width, line);
+    let first = y + line * 0.95;
+    let count = state
+        .chrome
+        .notifications
+        .len()
+        .clamp(1, NOTIFICATIONS_SHOWN);
+    let rows: Vec<Rect> = (0..count)
+        .map(|index| Rect::new(inner.x, first + line * index as f32, inner.width, line))
+        .collect();
+    let bottom = first + line * count as f32 + line * 0.4;
+    NotificationsPanel {
+        card: Rect::new(x, top, width, bottom - top),
+        heading,
+        rows,
+        offer,
+    }
+}
+
+/// The command of the offer's button under a point, if the panel is open and one is there.
+pub fn notifications_button_at(
+    state: &EditorState,
+    title: Rect,
+    bounds: Rect,
+    scale: f32,
+    x: f32,
+    y: f32,
+) -> Option<&'static str> {
+    if !state.chrome.show_notifications {
+        return None;
+    }
+    let panel = notifications_panel(state, title, bounds, scale);
+    panel
+        .offer?
+        .buttons
+        .into_iter()
+        .find_map(|(rect, button)| crate::layout::contains(rect, x, y).then_some(button.command))
+}
+
+/// The bell's panel: an update on offer, then the editor's recent messages, newest first.
 fn draw_notifications(
     frame: &mut Frame,
     state: &EditorState,
@@ -6057,50 +6186,98 @@ fn draw_notifications(
     scale: f32,
 ) {
     let theme = &state.theme;
-    let bar = crate::layout::title_bar(title, scale, &state.typography);
-    let width = (380.0 * scale).min(bounds.width - 16.0 * scale);
-    let line = 22.0 * scale;
-    let shown: Vec<&String> = state.chrome.notifications.iter().rev().take(12).collect();
-    let rows = shown.len().max(1);
-    let card = Rect::new(
-        (bar.bell.right() - width).max(bounds.x + 8.0 * scale),
-        title.bottom() + 6.0 * scale,
-        width,
-        line * (rows as f32 + 1.6),
-    );
+    let panel = notifications_panel(state, title, bounds, scale);
+    let card = panel.card;
     frame.set_zoom(Some(appear_zoom(card, travel, Anchor::Top)));
     self::card(frame, theme, card, scale, 1.0);
-    let inner = card.inset(12.0 * scale);
+
+    if let Some(offer) = &panel.offer {
+        for (text, rect) in &offer.lines {
+            frame.text(ui(
+                state,
+                text.clone(),
+                *rect,
+                theme.ink,
+                Align::Left,
+                scale,
+            ));
+        }
+        let radius = 5.0 * scale;
+        for (index, (rect, button)) in offer.buttons.iter().enumerate() {
+            // The first is the one the offer is for, and looks it.
+            let primary = index == 0;
+            if primary {
+                frame.fill_rounded(*rect, theme.primary, radius);
+            } else {
+                frame.fill_rounded(
+                    *rect,
+                    if pointer_in(state, *rect) {
+                        theme.row_active
+                    } else {
+                        theme.bg_alt
+                    },
+                    radius,
+                );
+                frame.outline_rounded(*rect, theme.rule, radius, border::BORDER * scale);
+            }
+            let text = elide(
+                state,
+                Role::Ui,
+                button.label,
+                rect.width - 8.0 * scale,
+                scale,
+            );
+            frame.text(ui(
+                state,
+                text,
+                *rect,
+                if primary { theme.bg } else { theme.ink },
+                Align::Center,
+                scale,
+            ));
+        }
+        frame.fill(
+            Rect::new(
+                offer.rect.x,
+                offer.rect.bottom(),
+                offer.rect.width,
+                border::BORDER * scale,
+            ),
+            theme.rule_soft,
+        );
+    }
+
     frame.text(label(
         state,
         "notifications",
-        Rect::new(inner.x, card.y + 6.0 * scale, inner.width, line),
+        panel.heading,
         theme.ink_faint,
         Align::Left,
         scale,
     ));
+    let shown: Vec<&String> = state
+        .chrome
+        .notifications
+        .iter()
+        .rev()
+        .take(NOTIFICATIONS_SHOWN)
+        .collect();
     if shown.is_empty() {
         frame.text(ui(
             state,
             "Nothing yet. Messages the editor shows land here.",
-            Rect::new(inner.x, card.y + line * 1.2, inner.width, line),
+            panel.rows[0],
             theme.ink_dim,
             Align::Left,
             scale,
         ));
         return;
     }
-    for (index, message) in shown.iter().enumerate() {
-        let row = Rect::new(
-            inner.x,
-            card.y + line * (1.2 + index as f32),
-            inner.width,
-            line,
-        );
+    for (index, (message, row)) in shown.iter().zip(&panel.rows).enumerate() {
         frame.text(ui(
             state,
             elide(state, Role::Ui, message, row.width, scale),
-            row,
+            *row,
             if index == 0 { theme.ink } else { theme.ink_dim },
             Align::Left,
             scale,

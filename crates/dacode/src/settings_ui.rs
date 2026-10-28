@@ -60,6 +60,8 @@ pub enum Field {
     Transparency,
     /// How much the interface moves: full, reduced or off.
     Animations,
+    /// Whether new releases are fetched and offered: automatic, notify or off.
+    Updates,
 }
 
 /// The index a field's glow is keyed by (`motion::Key::Glow`): its place in [`Field::ALL`], a set
@@ -72,7 +74,7 @@ pub fn glow_index(field: Field) -> u32 {
 }
 
 impl Field {
-    pub const ALL: [Field; 13] = [
+    pub const ALL: [Field; 14] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -86,6 +88,7 @@ impl Field {
         Field::Autosave,
         Field::Transparency,
         Field::Animations,
+        Field::Updates,
     ];
 
     pub fn name(self) -> &'static str {
@@ -103,6 +106,7 @@ impl Field {
             Field::Autosave => "autosave",
             Field::Transparency => "transparency",
             Field::Animations => "animations",
+            Field::Updates => "updates",
         }
     }
 }
@@ -327,6 +331,7 @@ pub struct Values {
     /// Percent, in steps of [`Values::TRANSPARENCY_STEP`].
     pub transparency: u8,
     pub animations: crate::motion::Animations,
+    pub updates: crate::update::Policy,
 }
 
 impl Values {
@@ -364,6 +369,7 @@ impl Values {
                 percent => format!("{percent}%"),
             },
             Field::Animations => self.animations.name().to_string(),
+            Field::Updates => self.updates.name().to_string(),
         }
     }
 
@@ -462,6 +468,19 @@ impl Values {
                 };
                 self.animations = all[next];
             }
+            Field::Updates => {
+                let all = crate::update::Policy::ALL;
+                let at = all
+                    .iter()
+                    .position(|value| *value == self.updates)
+                    .unwrap_or(0);
+                let next = if delta < 0 {
+                    (at + all.len() - 1) % all.len()
+                } else {
+                    (at + 1) % all.len()
+                };
+                self.updates = all[next];
+            }
             Field::Transparency => {
                 let step = Self::TRANSPARENCY_STEP as i32;
                 self.transparency = (self.transparency as i32 + delta.signum() * step)
@@ -509,6 +528,7 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
         Field::Autosave => values.autosave.to_string(),
         Field::Transparency => values.transparency.to_string(),
         Field::Animations => format!("\"{}\"", values.animations.name()),
+        Field::Updates => format!("\"{}\"", values.updates.name()),
     };
     Some(format!("  {} = {value},", field.name()))
 }
@@ -813,10 +833,16 @@ const EDITOR: &[Section] = &[
     },
 ];
 
-const FILES: &[Section] = &[Section {
-    title: "Saving",
-    fields: &[Field::Autosave, Field::FormatOnSave],
-}];
+const FILES: &[Section] = &[
+    Section {
+        title: "Saving",
+        fields: &[Field::Autosave, Field::FormatOnSave],
+    },
+    Section {
+        title: "New releases",
+        fields: &[Field::Updates],
+    },
+];
 
 /// The settings on a page, under their headings, in order.
 ///
@@ -896,6 +922,17 @@ const ANIMATIONS: [&str; crate::motion::Animations::ALL.len()] = {
     names
 };
 
+const UPDATES: [&str; crate::update::Policy::ALL.len()] = {
+    let all = crate::update::Policy::ALL;
+    let mut names = [""; crate::update::Policy::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = all[at].name();
+        at += 1;
+    }
+    names
+};
+
 impl Field {
     /// The row's name, as the page shows it.
     ///
@@ -918,6 +955,7 @@ impl Field {
             Field::Autosave => "Autosave",
             Field::Transparency => "Transparency",
             Field::Animations => "Animations",
+            Field::Updates => "Updates",
         }
     }
 
@@ -977,6 +1015,10 @@ impl Field {
                 "How much the interface moves. Full: panels and popups spring into place. \
                  Reduced: the same movement with no overshoot. Off: everything appears at once."
             }
+            Field::Updates => {
+                "Automatic: new releases are checked for daily, downloaded and verified, then \
+                 offered as a restart. Notify: only told. Off: never checked unless asked."
+            }
         })
     }
 
@@ -993,6 +1035,7 @@ impl Field {
             Field::Theme => Control::Dropdown(&THEMES),
             Field::LineNumbers => Control::Choice(&LINE_NUMBERS),
             Field::Animations => Control::Choice(&ANIMATIONS),
+            Field::Updates => Control::Choice(&UPDATES),
         }
     }
 
@@ -1037,6 +1080,7 @@ impl Values {
             line_numbers: crate::config::LineNumbers::default_for(modal),
             transparency: settings.transparency,
             animations: settings.animations,
+            updates: settings.updates,
         }
     }
 
@@ -1056,6 +1100,7 @@ impl Values {
             Field::Autosave => self.autosave != defaults.autosave,
             Field::Transparency => self.transparency != defaults.transparency,
             Field::Animations => self.animations != defaults.animations,
+            Field::Updates => self.updates != defaults.updates,
         }
     }
 
@@ -1082,6 +1127,7 @@ impl Values {
             Field::Autosave => self.autosave = defaults.autosave,
             Field::Transparency => self.transparency = defaults.transparency,
             Field::Animations => self.animations = defaults.animations,
+            Field::Updates => self.updates = defaults.updates,
         }
     }
 }
@@ -2883,6 +2929,7 @@ mod tests {
             line_numbers: crate::config::LineNumbers::Absolute,
             transparency: 0,
             animations: crate::motion::Animations::Full,
+            updates: crate::update::Policy::Automatic,
             sticky_scroll: true,
             inlay_hints: false,
             inline_blame: true,
@@ -2959,6 +3006,7 @@ mod tests {
             line_numbers: crate::config::LineNumbers::Relative,
             transparency: 0,
             animations: crate::motion::Animations::Full,
+            updates: crate::update::Policy::Automatic,
             sticky_scroll: true,
             inlay_hints: false,
             inline_blame: true,
@@ -3271,6 +3319,7 @@ mod click_tests {
             line_numbers: crate::config::LineNumbers::Relative,
             transparency: 0,
             animations: crate::motion::Animations::Full,
+            updates: crate::update::Policy::Automatic,
             sticky_scroll: true,
             inlay_hints: false,
             inline_blame: true,

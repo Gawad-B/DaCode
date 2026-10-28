@@ -47,6 +47,9 @@ pub struct Config {
     /// How much the interface moves: "full", "reduced" or "off". Checked against [`ANIMATIONS`] here
     /// and parsed into the enum by the caller, which owns it.
     pub animations: Option<String>,
+    /// Whether DaCode checks for, downloads and offers new releases: "automatic", "notify" or
+    /// "off". Checked against [`UPDATES`] here, like `animations`.
+    pub updates: Option<String>,
     /// "absolute", "relative" or "off" — parsed by the caller, which owns the enum.
     pub line_numbers: Option<String>,
     pub appearance: Option<Appearance>,
@@ -71,6 +74,10 @@ pub struct Config {
 /// The spellings `animations` accepts. This crate cannot see `dacode::motion::Animations`, so the
 /// binary has a test that every name that enum prints is in this list.
 pub const ANIMATIONS: [&str; 3] = ["full", "reduced", "off"];
+
+/// The spellings `updates` accepts. The binary owns `dacode::update::Policy` and checks every name it
+/// prints is here.
+pub const UPDATES: [&str; 3] = ["automatic", "notify", "off"];
 
 /// A language server named by `dacode.server(language, { command = …, args = {…} })`.
 ///
@@ -107,6 +114,7 @@ impl Config {
             && self.autosave.is_none()
             && self.transparency.is_none()
             && self.animations.is_none()
+            && self.updates.is_none()
             && self.line_numbers.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
@@ -232,6 +240,27 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
                 }
                 Ok(_) => config.problems.push(
                     "animations must be \"full\", \"reduced\" or \"off\" (a string, not a \
+                     boolean or number)"
+                        .into(),
+                ),
+            }
+            // The same shape as `animations`, for the same reason: `updates = false` is the
+            // natural way to write "off", and dropping it silently would leave the editor fetching
+            // from the network while its owner believed it never would.
+            match options.get::<Value>("updates") {
+                Ok(Value::Nil) | Err(_) => {}
+                Ok(Value::String(name)) => {
+                    let name = name.to_string_lossy();
+                    if UPDATES.contains(&name.as_str()) {
+                        config.updates = Some(name);
+                    } else {
+                        config.problems.push(format!(
+                            "updates must be \"automatic\", \"notify\" or \"off\", got {name:?}"
+                        ));
+                    }
+                }
+                Ok(_) => config.problems.push(
+                    "updates must be \"automatic\", \"notify\" or \"off\" (a string, not a \
                      boolean or number)"
                         .into(),
                 ),
@@ -551,6 +580,24 @@ mod tests {
             run("dacode.set { transparency = -5 }").transparency,
             Some(0)
         );
+    }
+
+    #[test]
+    fn updates_takes_one_of_three_names_and_reports_anything_else() {
+        // `updates = false` is the obvious way to write "off". Read as absent, it would leave the
+        // editor reaching the network every day for someone who had asked it not to.
+        let config = run("dacode.set { updates = \"notify\" }");
+        assert_eq!(config.updates, Some("notify".into()));
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        for bad in ["false", "\"never\"", "0"] {
+            let config = run(&format!("dacode.set {{ updates = {bad} }}"));
+            assert_eq!(config.updates, None, "{bad}");
+            assert!(
+                config.problems.iter().any(|p| p.contains("updates")),
+                "{bad}: {:?}",
+                config.problems
+            );
+        }
     }
 
     #[test]
