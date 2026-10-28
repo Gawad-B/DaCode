@@ -16,7 +16,7 @@ pub mod watch;
 
 pub use files::{FileIndex, FileWalk, Match, ProjectFile, WalkResult};
 pub use search::{ProjectSearch, SearchHit, SearchQuery, project_files, replace_all, search_file};
-pub use watch::FileWatcher;
+pub use watch::{FileWatcher, RepositoryChange};
 
 /// Finds the project root by walking up for a version-control or manifest marker.
 ///

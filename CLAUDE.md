@@ -69,7 +69,7 @@ dacode-lua      init.lua -> Config
 dacode-terminal a shell on a PTY (alacritty_terminal), xterm key bytes, viewport-sized Screen
 dacode-import   VSCode data, .vsix, colour schemes in four formats
 dacode          the binary: chrome, execute, panes, layout, settings, session, welcome,
-             palette, help, menu, clipboard, process
+             palette, help, menu, clipboard, process, scm (git), source_control (its view)
 ```
 
 ### Non-obvious invariants
@@ -152,6 +152,40 @@ record of how a selection grew means nothing once the text under it has moved. I
 only while the selections are exactly what the last expansion left, the way `vertical_goal` is. If
 you add an eighth, transform it in `mutate` beside the spans, clear it, version-gate it or log it,
 and say which.
+
+**A diff tab is a buffer `mutate` refuses.** Clicking a change opens git's unified diff as an
+ordinary buffer with no path, marked by `EditorState::review` — which travels with its `Buffer`
+through every swap, as the highlights do. Every edit funnels through `mutate`, so that is where read
+only is enforced: the closure is run against a throwaway copy and its answer returned, so whatever
+asked gets a value of the type it expects and the text on screen stays git's. Gating each action
+instead (`edits_text`) would be a list that is wrong the first time an action is added. Saving it
+under a name (Save As, `:w path`) clears `review`, because a patch on disk is a file.
+
+**Every git command the source-control view runs goes through `scm::Worker`, one at a time and in
+order** — "stage, then tell me the status" must not answer with the status from before the stage.
+Statuses carry a `Version` from `source_control::View::ask` and only the newest asked is accepted; a
+status with a newer one queued behind it is answered `Superseded`, so `busy()` returns to zero.
+**Nothing may wait for a person:** `GIT_TERMINAL_PROMPT=0`, no stdin, `GIT_EDITOR=true`, ssh in
+batch mode unless the user configured it — a push that needs a password fails at once with
+`Failure::sign_in`, and the sentence sends them to the terminal. The status itself runs with
+`GIT_OPTIONAL_LOCKS=0`, or its refresh of the index would trip the repository watch, which would ask
+for another status.
+
+**The repository is watched, and `HEAD` moving re-asks the blame and the gutter.** The view's
+status names `.git` (and the common dir in a linked worktree); `FileWatcher::watch_repository`
+watches it non-recursively and `refs/` recursively — never `objects/`, which a fetch writes
+thousands of. An index write refreshes the list; anything else (a commit, a checkout, a fetch) is
+`RepositoryChange::history`, which also raises `blame_wanted` and forgets `diffed_version` —
+before, a commit made in a terminal reached the blame only when the file was next saved. Status
+requests from the watch `settle` on the worker for 200 ms first, because a checkout is a burst of
+writes. `source_control_tests::a_commit_made_outside_the_editor_asks_for_the_blame_and_the_gutter_again`
+fails if the watch's history arm is removed.
+
+**The source-control list is built per status, never per frame.** `View::rows` and the group
+counts are computed when a status is accepted; `View::geometry` lays out only the rows on screen,
+the same as the search view. A status is capped at `scm::MAX_ENTRIES` (5,000) with the total
+counted, and "stage all"/"discard all" use pathspecs (`:/`) rather than the list, so they still act
+on what the view could not show.
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
@@ -544,6 +578,9 @@ anything platform-shaped:
 | Indentation on Enter, and `af`/`it`/`aa`/`ic` | `crates/dacode-syntax/src/structure.rs`, its queries in `crates/dacode-syntax/queries/`; the lexical fallback is `dacode-buffer`'s `pairs.rs` |
 | How a file is written | `crates/dacode/src/save.rs` — `write`, and `App::write_active` for buffers |
 | The terminal | `crates/dacode-terminal` for the shell, keys and `Screen`; `crates/dacode/src/terminal.rs` for which keys it keeps and its colours; `layout::terminal_panel` for where it is; `App::handle_terminal_key` and `poll_terminal` in `main.rs` |
+| The source-control view | `crates/dacode/src/source_control.rs` — `View` (rows, message box, selection, questions) and `View::geometry`/`hit`, read by `chrome::draw_source_control` and `App::click_source_control`; keys in `App::handle_scm_key` |
+| What git is asked, and how | `crates/dacode/src/scm.rs` — `parse_status` (porcelain v2), `parse_branches`, `Op`, `Worker`; `App::sync_scm` collects, `App::git_action` dispatches every `Action::Git` |
+| A diff tab | `App::show_review` opens it, `EditorState::review` marks it, `EditorState::mutate` keeps it read-only, `chrome::diff_line_kind` colours it |
 | Who changed a line | `crates/dacode/src/blame.rs` — the porcelain reader, the edit log, `Tracker` and `BlameWorker`; `App::sync_blame` asks and collects, `chrome::line_note` decides between a diagnostic and the inline blame |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
@@ -630,6 +667,14 @@ Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{
 or five hundred lines above it is left where it was typed. It used to walk to the start of the
 document, which cost 5.8 ms per keystroke in a hundred-thousand-line file. Doing nothing is what
 already happened when no opener was found, so there was nothing new to invent.
+
+From the source-control view: diffs are unified, not side-by-side, and nothing is staged by hunk or
+line. One repository per folder — the one the project folder is in — so submodules and several
+repositories side by side are not separate entries. Stash has no "include untracked" and no choice
+of which stash to pop. A pull or push in flight cannot be cancelled; it runs off the UI thread, so
+nothing waits on it, but it has to finish or fail. The message box keeps its caret but has no
+selection or undo of its own. The Run title is gone from the menu bar — Git took its place, since a
+ninth title pushed Help off at 1600px — and the run command is under Terminal and on the tab bar's ▶.
 
 Only the *active* buffer gets a file watcher, a git diff, and a language server. Background buffers
 get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused buffer is

@@ -513,6 +513,22 @@ mistakes, and budget for that rather than being surprised by it.
 > written every two seconds, while a session is only interesting when the editor closed properly and
 > is written once, on the way out.
 
+> **Source control is VSCode's view over the `git` binary, run on one worker.** Linking `gix` or
+> `git2` was rejected for the same reason the gutter shells out: the user's hooks, credential
+> helpers, signing and worktrees are the `git` binary's, and a library would have to agree with it
+> about all of them. One worker, in order, because "stage, then status" answered out of order shows
+> a file in the list it was just moved out of. Nothing waits for a person — terminal prompts off,
+> ssh in batch mode — because a prompt nobody can see is a view saying "pushing…" forever; a remote
+> that wants a password fails at once and the sentence points at the terminal, where git can ask.
+> A diff opens as an ordinary buffer marked read only, which `mutate` enforces, rather than as a
+> second kind of tab: the settings tab showed what a tab that is not a buffer costs (four dozen
+> sites that ask which one is showing), and a diff wants exactly what a buffer has — scrolling,
+> search, copy, `]c`. Unified, not side by side: one column of text the existing code drawing
+> already draws, with the gutter's colours. Smart commit asks before it stages everything, because
+> it commits more than was selected; every discard asks twice, because it is the one thing here
+> that cannot be undone. The menu bar's Run title gave its place to Git: a ninth title pushed Help
+> behind the overflow at 1600px, and Run held nothing Terminal and the tab bar's ▶ do not.
+
 ### M7 — Daily-driver gaps (ongoing, 3–4 weeks)
 Whatever is actually blocking use: soft wrap, folding, multi-cursor, git gutter and blame,
 integrated terminal, session restore, jumplist, macros, autopairs, snippets, sticky scroll,
@@ -590,7 +606,9 @@ inlay hints.
 > it cannot carry an answer that was computed while typing continued. Instead `mutate` records each
 > change's line arithmetic (constant work), drawing walks that log back for the rows on screen, and a
 > request in flight keeps its own log so its answer lands already up to date. Blame is asked for on
-> opening a file, on saving, when the file changes outside, and when the log fills; never per key.
+> opening a file, on saving, when the file changes outside, when the repository's `HEAD` or refs
+> move (a commit or checkout made anywhere — the source-control view's watch on `.git`), and when
+> the log fills; never per key.
 > The inline note on the caret's line is on by default and yields to a diagnostic on that line —
 > a problem is something to act on, an author is something to know. The column is off by default:
 > per-line authorship earns its screen space far less often than per-line change.

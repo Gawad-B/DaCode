@@ -843,6 +843,7 @@ fn group_title(group: Group) -> &'static str {
         Group::Search => "Finding things",
         Group::Language => "The language server",
         Group::View => "The view",
+        Group::SourceControl => "Source control",
         Group::Panes => "Panes and panels",
     }
 }

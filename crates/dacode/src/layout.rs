@@ -49,6 +49,32 @@ pub fn blame_column_width(typography: &dacode_theme::Typography, scale: f32) -> 
         .round()
 }
 
+/// Where the branch sits on the status line: first, at its left edge, where VSCode puts it — and a
+/// click on it opens the branch picker. `None` with no repository, so nothing empty is clickable.
+///
+/// Read by the status line's drawing and by the mouse, and it is the drawing that elides the name
+/// to the width this gives.
+pub fn status_branch(
+    status: Rect,
+    name: &str,
+    typography: &dacode_theme::Typography,
+    scale: f32,
+) -> Option<Rect> {
+    if name.is_empty() {
+        return None;
+    }
+    let advance = measured_advance(typography, dacode_theme::Role::Value, scale);
+    let icon = 13.0 * scale + 6.0 * scale;
+    let wanted = name.chars().count() as f32 * advance + icon + 12.0 * scale;
+    let width = wanted.min(status.width * 0.22).min(220.0 * scale).max(0.0);
+    Some(Rect::new(
+        status.x + 8.0 * scale,
+        status.y,
+        width,
+        status.height,
+    ))
+}
+
 /// Where everything in the terminal panel is: a header with its heading, its tabs and two buttons,
 /// the edge that resizes it, and the cell grid under it.
 ///

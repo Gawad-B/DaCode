@@ -24,6 +24,7 @@ Goal-first. Each one takes you from "I want *X*" to having *X*.
 | | |
 |---|---|
 | [Choosing how you type](guides/keymaps.md) | Vim's grammar or conventional keys, what changes, and how to rebind |
+| [Source control](guides/source-control.md) | staging, committing, diffs, branches, pull and push — VSCode's Source Control view |
 | [Language servers](guides/language-servers.md) | diagnostics, completion and go-to-definition — including installing a server from inside the editor |
 | [Configuration](guides/configuration.md) | the settings tab, `init.lua`, and which one wins |
 | [Themes](guides/themes.md) | the five built in, and importing one you found |

@@ -37,6 +37,8 @@ pub enum PromptKind {
     /// Pre-filled for the same reason a symbol rename is: it is nearly always a small edit of what
     /// is there, and retyping the path is how you move a file somewhere you did not mean to.
     RenameFile,
+    /// A name for a branch to create and check out.
+    NewBranch,
     /// `ctrl-h` — find and replace, in this file.
     ///
     /// Two fields on one line rather than an ex-command: `:s/a/b/g` is Vim-shaped, and with the
@@ -67,6 +69,7 @@ impl PromptKind {
             PromptKind::Replace => "replace ",
             PromptKind::NewFile => "new file ",
             PromptKind::RenameFile => "rename file to ",
+            PromptKind::NewBranch => "new branch ",
         }
     }
 }
@@ -133,6 +136,7 @@ impl Prompt {
             | PromptKind::SaveAs
             | PromptKind::NewFile
             | PromptKind::RenameFile
+            | PromptKind::NewBranch
             | PromptKind::Replace => true,
         }
     }

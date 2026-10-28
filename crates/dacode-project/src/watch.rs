@@ -71,6 +71,19 @@ pub struct FileWatcher {
     dirty: bool,
     /// Files the editor is replacing by rename, and when it said so.
     replacing: HashMap<PathBuf, Instant>,
+    /// The repository's own directories — `.git`, and `.git/refs` under it — when one is watched.
+    repository: Vec<PathBuf>,
+    /// What has changed in the repository since this was last asked.
+    repository_changed: Option<RepositoryChange>,
+}
+
+/// What moved in a repository, reduced to what the editor does about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RepositoryChange {
+    /// `HEAD` or a ref moved — a commit, a checkout, a fetch, a rebase. Who changed each line and
+    /// what the file is diffed against may both be different now. Only the index moving (a stage
+    /// in the terminal) changes neither.
+    pub history: bool,
 }
 
 impl FileWatcher {
@@ -115,6 +128,8 @@ impl FileWatcher {
             project: HashSet::new(),
             dirty: false,
             replacing: HashMap::new(),
+            repository: Vec::new(),
+            repository_changed: None,
         })
     }
 
@@ -168,6 +183,53 @@ impl FileWatcher {
         all
     }
 
+    /// Watches a repository's own files, so a commit, checkout or stage made outside the editor is
+    /// noticed: `git_dir` non-recursively (`HEAD`, the index, `packed-refs`, `ORIG_HEAD`) and
+    /// `common_dir/refs` recursively, where a branch's ref is a file of its own. They are two
+    /// directories in a linked worktree, whose `HEAD` and index are its own and whose refs are
+    /// shared.
+    ///
+    /// Not recursive on `.git` itself: `objects/` takes a write per object, and a fetch writes
+    /// thousands. Replaces the previous repository's watch, since a project has one. Returns
+    /// whether every directory could be watched.
+    pub fn watch_repository(&mut self, git_dir: &Path, common_dir: &Path) -> bool {
+        let wanted = vec![
+            crate::canonical(git_dir),
+            crate::canonical(common_dir),
+            crate::canonical(&common_dir.join("refs")),
+        ];
+        if wanted == self.repository {
+            return true;
+        }
+        for old in std::mem::take(&mut self.repository) {
+            let _ = self._watcher.unwatch(&old);
+        }
+        let mut all = true;
+        for (index, directory) in wanted.iter().enumerate() {
+            if self.repository.contains(directory) {
+                continue;
+            }
+            let mode = if index == 2 {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            if self._watcher.watch(directory, mode).is_err() {
+                all = false;
+            }
+            self.repository.push(directory.clone());
+        }
+        // Kept in the order given, so the next call with the same directories is recognised.
+        self.repository = wanted;
+        all
+    }
+
+    /// What changed in the watched repository since this was last asked, if anything.
+    pub fn repository_changed(&mut self) -> Option<RepositoryChange> {
+        self.drain();
+        self.repository_changed.take()
+    }
+
     /// Says that `path` is about to be replaced by a rename, which is how the editor saves.
     ///
     /// A rename reports its destination as appearing, and a file appearing in the project is what
@@ -210,6 +272,14 @@ impl FileWatcher {
         while let Ok((path, change)) = self.events.try_recv() {
             let path = crate::canonical(&path);
 
+            if let Some(change) = self.repository_change(&path) {
+                let history = self.repository_changed.is_some_and(|seen| seen.history);
+                self.repository_changed = Some(RepositoryChange {
+                    history: history || change.history,
+                });
+                continue;
+            }
+
             if self.files.contains(&path) && !self.changed.contains(&path) {
                 self.changed.push(path.clone());
             }
@@ -222,6 +292,40 @@ impl FileWatcher {
                 self.dirty = true;
             }
         }
+    }
+
+    /// What a path inside the watched repository means, or `None` for a path outside it.
+    ///
+    /// The index and its lock are a stage; anything else there — `HEAD`, a ref, `packed-refs`,
+    /// `FETCH_HEAD` — is history moving. Lock files of refs are history too, which over-reports by
+    /// one event per ref update and is harmless: the editor waits for the repository to settle
+    /// before asking anything.
+    fn repository_change(&self, path: &Path) -> Option<RepositoryChange> {
+        if self.repository.is_empty() {
+            return None;
+        }
+        let inside = self
+            .repository
+            .iter()
+            .enumerate()
+            .any(|(index, directory)| {
+                if index == 2 {
+                    path.starts_with(directory)
+                } else {
+                    path.parent() == Some(directory.as_path())
+                }
+            });
+        if !inside {
+            return None;
+        }
+        let name = path.file_name()?.to_string_lossy();
+        // Written by every `git` that reads the repository, this one's included, and meaning nothing.
+        if name == "FETCH_HEAD.lock" || name.ends_with(".tmp") {
+            return None;
+        }
+        Some(RepositoryChange {
+            history: name != "index" && name != "index.lock",
+        })
     }
 
     /// Whether a path that appeared or vanished should make the file list be rebuilt.
@@ -270,6 +374,49 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn wait_for_repository(watcher: &mut FileWatcher) -> Option<RepositoryChange> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(change) = watcher.repository_changed() {
+                return Some(change);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    fn a_commit_or_a_stage_made_outside_the_editor_is_noticed_and_told_apart() {
+        // A commit moves a branch's ref, deep under `refs/`; a stage only rewrites the index. The
+        // first changes who wrote each line and what the gutter diffs against, the second neither —
+        // so the editor re-blames for one and only refreshes the list for the other.
+        let dir = scratch("repository");
+        let git = dir.join(".git");
+        std::fs::create_dir_all(git.join("refs/heads/feature")).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::write(git.join("index"), "one").unwrap();
+
+        let mut watcher = FileWatcher::new().expect("a watcher starts");
+        assert!(watcher.watch_repository(&git, &git));
+
+        std::fs::write(git.join("index"), "two").unwrap();
+        let staged = wait_for_repository(&mut watcher).expect("the index write is seen");
+        assert!(!staged.history);
+
+        std::fs::write(git.join("refs/heads/feature/x"), "abc\n").unwrap();
+        let committed = wait_for_repository(&mut watcher).expect("a nested ref is seen");
+        assert!(committed.history);
+
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+        assert!(
+            wait_for_repository(&mut watcher)
+                .expect("HEAD is seen")
+                .history
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

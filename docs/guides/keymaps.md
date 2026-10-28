@@ -142,6 +142,7 @@ These are the editor's, not Vim's, and they work in both keymaps:
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>t</kbd> | go to a symbol anywhere in the project (`gS` with Vim keys) |
 | `gb`, or <kbd>alt</kbd>+<kbd>b</kbd> without Vim keys | who changed each line, as a column in the gutter |
 | `gB`, or <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>b</kbd> without Vim keys | the whole commit that changed this line |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>g</kbd> | source control — staging, committing, branches; see [its guide](source-control.md) |
 
 Plain **find** is one of the few that differ: `/` with the grammar on, <kbd>ctrl</kbd>+<kbd>f</kbd>
 with it off. Project-wide search is <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>f</kbd> without the
@@ -211,6 +212,16 @@ height is remembered per project, with the open files.
 
 Not there yet: splitting a terminal, dragging a tab to reorder it, and reporting the mouse's
 movement to a program while no button is held.
+
+### Source control
+
+<kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>g</kbd> opens the source-control view with the caret in its
+commit message box, as in VSCode, and closes it again; Vim's own <kbd>ctrl</kbd>+<kbd>g</kbd> is
+left alone. In the box <kbd>enter</kbd> is a new line and <kbd>ctrl</kbd>+<kbd>enter</kbd> commits.
+In its list <kbd>space</kbd> or <kbd>s</kbd> stages, <kbd>u</kbd> unstages, <kbd>enter</kbd> opens
+the diff and <kbd>o</kbd> the file. Every other git command — pull, push, checkout, stash — has a
+button there and a `git:` entry in the command palette rather than a key of its own; bind one in
+`init.lua` by its name if you want one. [Source control](source-control.md) has the rest.
 
 ### Scrolling and zooming
 

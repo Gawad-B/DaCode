@@ -167,6 +167,13 @@ pub struct EditorState {
     /// The search view in the sidebar, kept while it is closed so reopening it finds the last
     /// query and its results where they were.
     pub search: Option<crate::search_panel::SearchPanel>,
+    /// The source-control view: what git last said, the commit message, the selection. Kept while
+    /// the view is closed, like the search's, and asked about at startup so the status line can
+    /// name the branch without the view ever having been opened.
+    pub scm: crate::source_control::View,
+    /// What the active buffer is, when it is a diff or the history rather than a file: **read
+    /// only**, which [`EditorState::mutate`] enforces. Travels with its buffer, as the highlights do.
+    pub review: Option<crate::scm::Show>,
     /// The macro register being recorded into, if any.
     pub recording: Option<char>,
     /// What changed since the last commit, per line.
@@ -628,7 +635,22 @@ impl EditorState {
     /// view's boxes. The problems list and the placeholders are looked at, so giving them the
     /// keyboard would only make it disappear.
     pub fn sidebar_takes_keys(&self) -> bool {
-        self.tree.is_some() || self.search_showing()
+        self.tree.is_some() || self.search_showing() || self.source_control_showing()
+    }
+
+    /// Whether the sidebar is showing the source-control view.
+    pub fn source_control_showing(&self) -> bool {
+        self.tree.is_none()
+            && !self.show_diagnostics
+            && self.chrome.activity == Some(crate::layout::Activity::SourceControl)
+    }
+
+    /// Shows the source-control view with the keys in its message box, as VSCode's key does.
+    pub fn open_source_control(&mut self) {
+        self.close_sidebar();
+        self.chrome.activity = Some(crate::layout::Activity::SourceControl);
+        self.scm.field = crate::source_control::Field::Message;
+        self.focus = crate::focus::Focus::Sidebar;
     }
 
     /// Shows the search view with the keys in its query box, searching for `query` unless it is
@@ -1097,6 +1119,16 @@ impl EditorState {
     }
 
     pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
+        // A diff or the history is git's answer, not a file: an edit to it would be an edit to
+        // nothing, saved nowhere. The change is run against a copy and thrown away, so whatever
+        // asked gets an answer of the type it expects and the text on screen stays git's.
+        if self.review.is_some() {
+            self.hover = Some(
+                "this tab is git's answer, not a file — open the file to change it".to_string(),
+            );
+            let mut copy = Document::from_str(&self.document.text().to_string());
+            return change(&mut copy);
+        }
         // Cleared, not moved — see `Expansions`. Before the early return below, which would
         // otherwise skip it in every buffer with nothing folded or coloured.
         self.expansions.clear();
@@ -4918,48 +4950,528 @@ fn draw_search_panel(
     }
 }
 
-fn draw_placeholder(
-    frame: &mut Frame,
-    state: &EditorState,
-    rect: Rect,
-    heading: &str,
-    body: &str,
-    scale: f32,
-) {
+/// The colour of a change's letter: added green, modified in the modified hue, deleted and
+/// conflicted red, moved in the primary — the gutter's colours, so a letter here and a mark there
+/// mean the same thing.
+pub fn change_color(theme: &Theme, letter: char) -> Oklch {
+    match letter {
+        'A' | 'U' | '?' => theme.fresh(),
+        'M' | 'T' => theme.stale(),
+        'D' => theme.over_budget(),
+        'C' => theme.over_budget(),
+        _ => theme.primary,
+    }
+}
+
+/// What a line of a diff tab is, by its first character.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffLine {
+    Added,
+    Removed,
+    Hunk,
+}
+
+/// `start` is the line's first few characters: `+++ ` and `--- ` name the two files rather than
+/// add or remove a line, and are left plain.
+fn diff_line_kind(start: impl Iterator<Item = char>) -> Option<DiffLine> {
+    let start: String = start.collect();
+    if start.starts_with("+++ ") || start.starts_with("--- ") {
+        return None;
+    }
+    match start.chars().next()? {
+        '+' => Some(DiffLine::Added),
+        '-' => Some(DiffLine::Removed),
+        '@' => Some(DiffLine::Hunk),
+        _ => None,
+    }
+}
+
+/// The source-control view: the branch, the commit box, and the changes in their groups.
+fn draw_source_control(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
+    use crate::scm::Group;
+    use crate::source_control::{Confirm, Field, Row, State};
     let theme = &state.theme;
-    let pad = 16.0 * scale;
+    let view = &state.scm;
+    let geometry = view.geometry(rect, scale, &state.typography);
+    let focused = state.focus == crate::focus::Focus::Sidebar;
+    let radius = 5.0 * scale;
+    let inner = 8.0 * scale;
+
     frame.text(label(
         state,
-        heading,
-        Rect::new(
-            rect.x + pad,
-            rect.y + 12.0 * scale,
-            rect.width - pad * 2.0,
-            24.0 * scale,
-        ),
+        "SOURCE CONTROL",
+        geometry.heading,
         theme.ink_faint,
         Align::Left,
         scale,
     ));
-    let mut y = rect.y + 48.0 * scale;
-    let line = 22.0 * scale;
-    for text in wrap_to(
-        &state.typography,
-        Role::Ui,
-        body,
-        rect.width - pad * 2.0,
+    for (tool, cell) in &geometry.tools {
+        small_icon_button(frame, state, *cell, tool.icon(), theme.ink_dim, scale);
+    }
+
+    let notice = match &view.state {
+        State::Ready(_) => None,
+        State::Unknown => Some("Asking git about this folder…".to_string()),
+        State::NotARepository => Some(
+            "This folder is not in a git repository. Initialize one to start tracking its \
+             changes, or open a folder that already is one."
+                .to_string(),
+        ),
+        State::NoGit => Some(
+            "git is not installed, or not on PATH, so there is nothing to ask. Install it and \
+             refresh."
+                .to_string(),
+        ),
+        State::Failed(why) => Some(format!("git could not read this repository: {why}")),
+    };
+    if let Some(text) = notice {
+        if let Some(button) = geometry.init {
+            let over = hovered(state, button);
+            frame.fill_rounded(
+                button,
+                if over {
+                    theme.primary.with_alpha(0.85)
+                } else {
+                    theme.primary
+                },
+                radius,
+            );
+            frame.text(ui(
+                state,
+                elide(
+                    state,
+                    Role::Ui,
+                    "Initialize Repository",
+                    button.width,
+                    scale,
+                ),
+                button,
+                theme.bg,
+                Align::Center,
+                scale,
+            ));
+        }
+        let line = 20.0 * scale;
+        let mut y = geometry.notice.y;
+        for text in wrap_to(
+            &state.typography,
+            Role::Ui,
+            &text,
+            geometry.notice.width,
+            scale,
+        ) {
+            if y + line > geometry.notice.bottom() {
+                break;
+            }
+            frame.text(ui(
+                state,
+                text,
+                Rect::new(geometry.notice.x, y, geometry.notice.width, line),
+                theme.ink_dim,
+                Align::Left,
+                scale,
+            ));
+            y += line;
+        }
+        return;
+    }
+    let Some(status) = view.status() else {
+        return;
+    };
+    let advance = crate::layout::measured_advance(&state.typography, Role::Ui, scale);
+
+    // Where you are: the branch, and how far it is from its upstream, both of them buttons.
+    if hovered(state, geometry.branch) {
+        frame.fill_rounded(geometry.branch, theme.row_active, 4.0 * scale);
+    }
+    let icon = 14.0 * scale;
+    frame.icon(
+        Icon::Branch,
+        Rect::new(
+            geometry.branch.x + 4.0 * scale,
+            geometry.branch.y + (geometry.branch.height - icon) / 2.0,
+            icon,
+            icon,
+        ),
+        theme.ink_dim,
+    );
+    let name_rect = Rect::new(
+        geometry.branch.x + icon + 10.0 * scale,
+        geometry.branch.y,
+        (geometry.branch.width - icon - 12.0 * scale).max(0.0),
+        geometry.branch.height,
+    );
+    frame.text(ui(
+        state,
+        elide(state, Role::Ui, &status.head_name(), name_rect.width, scale),
+        name_rect,
+        theme.ink,
+        Align::Left,
         scale,
-    ) {
+    ));
+    for (cell, arrow, count) in [
+        (geometry.pull, Icon::ArrowDown, status.behind),
+        (geometry.push, Icon::ArrowUp, status.ahead),
+    ] {
+        if hovered(state, cell) {
+            frame.fill_rounded(cell, theme.row_active, 4.0 * scale);
+        }
+        let color = if count > 0 {
+            theme.ink
+        } else {
+            theme.ink_faint
+        };
+        let side = 13.0 * scale;
+        frame.icon(
+            arrow,
+            Rect::new(
+                cell.x + 4.0 * scale,
+                cell.y + (cell.height - side) / 2.0,
+                side,
+                side,
+            ),
+            color,
+        );
         frame.text(ui(
             state,
-            text,
-            Rect::new(rect.x + pad, y, rect.width - pad * 2.0, line),
-            theme.ink_dim,
+            count.to_string(),
+            Rect::new(
+                cell.x + 4.0 * scale + side + 2.0 * scale,
+                cell.y,
+                cell.width,
+                cell.height,
+            ),
+            color,
             Align::Left,
             scale,
         ));
-        y += line;
     }
+
+    // The message box.
+    let typing = focused && view.field == Field::Message;
+    frame.fill_rounded(geometry.message, theme.bg, radius);
+    frame.outline_rounded(
+        geometry.message,
+        if typing { theme.primary } else { theme.rule },
+        radius,
+        1.0 * scale,
+    );
+    let text_left = geometry.message.x + inner;
+    let text_width = (geometry.message.width - inner * 2.0).max(0.0);
+    let line = crate::source_control::MESSAGE_LINE * scale;
+    let top = geometry.message.y + 5.0 * scale;
+    if view.message.is_empty() {
+        let placeholder = format!("Message (ctrl-enter to commit on '{}')", status.head_name());
+        frame.text(ui(
+            state,
+            elide(state, Role::Ui, &placeholder, text_width, scale),
+            Rect::new(text_left, top, text_width, line),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    } else {
+        let first = view.message_top();
+        for (slot, text) in view
+            .message
+            .split('\n')
+            .skip(first)
+            .take(crate::source_control::MESSAGE_LINES)
+            .enumerate()
+        {
+            frame.text(ui(
+                state,
+                elide(state, Role::Ui, text, text_width, scale),
+                Rect::new(text_left, top + slot as f32 * line, text_width, line),
+                theme.ink,
+                Align::Left,
+                scale,
+            ));
+        }
+    }
+    if typing {
+        let (row, column) = view.caret_line_column();
+        let slot = row.saturating_sub(view.message_top());
+        let x = (text_left + column as f32 * advance).min(text_left + text_width);
+        frame.fill(
+            Rect::new(
+                x,
+                top + slot as f32 * line + 3.0 * scale,
+                1.5 * scale,
+                line - 6.0 * scale,
+            ),
+            theme.primary,
+        );
+    }
+
+    // The commit button: filled while there is something it would commit.
+    let committable = view.count(Group::Staged) > 0 || view.count(Group::Changes) > 0 || view.amend;
+    let smart = view.confirm == Some(Confirm::StageAllAndCommit);
+    let over = hovered(state, geometry.commit);
+    frame.fill_rounded(
+        geometry.commit,
+        if !committable {
+            theme.bg_alt
+        } else if over {
+            theme.primary.with_alpha(0.85)
+        } else {
+            theme.primary
+        },
+        radius,
+    );
+    if !committable {
+        frame.outline_rounded(geometry.commit, theme.rule, radius, 1.0 * scale);
+    }
+    let words = if smart {
+        "Stage All and Commit"
+    } else if view.amend {
+        "Commit (Amend)"
+    } else {
+        "Commit"
+    };
+    let check = 14.0 * scale;
+    let words_width = words.chars().count() as f32 * advance;
+    let start = geometry.commit.x
+        + ((geometry.commit.width - words_width - check - 6.0 * scale) / 2.0).max(inner);
+    let ink = if committable {
+        theme.bg
+    } else {
+        theme.ink_faint
+    };
+    frame.icon(
+        Icon::Check,
+        Rect::new(
+            start,
+            geometry.commit.y + (geometry.commit.height - check) / 2.0,
+            check,
+            check,
+        ),
+        ink,
+    );
+    let words_rect = Rect::new(
+        start + check + 6.0 * scale,
+        geometry.commit.y,
+        (geometry.commit.right() - start - check - 6.0 * scale).max(0.0),
+        geometry.commit.height,
+    );
+    frame.text(ui(
+        state,
+        elide(state, Role::Ui, words, words_rect.width, scale),
+        words_rect,
+        ink,
+        Align::Left,
+        scale,
+    ));
+
+    // What is happening, or the question a second press answers.
+    let summary = if let Some(doing) = view.busy {
+        (doing.to_string(), theme.ink_dim)
+    } else if let Some(confirm) = &view.confirm {
+        let question = match confirm {
+            Confirm::Discard(paths) if paths.len() == 1 => format!(
+                "discard {}? press again — not undoable",
+                paths[0].rsplit('/').next().unwrap_or(&paths[0])
+            ),
+            Confirm::Discard(paths) => {
+                format!("discard {} files? press again — not undoable", paths.len())
+            }
+            Confirm::DiscardAll => "discard every change? press again — not undoable".to_string(),
+            Confirm::StageAllAndCommit => {
+                "nothing is staged — press again to commit every change".to_string()
+            }
+        };
+        (question, theme.over_budget())
+    } else if status.truncated() {
+        (
+            format!(
+                "showing {} of {} changes",
+                status.entries.len(),
+                status.total
+            ),
+            theme.ink_faint,
+        )
+    } else {
+        (String::new(), theme.ink_faint)
+    };
+    frame.text(run(
+        state,
+        Role::Label,
+        elide(
+            state,
+            Role::Label,
+            &summary.0,
+            geometry.summary.width,
+            scale,
+        ),
+        geometry.summary,
+        summary.1,
+        Align::Left,
+        scale,
+    ));
+
+    // The list. Only the rows on screen: the geometry holds no others.
+    let pad = 12.0 * scale;
+    let letter_column = 22.0 * scale;
+    for (index, row_rect) in &geometry.rows {
+        let (index, row_rect) = (*index, *row_rect);
+        let selected = view.selected == Some(index);
+        let over = hovered(state, row_rect);
+        if selected {
+            frame.fill(
+                row_rect,
+                if focused && view.field == Field::List {
+                    theme.row_active
+                } else {
+                    theme.rule_soft
+                },
+            );
+        } else if over {
+            frame.fill(row_rect, theme.rule_soft);
+        }
+        let buttons = if over || (selected && focused) {
+            view.action_rects(index, row_rect, scale)
+        } else {
+            Vec::new()
+        };
+        let room_right = buttons
+            .first()
+            .map_or(row_rect.right() - pad - letter_column, |(_, at)| at.x)
+            - 4.0 * scale;
+
+        match view.rows()[index] {
+            Row::Header(group) => {
+                let collapsed = view.collapsed[group.index()];
+                let chevron = 14.0 * scale;
+                frame.icon(
+                    if collapsed {
+                        Icon::ChevronRight
+                    } else {
+                        Icon::ChevronDown
+                    },
+                    Rect::new(
+                        row_rect.x + 6.0 * scale,
+                        row_rect.y + (row_rect.height - chevron) / 2.0,
+                        chevron,
+                        chevron,
+                    ),
+                    theme.ink_dim,
+                );
+                let title = Rect::new(
+                    row_rect.x + 24.0 * scale,
+                    row_rect.y,
+                    (room_right - row_rect.x - 24.0 * scale).max(0.0),
+                    row_rect.height,
+                );
+                frame.text(ui(
+                    state,
+                    elide(state, Role::Ui, group.title(), title.width, scale),
+                    title,
+                    theme.ink,
+                    Align::Left,
+                    scale,
+                ));
+                // The count, in a pill at the end of the row, as VSCode draws it.
+                let count = view.count(group).to_string();
+                let width = (count.len() as f32 * advance + 10.0 * scale).max(18.0 * scale);
+                let pill = Rect::new(
+                    row_rect.right() - pad - width,
+                    row_rect.y + 3.0 * scale,
+                    width,
+                    row_rect.height - 6.0 * scale,
+                );
+                frame.fill_rounded(pill, theme.rule, pill.height / 2.0);
+                frame.text(ui(state, count, pill, theme.ink_dim, Align::Center, scale));
+            }
+            Row::File { group, entry } => {
+                let Some(entry) = status.entries.get(entry) else {
+                    continue;
+                };
+                let letter = entry.letter(group);
+                let left = row_rect.x + 26.0 * scale;
+                let width = (room_right - left).max(0.0);
+                let name = elide(state, Role::Ui, entry.name(), width, scale);
+                let name_width = name.chars().count() as f32 * advance;
+                // A deletion is drawn dim, being a file that is no longer there.
+                let ink = if letter == 'D' {
+                    theme.ink_faint
+                } else {
+                    theme.ink
+                };
+                frame.text(ui(
+                    state,
+                    name,
+                    Rect::new(left, row_rect.y, width, row_rect.height),
+                    ink,
+                    Align::Left,
+                    scale,
+                ));
+                let folder_room = width - name_width - advance;
+                if !entry.directory().is_empty() && folder_room > advance * 3.0 {
+                    frame.text(ui(
+                        state,
+                        elide_start(state, Role::Ui, entry.directory(), folder_room, scale),
+                        Rect::new(
+                            left + name_width + advance,
+                            row_rect.y,
+                            folder_room,
+                            row_rect.height,
+                        ),
+                        theme.ink_faint,
+                        Align::Left,
+                        scale,
+                    ));
+                }
+                frame.text(ui(
+                    state,
+                    letter.to_string(),
+                    Rect::new(
+                        row_rect.right() - pad - letter_column,
+                        row_rect.y,
+                        letter_column,
+                        row_rect.height,
+                    ),
+                    change_color(theme, letter),
+                    Align::Center,
+                    scale,
+                ));
+            }
+        }
+
+        for (action, cell) in buttons {
+            if hovered(state, cell) {
+                frame.fill_rounded(cell, theme.row_active, 4.0 * scale);
+            }
+            frame.icon(
+                action.icon(),
+                centred(cell, 14.0 * scale),
+                if hovered(state, cell) {
+                    theme.ink
+                } else {
+                    theme.ink_dim
+                },
+            );
+        }
+    }
+}
+
+/// A toolbar button at the size of a sidebar's heading: [`icon_button`]'s, with a smaller icon.
+fn small_icon_button(
+    frame: &mut Frame,
+    state: &EditorState,
+    rect: Rect,
+    icon: Icon,
+    color: Oklch,
+    scale: f32,
+) {
+    let over = hovered(state, rect);
+    if over {
+        frame.fill_rounded(rect, state.theme.row_active, 5.0 * scale);
+    }
+    frame.icon(
+        icon,
+        centred(rect, 15.0 * scale),
+        if over { state.theme.ink } else { color },
+    );
 }
 
 /// Advance of one code column.
@@ -5451,6 +5963,52 @@ fn draw_tooltip(
         }
     }
 
+    if let Some(sidebar) = regions
+        .sidebar
+        .filter(|sidebar| state.source_control_showing() && crate::layout::contains(*sidebar, x, y))
+    {
+        let view = &state.scm;
+        let geometry = view.geometry(sidebar, scale, &state.typography);
+        use crate::source_control::Hit;
+        let hit = view.hit(&geometry, x, y, scale);
+        found = match hit {
+            Some(Hit::Tool(tool)) => geometry
+                .tools
+                .iter()
+                .find(|(at, _)| *at == tool)
+                .map(|(_, rect)| (tool.label(), tool.command(), *rect)),
+            Some(Hit::Branch) => Some(("Checkout branch…", "git_checkout", geometry.branch)),
+            Some(Hit::Pull) => Some(("Pull", "git_pull", geometry.pull)),
+            Some(Hit::Push) => Some(("Push", "git_push", geometry.push)),
+            Some(Hit::Action(row, action)) => geometry
+                .rows
+                .iter()
+                .find(|(index, _)| *index == row)
+                .and_then(|(_, rect)| {
+                    view.action_rects(row, *rect, scale)
+                        .into_iter()
+                        .find(|(at, _)| *at == action)
+                })
+                .map(|(_, rect)| {
+                    let (name, command) = action.label();
+                    (name, command, rect)
+                }),
+            _ => found,
+        };
+    }
+    if let Some(branch) = state.scm.status().and_then(|status| {
+        crate::layout::status_branch(
+            regions.status,
+            &status.head_name(),
+            &state.typography,
+            scale,
+        )
+    }) {
+        if crate::layout::contains(branch, x, y) {
+            found = Some(("Checkout branch…", "git_checkout", branch));
+        }
+    }
+
     let Some((name, command, anchor)) = found else {
         return;
     };
@@ -5479,7 +6037,10 @@ fn draw_tooltip(
         bounds.x + 4.0 * scale,
         (bounds.right() - width - 4.0 * scale).max(0.0),
     );
-    tip_y = tip_y.min(bounds.bottom() - height - 4.0 * scale);
+    // Above the control when there is no room below it — the status line's branch, at the foot.
+    if tip_y + height > bounds.bottom() - 4.0 * scale {
+        tip_y = (anchor.y - height - 6.0 * scale).max(bounds.y);
+    }
     let tip = Rect::new(tip_x, tip_y, width, height);
     frame.fill_rounded(tip, theme.row_active, 5.0 * scale);
     frame.outline_rounded(tip, theme.rule, 5.0 * scale, border::BORDER * scale);
@@ -5858,6 +6419,33 @@ fn draw_code(
         let y = grid.y_of(index);
         let on_cursor_line = row.line == cursor_line;
 
+        // A diff tab: each line's first character says what it is, as `git diff` prints it, and the
+        // line takes the gutter's colour for that — a wash across the code and a bar in the gutter.
+        // Read per visible row, from the row's own line, so a diff of any length costs the viewport.
+        if pane.focused {
+            if let Some(kind) = state
+                .review
+                .as_ref()
+                .and_then(|_| diff_line_kind(text.line(row.line).chars().take(4)))
+            {
+                let color = match kind {
+                    DiffLine::Added => theme.fresh(),
+                    DiffLine::Removed => theme.over_budget(),
+                    DiffLine::Hunk => theme.primary,
+                };
+                // Faint: blended in linear light, a few percent already reads as a clear wash, and
+                // the text over it has to stay as legible as the file's own.
+                frame.fill(
+                    Rect::new(left, y, code.right() - left, row_height),
+                    color.with_alpha(0.05),
+                );
+                frame.fill(
+                    Rect::new(gutter.right() - 3.0 * scale, y, 2.0 * scale, row_height),
+                    color,
+                );
+            }
+        }
+
         if on_cursor_line && pane.focused {
             // Across the gutter and the code, translucent so it works on any surface — including
             // a see-through one. With modes on it takes the mode's hue, which is how the line
@@ -5974,7 +6562,8 @@ fn draw_code(
         // The git mark, on the gutter's inner edge. A 2px bar rather than a letter or an icon: it is
         // read peripherally while looking at the code, and shape at the edge of vision is all that
         // survives — which is also the whole reason the design is made of rectangles.
-        if pane.focused && row.is_first() {
+        // A diff tab draws its own bars, above; its marks are only there for `]c`.
+        if pane.focused && row.is_first() && state.review.is_none() {
             if let Some(change) = state.diff.change_at(row.line) {
                 let (color, height) = match change {
                     crate::git::Change::Added => (theme.fresh(), row_height),
@@ -6368,15 +6957,9 @@ fn draw_sidebar_view(frame: &mut Frame, state: &EditorState, rect: Rect, scale: 
                     draw_search_panel(frame, state, panel, rect, scale);
                 }
             }
-            Some(crate::layout::Activity::SourceControl) => draw_placeholder(
-                frame,
-                state,
-                rect,
-                "source control",
-                "Staging, committing and branches are coming to this panel. Until then the \
-                 gutter marks every change against HEAD, and ]c and [c step between them.",
-                scale,
-            ),
+            Some(crate::layout::Activity::SourceControl) => {
+                draw_source_control(frame, state, rect, scale)
+            }
             _ => {}
         }
     }
@@ -6501,6 +7084,49 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
         })
         .count();
     let mut x = left.x;
+    // The branch, first: where you are, before what is wrong there. A button — it opens the picker.
+    let branch_name = state.scm.status().map(|status| status.head_name());
+    if let Some(cell) = branch_name
+        .as_deref()
+        .and_then(|name| crate::layout::status_branch(rect, name, &state.typography, scale))
+    {
+        if hovered(state, cell) {
+            frame.fill(cell, theme.row_active);
+        }
+        let side = 13.0 * scale;
+        frame.icon(
+            Icon::Branch,
+            Rect::new(
+                cell.x + 4.0 * scale,
+                cell.y + (cell.height - side) / 2.0,
+                side,
+                side,
+            ),
+            theme.ink_dim,
+        );
+        let name_rect = Rect::new(
+            cell.x + side + 8.0 * scale,
+            cell.y,
+            (cell.width - side - 10.0 * scale).max(0.0),
+            cell.height,
+        );
+        frame.text(run(
+            state,
+            Role::Value,
+            elide(
+                state,
+                Role::Value,
+                branch_name.as_deref().unwrap_or_default(),
+                name_rect.width,
+                scale,
+            ),
+            name_rect,
+            theme.ink_dim,
+            Align::Left,
+            scale,
+        ));
+        x = x.max(cell.right() + 10.0 * scale);
+    }
     for (icon, count, lit) in [
         (Icon::ErrorCircle, errors, theme.over_budget()),
         (Icon::Warning, warnings, theme.stale()),

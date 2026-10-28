@@ -331,6 +331,8 @@ impl Grammar {
                 KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
                 KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
                 KeyCode::Char('h') => Some(Action::StartReplace),
+                // VSCode's key for its source-control view. Shifted first, or the plain arm takes it.
+                KeyCode::Char('g') if key.shift => Some(Action::ShowSourceControl),
                 KeyCode::Char('g') => Some(Action::StartCommand),
                 // `ctrl-d` is occurrence selection, not "a cursor below": it is the first shortcut a
                 // VSCode user reaches for, and having it do something else is worse than not having
@@ -470,6 +472,8 @@ impl Grammar {
                 KeyCode::Char('q') => Some(Action::Quit),
                 KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
+                // Only shifted: Vim's own `ctrl-g` (file info) is left where it is.
+                KeyCode::Char('g') if key.shift => Some(Action::ShowSourceControl),
                 KeyCode::Char('1') => Some(Action::FocusEditor),
                 KeyCode::Char('`') => Some(Action::ToggleTerminal),
                 // In every mode, insert included — where Vim's own `ctrl-w` deletes a word. Closing

@@ -208,11 +208,12 @@ pub enum Group {
     Search,
     Language,
     View,
+    SourceControl,
     Panes,
 }
 
 impl Group {
-    pub const ALL: [Group; 8] = [
+    pub const ALL: [Group; 9] = [
         Group::Files,
         Group::Editing,
         Group::Selection,
@@ -220,6 +221,7 @@ impl Group {
         Group::Search,
         Group::Language,
         Group::View,
+        Group::SourceControl,
         Group::Panes,
     ];
 
@@ -232,6 +234,7 @@ impl Group {
             Group::Search => "finding things",
             Group::Language => "the language server",
             Group::View => "the view",
+            Group::SourceControl => "source control",
             Group::Panes => "panes and panels",
         }
     }
@@ -641,7 +644,87 @@ pub const COMMANDS: &[Command] = &[
         "gD",
         "",
     ),
-    command("source_control", "show source control", View, "", ""),
+    // ---- source control ----------------------------------------------------------------
+    // VSCode's names, so the palette answers "git: commit" the way someone arriving from it types.
+    // Only the view has a key of its own: inside it the arrows, `s`, `u`, enter and ctrl-enter are
+    // the view's, and everything else is a button there with its name on its tooltip.
+    command(
+        "source_control",
+        "show source control",
+        SourceControl,
+        "<c-s-g>",
+        "<c-s-g>",
+    ),
+    command("git_commit", "git: commit", SourceControl, "", ""),
+    command(
+        "git_commit_amend",
+        "git: commit (amend)",
+        SourceControl,
+        "",
+        "",
+    ),
+    command("git_refresh", "git: refresh", SourceControl, "", ""),
+    command("git_stage", "git: stage file", SourceControl, "", ""),
+    command("git_unstage", "git: unstage file", SourceControl, "", ""),
+    command("git_discard", "git: discard changes", SourceControl, "", ""),
+    command(
+        "git_stage_all",
+        "git: stage all changes",
+        SourceControl,
+        "",
+        "",
+    ),
+    command(
+        "git_unstage_all",
+        "git: unstage all changes",
+        SourceControl,
+        "",
+        "",
+    ),
+    command(
+        "git_discard_all",
+        "git: discard all changes",
+        SourceControl,
+        "",
+        "",
+    ),
+    command("git_pull", "git: pull", SourceControl, "", ""),
+    command("git_push", "git: push", SourceControl, "", ""),
+    command(
+        "git_sync",
+        "git: sync (pull, then push)",
+        SourceControl,
+        "",
+        "",
+    ),
+    command("git_fetch", "git: fetch", SourceControl, "", ""),
+    command("git_stash", "git: stash", SourceControl, "", ""),
+    command("git_pop_stash", "git: pop stash", SourceControl, "", ""),
+    command("git_checkout", "git: checkout to…", SourceControl, "", ""),
+    command(
+        "git_create_branch",
+        "git: create branch…",
+        SourceControl,
+        "",
+        "",
+    ),
+    command("git_history", "git: show history", SourceControl, "", ""),
+    command(
+        "git_open_changes",
+        "git: open changes",
+        SourceControl,
+        "",
+        "",
+    ),
+    command("git_open_file", "git: open file", SourceControl, "", ""),
+    command(
+        "git_init",
+        "git: initialize repository",
+        SourceControl,
+        "",
+        "",
+    ),
+    command("git_menu", "git: more actions…", SourceControl, "", ""),
     command("notifications", "show recent messages", View, "", ""),
     command("share", "copy link to line", Files, "", ""),
     command("run", "run the project in the terminal", Files, "", ""),

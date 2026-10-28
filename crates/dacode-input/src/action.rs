@@ -436,6 +436,108 @@ pub enum Action {
     ToggleMenu,
     /// `shift-f10`, or a right-click — the context menu at the cursor.
     ToggleContextMenu,
+
+    // ---- source control -----------------------------------------------------------------
+    /// Something the source-control view does. One variant over [`Git`] rather than twenty here,
+    /// because every one of them is carried out by the event loop's git worker the same way.
+    Git(Git),
+}
+
+/// The source-control commands, VSCode's "Git: …" palette entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Git {
+    /// Commit what is staged — or, with nothing staged, offer to commit everything.
+    Commit,
+    /// Fold what is staged into the last commit, with the message box's text if it has any.
+    CommitAmend,
+    Refresh,
+    /// Stage the selected change, or the file on screen.
+    Stage,
+    Unstage,
+    /// Throw away the selected change's working-tree edits. Asks to be pressed twice.
+    Discard,
+    StageAll,
+    UnstageAll,
+    DiscardAll,
+    Fetch,
+    Pull,
+    Push,
+    /// Pull, then push.
+    Sync,
+    Stash,
+    PopStash,
+    /// Choose a branch to check out, from a picker.
+    Checkout,
+    CreateBranch,
+    /// The log, in a read-only tab.
+    History,
+    /// The selected change's diff, or the file on screen's, in a read-only tab.
+    OpenChanges,
+    /// The selected change's file itself.
+    OpenFile,
+    /// `git init` in the project.
+    Init,
+    /// The view's `…` menu: everything above that is not a button of its own.
+    Menu,
+}
+
+impl Git {
+    pub const ALL: [Git; 22] = [
+        Git::Commit,
+        Git::CommitAmend,
+        Git::Refresh,
+        Git::Stage,
+        Git::Unstage,
+        Git::Discard,
+        Git::StageAll,
+        Git::UnstageAll,
+        Git::DiscardAll,
+        Git::Fetch,
+        Git::Pull,
+        Git::Push,
+        Git::Sync,
+        Git::Stash,
+        Git::PopStash,
+        Git::Checkout,
+        Git::CreateBranch,
+        Git::History,
+        Git::OpenChanges,
+        Git::OpenFile,
+        Git::Init,
+        Git::Menu,
+    ];
+
+    /// The name config binds it under, and the palette runs it by.
+    pub fn name(self) -> &'static str {
+        match self {
+            Git::Commit => "git_commit",
+            Git::CommitAmend => "git_commit_amend",
+            Git::Refresh => "git_refresh",
+            Git::Stage => "git_stage",
+            Git::Unstage => "git_unstage",
+            Git::Discard => "git_discard",
+            Git::StageAll => "git_stage_all",
+            Git::UnstageAll => "git_unstage_all",
+            Git::DiscardAll => "git_discard_all",
+            Git::Fetch => "git_fetch",
+            Git::Pull => "git_pull",
+            Git::Push => "git_push",
+            Git::Sync => "git_sync",
+            Git::Stash => "git_stash",
+            Git::PopStash => "git_pop_stash",
+            Git::Checkout => "git_checkout",
+            Git::CreateBranch => "git_create_branch",
+            Git::History => "git_history",
+            Git::OpenChanges => "git_open_changes",
+            Git::OpenFile => "git_open_file",
+            Git::Init => "git_init",
+            Git::Menu => "git_menu",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Git> {
+        Git::ALL.into_iter().find(|git| git.name() == name)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -596,6 +698,28 @@ impl Action {
         "help",
         "menu",
         "context_menu",
+        "git_commit",
+        "git_commit_amend",
+        "git_refresh",
+        "git_stage",
+        "git_unstage",
+        "git_discard",
+        "git_stage_all",
+        "git_unstage_all",
+        "git_discard_all",
+        "git_fetch",
+        "git_pull",
+        "git_push",
+        "git_sync",
+        "git_stash",
+        "git_pop_stash",
+        "git_checkout",
+        "git_create_branch",
+        "git_history",
+        "git_open_changes",
+        "git_open_file",
+        "git_init",
+        "git_menu",
     ];
 
     /// Resolves a configuration name to an action.
@@ -798,7 +922,7 @@ impl Action {
             "menu" => Action::ToggleMenu,
             "context_menu" => Action::ToggleContextMenu,
 
-            _ => return None,
+            name => return Git::from_name(name).map(Action::Git),
         })
     }
 
@@ -851,6 +975,20 @@ mod tests {
                 Action::from_name(name).is_some(),
                 "`{name}` is advertised but does not resolve"
             );
+        }
+    }
+
+    #[test]
+    fn every_source_control_command_is_advertised_and_resolves_to_itself() {
+        // `NAMES` is written out by hand, and the git commands resolve through a fallback arm — the
+        // one place a new `Git` variant could be reachable from config and absent from the palette.
+        for git in Git::ALL {
+            assert!(
+                Action::NAMES.contains(&git.name()),
+                "{} is not advertised",
+                git.name()
+            );
+            assert_eq!(Action::from_name(git.name()), Some(Action::Git(git)));
         }
     }
 

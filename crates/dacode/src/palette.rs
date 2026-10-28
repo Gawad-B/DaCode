@@ -43,6 +43,9 @@ pub enum PaletteKind {
     /// keystroke sends the query and the reply replaces the list — with the query it was for, so
     /// an answer that arrives after you have typed on is discarded rather than flickering back.
     ProjectSymbols,
+    /// The branch picker: what clicking the branch, or "git: checkout to…", opens. Local branches,
+    /// then remote ones, with "create new branch" first — VSCode's picker, in the palette's card.
+    Branches,
 }
 
 impl PaletteKind {
@@ -54,6 +57,7 @@ impl PaletteKind {
             PaletteKind::Commands => "run a command",
             PaletteKind::Symbols => "go to symbol",
             PaletteKind::ProjectSymbols => "go to symbol in project",
+            PaletteKind::Branches => "checkout to branch",
         }
     }
 }
@@ -87,6 +91,13 @@ pub enum Target {
     Command(&'static str),
     /// The index of a symbol in the list the server sent.
     Symbol(usize),
+    /// A branch to check out — a remote one is checked out as a new local branch tracking it.
+    Branch {
+        name: String,
+        remote: bool,
+    },
+    /// A new branch, with the name typed so far — empty asks for one.
+    CreateBranch(String),
 }
 
 /// How many rows the palette shows. The design's card is a fixed height, and a palette that scrolls
@@ -224,6 +235,65 @@ impl Palette {
             })
             .collect();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+    }
+
+    /// Fills the palette with branches, filtered by the query.
+    ///
+    /// "Create new branch" is always the first row, carrying what has been typed — so typing a name
+    /// that matches nothing and pressing enter makes that branch, as VSCode's picker does. Capped,
+    /// like every palette list, so a repository with ten thousand remote branches lays out the
+    /// same card as one with ten.
+    pub fn refresh_branches(&mut self, branches: &[crate::scm::Branch]) {
+        let typed = self.query.trim().to_string();
+        let query = typed.to_lowercase();
+        self.total = branches.len();
+        let create = Row {
+            name: if typed.is_empty() {
+                "Create new branch…".to_string()
+            } else {
+                format!("Create new branch: {typed}")
+            },
+            context: String::new(),
+            score: 0,
+            highlights: Vec::new(),
+            target: Target::CreateBranch(typed.clone()),
+            heading: Some("new"),
+        };
+        self.rows = std::iter::once(create)
+            .chain(
+                branches
+                    .iter()
+                    .filter(|branch| {
+                        query.is_empty() || branch.name.to_lowercase().contains(&query)
+                    })
+                    .map(|branch| Row {
+                        name: branch.name.clone(),
+                        context: if branch.current {
+                            format!("current · {}", branch.when)
+                        } else {
+                            branch.when.clone()
+                        },
+                        score: 0,
+                        highlights: highlight_substring(&branch.name, &query),
+                        target: Target::Branch {
+                            name: branch.name.clone(),
+                            remote: branch.remote,
+                        },
+                        heading: Some(if branch.remote {
+                            "remote branches"
+                        } else {
+                            "branches"
+                        }),
+                    }),
+            )
+            .take(VISIBLE_ROWS * 8)
+            .collect();
+        // With a name typed, a matching branch is the likelier choice than making another.
+        self.selected = if !typed.is_empty() && self.rows.len() > 1 {
+            1
+        } else {
+            self.selected.min(self.rows.len().saturating_sub(1))
+        };
     }
 
     pub fn refresh_buffers(&mut self, names: &[(String, String)]) {

@@ -11,6 +11,22 @@ release, where one exists, lives in `packaging/notes/`.
 
 ### Added
 
+- **Source control, as in VSCode.** `ctrl-shift-g` (or the branch icon, or the new **Git** menu)
+  opens a view with the branch and how far it is ahead of and behind its upstream, a commit message
+  box (`ctrl-enter` commits), and the changes in **Merge Changes**, **Staged Changes** and
+  **Changes**, each foldable, with coloured M/A/D/R/U/C letters and buttons on hover to open, stage,
+  unstage and discard — per file and per group. Committing with nothing staged asks once, then
+  stages and commits everything. Clicking a change opens its diff in a read-only tab (the index
+  against the working tree, or `HEAD` against the index for a staged one), washed in the gutter's
+  colours, and `]c`/`[c` walk its hunks. Click the branch — in the view or on the status line,
+  where it now shows — for a picker of local and remote branches that also creates one. Pull,
+  push (publishing a new branch), sync, fetch, stash, pop, history and amend are in the view's `…`
+  menu, the Git menu and the palette as `git: …` commands. In a folder git does not track, the view
+  offers to initialize one. Every git command runs off the UI thread with prompts turned off, so a
+  push that needs a password fails with a sentence pointing at the terminal instead of hanging.
+  Discarding asks to be pressed twice. `--source-control`, `--no-repository`, `--diff-view` and
+  `--branches` capture it.
+
 - **Rebind keys from the settings tab.** On the Keys page, click a command (or press Enter on it)
   and press the new keys: any ctrl, alt or function-key chord, or `ctrl-k` and a second key. Esc
   cancels, Backspace leaves the command with no key, and a key another command already has is
@@ -79,6 +95,13 @@ release, where one exists, lives in `packaging/notes/`.
   (`OSC 10`, `11`, `4`) is told the theme's, so it picks light or dark colours to match.
 
 ### Changed
+
+- **The blame and the gutter follow commits and checkouts made outside DaCode.** The repository's
+  `HEAD`, index and refs are watched, so a commit in a terminal shows in the blame and the diff
+  marks as soon as it is made; before, it showed only once the file was saved or reopened.
+- **The menu bar's Run title is now Git.** It held two rows, both also under Terminal (and the run
+  command is still the tab bar's ▶); a ninth title would have pushed Help behind the overflow at
+  1600px wide.
 
 - **`dacode.map` bindings now work with Vim's keys off.** The non-modal grammar never asked the
   keymap, so every binding in `init.lua` did nothing for anyone who had turned Vim off; with it off

@@ -39,6 +39,18 @@ pub enum Icon {
     Terminal,
     /// An open circle with its arrow turning back: put a setting back to its default.
     Reset,
+    /// A tick: commit.
+    Check,
+    /// Two arrows chasing round a circle: ask again.
+    Refresh,
+    /// A bar: the opposite of [`Icon::Plus`] — unstage.
+    Minus,
+    /// Three dots: more of what this bar offers, in a menu.
+    More,
+    /// Pull: down, into here.
+    ArrowDown,
+    /// Push: up, out of here.
+    ArrowUp,
 }
 
 /// A primitive in grid units, before it is placed and scaled.
@@ -79,7 +91,7 @@ fn rounded(x: f32, y: f32, w: f32, h: f32, r: f32) -> Vec<Stroke> {
 }
 
 impl Icon {
-    pub const ALL: [Icon; 23] = [
+    pub const ALL: [Icon; 29] = [
         Icon::Explorer,
         Icon::Search,
         Icon::Branch,
@@ -103,6 +115,12 @@ impl Icon {
         Icon::Dot,
         Icon::Terminal,
         Icon::Reset,
+        Icon::Check,
+        Icon::Refresh,
+        Icon::Minus,
+        Icon::More,
+        Icon::ArrowDown,
+        Icon::ArrowUp,
     ];
 
     pub fn strokes(self) -> Vec<Stroke> {
@@ -238,6 +256,34 @@ impl Icon {
             Icon::Reset => {
                 let mut strokes = vec![Arc(12.0, 12.0, 8.0, 270.0, 540.0)];
                 strokes.extend(path(&[(15.0, 1.5), (11.5, 4.0), (15.0, 6.5)]));
+                strokes
+            }
+            Icon::Check => path(&[(4.5, 12.5), (9.5, 17.5), (19.5, 6.5)]),
+            // Two arcs with a gap at each end of the turn, an arrowhead on each: the circle goes
+            // round clockwise, as a refresh does in every toolbar.
+            Icon::Refresh => {
+                let mut strokes = vec![
+                    Arc(12.0, 12.0, 8.0, 200.0, 340.0),
+                    Arc(12.0, 12.0, 8.0, 20.0, 160.0),
+                ];
+                strokes.extend(path(&[(16.5, 3.5), (19.6, 9.3), (13.5, 9.5)]));
+                strokes.extend(path(&[(7.5, 20.5), (4.4, 14.7), (10.5, 14.5)]));
+                strokes
+            }
+            Icon::Minus => vec![Line(5.0, 12.0, 19.0, 12.0)],
+            Icon::More => vec![
+                Disc(5.5, 12.0, 1.6),
+                Disc(12.0, 12.0, 1.6),
+                Disc(18.5, 12.0, 1.6),
+            ],
+            Icon::ArrowDown => {
+                let mut strokes = vec![Line(12.0, 4.0, 12.0, 19.0)];
+                strokes.extend(path(&[(6.0, 13.5), (12.0, 19.5), (18.0, 13.5)]));
+                strokes
+            }
+            Icon::ArrowUp => {
+                let mut strokes = vec![Line(12.0, 5.0, 12.0, 20.0)];
+                strokes.extend(path(&[(6.0, 10.5), (12.0, 4.5), (18.0, 10.5)]));
                 strokes
             }
         }

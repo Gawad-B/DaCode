@@ -102,15 +102,17 @@ pub const TITLES: [&str; 8] = [
     "Selection",
     "View",
     "Go",
-    "Run",
+    "Git",
     "Terminal",
     "Help",
 ];
 
 /// What is in each menu, by command name, in the order of [`TITLES`].
 ///
-/// Run holds the project's run command; Terminal the terminal panel, and the same run command, since
-/// that is where it runs.
+/// Terminal holds the terminal panel and the project's run command, since that is where it runs.
+/// There was a Run title too, holding only those two rows again; Git took its place, because a
+/// ninth title does not fit beside the search box at 1600px and the one that fell off was Help.
+/// The run command keeps its ▶ on the tab bar.
 const MENUS: [&[&str]; 8] = [
     &[
         "new_file",
@@ -169,7 +171,24 @@ const MENUS: [&[&str]; 8] = [
         "next_diagnostic",
         "previous_diagnostic",
     ],
-    &["run", "toggle_terminal"],
+    // Git: VSCode keeps these in the source-control view's own `…` menu and the palette, with no
+    // title on the bar. A title is where someone who has never opened that view looks.
+    &[
+        "source_control",
+        "git_commit",
+        "git_commit_amend",
+        "git_refresh",
+        "git_pull",
+        "git_push",
+        "git_sync",
+        "git_fetch",
+        "git_checkout",
+        "git_create_branch",
+        "git_stash",
+        "git_pop_stash",
+        "git_history",
+        "git_open_changes",
+    ],
     &[
         "new_terminal",
         "kill_terminal",
@@ -192,7 +211,7 @@ const MENUS: [&[&str]; 8] = [
 ///
 /// Long, deliberately. A context menu is where someone who does not know the shortcuts finds out
 /// what the editor can do at this spot, and every row prints the key that would have done it.
-const CONTEXT: [&str; 14] = [
+const CONTEXT: [&str; 16] = [
     "cut",
     "copy",
     "paste",
@@ -207,6 +226,8 @@ const CONTEXT: [&str; 14] = [
     "rename",
     "code_action",
     "format",
+    "git_open_changes",
+    "git_stage",
 ];
 
 /// What a right-click **on the file tree** offers.
@@ -215,7 +236,29 @@ const CONTEXT: [&str; 14] = [
 /// and the thing under the pointer is a file, not a symbol. Until this existed the tree was
 /// strictly read-only — which contradicts the rule that a feature reachable only by a key is not
 /// finished, for exactly the audience that rule was written for.
-const TREE: [&str; 4] = ["new_file", "rename_file", "delete_file", "search_project"];
+const TREE: [&str; 6] = [
+    "new_file",
+    "rename_file",
+    "delete_file",
+    "search_project",
+    "git_open_changes",
+    "git_stage",
+];
+
+/// What the source-control view's `…` button offers: what has no button of its own there.
+const SOURCE_CONTROL: [&str; 11] = [
+    "git_pull",
+    "git_push",
+    "git_sync",
+    "git_fetch",
+    "git_checkout",
+    "git_create_branch",
+    "git_stash",
+    "git_pop_stash",
+    "git_history",
+    "git_commit_amend",
+    "git_discard_all",
+];
 
 /// What a right-click **on the terminal** offers.
 ///
@@ -278,6 +321,18 @@ impl Menu {
         };
         menu.fill(modal);
         menu
+    }
+
+    /// The source-control view's `…` menu, hung from the button.
+    pub fn source_control(at: (f32, f32), modal: bool) -> Self {
+        Self {
+            items: SOURCE_CONTROL
+                .iter()
+                .filter_map(|name| commands::by_name(name))
+                .map(|command| Item::from_command(command, modal))
+                .collect(),
+            ..Self::context(at, modal)
+        }
     }
 
     /// The context menu for the terminal panel.
@@ -705,8 +760,8 @@ mod tests {
     #[test]
     fn the_terminal_is_reachable_from_the_menu_bar() {
         // A feature reachable only by a key is not finished: someone who chose the conventional
-        // editor finds the terminal under Terminal, and the run command under both titles says
-        // where it runs.
+        // editor finds the terminal under Terminal, and the run command beside it says where it
+        // runs.
         let terminal = Menu::bar_at(TITLES.iter().position(|t| *t == "Terminal").unwrap(), false);
         for action in [
             Action::NewTerminal,
@@ -721,19 +776,12 @@ mod tests {
                 "Terminal offers {action:?}"
             );
         }
-        for title in ["Run", "Terminal"] {
-            let menu = Menu::bar_at(TITLES.iter().position(|t| *t == title).unwrap(), false);
-            let run = menu
-                .items
-                .iter()
-                .find(|item| item.action == Action::Run)
-                .unwrap_or_else(|| panic!("{title} offers run"));
-            assert!(
-                run.label.contains("terminal"),
-                "under {title}: {}",
-                run.label
-            );
-        }
+        let run = terminal
+            .items
+            .iter()
+            .find(|item| item.action == Action::Run)
+            .expect("Terminal offers run");
+        assert!(run.label.contains("terminal"), "{}", run.label);
     }
 
     #[test]

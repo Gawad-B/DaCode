@@ -188,6 +188,8 @@ fn main() -> Result<()> {
     );
     app.wake_pending = wake_pending;
     app.walk = Some(FileWalk::start(root.clone()));
+    // Asked at once, so the status line names the branch before the view is ever opened.
+    app.refresh_scm(false);
     dacode::recovery::install_panic_hook(app.lifeline.clone());
 
     // First run: no configuration means nobody has answered the two questions that decide whether
@@ -302,6 +304,8 @@ fn new_state(
         vertical_goal: None,
         expansions: dacode::chrome::Expansions::default(),
         search: None,
+        scm: Default::default(),
+        review: None,
         recording: None,
         diff: dacode::git::Diff::default(),
         blame: dacode::blame::Tracker::new(settings.inline_blame),
@@ -412,7 +416,7 @@ const VALUE_FLAGS: [&str; 28] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 50] = [
+const FLAGS: [(&str, &str, &str); 54] = [
     // Opening.
     (
         "--no-session",
@@ -491,6 +495,18 @@ const FLAGS: [(&str, &str, &str); 50] = [
     ("--complete", "PREFIX", "the completion popup"),
     ("--diagnostic", "L:C:MSG", "one diagnostic, inline"),
     ("--diagnostics-list", "", "the problems list"),
+    (
+        "--source-control",
+        "",
+        "the source control view, over a canned status",
+    ),
+    (
+        "--no-repository",
+        "",
+        "the source control view in a folder git does not track",
+    ),
+    ("--diff-view", "", "a diff tab, showing a canned diff"),
+    ("--branches", "", "the branch picker, over canned branches"),
     (
         "--terminal",
         "",
@@ -1228,6 +1244,53 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--source-control") || flag("--no-repository") {
+        // Canned, for the same reason as `--git`: what is uncommitted in this checkout right now
+        // is not something a capture may depend on. Read through the real parser, so the capture
+        // also shows what it makes of renames, conflicts and a directory with spaces.
+        state.open_source_control();
+        let version = state.scm.ask();
+        let repo = if flag("--no-repository") {
+            dacode::scm::Repo::NotARepository
+        } else {
+            canned_status()
+        };
+        state.scm.accept(version, repo);
+        if flag("--source-control") {
+            state.scm.message = "Handle the empty input before parsing".to_string();
+            state.scm.caret = state.scm.message.chars().count();
+            state.scm.field = dacode::source_control::Field::List;
+            state.scm.selected = Some(5);
+        }
+        refit(&mut state);
+        start(&mut state);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--diff-view") {
+        state.document = Document::from_str(CANNED_DIFF);
+        state.review = Some(dacode::scm::Show::Changes {
+            path: "crates/dacode-text/src/anchor.rs".to_string(),
+            side: dacode::scm::Side::Unstaged,
+        });
+        state.path = review_crumbs(state.review.as_ref().expect("just set"));
+        state.buffer_tabs = vec![(state.path.last().cloned().unwrap_or_default(), false)];
+        state.file_path = None;
+        state.highlights.clear();
+        state.scroll = ScrollAnchor::at_line(0);
+        state.document.set_primary_caret(dacode_text::CharOffset(0));
+        let version = state.scm.ask();
+        state.scm.accept(version, canned_status());
+        refit(&mut state);
+        start(&mut state);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
+    } else if flag("--branches") {
+        let version = state.scm.ask();
+        state.scm.accept(version, canned_status());
+        let mut palette = Palette::new(PaletteKind::Branches);
+        palette.refresh_branches(&dacode::scm::parse_branches(CANNED_BRANCHES));
+        state.palette = Some(palette);
+        refit(&mut state);
+        start(&mut state);
+        chrome::draw(&mut frame, &state, bounds, 1.0);
     } else if flag("--terminal") {
         // No shell: a capture must draw the same thing every time, so the transcript is fed to the
         // same parser a live terminal runs, at the size the panel's grid has here.
@@ -1556,6 +1619,79 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     Ok(())
 }
 
+/// The status `--source-control` draws, as `git status --porcelain=v2 -z --branch` prints it:
+/// a conflict, staged changes including a rename, and unstaged ones including untracked files.
+fn canned_status() -> dacode::scm::Repo {
+    let records = [
+        "# branch.oid 4f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39",
+        "# branch.head feature/empty-input",
+        "# branch.upstream origin/feature/empty-input",
+        "# branch.ab +2 -1",
+        "u UU N... 100644 100644 100644 100644 aaaa bbbb cccc crates/dacode/src/config.rs",
+        "1 M. N... 100644 100644 100644 aaaa bbbb crates/dacode-text/src/anchor.rs",
+        "2 R. N... 100644 100644 100644 aaaa aaaa R100 docs/guides/source control.md",
+        "docs/guides/git.md",
+        "1 A. N... 000000 100644 100644 0000 aaaa crates/dacode/src/scm.rs",
+        "1 .M N... 100644 100644 100644 aaaa bbbb crates/dacode-text/src/anchor.rs",
+        "1 .M N... 100644 100644 100644 aaaa bbbb README.md",
+        "1 .D N... 100644 100644 000000 aaaa 0000 crates/dacode/src/old_panel.rs",
+        "? notes/a very long name for a scratch file that will not fit.txt",
+        "? crates/dacode/src/source_control.rs",
+    ];
+    let mut bytes = Vec::new();
+    for record in records {
+        bytes.extend_from_slice(record.as_bytes());
+        bytes.push(0);
+    }
+    let mut status = dacode::scm::parse_status(&bytes);
+    status.root = find_root(&std::path::PathBuf::from("."));
+    dacode::scm::Repo::Ready(Box::new(status))
+}
+
+/// The diff `--diff-view` shows: two hunks, with lines added, removed and kept.
+const CANNED_DIFF: &str =
+    "diff --git a/crates/dacode-text/src/anchor.rs b/crates/dacode-text/src/anchor.rs
+index 3b18e51..a9c2f04 100644
+--- a/crates/dacode-text/src/anchor.rs
++++ b/crates/dacode-text/src/anchor.rs
+@@ -12,9 +12,11 @@ use crate::{CharOffset, Text};
+ /// A position that survives edits around it.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub struct Anchor {
+-    offset: usize,
++    offset: CharOffset,
++    /// Which side of an insertion at this exact offset the anchor ends up on.
++    bias: Bias,
+ }
+ 
+ impl Anchor {
+-    pub fn new(offset: usize) -> Self {
+-        Self { offset }
++    pub fn new(offset: CharOffset, bias: Bias) -> Self {
++        Self { offset, bias }
+     }
+@@ -48,7 +50,7 @@ impl Anchor {
+     pub fn transform(&mut self, edit: &Edit) {
+         if edit.range.end <= self.offset {
+-            self.offset = self.offset + edit.text.len() - edit.range.len();
++            self.offset = edit.shift(self.offset);
+         }
+     }
+ }
+";
+
+/// The branches `--branches` lists, as `for-each-ref` prints them.
+const CANNED_BRANCHES: &str =
+    "*\trefs/heads/feature/empty-input\torigin/feature/empty-input\t2 hours ago
+ \trefs/heads/main\torigin/main\t3 days ago
+ \trefs/heads/terminal-tabs\t\t5 days ago
+ \trefs/heads/fix/crlf-revert\t\t3 weeks ago
+ \trefs/remotes/origin/HEAD\t\t3 days ago
+ \trefs/remotes/origin/main\t\t3 days ago
+ \trefs/remotes/origin/feature/empty-input\t\t2 hours ago
+ \trefs/remotes/origin/release/0.3\t\t2 months ago
+";
+
 /// The blame `--blame` draws: three authors in runs down the file, and lines 12 and 13 not committed.
 fn canned_blame(state: &EditorState) -> dacode::blame::Blame {
     let now = dacode::blame::now();
@@ -1839,6 +1975,11 @@ struct App {
     /// Whether the soft wrap was last fitted with the blame column taking its width, so the wrap
     /// is refitted when the column comes or goes rather than every idle step.
     blame_fitted: bool,
+    /// Runs every source-control command — status, stage, commit, push, a diff for a diff tab —
+    /// one at a time and in order, off the UI thread.
+    scm: dacode::scm::Worker,
+    /// The branches the picker lists, as git last gave them.
+    branches: Vec<dacode::scm::Branch>,
     /// Watches open files for changes made outside the editor.
     watcher: Option<dacode_project::FileWatcher>,
     /// Paths this editor is about to write, so its own saves are not mistaken for someone else's
@@ -1955,6 +2096,9 @@ struct Buffer {
     /// They stay correct because an unfocused buffer cannot be edited — keys only reach the focused
     /// pane — and the moment it is edited it is the live buffer again.
     highlights: Vec<dacode_syntax::HighlightSpan>,
+    /// What this buffer is when it is a diff or the history rather than a file — see
+    /// [`EditorState::review`], which it is swapped with.
+    review: Option<dacode::scm::Show>,
 }
 
 impl ApplicationHandler<dacode::wake::Wake> for App {
@@ -2159,6 +2303,14 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             }
 
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+
+            // Coming back to the window is when work done elsewhere — a commit in another
+            // terminal, a pull in another tool — is most likely to have happened. The watch on the
+            // repository usually has it already; this is the cheap check for when it could not.
+            WindowEvent::Focused(true) => {
+                self.refresh_scm(false);
+                self.request_redraw();
+            }
 
             WindowEvent::Occluded(hidden) => {
                 self.occluded = hidden;
@@ -2432,6 +2584,8 @@ impl App {
             blame_worker: dacode::blame::BlameWorker::spawn_with(waker.clone()),
             blame_wanted: true,
             blame_fitted: false,
+            scm: dacode::scm::Worker::spawn_with(waker.clone()),
+            branches: Vec::new(),
             watcher: match dacode_project::FileWatcher::with_waker(waker.clone()) {
                 Ok(watcher) => Some(watcher),
                 Err(error) => {
@@ -2712,6 +2866,11 @@ impl App {
             if self.state.show_diagnostics {
                 // The problems list draws from `problems` directly and has no selection to move, so
                 // the wheel is swallowed rather than falling through to scroll the file behind it.
+                return true;
+            }
+            if self.state.source_control_showing() {
+                let capacity = self.scm_capacity();
+                self.state.scm.scroll(lines, capacity);
                 return true;
             }
         }
@@ -3253,6 +3412,9 @@ impl App {
                 self.state.focus = Focus::Editor;
                 return false;
             }
+            if self.handle_scm_key(key) {
+                return false;
+            }
             if self.handle_search_key(key) {
                 return false;
             }
@@ -3468,6 +3630,18 @@ impl App {
             action,
             Action::Quit | Action::CloseBuffer | Action::DeleteFile | Action::InstallLanguageServer
         );
+        // The source-control view's questions expire the same way, except for the press that
+        // answers one.
+        if !matches!(
+            action,
+            Action::Git(
+                dacode_input::Git::Discard
+                    | dacode_input::Git::DiscardAll
+                    | dacode_input::Git::Commit
+            )
+        ) {
+            self.state.scm.confirm = None;
+        }
         if !consuming {
             self.state.hover = None;
             self.confirm_quit = false;
@@ -4535,6 +4709,9 @@ impl App {
         if self.blame_worker.busy() {
             return true;
         }
+        if self.scm.busy() {
+            return true;
+        }
         // And for an install. It is the longest-running of them by far, and its whole point is to
         // report back — a reply left sitting in the channel would make a minute-long install look
         // like nothing happened.
@@ -5016,6 +5193,7 @@ impl App {
         changed |= self.poll_installer();
         changed |= self.sync_git();
         changed |= self.sync_blame();
+        changed |= self.sync_scm();
         changed |= self.poll_terminal();
         changed
     }
@@ -5139,6 +5317,14 @@ impl App {
                             self.warn(&format!("not a folder: {}", expanded.display()));
                         }
                     }
+                    PromptKind::NewBranch => {
+                        let name = prompt.input.trim().to_string();
+                        if name.is_empty() {
+                            self.warn("a branch needs a name");
+                        } else {
+                            self.run_git(dacode::scm::Op::CreateBranch(name));
+                        }
+                    }
                     PromptKind::NewFile => {
                         let relative = prompt.input.trim().to_string();
                         match self.in_project(&relative) {
@@ -5226,6 +5412,8 @@ impl App {
                             let path = absolute_in(&self.state.project_root, &path);
                             self.state.path = relative_crumbs(&path);
                             self.state.file_path = Some(path);
+                            // A diff saved as a file is a patch, and a file is editable.
+                            self.state.review = None;
                             self.save_active();
                             self.after_buffer_change();
                         }
@@ -5387,6 +5575,7 @@ impl App {
                     let path = absolute_in(&self.state.project_root, &path);
                     self.state.path = relative_crumbs(&path);
                     self.state.file_path = Some(path);
+                    self.state.review = None;
                 }
                 self.save_active();
             }
@@ -5596,6 +5785,20 @@ struct Held {
 
 /// Whether a stored buffer is the empty scratch buffer the editor starts with and nothing more:
 /// no file, no text, nothing to lose by dropping it.
+/// The tab name of a read-only tab: the file and which of its changes, or the history.
+fn review_crumbs(show: &dacode::scm::Show) -> Vec<String> {
+    match show {
+        dacode::scm::Show::Changes { path, side } => {
+            let mut crumbs: Vec<String> = path.split('/').map(str::to_string).collect();
+            if let Some(last) = crumbs.last_mut() {
+                *last = format!("{last} ({})", side.describe());
+            }
+            crumbs
+        }
+        dacode::scm::Show::History => vec!["git".to_string(), "history".to_string()],
+    }
+}
+
 fn is_placeholder(buffer: &Buffer) -> bool {
     buffer.file_path.is_none()
         && !buffer.document.is_dirty()
@@ -5628,6 +5831,23 @@ fn absolute_in(root: &std::path::Path, typed: &str) -> String {
 impl App {
     /// Carries out a window action.
     fn window_action(&mut self, action: &Action) {
+        match action {
+            Action::ShowSourceControl => {
+                // A second press closes it, as the activity icons do in every editor that has them.
+                if self.state.source_control_showing() {
+                    self.state.close_sidebar();
+                } else {
+                    self.state.open_source_control();
+                    self.refresh_scm(false);
+                }
+                return;
+            }
+            Action::Git(git) => {
+                self.git_action(*git);
+                return;
+            }
+            _ => {}
+        }
         match action {
             // File ▸ Save and the palette reach here without the settings tab's ctrl-s intercept,
             // and would save — and maybe reformat — the file hidden behind the tab.
@@ -5902,6 +6122,7 @@ impl App {
             file_path: Some(display),
             scroll: ScrollAnchor::default(),
             highlights: Vec::new(),
+            review: None,
         });
         self.state.buffer_count = self.buffers.len() + 1;
     }
@@ -7529,6 +7750,8 @@ impl App {
                 // A save is the moment the buffer and the blame's idea of it are re-aligned: the
                 // edit log's pessimism about split lines ends here.
                 self.blame_wanted = true;
+                // And the file's row in the source-control view appears, or changes letter.
+                self.refresh_scm(false);
                 // The file on disk is authoritative now, so the recovery copy must go — otherwise it
                 // would be offered again on the next open.
                 self.recovery.discard(file);
@@ -7612,6 +7835,8 @@ impl App {
             PaletteKind::Commands => palette.refresh_commands(self.state.modal),
             // Filled when the server answers.
             PaletteKind::CodeActions | PaletteKind::Symbols | PaletteKind::ProjectSymbols => {}
+            // What git said last time, until it answers again.
+            PaletteKind::Branches => palette.refresh_branches(&self.branches),
         }
         self.state.palette = Some(palette);
     }
@@ -7784,6 +8009,7 @@ impl App {
                 PaletteKind::ProjectSymbols => {
                     self.state.pending_request = Some(Action::GotoSymbolInProject);
                 }
+                PaletteKind::Branches => palette.refresh_branches(&self.branches),
             }
         }
     }
@@ -7853,6 +8079,13 @@ impl App {
                 }
             }
             Target::Symbol(index) => self.go_to_symbol(index),
+            Target::Branch { name, remote } => {
+                self.run_git(dacode::scm::Op::Checkout { name, remote })
+            }
+            Target::CreateBranch(name) if name.is_empty() => {
+                let _ = self.run(Action::Git(dacode_input::Git::CreateBranch));
+            }
+            Target::CreateBranch(name) => self.run_git(dacode::scm::Op::CreateBranch(name)),
         }
     }
 
@@ -7914,6 +8147,7 @@ impl App {
             file_path: std::mem::replace(&mut self.state.file_path, file_path),
             scroll: std::mem::take(&mut self.state.scroll),
             highlights: std::mem::take(&mut self.state.highlights),
+            review: self.state.review.take(),
         };
         // An untouched scratch buffer is a placeholder for "nothing open yet", not a document: kept,
         // it sat in the tab strip as `untitled` beside every file opened after it.
@@ -7973,6 +8207,7 @@ impl App {
             self.state.file_path = None;
             self.state.scroll = ScrollAnchor::default();
             self.state.highlights = Vec::new();
+            self.state.review = None;
             self.after_buffer_change();
             self.refresh_buffer_tabs();
             return;
@@ -8179,6 +8414,7 @@ impl App {
             scroll: std::mem::replace(&mut self.state.scroll, target.scroll),
             // Highlights travel with the buffer so an unfocused pane keeps its colors.
             highlights: std::mem::replace(&mut self.state.highlights, target.highlights),
+            review: std::mem::replace(&mut self.state.review, target.review),
         };
 
         // Where the buffer that was live belongs: at its own number, in a list that now skips the
@@ -8312,6 +8548,708 @@ impl App {
             changed = true;
         }
         changed
+    }
+
+    // ---- source control -------------------------------------------------------------------------
+
+    /// Asks git for a fresh status of the project. `settle` waits for the repository to stop
+    /// changing first, for a change seen on disk — which arrives as a burst of events.
+    fn refresh_scm(&mut self, settle: bool) {
+        let version = self.state.scm.ask();
+        self.scm.request(dacode::scm::Request::Status {
+            root: self.state.project_root.clone(),
+            version,
+            settle,
+        });
+    }
+
+    /// `HEAD` moved — a commit, a checkout, a pull, here or anywhere else. Who wrote each line and
+    /// what the gutter diffs against may both have changed under a buffer whose text did not, so
+    /// both are asked again. Before this a commit made in a terminal showed in the blame only once
+    /// the file was saved or reopened.
+    fn history_moved(&mut self) {
+        self.blame_wanted = true;
+        self.diffed_version = None;
+    }
+
+    /// Takes what the source-control worker has answered, and notices the repository changing on
+    /// disk. Returns whether anything on screen changed.
+    fn sync_scm(&mut self) -> bool {
+        use dacode::scm::Answer;
+        let mut changed = false;
+        if let Some(change) = self
+            .watcher
+            .as_mut()
+            .and_then(|watcher| watcher.repository_changed())
+        {
+            if change.history {
+                self.history_moved();
+            }
+            self.refresh_scm(true);
+        }
+        while let Some(answer) = self.scm.poll() {
+            match answer {
+                Answer::Status { version, repo } => {
+                    if self.state.scm.accept(version, repo) {
+                        changed = true;
+                        self.watch_repository();
+                    }
+                }
+                Answer::Done { op, result } => {
+                    self.finish_git(op, result);
+                    changed = true;
+                }
+                Answer::Branches(result) => {
+                    match result {
+                        Ok(branches) => self.branches = branches,
+                        Err(failure) => self.state.hover = Some(failure.sentence),
+                    }
+                    if self
+                        .state
+                        .palette
+                        .as_ref()
+                        .is_some_and(|palette| palette.kind == PaletteKind::Branches)
+                    {
+                        self.refresh_palette();
+                    }
+                    changed = true;
+                }
+                Answer::Shown { show, text } => {
+                    self.show_review(show, text);
+                    changed = true;
+                }
+                Answer::Superseded => {}
+            }
+        }
+        changed
+    }
+
+    /// Watches the repository the last status found, so a commit or a checkout made outside the
+    /// editor is noticed when it happens rather than at the next save.
+    fn watch_repository(&mut self) {
+        let Some(status) = self.state.scm.status() else {
+            return;
+        };
+        if status.git_dir.as_os_str().is_empty() {
+            return;
+        }
+        let (git_dir, common) = (status.git_dir.clone(), status.common_dir.clone());
+        if let Some(watcher) = &mut self.watcher {
+            if !watcher.watch_repository(&git_dir, &common) {
+                eprintln!(
+                    "dacode: could not watch {}; changes made outside the editor show on refresh",
+                    git_dir.display()
+                );
+            }
+        }
+    }
+
+    /// An operation finished: say what it did, and ask what the repository looks like now.
+    fn finish_git(&mut self, op: dacode::scm::Op, result: Result<String, dacode::scm::Failure>) {
+        use dacode::scm::Op;
+        self.state.scm.busy = None;
+        match result {
+            Ok(said) => {
+                if let Op::Commit { message, .. } = &op {
+                    // Only if it is still what was committed: typed on while git ran, it is a new one.
+                    if self.state.scm.message.trim_end() == message {
+                        self.state.scm.take_message();
+                    }
+                    self.state.scm.amend = false;
+                }
+                self.state.hover = Some(said);
+            }
+            Err(failure) if failure.sign_in => {
+                self.state.hover = Some(format!(
+                    "{} needs you to sign in, and nothing here can ask — run it once in the \
+                     terminal ({}), then try again",
+                    op.command(),
+                    self.key_for("toggle_terminal")
+                ));
+            }
+            Err(failure) => self.state.hover = Some(failure.sentence),
+        }
+        // A stage leaves `HEAD` where it was; everything else may have moved it, and a failed pull
+        // may still have fetched.
+        if !matches!(
+            op,
+            Op::Stage(_) | Op::Unstage(_) | Op::StageAll | Op::UnstageAll
+        ) {
+            self.history_moved();
+        }
+        self.refresh_scm(false);
+    }
+
+    /// Hands an operation to the worker, in the repository the last status found.
+    fn run_git(&mut self, op: dacode::scm::Op) {
+        let root = match (&op, self.state.scm.status()) {
+            (dacode::scm::Op::Init, _) => self.state.project_root.clone(),
+            (_, Some(status)) => status.root.clone(),
+            (_, None) => {
+                self.state.hover = Some(self.no_repository());
+                return;
+            }
+        };
+        self.state.scm.busy = Some(op.doing());
+        self.scm.request(dacode::scm::Request::Run { root, op });
+    }
+
+    /// Why a command that needs a repository did nothing.
+    fn no_repository(&self) -> String {
+        use dacode::source_control::State;
+        match &self.state.scm.state {
+            State::NotARepository => {
+                "this folder is not a git repository — the source control view can initialize one"
+                    .to_string()
+            }
+            State::NoGit => "git is not installed, or not on PATH".to_string(),
+            State::Failed(why) => why.clone(),
+            State::Unknown | State::Ready(_) => "still asking git about this folder".to_string(),
+        }
+    }
+
+    /// The row the source-control view has selected, while it has the keys.
+    fn scm_row(&self) -> Option<dacode::source_control::Row> {
+        let view = &self.state.scm;
+        (self.state.focus == dacode::focus::Focus::Sidebar
+            && self.state.source_control_showing()
+            && view.field == dacode::source_control::Field::List)
+            .then(|| view.selected.and_then(|at| view.rows().get(at).copied()))
+            .flatten()
+    }
+
+    /// The change a per-file command is about: the selected file while the view has the keys, the
+    /// tree's selection or the file on screen otherwise — with the group it was chosen from, when
+    /// it was chosen from one. `None` with a sentence said when there is nothing to act on.
+    fn git_target(&mut self) -> Option<(Option<dacode::scm::Group>, dacode::scm::Entry)> {
+        if let Some(dacode::source_control::Row::File { group, entry }) = self.scm_row() {
+            let entry = self.state.scm.status()?.entries.get(entry)?.clone();
+            return Some((Some(group), entry));
+        }
+        let relative = self.tree_target();
+        let found = relative.as_ref().and_then(|relative| {
+            let status = self.state.scm.status()?;
+            let inside = status.relative(&self.state.project_root.join(relative))?;
+            status.find(&inside).cloned()
+        });
+        if found.is_none() {
+            self.state.hover = Some(match relative {
+                Some(relative) => format!("{relative} has no changes"),
+                None => "no file to act on".to_string(),
+            });
+        }
+        found.map(|entry| (None, entry))
+    }
+
+    /// Does what a source-control command asks.
+    fn git_action(&mut self, git: dacode_input::Git) {
+        use dacode::scm::{Group, Op};
+        use dacode::source_control::{Confirm, Row};
+        use dacode_input::Git;
+        let needs_repository = !matches!(git, Git::Init | Git::Refresh | Git::Menu);
+        if needs_repository && self.state.scm.status().is_none() {
+            self.state.hover = Some(self.no_repository());
+            return;
+        }
+        match git {
+            Git::Commit => self.commit(false),
+            Git::CommitAmend => {
+                self.state.scm.amend = true;
+                self.commit(true)
+            }
+            Git::Refresh => {
+                self.history_moved();
+                self.refresh_scm(false);
+            }
+            Git::Stage | Git::Unstage => {
+                let stage = git == Git::Stage;
+                if let Some(Row::Header(group)) = self.scm_row() {
+                    let op = match (stage, group) {
+                        (true, Group::Changes) => Op::StageAll,
+                        (true, group) => Op::Stage(self.state.scm.paths(group)),
+                        (false, _) => Op::UnstageAll,
+                    };
+                    self.run_git(op);
+                    return;
+                }
+                let Some((group, entry)) = self.git_target() else {
+                    return;
+                };
+                if stage {
+                    let can = group.is_none_or(|group| group != Group::Staged)
+                        && (entry.in_group(Group::Changes) || entry.conflict);
+                    if !can {
+                        self.state.hover = Some(format!("{} has nothing to stage", entry.name()));
+                        return;
+                    }
+                    self.run_git(Op::Stage(vec![entry.path.clone()]));
+                } else {
+                    if !entry.in_group(Group::Staged) {
+                        self.state.hover = Some(format!("{} has nothing staged", entry.name()));
+                        return;
+                    }
+                    let mut paths = vec![entry.path.clone()];
+                    paths.extend(entry.original.clone());
+                    self.run_git(Op::Unstage(paths));
+                }
+            }
+            Git::Discard => {
+                if let Some(Row::Header(Group::Changes)) = self.scm_row() {
+                    self.git_action(Git::DiscardAll);
+                    return;
+                }
+                let Some((_, entry)) = self.git_target() else {
+                    return;
+                };
+                if !entry.in_group(Group::Changes) {
+                    self.state.hover = Some(format!(
+                        "{} has no unstaged changes to discard",
+                        entry.name()
+                    ));
+                    return;
+                }
+                let confirm = Confirm::Discard(vec![entry.path.clone()]);
+                if self.state.scm.confirm.as_ref() != Some(&confirm) {
+                    self.state.scm.confirm = Some(confirm);
+                    self.state.hover = Some(format!(
+                        "discard your changes to {}? Do it again to — it cannot be undone",
+                        entry.name()
+                    ));
+                    return;
+                }
+                self.state.scm.confirm = None;
+                let (tracked, untracked) = if entry.untracked {
+                    (Vec::new(), vec![entry.path.clone()])
+                } else {
+                    (vec![entry.path.clone()], Vec::new())
+                };
+                self.run_git(Op::Discard { tracked, untracked });
+            }
+            Git::StageAll => self.run_git(Op::StageAll),
+            Git::UnstageAll => self.run_git(Op::UnstageAll),
+            Git::DiscardAll => {
+                if self.state.scm.count(Group::Changes) == 0 {
+                    self.state.hover = Some("nothing to discard".to_string());
+                    return;
+                }
+                if self.state.scm.confirm != Some(Confirm::DiscardAll) {
+                    self.state.scm.confirm = Some(Confirm::DiscardAll);
+                    self.state.hover = Some(
+                        "discard every unstaged change, and delete every untracked file? Do it \
+                         again to — it cannot be undone"
+                            .to_string(),
+                    );
+                    return;
+                }
+                self.state.scm.confirm = None;
+                self.run_git(Op::DiscardAll);
+            }
+            Git::Fetch => self.run_git(Op::Fetch),
+            Git::Pull => self.run_git(Op::Pull),
+            Git::Push => self.run_git(Op::Push),
+            Git::Sync => self.run_git(Op::Sync),
+            Git::Stash => self.run_git(Op::Stash),
+            Git::PopStash => self.run_git(Op::PopStash),
+            Git::Checkout => {
+                if let Some(status) = self.state.scm.status() {
+                    let root = status.root.clone();
+                    self.scm.request(dacode::scm::Request::Branches { root });
+                }
+                self.state.close_menu();
+                self.open_palette(PaletteKind::Branches);
+            }
+            Git::CreateBranch => {
+                self.state.prompt = Some(dacode::prompt::Prompt::new(
+                    PromptKind::NewBranch,
+                    self.state.cursor(),
+                ));
+            }
+            Git::History => {
+                if let Some(status) = self.state.scm.status() {
+                    let root = status.root.clone();
+                    self.scm.request(dacode::scm::Request::Show {
+                        root,
+                        show: dacode::scm::Show::History,
+                    });
+                }
+            }
+            Git::OpenChanges => self.open_changes(),
+            Git::OpenFile => {
+                let root = self.state.scm.status().map(|status| status.root.clone());
+                if let (Some(root), Some((_, entry))) = (root, self.git_target()) {
+                    let path = root.join(&entry.path);
+                    if path.is_file() {
+                        self.activate(Target::File(path));
+                    } else {
+                        self.state.hover =
+                            Some(format!("{} is not on disk — it was deleted", entry.name()));
+                    }
+                }
+            }
+            Git::Init => self.run_git(Op::Init),
+            Git::Menu => {
+                let at = self
+                    .layout()
+                    .sidebar
+                    .filter(|_| self.state.source_control_showing())
+                    .and_then(|sidebar| {
+                        let geometry =
+                            self.state
+                                .scm
+                                .geometry(sidebar, self.scale(), &self.state.typography);
+                        geometry
+                            .tools
+                            .iter()
+                            .find(|(tool, _)| *tool == dacode::source_control::Tool::More)
+                            .map(|(_, rect)| (rect.x, rect.bottom()))
+                    })
+                    .unwrap_or(self.pointer);
+                self.state
+                    .open_menu(dacode::menu::Menu::source_control(at, self.state.modal));
+            }
+        }
+    }
+
+    /// Commits what is staged — or, with nothing staged, everything, once asked twice: VSCode's
+    /// smart commit, which offers to stage all your changes rather than refusing.
+    fn commit(&mut self, amend: bool) {
+        use dacode::scm::{Group, Op};
+        use dacode::source_control::Confirm;
+        if self
+            .state
+            .scm
+            .status()
+            .is_some_and(|status| status.has_conflicts())
+        {
+            self.state.hover = Some(
+                "resolve the merge conflicts first — stage each file once it is fixed".to_string(),
+            );
+            return;
+        }
+        let message = self.state.scm.message.trim_end().to_string();
+        if message.trim().is_empty() && !amend {
+            self.state.open_source_control();
+            self.state.hover = Some("type a commit message first".to_string());
+            return;
+        }
+        let staged = self.state.scm.count(Group::Staged);
+        let changes = self.state.scm.count(Group::Changes);
+        let stage_all = staged == 0 && !amend;
+        if stage_all {
+            if changes == 0 {
+                self.state.hover = Some("nothing to commit — the working tree is clean".into());
+                return;
+            }
+            if self.state.scm.confirm != Some(Confirm::StageAllAndCommit) {
+                self.state.scm.confirm = Some(Confirm::StageAllAndCommit);
+                self.state.hover = Some(format!(
+                    "nothing is staged — commit again to stage all {changes} change{} and commit \
+                     them",
+                    if changes == 1 { "" } else { "s" }
+                ));
+                return;
+            }
+        }
+        self.state.scm.confirm = None;
+        self.run_git(Op::Commit {
+            message,
+            amend,
+            stage_all,
+        });
+    }
+
+    /// Asks for the diff of the change in question, for a read-only tab.
+    fn open_changes(&mut self) {
+        use dacode::scm::Side;
+        let Some((group, entry)) = self.git_target() else {
+            return;
+        };
+        let side = match group {
+            Some(group) => entry.side(group),
+            None if entry.untracked => Side::Untracked,
+            None if entry.worktree != '.' || entry.conflict => Side::Unstaged,
+            None => Side::Staged,
+        };
+        let Some(root) = self.state.scm.status().map(|status| status.root.clone()) else {
+            return;
+        };
+        self.scm.request(dacode::scm::Request::Show {
+            root,
+            show: dacode::scm::Show::Changes {
+                path: entry.path,
+                side,
+            },
+        });
+    }
+
+    /// Shows a diff or the history in a read-only tab — the one already showing it, if there is
+    /// one, so clicking a row twice does not open it twice.
+    fn show_review(&mut self, show: dacode::scm::Show, text: Result<String, dacode::scm::Failure>) {
+        let text = match text {
+            Ok(text) => text,
+            Err(failure) => {
+                self.state.hover = Some(failure.sentence);
+                return;
+            }
+        };
+        if text.trim().is_empty() {
+            self.state.hover = Some(
+                "git shows no difference in the text — the change may be to the file's mode only"
+                    .to_string(),
+            );
+            return;
+        }
+        if self.state.review.as_ref() != Some(&show) {
+            let stored = self
+                .buffers
+                .iter()
+                .position(|buffer| buffer.review.as_ref() == Some(&show));
+            match stored {
+                Some(stored) => {
+                    let index = if stored < self.state.active_buffer {
+                        stored
+                    } else {
+                        stored + 1
+                    };
+                    self.switch_to(index);
+                }
+                None => {
+                    self.open_document(Document::from_str(&text), review_crumbs(&show), None);
+                    self.state.review = Some(show);
+                    self.state.diff = self.review_marks();
+                    self.refresh_buffer_tabs();
+                    return;
+                }
+            }
+        }
+        // Already open: its text is replaced, keeping its place, as a reload keeps a file's.
+        let point = self.state.cursor_point();
+        let previous = self.state.document.version();
+        self.state.document = Document::from_str(&text);
+        self.state.document.resume_from(previous);
+        self.restore_cursor(point.line, point.column);
+        self.state.diff = self.review_marks();
+    }
+
+    /// A diff tab's changed lines as gutter marks, so `]c` and `[c` walk its hunks. Read once, when
+    /// the tab is opened or shown — never per frame — and empty for a file, whose marks are git's.
+    fn review_marks(&self) -> dacode::git::Diff {
+        if !matches!(self.state.review, Some(dacode::scm::Show::Changes { .. })) {
+            return dacode::git::Diff::default();
+        }
+        let text = self.state.document.text();
+        let marks = (0..text.len_lines())
+            .filter(|line| matches!(text.line(*line).chars().next(), Some('+' | '-')))
+            .filter(|line| {
+                let start: String = text.line(*line).chars().take(4).collect();
+                !start.starts_with("+++ ") && !start.starts_with("--- ")
+            })
+            .map(|line| (line, dacode::git::Change::Modified))
+            .collect();
+        dacode::git::Diff::from_marks(marks, self.state.document.version())
+    }
+
+    /// How many rows the source-control list has room for, from the geometry it draws with.
+    fn scm_capacity(&self) -> usize {
+        let Some(sidebar) = self.layout().sidebar else {
+            return 1;
+        };
+        self.state
+            .scm
+            .geometry(sidebar, self.scale(), &self.state.typography)
+            .capacity
+    }
+
+    /// Keys for the source-control view while it has focus. Returns whether the key was used.
+    fn handle_scm_key(&mut self, key: Key) -> bool {
+        use dacode::source_control::{Field, Row};
+        use dacode_input::Git;
+        if !self.state.source_control_showing() {
+            return false;
+        }
+        // Commits from anywhere in the view, as in VSCode's box.
+        if key.ctrl && !key.alt && key.code == KeyCode::Enter {
+            let _ = self.run(Action::Git(Git::Commit));
+            return true;
+        }
+        let capacity = self.scm_capacity();
+        match self.state.scm.field {
+            Field::Message => {
+                if key.ctrl && !key.alt {
+                    match key.code {
+                        // Pasted here rather than into the file behind the view.
+                        KeyCode::Char('v') => {
+                            if let Some(text) = dacode::clipboard::get() {
+                                self.state.scm.type_text(&text.replace("\r\n", "\n"));
+                            }
+                            return true;
+                        }
+                        KeyCode::Backspace => {
+                            self.state.scm.message.clear();
+                            self.state.scm.caret = 0;
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                }
+                if key.alt {
+                    return false;
+                }
+                let view = &mut self.state.scm;
+                match key.code {
+                    KeyCode::Char(c) => {
+                        let mut buffer = [0u8; 4];
+                        view.type_text(c.encode_utf8(&mut buffer));
+                    }
+                    KeyCode::Enter => view.type_text("\n"),
+                    KeyCode::Backspace => view.backspace(),
+                    KeyCode::Delete => view.delete(),
+                    KeyCode::Left => view.move_caret(-1),
+                    KeyCode::Right => view.move_caret(1),
+                    KeyCode::Home => view.caret_to_line_edge(false),
+                    KeyCode::End => view.caret_to_line_edge(true),
+                    KeyCode::Tab => view.field = Field::List,
+                    // Off the bottom of the box, into the list — the way the arrows read.
+                    KeyCode::Down => {
+                        let (line, _) = view.caret_line_column();
+                        if line + 1 >= view.message.split('\n').count() {
+                            view.field = Field::List;
+                            if view.selected.is_none() {
+                                view.move_selection(1, capacity);
+                            }
+                        }
+                    }
+                    _ => return false,
+                }
+                true
+            }
+            Field::List => {
+                if key.ctrl || key.alt {
+                    return false;
+                }
+                let selected = self
+                    .state
+                    .scm
+                    .selected
+                    .and_then(|at| self.state.scm.rows().get(at).copied());
+                match key.code {
+                    KeyCode::Down => self.state.scm.move_selection(1, capacity),
+                    KeyCode::Up if self.state.scm.selected.is_none_or(|at| at == 0) => {
+                        self.state.scm.field = Field::Message;
+                    }
+                    KeyCode::Up => self.state.scm.move_selection(-1, capacity),
+                    KeyCode::PageDown => self.state.scm.move_selection(capacity as isize, capacity),
+                    KeyCode::PageUp => self
+                        .state
+                        .scm
+                        .move_selection(-(capacity as isize), capacity),
+                    KeyCode::Tab => self.state.scm.field = Field::Message,
+                    KeyCode::Enter => match selected {
+                        Some(Row::Header(group)) => self.state.scm.toggle(group),
+                        Some(Row::File { .. }) => {
+                            let _ = self.run(Action::Git(Git::OpenChanges));
+                        }
+                        None => {}
+                    },
+                    KeyCode::Left | KeyCode::Right => {
+                        if let Some(Row::Header(group)) = selected {
+                            let folded = self.state.scm.collapsed[group.index()];
+                            if folded == (key.code == KeyCode::Right) {
+                                self.state.scm.toggle(group);
+                            }
+                        }
+                    }
+                    KeyCode::Char(' ') | KeyCode::Char('s') => {
+                        let _ = self.run(Action::Git(Git::Stage));
+                    }
+                    KeyCode::Char('u') => {
+                        let _ = self.run(Action::Git(Git::Unstage));
+                    }
+                    KeyCode::Char('o') => {
+                        let _ = self.run(Action::Git(Git::OpenFile));
+                    }
+                    _ => return false,
+                }
+                true
+            }
+        }
+    }
+
+    /// A press in the source-control view: the same geometry it is drawn from decides what it hit.
+    fn click_source_control(&mut self, sidebar: Rect, x: f32, y: f32, scale: f32) {
+        use dacode::source_control::{Field, Hit, Row, RowAction, Tool};
+        use dacode_input::Git;
+        let geometry = self
+            .state
+            .scm
+            .geometry(sidebar, scale, &self.state.typography);
+        let Some(hit) = self.state.scm.hit(&geometry, x, y, scale) else {
+            return;
+        };
+        let git = match hit {
+            Hit::Tool(Tool::Commit) | Hit::Commit => Some(Git::Commit),
+            Hit::Tool(Tool::Refresh) => Some(Git::Refresh),
+            Hit::Tool(Tool::More) => Some(Git::Menu),
+            Hit::Branch => Some(Git::Checkout),
+            Hit::Pull => Some(Git::Pull),
+            Hit::Push => Some(Git::Push),
+            Hit::Init => Some(Git::Init),
+            Hit::Message => {
+                // The caret goes where the click was, as in any text box.
+                let view = &mut self.state.scm;
+                view.field = Field::Message;
+                let advance = dacode::layout::measured_advance(
+                    &self.state.typography,
+                    dacode_theme::Role::Ui,
+                    scale,
+                );
+                let line = dacode::source_control::MESSAGE_LINE * scale;
+                let row = ((y - geometry.message.y - 5.0 * scale) / line).max(0.0) as usize
+                    + view.message_top();
+                let column = ((x - geometry.message.x - 8.0 * scale) / advance)
+                    .round()
+                    .max(0.0) as usize;
+                let lines: Vec<&str> = view.message.split('\n').collect();
+                let row = row.min(lines.len().saturating_sub(1));
+                let before: usize = lines[..row]
+                    .iter()
+                    .map(|text| text.chars().count() + 1)
+                    .sum();
+                view.caret = before + column.min(lines[row].chars().count());
+                None
+            }
+            Hit::Row(index) => {
+                let view = &mut self.state.scm;
+                view.selected = Some(index);
+                view.field = Field::List;
+                match view.rows().get(index).copied() {
+                    Some(Row::Header(group)) => {
+                        view.toggle(group);
+                        None
+                    }
+                    // A click opens the diff, as in VSCode, and the keys stay in the list.
+                    Some(Row::File { .. }) => Some(Git::OpenChanges),
+                    None => None,
+                }
+            }
+            Hit::Action(index, action) => {
+                let view = &mut self.state.scm;
+                view.selected = Some(index);
+                view.field = Field::List;
+                Some(match action {
+                    RowAction::Open => Git::OpenFile,
+                    RowAction::Stage => Git::Stage,
+                    RowAction::Unstage => Git::Unstage,
+                    RowAction::Discard => Git::Discard,
+                    RowAction::StageAll => Git::Stage,
+                    RowAction::UnstageAll => Git::Unstage,
+                    RowAction::DiscardAll => Git::DiscardAll,
+                })
+            }
+        };
+        if let Some(git) = git {
+            let _ = self.run(Action::Git(git));
+        }
     }
 
     /// Shows the whole commit that last changed `line`, in the info card.
@@ -9079,6 +10017,25 @@ impl App {
         if !extend && self.click_chrome(&layout, x, y, scale) {
             return;
         }
+        // The branch on the status line opens the picker, as VSCode's does.
+        if !extend
+            && self
+                .state
+                .scm
+                .status()
+                .and_then(|status| {
+                    dacode::layout::status_branch(
+                        layout.status,
+                        &status.head_name(),
+                        &self.state.typography,
+                        scale,
+                    )
+                })
+                .is_some_and(|branch| dacode::layout::contains(branch, x, y))
+        {
+            let _ = self.run(Action::Git(dacode_input::Git::Checkout));
+            return;
+        }
 
         // The sidebar owns its own clicks: choosing a file in the tree is the whole reason someone
         // reaches for the mouse there.
@@ -9729,6 +10686,10 @@ impl App {
             self.click_search_panel(sidebar, x, y, scale);
             return;
         }
+        if self.state.source_control_showing() {
+            self.click_source_control(sidebar, x, y, scale);
+            return;
+        }
 
         // The problems list. Choosing a row goes there — the panel exists to decide where to go
         // next, and one you can only read is half a panel.
@@ -10374,6 +11335,11 @@ impl App {
         if let Some(panel) = &mut self.state.search {
             panel.restart(&root);
         }
+        // Another folder is another repository, or none: what the view knew is about the old one,
+        // and a status for it still on its way is refused by the version `ask` moves on.
+        self.state.scm.forget();
+        self.branches.clear();
+        self.refresh_scm(false);
         let kept = self.close_clean_buffers();
         self.show_tree();
         // Nothing to say when it simply worked: the tree changing is the answer, and a box over the
@@ -10463,8 +11429,9 @@ impl App {
             .problems
             .set_current(self.state.file_path.as_deref().map(std::path::Path::new));
 
-        // The diff describes the document that just left.
-        self.state.diff = dacode::git::Diff::default();
+        // The diff describes the document that just left — unless this one is itself a diff, whose
+        // hunks `]c` steps between as it does a file's.
+        self.state.diff = self.review_marks();
         self.diffed_version = None;
         // So does the blame, and its line numbers mean nothing in the new one.
         self.state.blame.clear();
@@ -15966,5 +16933,421 @@ mod terminal_tests {
             );
             end(&mut app);
         }
+    }
+}
+
+/// The source-control view driven through the editor's own paths: its keys, its clicks, the
+/// worker, and a real repository in a directory of each test's own.
+#[cfg(test)]
+mod source_control_tests {
+    use super::*;
+    use dacode::scm::Group;
+    use dacode::source_control::{Field, Row};
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("dacode-scm-{}-{label}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> Option<String> {
+        dacode::process::command("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// A repository with `notes.txt` committed, or `None` where git is missing — a skip, as
+    /// CLAUDE.md asks, not a failure that tests the machine. Signing and hooks are turned off in the
+    /// repository itself, so a developer's global config cannot make a commit here ask for a key.
+    fn repository(label: &str) -> Option<std::path::PathBuf> {
+        if git(std::path::Path::new("."), &["--version"]).is_none() {
+            eprintln!("skipping: no git on this machine");
+            return None;
+        }
+        let dir = scratch(label);
+        std::fs::write(dir.join("notes.txt"), "one\ntwo\n").unwrap();
+        std::fs::create_dir_all(dir.join(".git-hooks-none")).unwrap();
+        let built = git(&dir, &["init", "-q"]).is_some()
+            && git(&dir, &["config", "user.email", "ann@example.invalid"]).is_some()
+            && git(&dir, &["config", "user.name", "Ann Example"]).is_some()
+            && git(&dir, &["config", "commit.gpgsign", "false"]).is_some()
+            && git(&dir, &["config", "core.hooksPath", ".git-hooks-none"]).is_some()
+            && git(&dir, &["add", "notes.txt"]).is_some()
+            && git(&dir, &["commit", "-q", "-m", "write the notes"]).is_some();
+        if !built {
+            eprintln!("skipping: could not build a repository here");
+            return None;
+        }
+        Some(dir)
+    }
+
+    fn editor(dir: &std::path::Path, name: &str, contents: &str) -> App {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        let (state, _) = new_state(
+            Text::from_str(contents),
+            vec![name.to_string()],
+            Some(path.to_string_lossy().to_string()),
+            Mode::Insert,
+            None,
+            dir.to_path_buf(),
+        );
+        let mut app = App::new(
+            dir.to_path_buf(),
+            state,
+            Grammar::new(),
+            &dacode::config::Settings::default(),
+            None,
+        );
+        app.config_dir = dir.join("config");
+        app.state.modal = false;
+        app.grammar.set_modal(false);
+        app
+    }
+
+    fn settle(app: &mut App, mut done: impl FnMut(&App) -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            app.collect_background();
+            if done(app) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    /// Lets every answer still on its way land, so the next assertion reads a settled view.
+    fn quiet(app: &mut App) {
+        settle(app, |app| !app.scm.busy());
+    }
+
+    fn row_of(app: &App, group: Group, path: &str) -> Option<usize> {
+        app.state.scm.rows().iter().position(|row| match row {
+            Row::File { group: at, entry } => {
+                *at == group
+                    && app
+                        .state
+                        .scm
+                        .status()
+                        .map(|s| s.entries[*entry].path.as_str())
+                        == Some(path)
+            }
+            Row::Header(_) => false,
+        })
+    }
+
+    fn type_keys(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.press(Key::char(c));
+        }
+    }
+
+    fn ctrl_enter() -> Key {
+        Key {
+            ctrl: true,
+            ..Key::named(KeyCode::Enter)
+        }
+    }
+
+    #[test]
+    fn stage_unstage_and_commit_from_the_views_own_keys() {
+        // The whole loop someone runs in VSCode's view, with the keys this one documents: open it,
+        // type a message, stage a file, change their mind, stage it again, commit.
+        let Some(dir) = repository("loop") else {
+            return;
+        };
+        std::fs::write(dir.join("new.txt"), "fresh\n").unwrap();
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\nthree\n");
+
+        app.press(Key::ctrl('g').with_shift());
+        assert!(app.state.source_control_showing(), "ctrl-shift-g opens it");
+        assert_eq!(app.state.focus, dacode::focus::Focus::Sidebar);
+        assert_eq!(
+            app.state.scm.field,
+            Field::Message,
+            "with the caret in the box"
+        );
+        assert!(
+            settle(&mut app, |app| app.state.scm.count(Group::Changes) == 2),
+            "the status never arrived: {:?}",
+            app.state.scm.state
+        );
+        assert!(app.state.scm.status().unwrap().branch.is_some());
+
+        type_keys(&mut app, "Add a third note");
+        assert_eq!(app.state.scm.message, "Add a third note");
+        assert_eq!(
+            app.state.document.text().to_string(),
+            "one\ntwo\nthree\n",
+            "typing went to the box, not the file behind it"
+        );
+
+        app.press(Key::named(KeyCode::Tab));
+        assert_eq!(app.state.scm.field, Field::List);
+        app.state.scm.selected = row_of(&app, Group::Changes, "notes.txt");
+        app.press(Key::char('s'));
+        assert!(
+            settle(&mut app, |app| app.state.scm.count(Group::Staged) == 1),
+            "s never staged it"
+        );
+        quiet(&mut app);
+
+        app.state.scm.selected = row_of(&app, Group::Staged, "notes.txt");
+        app.press(Key::char('u'));
+        assert!(
+            settle(&mut app, |app| app.state.scm.count(Group::Staged) == 0),
+            "u never unstaged it"
+        );
+        quiet(&mut app);
+
+        app.state.scm.selected = row_of(&app, Group::Changes, "notes.txt");
+        app.press(Key::char(' '));
+        assert!(settle(&mut app, |app| app.state.scm.count(Group::Staged) == 1));
+        quiet(&mut app);
+
+        app.press(ctrl_enter());
+        assert!(
+            settle(&mut app, |app| app.state.scm.count(Group::Staged) == 0
+                && app.state.scm.busy.is_none()),
+            "the commit never landed"
+        );
+        quiet(&mut app);
+        assert_eq!(
+            git(&dir, &["log", "-1", "--format=%s"]).unwrap().trim(),
+            "Add a third note"
+        );
+        assert!(
+            app.state.scm.message.is_empty(),
+            "the box empties on success"
+        );
+        assert_eq!(
+            app.state.scm.count(Group::Changes),
+            1,
+            "new.txt was never staged, so it is still a change"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn committing_with_nothing_staged_asks_once_then_commits_every_change() {
+        // VSCode's smart commit: rather than refusing, it offers to stage everything — and here the
+        // offer is the first press, so nothing is committed that was not asked for twice.
+        let Some(dir) = repository("smart") else {
+            return;
+        };
+        std::fs::write(dir.join("new.txt"), "fresh\n").unwrap();
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\nthree\n");
+        app.press(Key::ctrl('g').with_shift());
+        assert!(settle(&mut app, |app| app.state.scm.count(Group::Changes) == 2));
+        type_keys(&mut app, "Everything");
+
+        app.press(ctrl_enter());
+        assert_eq!(
+            app.state.scm.confirm,
+            Some(dacode::source_control::Confirm::StageAllAndCommit)
+        );
+        quiet(&mut app);
+        assert_eq!(
+            git(&dir, &["rev-list", "--count", "HEAD"]).unwrap().trim(),
+            "1",
+            "the first press only asks"
+        );
+
+        app.press(ctrl_enter());
+        assert!(settle(&mut app, |app| {
+            app.state.scm.busy.is_none() && app.state.scm.count(Group::Changes) == 0
+        }));
+        quiet(&mut app);
+        assert_eq!(
+            git(&dir, &["rev-list", "--count", "HEAD"]).unwrap().trim(),
+            "2"
+        );
+        assert_eq!(git(&dir, &["status", "--porcelain"]).unwrap(), "");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn discarding_asks_twice_then_puts_a_file_back_and_deletes_an_untracked_one() {
+        // The only buttons in the view that throw work away, so each has to be pressed twice — and
+        // pressing it on a different file in between starts the question again.
+        let Some(dir) = repository("discard") else {
+            return;
+        };
+        std::fs::write(dir.join("scratch.txt"), "throwaway\n").unwrap();
+        let mut app = editor(&dir, "notes.txt", "one\nCHANGED\n");
+        app.press(Key::ctrl('g').with_shift());
+        assert!(settle(&mut app, |app| app.state.scm.count(Group::Changes) == 2));
+        quiet(&mut app);
+
+        // By the row's own ↶ button, where the mouse would press it.
+        let sidebar = app.layout().sidebar.expect("the view is open");
+        let press_discard = |app: &mut App, path: &str| {
+            let row = row_of(app, Group::Changes, path).expect("listed");
+            let geometry = app.state.scm.geometry(sidebar, 1.0, &app.state.typography);
+            let rect = geometry
+                .rows
+                .iter()
+                .find(|(index, _)| *index == row)
+                .map(|(_, rect)| *rect)
+                .expect("on screen");
+            let (_, button) = app
+                .state
+                .scm
+                .action_rects(row, rect, 1.0)
+                .into_iter()
+                .find(|(action, _)| *action == dacode::source_control::RowAction::Discard)
+                .expect("a discard button");
+            app.click_source_control(
+                sidebar,
+                button.x + button.width / 2.0,
+                button.y + button.height / 2.0,
+                1.0,
+            );
+        };
+
+        press_discard(&mut app, "notes.txt");
+        quiet(&mut app);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "one\nCHANGED\n",
+            "one press only asks"
+        );
+        press_discard(&mut app, "scratch.txt");
+        press_discard(&mut app, "notes.txt");
+        quiet(&mut app);
+        assert!(
+            dir.join("scratch.txt").exists(),
+            "a press on another file asked again rather than answering"
+        );
+        press_discard(&mut app, "notes.txt");
+        assert!(settle(&mut app, |app| app.state.scm.count(Group::Changes) == 1));
+        quiet(&mut app);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "one\ntwo\n"
+        );
+
+        press_discard(&mut app, "scratch.txt");
+        press_discard(&mut app, "scratch.txt");
+        assert!(settle(&mut app, |app| app.state.scm.count(Group::Changes) == 0));
+        assert!(!dir.join("scratch.txt").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_commit_made_outside_the_editor_asks_for_the_blame_and_the_gutter_again() {
+        // The defect this fixes: a commit or checkout in a terminal changed who wrote every line,
+        // and the blame said so only after the file was saved or reopened — the watch on the
+        // repository is what notices now.
+        let Some(dir) = repository("outside") else {
+            return;
+        };
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\nthree\n");
+        // The blame is not wanted, so the flag that asks for one stays where a test can see it.
+        app.state.blame.inline = false;
+        app.state.blame.column = false;
+        app.refresh_scm(false);
+        assert!(settle(&mut app, |app| app.state.scm.status().is_some()));
+        quiet(&mut app);
+        app.blame_wanted = false;
+
+        git(&dir, &["add", "notes.txt"]).expect("staged");
+        git(&dir, &["commit", "-q", "-m", "elsewhere"]).expect("committed");
+
+        assert!(
+            settle(&mut app, |app| app.blame_wanted),
+            "the commit was never noticed"
+        );
+        assert!(
+            settle(&mut app, |app| app.state.scm.count(Group::Changes) == 0),
+            "and the list was asked again"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_change_opens_as_a_read_only_diff_tab_that_a_second_click_reuses() {
+        let Some(dir) = repository("diff") else {
+            return;
+        };
+        let mut app = editor(&dir, "notes.txt", "one\ntwo\nthree\n");
+        app.press(Key::ctrl('g').with_shift());
+        assert!(settle(&mut app, |app| app.state.scm.count(Group::Changes) == 1));
+        quiet(&mut app);
+
+        app.state.scm.field = Field::List;
+        app.state.scm.selected = row_of(&app, Group::Changes, "notes.txt");
+        app.press(Key::named(KeyCode::Enter));
+        assert!(
+            settle(&mut app, |app| app.state.review.is_some()),
+            "the diff never opened"
+        );
+        let text = app.state.document.text().to_string();
+        assert!(text.contains("+three"), "{text}");
+        assert_eq!(
+            app.state.buffer_count, 2,
+            "a tab of its own beside the file"
+        );
+        assert_eq!(
+            app.state.path.last().map(String::as_str),
+            Some("notes.txt (working tree)")
+        );
+        assert!(
+            !app.state.diff.is_empty(),
+            "its hunks are marks, so `]c` walks them as it walks a file's"
+        );
+
+        // Read only: typing into it changes nothing, and says why.
+        app.state.focus = dacode::focus::Focus::Editor;
+        app.press(Key::char('x'));
+        assert_eq!(app.state.document.text().to_string(), text);
+        assert!(
+            app.state
+                .hover
+                .as_deref()
+                .unwrap_or("")
+                .contains("not a file")
+        );
+
+        // Opening it again goes back to the same tab.
+        app.state.focus = dacode::focus::Focus::Sidebar;
+        app.state.scm.field = Field::List;
+        app.switch_to(0);
+        app.press(Key::named(KeyCode::Enter));
+        assert!(settle(&mut app, |app| app.state.review.is_some()));
+        assert_eq!(app.state.buffer_count, 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_folder_git_does_not_track_offers_to_initialize_one() {
+        if git(std::path::Path::new("."), &["--version"]).is_none() {
+            return;
+        }
+        let dir = scratch("init");
+        let mut app = editor(&dir, "a.txt", "a\n");
+        app.press(Key::ctrl('g').with_shift());
+        assert!(settle(&mut app, |app| matches!(
+            app.state.scm.state,
+            dacode::source_control::State::NotARepository
+        )));
+        let sidebar = app.layout().sidebar.expect("open");
+        let geometry = app.state.scm.geometry(sidebar, 1.0, &app.state.typography);
+        let button = geometry.init.expect("the button");
+        app.click_source_control(sidebar, button.x + 4.0, button.y + 4.0, 1.0);
+        assert!(
+            settle(&mut app, |app| app.state.scm.status().is_some()),
+            "{:?}",
+            app.state.scm.state
+        );
+        assert!(dir.join(".git").is_dir());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

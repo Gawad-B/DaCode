@@ -296,16 +296,8 @@ pub fn execute(
             // Either way the list takes no keys, so the keys are the text's.
             state.settle_focus();
         }
-        Action::ShowSourceControl => {
-            let view = crate::layout::Activity::SourceControl;
-            // A second press closes it, as the activity icons do in every editor that has them.
-            if state.chrome.activity == Some(view) {
-                state.chrome.activity = None;
-            } else {
-                state.close_sidebar();
-                state.chrome.activity = Some(view);
-            }
-        }
+        // Opening it asks git for a fresh status, and git is the event loop's.
+        Action::ShowSourceControl | Action::Git(_) => return Outcome::Window(action.clone()),
         Action::ToggleNotifications => {
             state.chrome.show_notifications = !state.chrome.show_notifications;
             state.chrome.unread = 0;

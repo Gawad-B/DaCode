@@ -13,7 +13,7 @@ dacode --help | --version
 `--version` / `-V` and `--help` / `-h` are checked at the top of `main()` — after the `import`
 subcommand is dispatched, so `dacode import --help` still reaches the importer's own help, and before
 anything that could open a window. Each prints and exits.
-`--help` renders the `FLAGS` table (49 entries of flag, value placeholder, description) rather than
+`--help` renders the `FLAGS` table (54 entries of flag, value placeholder, description) rather than
 carrying its own prose, so the help text and the flag list cannot disagree — the same one-table
 discipline `dacode_input::commands::COMMANDS` follows. **That table is the source of truth for this
 document**; everything under "Normal use" and "Headless rendering" below is the same set with the
@@ -94,6 +94,10 @@ RENDERING WITHOUT A WINDOW
     --complete PREFIX           the completion popup
     --diagnostic L:C:MSG        one diagnostic, inline
     --diagnostics-list          the problems list
+    --source-control            the source control view, over a canned status
+    --no-repository             the source control view in a folder git does not track
+    --diff-view                 a diff tab, showing a canned diff
+    --branches                  the branch picker, over canned branches
     --terminal                  the terminal panel, showing a fixed transcript
     --terminal-tabs N           with --terminal: that many terminal tabs
     --terminal-height PERCENT   with --terminal: the panel dragged to that share
@@ -231,6 +235,10 @@ order.
 | 2a | `--blame` | — | The editor with the blame column on and a canned blame — three authors in runs down the file, lines 13 and 14 not committed yet — so neither the column nor the caret line's note depends on who last committed to the file on screen. `--at` puts the caret on the line whose note you want to see. |
 | 3 | `--folded` | — | Every top-level block folded, so the marker and the hidden-line count are visible. |
 | 4 | `--diagnostics-list` | — | The diagnostics sidebar. |
+| 4′ | `--source-control` | — | The source-control view over a canned status, read through the real porcelain parser: a branch two ahead and one behind its upstream, a conflict under Merge Changes, a staged rename into a directory with a space in its name, a file both staged and changed again, a deletion, and two untracked files — one with a name too long for the row. A message is typed, and the list has the keys with a file selected, so its row buttons show. |
+| 4″ | `--no-repository` | — | The source-control view in a folder git does not track: the explanation and the Initialize Repository button. |
+| 4‴ | `--diff-view` | — | A diff tab — the read-only tab a change opens in — showing a canned two-hunk diff, with its added, removed and hunk lines washed in the gutter's colours. |
+| 4⁗ | `--branches` | — | The branch picker over canned branches: "create new branch" first, local branches with the current one marked, then remote ones without the remote's `HEAD`. |
 | 4a | `--terminal` | — | The terminal panel open under the code, with the keys, showing a fixed transcript fed to the same parser a live shell's output goes through — a prompt, a coloured `ls`, a build, `git status`, every attribute the panel draws, the sixteen colours as swatches, 256-colour and 24-bit text, and the cursor waiting at a prompt. No shell is started, so the capture is the same on every machine. `--terminal-tabs N` shows that many tabs in its header (the first is the transcript's), `--terminal-height PERCENT` the panel as if its edge had been dragged to that share of the editor — clamped as a drag is — and `--terminal-select R:C-R:C` a mouse selection from the first cell to the last, rows and columns counted from zero on the screen. |
 | 5 | `--welcome` | `STEP` | The first-run wizard. `keys` is the first screen, `theme` the second with the third option highlighted, `import` the third. Any other value lands on `theme` without the highlight. Ignores the buffer. |
 | 6 | `--help-panel` | — | The F1 key list. |

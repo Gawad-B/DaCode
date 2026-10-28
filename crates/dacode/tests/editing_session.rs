@@ -62,6 +62,8 @@ impl Session {
                 vertical_goal: None,
                 expansions: Default::default(),
                 search: None,
+                scm: Default::default(),
+                review: None,
                 recording: None,
                 diff: dacode::git::Diff::default(),
                 blame: Default::default(),

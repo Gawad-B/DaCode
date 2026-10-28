@@ -216,6 +216,19 @@ again discards them. `ctrl-w` closes the file in every mode, insert included, as
 tabbed application — so Vim's window commands are after `ctrl-k` instead, each on the second key it
 had after `ctrl-w`.
 
+## Source control
+
+| Key | Does |
+|---|---|
+| `ctrl-shift-g` | the source-control view, with the keys in its commit message box — again to close it |
+| `ctrl-enter` | in the view: commit (with nothing staged, asks once, then commits every change) |
+| `↑` `↓` · `enter` | in its list: move · open the change's diff (or fold a group) |
+| `space` `s` · `u` · `o` | in its list: stage · unstage · open the file |
+
+Pull, push, fetch, sync, checkout, create branch, stash and history are buttons in the view and
+`git:` commands in the palette. Click the branch on the status line to switch branches. A diff
+opens as a read-only tab. See [the guide](docs/guides/source-control.md).
+
 ## Terminal
 
 | Key | Does |
