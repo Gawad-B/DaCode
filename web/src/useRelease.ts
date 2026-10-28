@@ -58,19 +58,19 @@ const RELEASE: Release = {
   assets: {
     "dacode-setup.exe": {
       url: `${ASSETS}/v1.1.0/dacode-setup.exe`,
-      size: 8001050,
+      size: 8533988,
     },
     "dacode_1.1.0_amd64.deb": {
       url: `${ASSETS}/v1.1.0/dacode_1.1.0_amd64.deb`,
-      size: 9949890,
+      size: 10658444,
     },
     "dacode-1.1.0-1.x86_64.rpm": {
       url: `${ASSETS}/v1.1.0/dacode-1.1.0-1.x86_64.rpm`,
-      size: 9845331,
+      size: 10552509,
     },
     "dacode-1.1.0-x86_64-linux.tar.gz": {
       url: `${ASSETS}/v1.1.0/dacode-1.1.0-x86_64-linux.tar.gz`,
-      size: 9944482,
+      size: 10660762,
     },
   },
   stale: false,
