@@ -36,7 +36,7 @@ pub enum PaletteKind {
     /// Fetched once and filtered here, like the code actions: it is one file, the server answered
     /// it in full, and asking again per keystroke would be paying a round trip for a `contains`.
     Symbols,
-    /// `ctrl-t` — every name in the project.
+    /// `ctrl-shift-t` — every name in the project.
     ///
     /// The one palette whose list the *server* filters: a project's symbol table is not something
     /// the editor holds, and asking for all of it up front is the request no server wants. So each

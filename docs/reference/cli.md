@@ -233,7 +233,7 @@ order.
 | 7 | `--menu` | — | The menu bar, opened. |
 | 7a | `--menu-title` | `TITLE` | The menu bar open at one title, named as on the bar (`Help`). A title the window is too narrow to show opens as F10 reaches it, under "…" with its name as a header; `...` opens the overflow's list of hidden titles. |
 | 8 | `--context-menu` | — | A right-click menu at (420, 300). |
-| 9 | `--which-key` | `PREFIX` | The which-key popup, driven by the pending cell exactly as a half-typed chord drives it. Quote it: `--which-key '<c-w>'`. |
+| 9 | `--which-key` | `PREFIX` | The which-key popup, driven by the pending cell exactly as a half-typed chord drives it. Quote it: `--which-key '<c-k>'`. |
 | 10 | `--symbols` | `QUERY` | The symbol palette over a canned ten-entry outline, so its indenting and kind column are inspectable without a language server. |
 | 11 | `--commands` | — | The command palette listing every command. |
 | 12 | `--settings` | — | The settings tab, with the Languages page's servers and formatters detected against this machine — the page is a report, and a screenshot of a report with invented contents verifies nothing. |

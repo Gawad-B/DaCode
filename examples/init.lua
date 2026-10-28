@@ -10,7 +10,7 @@
 dacode.set {
   -- Vim's modal editing. Turn it off and dacode behaves like any other editor: typing always inserts,
   -- and the shortcuts are the familiar ones — ctrl-c, ctrl-v, ctrl-z, shift-arrow to select. The
-  -- editor's own chords (ctrl-e, ctrl-p, ctrl-w, ctrl-,) keep working either way.
+  -- editor's own chords (ctrl-e, ctrl-p, ctrl-w, ctrl-k, ctrl-,) keep working either way.
   vim_keys = true,
 
   font_size = 13.5,

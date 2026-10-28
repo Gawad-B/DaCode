@@ -15,7 +15,7 @@ use dacode_buffer::Document;
 use dacode_display::{DisplayMap, ScrollAnchor, WrapMode};
 use dacode_render::{Align, Frame, Icon, Layer, Rect, TextRun};
 use dacode_syntax::{Highlight, HighlightSpan};
-use dacode_text::{Bias, CharOffset, Point, Text, Version};
+use dacode_text::{Bias, CharOffset, Point, SelectionSet, Text, Version};
 use dacode_theme::{CursorShape, Mode, Oklch, Role, Theme, Typography, frame as border, space};
 
 /// One pane's view of a buffer, for drawing.
@@ -34,6 +34,51 @@ pub struct PaneView<'a> {
     /// when it was last focused are still correct for its text. Missing spans render as plain text,
     /// which degrades honestly rather than painting one file's colors onto another's.
     pub highlights: &'a [HighlightSpan],
+}
+
+/// The selections each `expand_selection` started from, so `shrink_selection` can retrace them.
+///
+/// The seventh thing outside the document that holds offsets into it (see `CLAUDE.md`), and it is
+/// **cleared** by [`EditorState::mutate`] rather than moved: a history of how far a selection grew
+/// is worth nothing once the text under it has changed, and shrinking from wherever the selection
+/// is now is what the tree fallback already does. It is also cleared on a buffer change, and it
+/// is valid only while the selections are still exactly the ones the last expansion left — any
+/// other move, a click, a `vaf`, ends the run without anything having to say so, the same way
+/// [`EditorState::vertical_goal`] ends.
+#[derive(Debug, Clone, Default)]
+pub struct Expansions {
+    /// What the selections were before each expansion, oldest first.
+    before: Vec<SelectionSet>,
+    /// What the last expansion left them as.
+    after: Option<SelectionSet>,
+}
+
+impl Expansions {
+    /// Records one expansion: from `before` to `after`. A history whose end no longer matches
+    /// `before` belonged to some earlier run and is dropped first.
+    pub fn push(&mut self, before: SelectionSet, after: SelectionSet) {
+        if self.after.as_ref() != Some(&before) {
+            self.before.clear();
+        }
+        self.before.push(before);
+        self.after = Some(after);
+    }
+
+    /// The selections to go back to, when `current` is still what the last expansion left.
+    pub fn pop(&mut self, current: &SelectionSet) -> Option<SelectionSet> {
+        if self.after.as_ref() != Some(current) {
+            self.clear();
+            return None;
+        }
+        let previous = self.before.pop()?;
+        self.after = (!self.before.is_empty()).then(|| previous.clone());
+        Some(previous)
+    }
+
+    pub fn clear(&mut self) {
+        self.before.clear();
+        self.after = None;
+    }
 }
 
 pub struct EditorState {
@@ -74,6 +119,9 @@ pub struct EditorState {
     /// Moving a tree by hand would be re-implementing tree-sitter's incremental edit on the UI
     /// thread; ignoring it until the worker sends the next one costs nothing.
     pub structure: Option<dacode_syntax::Structure>,
+    /// How the selections got to be the size they are, for `shrink_selection`. Cleared by
+    /// [`EditorState::mutate`]; see [`Expansions`].
+    pub expansions: Expansions,
 
     pub frame_ms: f32,
     pub worst_ms: f32,
@@ -1049,6 +1097,9 @@ impl EditorState {
     }
 
     pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
+        // Cleared, not moved — see `Expansions`. Before the early return below, which would
+        // otherwise skip it in every buffer with nothing folded or coloured.
+        self.expansions.clear();
         // Nothing folded, colored or underlined, and this costs three `is_empty` calls.
         if self.display.folds.is_empty()
             && self.highlights.is_empty()
@@ -2942,7 +2993,7 @@ fn placeholder(kind: PaletteKind) -> String {
 
 /// The which-key hint: what can follow the keys typed so far.
 ///
-/// The statusline already showed the prefix — `<c-w>` sat there on its own, which tells you the
+/// The statusline already showed the prefix — `<c-k>` sat there on its own, which tells you the
 /// editor is waiting and nothing about what for. This is the thing Helix is repeatedly praised for
 /// and which people bolt onto Neovim with a plugin: press a prefix, read the menu, learn the key.
 ///

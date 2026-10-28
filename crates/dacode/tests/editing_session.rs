@@ -60,6 +60,7 @@ impl Session {
                 modal: true,
                 sticky_scroll: true,
                 vertical_goal: None,
+                expansions: Default::default(),
                 search: None,
                 recording: None,
                 diff: dacode::git::Diff::default(),
@@ -1167,4 +1168,171 @@ fn shift_alt_right_grows_the_selection_one_node_at_a_time() {
     assert_eq!(s.selected(), "a + b");
     s.press(grow);
     assert_eq!(s.selected(), "(a + b)");
+}
+
+// ---- ctrl-w and ctrl-t, through the grammar to the window ------------------------------------
+//
+// Closing a buffer and opening the terminal are the event loop's — the executor hands them back as
+// `Outcome::Window` — so this is as far as a headless session goes. The binary's own tests carry
+// the same keys on through `App::press` to a buffer actually closing and a shell actually starting.
+
+impl Session {
+    /// The window action one key resolves to, through the grammar and the executor.
+    fn window_action(&mut self, keys: &str) -> Option<Action> {
+        let mut last = None;
+        for key in Key::parse_sequence(keys) {
+            if let Resolution::Action(action) = self.grammar.feed(self.state.mode, key) {
+                if let Outcome::Window(window) =
+                    execute(&mut self.state, &mut self.registers, &action, 40)
+                {
+                    last = Some(window);
+                }
+            }
+        }
+        last
+    }
+}
+
+#[test]
+fn ctrl_w_closes_the_file_and_ctrl_t_toggles_the_terminal_from_any_mode() {
+    // Insert mode included: Vim's own ctrl-w deletes a word there, and leaving it to do that while
+    // every other mode closed the file would make the key mean whatever mode you forgot you were in.
+    for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+        let mut s = session("let x = 1;\n");
+        s.state.set_mode(mode);
+        assert_eq!(
+            s.window_action("<c-w>"),
+            Some(Action::CloseBuffer),
+            "ctrl-w in {mode:?}"
+        );
+        assert_eq!(s.text(), "let x = 1;\n", "and nothing typed into the file");
+        assert_eq!(
+            s.window_action("<c-t>"),
+            Some(Action::ToggleTerminal),
+            "ctrl-t in {mode:?}"
+        );
+    }
+    // The window commands are still there, after the prefix they moved to.
+    let mut s = session("x\n");
+    assert_eq!(
+        s.window_action("<c-k>v"),
+        Some(Action::SplitPane { vertical: true })
+    );
+}
+
+// ---- counted structural objects, and shrink-selection ----------------------------------------
+
+const NESTED: &str = "fn outer() {\n    let f = |x| {\n        x + 1\n    };\n}\n\nfn after() {}\n";
+
+#[test]
+fn two_daf_deletes_the_function_around_the_closure() {
+    // `daf` inside a closure takes the closure; `2daf` and `d2af` take the function it is in.
+    let at = NESTED.find("x + 1").unwrap();
+    for keys in ["2daf", "d2af"] {
+        let mut s = session(NESTED).at(at).parsed(dacode_syntax::Language::Rust);
+        s.keys(keys);
+        assert_eq!(s.text(), "\nfn after() {}\n", "{keys}");
+    }
+    let mut s = session(NESTED).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("daf");
+    assert!(
+        s.text().starts_with("fn outer() {\n    let f = ;"),
+        "{:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn a_count_past_the_outermost_deletes_nothing_and_says_so() {
+    // `3daf` with only two functions around must not fall back to the outermost: the user asked
+    // for something that is not there, and deleting something else would be the worst answer.
+    let at = NESTED.find("x + 1").unwrap();
+    let mut s = session(NESTED).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("3daf");
+    assert_eq!(s.text(), NESTED);
+    assert_eq!(s.state.hover.as_deref(), Some("no function here"));
+}
+
+#[test]
+fn v2aa_selects_the_argument_one_list_out() {
+    let source = "fn f() { g(a, h(b, c)); }\n";
+    let at = source.find("b, c").unwrap();
+    let mut s = session(source).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("v2ia");
+    s.keys("d");
+    assert_eq!(s.text(), "fn f() { g(a, ); }\n");
+}
+
+/// A session with the modal grammar off, where shift-alt-arrows are expand and shrink.
+fn flat_session(source: &str, at: usize) -> Session {
+    let mut s = session(source).at(at).parsed(dacode_syntax::Language::Rust);
+    s.grammar.set_modal(false);
+    s.state.modal = false;
+    s.state.mode = Mode::Insert;
+    s
+}
+
+#[test]
+fn shrinking_retraces_each_expansion_back_to_the_caret() {
+    // Expand three times and shrink three times and you are where you started — including the
+    // caret's place inside the word, which no node of the tree records: only the history can say.
+    let source = "fn f() { g(alpha + b); }\n";
+    let at = source.find("lpha").unwrap();
+    let mut s = flat_session(source, at);
+    s.keys("<s-a-→>");
+    assert_eq!(s.selected(), "alpha");
+    s.keys("<s-a-→><s-a-→>");
+    assert_eq!(s.selected(), "(alpha + b)");
+    s.keys("<s-a-←>");
+    assert_eq!(s.selected(), "alpha + b");
+    s.keys("<s-a-←><s-a-←>");
+    assert_eq!(s.selected(), "");
+    assert_eq!(s.cursor(), at, "back on the character it started on");
+}
+
+#[test]
+fn with_no_history_shrinking_asks_the_tree() {
+    // A selection made some other way — here `select_argument` — has no expansions behind it, so
+    // shrinking steps to the named node under the caret inside it.
+    let source = "fn f() { g(alpha + b); }\n";
+    let at = source.find("alpha").unwrap();
+    let mut s = flat_session(source, at);
+    s.keys("<a-a>");
+    assert_eq!(s.selected(), "alpha + b");
+    s.keys("<s-a-←>");
+    assert_eq!(
+        s.selected(),
+        "b",
+        "the head sits at the end, so the child there"
+    );
+}
+
+#[test]
+fn an_edit_ends_the_expansion_history() {
+    // The history holds offsets, and `mutate` clears it rather than moving it. An edit after the
+    // selection leaves the selection's offsets exactly where they were, so this is the one case the
+    // "are the selections still what expand left?" check cannot catch on its own: without the
+    // clear, shrinking would put the caret back from a history of a document that no longer exists.
+    let source = "fn f() { g(alpha + b); }\n";
+    let at = source.find("lpha").unwrap();
+    let mut s = flat_session(source, at);
+    s.keys("<s-a-→>");
+    assert_eq!(s.selected(), "alpha");
+    let end = s.state.document.text().len_chars();
+    s.state.mutate(|document| {
+        document
+            .apply(
+                dacode_text::Transaction::new(vec![dacode_text::Edit::insert(end, "// x\n")]),
+                dacode_buffer::EditKind::Discrete,
+            )
+            .unwrap()
+    });
+    s.reparse(dacode_syntax::Language::Rust);
+    assert_eq!(s.selected(), "alpha", "the edit was after the selection");
+    s.keys("<s-a-←>");
+    assert_eq!(
+        s.selected(),
+        "alpha",
+        "the tree has nothing inside an identifier, so the selection stays — not the old caret"
+    );
 }

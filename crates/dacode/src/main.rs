@@ -300,6 +300,7 @@ fn new_state(
         modal: settings.modal,
         sticky_scroll: settings.sticky_scroll,
         vertical_goal: None,
+        expansions: dacode::chrome::Expansions::default(),
         search: None,
         recording: None,
         diff: dacode::git::Diff::default(),
@@ -9741,6 +9742,8 @@ impl App {
         // The tree too: its version is a number in the *old* document's sequence, and a new
         // document can reach the same number while holding different text.
         self.state.structure = None;
+        // And the expansion history, whose offsets are into the old document.
+        self.state.expansions.clear();
         self.state.syntax_version = Version(0);
         self.requested_range = None;
 
@@ -13765,6 +13768,30 @@ mod buffer_tests {
     }
 
     #[test]
+    fn ctrl_w_closes_the_file_on_screen_in_insert_and_normal_mode() {
+        // Through `App::press`, the path a real key takes: the grammar resolves ctrl-w to
+        // `CloseBuffer` and the event loop closes the live buffer. In insert mode too, where Vim's
+        // own ctrl-w deletes a word — the key means one thing in DaCode, in every mode.
+        let dir = scratch("ctrl-w");
+        let mut app = editor(&dir, &["a.rs", "b.rs", "c.rs"]);
+        assert_eq!(app.state.mode, Mode::Insert);
+        app.press(Key::ctrl('w'));
+        assert_eq!(names(&app), ["a.rs", "b.rs"], "the live file closed");
+        assert!(
+            !app.state.document.text().to_string().contains('w'),
+            "and nothing was typed"
+        );
+
+        app.state.set_mode(Mode::Normal);
+        app.press(Key::ctrl('w'));
+        assert_eq!(names(&app).len(), 1, "and again from normal mode");
+        assert!(
+            app.grammar.is_idle(),
+            "a whole command, not a prefix waiting"
+        );
+    }
+
+    #[test]
     fn switching_buffers_does_not_renumber_them() {
         // It swapped the live document with the stored one, which put the buffer that had been
         // live into the *target's* slot: switching from 3 to 1 left 1's file at 3 and 3's at 1. The
@@ -14614,7 +14641,7 @@ mod terminal_tests {
     #[test]
     fn the_editors_shortcuts_are_the_shells_while_it_has_focus() {
         // ctrl-w deletes a word in a shell and closes a buffer in the editor. In the terminal it
-        // must be the first: the editor keeps only ctrl-`, ctrl-shift-v and ctrl-shift-p.
+        // must be the first: the editor keeps only ctrl-`, ctrl-t, ctrl-shift-v and ctrl-shift-p.
         let dir = scratch("shortcuts");
         let mut app = editor(&dir);
         app.press(Key::ctrl('`'));
@@ -14652,6 +14679,31 @@ mod terminal_tests {
             Focus::Terminal,
             "and the keys go back where they were"
         );
+        end(&mut app);
+    }
+
+    #[test]
+    fn ctrl_t_opens_the_terminal_and_closes_it_again_from_inside() {
+        // The second key for the terminal, through `App::press`. It has to work from inside as
+        // well as out — the route keeps it from the shell — or it would open a panel that only
+        // ctrl-` could leave.
+        let dir = scratch("ctrl-t");
+        let mut app = editor(&dir);
+        app.press(Key::ctrl('t'));
+        assert!(app.state.terminal.open, "ctrl-t opens the terminal");
+        assert_eq!(app.state.focus, Focus::Terminal, "and gives it the keys");
+        assert!(app.terminal.is_some(), "with a shell in it");
+        let sent = app.terminal.as_ref().unwrap().bytes_sent();
+
+        app.press(Key::ctrl('t'));
+        assert!(!app.state.terminal.open, "and closes it from inside");
+        assert_eq!(app.state.focus, Focus::Editor);
+        assert_eq!(
+            app.terminal.as_ref().unwrap().bytes_sent(),
+            sent,
+            "the shell was not sent a transpose"
+        );
+        assert_eq!(app.state.document.text().to_string(), "hello\n");
         end(&mut app);
     }
 

@@ -16,7 +16,16 @@ release, where one exists, lives in `packaging/notes/`.
   comment, in Rust, Python, JavaScript, TypeScript, C and C++ (comments in HTML and CSS too). They
   work with every operator — `daf`, `cif`, `yat`, `cia` — and in visual mode `vaf` selects the
   function. Right after an edit, before the background parse has caught up, they do nothing and say
-  so instead of acting on text that has moved.
+  so instead of acting on text that has moved. A count reaches outwards: `2af` (or `d2af`) is the
+  function around the one you are in, `v3at` the third type out, and `2aa` the argument of the next
+  list out — the whole inner call — as targets.vim reads it, never "two arguments". A count past the
+  outermost does nothing and says so rather than taking the outermost.
+- **Shrink selection**, `shift-alt-←` with Vim keys off and in the Selection menu and palette: the
+  inverse of `shift-alt-→`. It retraces the expansions exactly — expand three times, shrink three
+  times, and the caret is back on its character — and with nothing to retrace (a selection made
+  another way, or an edit since) it steps to the piece of syntax under the cursor.
+- `ctrl-t` opens and closes the terminal too, in both keymaps and from inside the terminal, for
+  keyboards where the backtick is awkward to reach.
 - With Vim keys off: `alt-f`, `alt-t` and `alt-a` select the enclosing function, type and argument,
   and `shift-alt-→` grows the selection to the enclosing piece of syntax. All four are in the
   Selection menu and the command palette.
@@ -56,6 +65,14 @@ release, where one exists, lives in `packaging/notes/`.
   however far above the opener is; the old scan stopped looking after about five hundred lines.
 - In visual mode, `i` and `a` now begin a text object (`viw`, `va(`), as in Vim, instead of
   entering insert mode.
+- **`ctrl-w` closes the file**, in both keymaps and every mode — Vim's insert mode included, where
+  `ctrl-backspace` still deletes a word — as it does in every tabbed application. It was the prefix
+  for the window commands, which now follow **`ctrl-k`** on the same second key: `ctrl-k v` and
+  `ctrl-k s` split, `ctrl-k c` closes a pane, `ctrl-k w` and `h` `j` `k` `l` move between panes.
+  The which-key popup lists them under `ctrl-k`. `ctrl-k s` no longer opens settings — `ctrl-,`
+  does, as before. In the terminal `ctrl-w` is still the shell's word delete.
+- **Go to a symbol anywhere in the project** moved from `ctrl-t` to `ctrl-shift-t`, since `ctrl-t`
+  is now the terminal's; `gS` is unchanged.
 
 ## [1.0.0] - 2026-10-27
 

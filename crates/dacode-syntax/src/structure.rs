@@ -347,6 +347,31 @@ impl Structure {
         kind: ObjectKind,
         around: bool,
     ) -> Option<Range<CharOffset>> {
+        self.object_nth(text, at, kind, around, 1)
+    }
+
+    /// The `count`-th object of `kind` around `at`, counting outwards: `1` is [`Self::object`],
+    /// `2` the one enclosing that, and so on — `2af` inside a closure is the function holding it.
+    ///
+    /// For an argument the count climbs *lists*: `2aa` is the argument of the next list out that
+    /// contains this one, the whole inner call when the cursor is in an argument of a call that is
+    /// itself an argument. That is what targets.vim and nvim-treesitter-textobjects do with a count
+    /// on an object, and it keeps every kind counting the same way. "This argument and the next
+    /// one" is the other reading, and neither of them chose it. Comments do not nest, so a count
+    /// above one finds nothing. A count beyond the outermost is `None` rather than the outermost:
+    /// an operator told to take the third enclosing function should not quietly take the second.
+    ///
+    /// Bounded by the depth of the tree, like every walk here: it only ever goes up from the
+    /// cursor's node.
+    pub fn object_nth(
+        &self,
+        text: &Text,
+        at: CharOffset,
+        kind: ObjectKind,
+        around: bool,
+        count: usize,
+    ) -> Option<Range<CharOffset>> {
+        let mut remaining = count.max(1);
         let query = &self.queries.objects;
         let at = text.clamp(at);
         let byte = text.char_to_byte(at).get();
@@ -364,6 +389,11 @@ impl Structure {
                 if let Some(index) = inside_index {
                     let items = captured_nodes(&mut cursor, query, current, text, index);
                     if let Some(item) = pick_item(&items, byte) {
+                        remaining -= 1;
+                        if remaining > 0 {
+                            node = current.parent();
+                            continue;
+                        }
                         return Some(if around {
                             argument_around(text, item)
                         } else {
@@ -390,7 +420,12 @@ impl Structure {
                         }
                     }
                 }
-                if found {
+                if found && kind == ObjectKind::Comment && remaining > 1 {
+                    return None;
+                }
+                if found && remaining > 1 {
+                    remaining -= 1;
+                } else if found {
                     return Some(match (kind, around) {
                         (ObjectKind::Comment, around) => comment_range(text, current, around),
                         (_, true) => {
@@ -431,6 +466,50 @@ impl Structure {
             node = current.parent();
         }
         None
+    }
+
+    /// One step of "shrink selection" with nothing to retrace: the first named node inside `range`
+    /// that holds `caret`, and is strictly smaller than `range`.
+    ///
+    /// The editor undoes its own expansions from a history it keeps and asks this only when there
+    /// is none, for a selection made some other way — a `vaf`, a drag. Named, because an anonymous
+    /// node is a bracket or a keyword, and shrinking onto a lone `(` is never what was meant. A
+    /// child the same size as its parent is gone through, not stopped at, or the step would
+    /// change nothing visible: an expression statement and its call usually cover the same text.
+    pub fn shrink(
+        &self,
+        text: &Text,
+        range: Range<CharOffset>,
+        caret: CharOffset,
+    ) -> Option<Range<CharOffset>> {
+        let start = text.char_to_byte(text.clamp(range.start)).get();
+        let end = text.char_to_byte(text.clamp(range.end)).get();
+        if start >= end {
+            return None;
+        }
+        // The caret as a byte *inside* the range: a selection's head sits on its exclusive end
+        // after an expansion, and the node that starts there is outside it.
+        let caret = text
+            .char_to_byte(text.clamp(caret))
+            .get()
+            .clamp(start, end - 1);
+        let mut node = self
+            .tree
+            .root_node()
+            .descendant_for_byte_range(start, end)?;
+        loop {
+            let mut walker = node.walk();
+            let child = node
+                .named_children(&mut walker)
+                .find(|child| child.start_byte() <= caret && caret < child.end_byte())?;
+            if child.start_byte() >= start
+                && child.end_byte() <= end
+                && (child.start_byte() > start || child.end_byte() < end)
+            {
+                return Some(node_range(text, child));
+            }
+            node = child;
+        }
     }
 }
 
@@ -991,5 +1070,112 @@ mod tests {
         assert_eq!(selected(&text, sum.clone()), "a + b");
         let call = tree.expand(&text, sum).unwrap();
         assert_eq!(selected(&text, call), "(a + b)");
+    }
+
+    #[test]
+    fn a_count_takes_the_function_around_the_one_you_are_in() {
+        // `2af` inside a closure is the function holding it: the count climbs outwards, as `2i(`
+        // does in Vim. Counting the same way for every kind is what lets the count be learned once.
+        let source = "fn outer() {\n    let f = |x| {\n        x + 1\n    };\n}\n";
+        let (text, tree) = structure(Language::Rust, source);
+        let caret = at(&text, "x + 1", 0);
+        let first = tree
+            .object_nth(&text, caret, ObjectKind::Function, true, 1)
+            .unwrap();
+        assert_eq!(selected(&text, first), "|x| {\n        x + 1\n    }");
+        let second = tree
+            .object_nth(&text, caret, ObjectKind::Function, true, 2)
+            .unwrap();
+        assert_eq!(selected(&text, second), source);
+        // Past the outermost there is nothing, and saying so beats quietly taking the outermost:
+        // `d3af` that deleted the second function out would delete code nobody asked about.
+        assert_eq!(
+            tree.object_nth(&text, caret, ObjectKind::Function, true, 3),
+            None
+        );
+        assert_eq!(
+            tree.object_nth(&text, caret, ObjectKind::Function, true, 1),
+            tree.object(&text, caret, ObjectKind::Function, true),
+            "a count of one is the plain object"
+        );
+    }
+
+    #[test]
+    fn a_count_on_an_argument_climbs_to_the_list_outside() {
+        // targets.vim's and nvim-treesitter-textobjects' reading: `2aa` on `b` inside `h(b, c)`,
+        // itself an argument of `g`, is `h(b, c)` — the argument one list out — and not "b and c".
+        let source = "fn f() { g(a, h(b, c)); }";
+        let (text, tree) = structure(Language::Rust, source);
+        let b = at(&text, "b, c", 0);
+        let inner = tree
+            .object_nth(&text, b, ObjectKind::Argument, false, 1)
+            .unwrap();
+        assert_eq!(selected(&text, inner), "b");
+        let outer = tree
+            .object_nth(&text, b, ObjectKind::Argument, false, 2)
+            .unwrap();
+        assert_eq!(selected(&text, outer), "h(b, c)");
+        let outer_around = tree
+            .object_nth(&text, b, ObjectKind::Argument, true, 2)
+            .unwrap();
+        assert_eq!(selected(&text, outer_around), ", h(b, c)");
+        assert_eq!(
+            tree.object_nth(&text, b, ObjectKind::Argument, false, 3),
+            None
+        );
+    }
+
+    #[test]
+    fn a_count_on_a_type_and_on_a_comment() {
+        // Types nest (a struct in a module's impl, a class in a class); comments never do, so a
+        // count above one on a comment finds nothing rather than something unrelated.
+        let source = "# note\nclass A:\n    class B:\n        x = 1\n";
+        let (text, tree) = structure(Language::Python, source);
+        let caret = at(&text, "x = 1", 0);
+        let outer = tree
+            .object_nth(&text, caret, ObjectKind::Type, true, 2)
+            .unwrap();
+        assert_eq!(
+            selected(&text, outer),
+            "class A:\n    class B:\n        x = 1\n"
+        );
+        let note = at(&text, "note", 0);
+        assert!(
+            tree.object_nth(&text, note, ObjectKind::Comment, true, 1)
+                .is_some()
+        );
+        assert_eq!(
+            tree.object_nth(&text, note, ObjectKind::Comment, true, 2),
+            None
+        );
+    }
+
+    #[test]
+    fn shrinking_steps_to_the_named_node_under_the_caret() {
+        // With no history of how the selection grew — a `vaf`, a drag — shrinking is the tree's
+        // to answer: the named child holding the caret, and never one the same size as the
+        // selection, which would make the key look broken.
+        let source = "fn f() { g(a + b); }";
+        let (text, tree) = structure(Language::Rust, source);
+        let start = at(&text, "g(", 0);
+        let end = at(&text, "; }", 0);
+        let caret = at(&text, "a + b", 0);
+        let args = tree.shrink(&text, start..end, caret).unwrap();
+        assert_eq!(selected(&text, args.clone()), "(a + b)");
+        let sum = tree.shrink(&text, args, caret).unwrap();
+        assert_eq!(selected(&text, sum.clone()), "a + b");
+        let a = tree.shrink(&text, sum, caret).unwrap();
+        assert_eq!(selected(&text, a.clone()), "a");
+        assert_eq!(
+            tree.shrink(&text, a, caret),
+            None,
+            "a leaf has nothing inside"
+        );
+        // A caret on the selection's exclusive end — where an expansion leaves it — still means
+        // the text inside: the last character, not the node that starts after it.
+        let sum_start = at(&text, "a + b", 0);
+        let sum_end = at(&text, "); }", 0);
+        let b = tree.shrink(&text, sum_start..sum_end, sum_end).unwrap();
+        assert_eq!(selected(&text, b), "b");
     }
 }

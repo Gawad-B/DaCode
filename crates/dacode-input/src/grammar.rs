@@ -51,18 +51,18 @@ enum Stage {
     GPrefix,
     /// Saw `]` or `[`, waiting for what to jump to.
     BracketPrefix { forward: bool },
-    /// Saw `ctrl-w`, waiting for a window command.
-    WindowPrefix,
     /// Saw `z`, waiting for a fold command.
     FoldPrefix,
     /// Saw `q`, waiting for the register to record into.
     RecordRegister,
     /// Saw `@`, waiting for the register to replay.
     ReplayRegister,
-    /// Saw `ctrl-k`, waiting for the second key of a chord.
+    /// Saw `ctrl-k`, waiting for the second key of a chord: open a folder, or a window command.
     ///
-    /// VSCode's convention rather than Vim's, because the things behind it — open folder, settings —
-    /// are the ones people already reach for with `ctrl-k` and have no Vim spelling to inherit.
+    /// VSCode's convention rather than Vim's for the prefix, because `ctrl-w` is the key every tabbed
+    /// application closes a tab with and DaCode gives it that meaning in both grammars. The window
+    /// commands that used to follow `ctrl-w` follow `ctrl-k` instead, each on the same second key —
+    /// `ctrl-k v` splits, `ctrl-k w` moves focus — so the move is one rule to relearn, not ten keys.
     ChordPrefix,
 }
 
@@ -226,12 +226,10 @@ impl Grammar {
     /// to name. The vocabulary is VSCode's rather than invented, because muscle memory is not a
     /// thing an editor gets to have opinions about.
     fn feed_flat(&mut self, key: Key) -> Resolution {
-        // A chord already in progress owns the key. Without this the second press of `ctrl-w v` is
+        // A chord already in progress owns the key. Without this the second press of `ctrl-k v` is
         // taken as text and types a `v` into the document.
-        match self.stage {
-            Stage::WindowPrefix => return self.take_window_prefix(key),
-            Stage::ChordPrefix => return self.take_chord(key),
-            _ => {}
+        if self.stage == Stage::ChordPrefix {
+            return self.take_chord(key);
         }
 
         // Alt with the vertical arrows is line surgery, and with the horizontal ones it is the
@@ -240,9 +238,10 @@ impl Grammar {
             let action = match key.code {
                 KeyCode::Up if key.shift => Some(Action::DuplicateLine { down: false }),
                 KeyCode::Down if key.shift => Some(Action::DuplicateLine { down: true }),
-                // VSCode's "expand selection". Before the plain `alt-→` below, which is the
-                // jumplist and would otherwise take the shifted key too.
+                // VSCode's "expand selection" and its inverse. Before the plain `alt-←`/`alt-→`
+                // below, which are the jumplist and would otherwise take the shifted keys too.
                 KeyCode::Right if key.shift => Some(Action::ExpandSelection),
+                KeyCode::Left if key.shift => Some(Action::ShrinkSelection),
                 KeyCode::Up => Some(Action::MoveLine { down: false }),
                 KeyCode::Down => Some(Action::MoveLine { down: true }),
                 KeyCode::Left => Some(Action::Jump { forward: false }),
@@ -310,8 +309,11 @@ impl Grammar {
                 KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
                 KeyCode::Char('1') => Some(Action::FocusEditor),
                 // VSCode's key for its terminal, and free here: nothing else uses the backtick
-                // with ctrl, and Vim's own backtick (a mark jump) is never chorded.
+                // with ctrl, and Vim's own backtick (a mark jump) is never chorded. `ctrl-t` is the
+                // second spelling, for keyboards where the backtick is a dead key or behind AltGr.
                 KeyCode::Char('`') => Some(Action::ToggleTerminal),
+                // The tab's key in every tabbed application, so it closes the file on screen.
+                KeyCode::Char('w') => Some(Action::CloseBuffer),
                 KeyCode::Char(' ') => Some(Action::RequestCompletion),
                 KeyCode::Backspace => Some(Action::DeleteWord { forward: false }),
                 KeyCode::Delete => Some(Action::DeleteWord { forward: true }),
@@ -327,7 +329,7 @@ impl Grammar {
             if let Some(action) = action {
                 return self.emit(action);
             }
-            // `ctrl-w`, `ctrl-k`, `ctrl-p` and the rest keep working: they are editor commands, not
+            // `ctrl-k`, `ctrl-e`, `ctrl-o` and the rest keep working: they are editor commands, not
             // Vim ones, and turning the grammar off should not cost you the file tree.
             return self.feed_editor_chords(key);
         }
@@ -368,16 +370,11 @@ impl Grammar {
     /// The editor's own Ctrl chords, which are not Vim's and survive the grammar being off.
     fn feed_editor_chords(&mut self, key: Key) -> Resolution {
         match key.code {
-            // Both push what was typed before returning `Pending`. Without it the which-key popup
-            // and the statusline were handed an empty string: with the grammar off, `ctrl-w` and
-            // `ctrl-k` waited for a second key and said nothing at all about it — and those two are
-            // *only* reachable this way when Vim is off, so the popup that exists to teach them
-            // never appeared for the people who needed it.
-            KeyCode::Char('w') => {
-                self.push_display(&key);
-                self.stage = Stage::WindowPrefix;
-                Resolution::Pending(self.display.clone())
-            }
+            // Pushes what was typed before returning `Pending`. Without it the which-key popup and
+            // the statusline were handed an empty string: with the grammar off, the window prefix
+            // waited for a second key and said nothing at all about it — and it is *only* reachable
+            // this way when Vim is off, so the popup that exists to teach it never appeared for the
+            // people who needed it.
             KeyCode::Char('k') => {
                 self.push_display(&key);
                 self.stage = Stage::ChordPrefix;
@@ -388,7 +385,9 @@ impl Grammar {
             // plain one never matches, and that is exactly how five bindings shipped dead in 0.2.0.
             KeyCode::Char('o') if key.shift => self.emit(Action::GotoSymbol),
             KeyCode::Char('o') => self.emit(Action::Jump { forward: false }),
-            KeyCode::Char('t') => self.emit(Action::GotoSymbolInProject),
+            // Shifted first, as above. The plain key is the terminal's, in `feed_flat`.
+            KeyCode::Char('t') if key.shift => self.emit(Action::GotoSymbolInProject),
+            KeyCode::Char('t') => self.emit(Action::ToggleTerminal),
             KeyCode::Char('i') => self.emit(Action::Jump { forward: true }),
             KeyCode::Char(',') => self.emit(Action::ToggleSettings),
             _ => Resolution::Unhandled,
@@ -443,6 +442,11 @@ impl Grammar {
                 KeyCode::Char('e') => Some(Action::ToggleTree),
                 KeyCode::Char('1') => Some(Action::FocusEditor),
                 KeyCode::Char('`') => Some(Action::ToggleTerminal),
+                // In every mode, insert included — where Vim's own `ctrl-w` deletes a word. Closing
+                // the tab is what the key does in every other application on the desktop, and a key
+                // that means one thing in one mode and another in the next is the kind of surprise
+                // a modal editor already has enough of. `ctrl-backspace` deletes the word.
+                KeyCode::Char('w') => Some(Action::CloseBuffer),
                 // In both grammars. Vim's own answer is `:s/a/b/g`, which is a fine thing to know
                 // and a poor thing to be the only way — and the prompt it opens is the same one, so
                 // there is no second implementation to keep in step.
@@ -450,7 +454,11 @@ impl Grammar {
                 // Shifted first, or the plain arm swallows it — see `feed_editor_chords`.
                 KeyCode::Char('o') if key.shift => Some(Action::GotoSymbol),
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),
-                KeyCode::Char('t') => Some(Action::GotoSymbolInProject),
+                // VSCode's own key for this is the plain `ctrl-t`, which is the terminal's here: a
+                // panel you open many times an hour earns the shorter key over a picker. The
+                // shifted one is free in both grammars.
+                KeyCode::Char('t') if key.shift => Some(Action::GotoSymbolInProject),
+                KeyCode::Char('t') => Some(Action::ToggleTerminal),
                 KeyCode::Char('i') => Some(Action::Jump { forward: true }),
                 KeyCode::Char(',') => Some(Action::ToggleSettings),
                 // The palette of every command works in both grammars. Vim's own vocabulary has no
@@ -536,7 +544,6 @@ impl Grammar {
             Stage::ObjectKind { around } => self.take_object_kind(key, around),
             Stage::GPrefix => self.take_g_prefix(key, extend),
             Stage::BracketPrefix { forward } => self.take_bracket_prefix(key, forward),
-            Stage::WindowPrefix => self.take_window_prefix(key),
             Stage::FoldPrefix => self.take_fold_prefix(key),
             Stage::RecordRegister => self.take_macro_register(key, true),
             Stage::ReplayRegister => self.take_macro_register(key, false),
@@ -549,14 +556,7 @@ impl Grammar {
     fn feed_builtin(&mut self, mode: Mode, key: Key) -> Resolution {
         let extend = mode == Mode::Visual;
 
-        // `ctrl-w` is a prefix, so it is claimed before the single-key Ctrl bindings below.
-        if key.ctrl && key.code == KeyCode::Char('w') && self.stage == Stage::Start {
-            self.stage = Stage::WindowPrefix;
-            self.push_display(&key);
-            return Resolution::Pending(self.display.clone());
-        }
-
-        // `ctrl-k` likewise, for the VSCode-style chords.
+        // `ctrl-k` is a prefix, so it is claimed before the single-key Ctrl bindings below.
         if key.ctrl && key.code == KeyCode::Char('k') && self.stage == Stage::Start {
             self.stage = Stage::ChordPrefix;
             self.push_display(&key);
@@ -567,10 +567,10 @@ impl Grammar {
         // below get a chance at it. A VSCode-style chord is typed without letting go of ctrl —
         // that is what makes it a chord — so `ctrl-k ctrl-s` reached `editing_key` as a plain
         // `ctrl-s`, saved the file and dropped the prefix, and `ctrl-k ctrl-o` jumped backwards
-        // instead of opening a folder. Only these two stages, because they are the only ones a
-        // modifier can still be down for; the rest wait on an ordinary character, and reordering
+        // instead of opening a folder. Only this stage, because it is the only one a modifier can
+        // still be down for; the rest wait on an ordinary character, and reordering
         // them would change what an arrow key does mid-command for no reported reason.
-        if matches!(self.stage, Stage::WindowPrefix | Stage::ChordPrefix) {
+        if self.stage == Stage::ChordPrefix {
             if let Some(resolution) = self.take_pending(key, extend) {
                 return resolution;
             }
@@ -928,22 +928,18 @@ impl Grammar {
             'p' => TextObject::Paragraph { around },
             'l' => TextObject::Line { around },
             // From the syntax tree. Vim's own `t` is the XML tag object, which this grammar never
-            // had; `f`, `a` and `c` were free too.
-            'f' => TextObject::Syntax {
-                kind: SyntaxObject::Function,
+            // had; `f`, `a` and `c` were free too. Only these take the count — `2af` is the function
+            // around the one you are in — because the tree is what makes "the next one out" a
+            // question with one answer; see `TextObject::Syntax`.
+            'f' | 't' | 'a' | 'c' => TextObject::Syntax {
+                kind: match c {
+                    'f' => SyntaxObject::Function,
+                    't' => SyntaxObject::Type,
+                    'a' => SyntaxObject::Argument,
+                    _ => SyntaxObject::Comment,
+                },
                 around,
-            },
-            't' => TextObject::Syntax {
-                kind: SyntaxObject::Type,
-                around,
-            },
-            'a' => TextObject::Syntax {
-                kind: SyntaxObject::Argument,
-                around,
-            },
-            'c' => TextObject::Syntax {
-                kind: SyntaxObject::Comment,
-                around,
+                count: self.total_count(),
             },
             _ => {
                 self.clear();
@@ -967,20 +963,17 @@ impl Grammar {
 
     /// The second key of a `ctrl-k` chord. Accepted with or without Ctrl held, because nobody lets go
     /// of it deliberately between the two presses.
+    ///
+    /// `o` opens a folder; every other key is a window command, the one Vim puts after `ctrl-w`.
+    /// `ctrl-k s` was a second spelling of the settings tab before the window commands moved here,
+    /// and it gave way to "split below" rather than the other way round: settings keeps `ctrl-,`
+    /// in both grammars, the gear and the menus, while splitting had no other key, and a Vim user's
+    /// `s` after the window prefix is the habit worth keeping.
     fn take_chord(&mut self, key: Key) -> Resolution {
-        let KeyCode::Char(c) = key.code else {
-            self.clear();
-            return Resolution::Unhandled;
-        };
-
-        match c {
-            'o' => self.emit(Action::OpenFolder),
-            's' => self.emit(Action::ToggleSettings),
-            _ => {
-                self.clear();
-                Resolution::Unhandled
-            }
+        if key.code == KeyCode::Char('o') {
+            return self.emit(Action::OpenFolder);
         }
+        self.take_window_command(key)
     }
 
     /// The register after `q` or `@`.
@@ -1023,11 +1016,11 @@ impl Grammar {
         }
     }
 
-    /// `ctrl-w` and then a window command, as Vim spells it.
+    /// A window command, as Vim spells the key after its `ctrl-w` — reached here after `ctrl-k`.
     ///
     /// Panes are a flat row or column rather than a tree, so `h`/`l` and `j`/`k` both mean "the
     /// neighbour that way" — which in a single-axis layout is simply the previous or next pane.
-    fn take_window_prefix(&mut self, key: Key) -> Resolution {
+    fn take_window_command(&mut self, key: Key) -> Resolution {
         let KeyCode::Char(c) = key.code else {
             self.clear();
             return Resolution::Unhandled;
@@ -1038,7 +1031,8 @@ impl Grammar {
             's' => self.emit(Action::SplitPane { vertical: false }),
             'c' | 'q' => self.emit(Action::ClosePane),
             // Backwards on shift as well as on `W`: someone holding ctrl through the whole chord
-            // sends `ctrl-shift-w`, which arrives lowercased with shift set rather than as `W`.
+            // sends `ctrl-k ctrl-shift-w`, whose second key arrives lowercased with shift set
+            // rather than as `W`.
             'w' if key.shift => self.emit(Action::FocusPane { forward: false }),
             'w' | 'l' | 'j' => self.emit(Action::FocusPane { forward: true }),
             'W' | 'h' | 'k' => self.emit(Action::FocusPane { forward: false }),
@@ -1147,9 +1141,9 @@ fn function_key(key: Key) -> Option<Action> {
         return None;
     };
 
-    // ctrl-F4 closes the file, as it does in every tabbed application on Windows. `ctrl-w` is the
-    // other muscle memory for this and cannot have it: it is already the pane prefix, in both
-    // grammars. The tab's own close button is there for everyone who would guess neither.
+    // ctrl-F4 closes the file, as it does in every tabbed application on Windows — beside `ctrl-w`,
+    // the other muscle memory for it, which the grammars bind themselves. The tab's own close
+    // button is there for everyone who would guess neither.
     if key.ctrl && number == 4 {
         return Some(Action::CloseBuffer);
     }

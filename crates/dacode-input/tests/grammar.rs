@@ -206,7 +206,13 @@ fn text_objects_resolve_after_an_operator() {
 fn structural_objects_compose_with_every_operator() {
     // `daf`, `cia`, `yat`: the objects are only worth having because the grammar treats them like
     // `iw` — any operator, any register — rather than as commands of their own.
-    let object = |kind, around| Target::Object(TextObject::Syntax { kind, around });
+    let object = |kind, around| {
+        Target::Object(TextObject::Syntax {
+            kind,
+            around,
+            count: 1,
+        })
+    };
     assert_eq!(
         normal("daf"),
         Action::Apply {
@@ -251,6 +257,7 @@ fn in_visual_mode_a_text_object_selects_itself() {
         Action::SelectObject(TextObject::Syntax {
             kind: SyntaxObject::Argument,
             around: true,
+            count: 1,
         })
     );
     assert_eq!(
@@ -850,7 +857,7 @@ fn shift_and_an_arrow_extends_the_selection() {
 
 #[test]
 fn the_editors_own_chords_survive_the_grammar_being_off() {
-    // ctrl-e, ctrl-w and ctrl-k are DaCode's, not Vim's. Turning the modal grammar off should not cost
+    // ctrl-e and ctrl-k are DaCode's, not Vim's. Turning the modal grammar off should not cost
     // someone the file tree or the ability to split a window.
     let mut grammar = flat();
 
@@ -860,7 +867,7 @@ fn the_editors_own_chords_survive_the_grammar_being_off() {
     );
 
     assert!(matches!(
-        grammar.feed(Mode::Normal, Key::ctrl('w')),
+        grammar.feed(Mode::Normal, Key::ctrl('k')),
         Resolution::Pending(_)
     ));
     assert_eq!(
@@ -1027,18 +1034,18 @@ fn a_chord_typed_with_ctrl_held_completes_instead_of_firing_a_global_binding() {
         ));
         assert_eq!(
             grammar.feed(Mode::Normal, second),
-            Resolution::Action(Action::ToggleSettings),
+            Resolution::Action(Action::SplitPane { vertical: false }),
             "the chord must win over ctrl-s meaning save"
         );
     }
 
-    // And the same for the window prefix, where `ctrl-w ctrl-q` is the one people type.
+    // And for the window commands on it, where `ctrl-k ctrl-q` is the one people type.
     let mut grammar = Grammar::new();
-    grammar.feed(Mode::Normal, Key::ctrl('w'));
+    grammar.feed(Mode::Normal, Key::ctrl('k'));
     assert_eq!(
         grammar.feed(Mode::Normal, Key::ctrl('q')),
         Resolution::Action(Action::ClosePane),
-        "ctrl-w ctrl-q closes the pane rather than quitting the editor"
+        "ctrl-k ctrl-q closes the pane rather than quitting the editor"
     );
 }
 
@@ -1046,7 +1053,7 @@ fn a_chord_typed_with_ctrl_held_completes_instead_of_firing_a_global_binding() {
 fn every_prefix_says_on_screen_that_it_is_waiting() {
     // `Pending` with an empty string is a machine waiting for a key while telling the user nothing.
     // Five prefixes did it: `q` and `@` and `z` in the modal grammar, and `ctrl-w` and `ctrl-k`
-    // with the grammar off — which are *only* reachable that way, so the popup that exists to teach
+    // (the window prefix, and the chords it has since absorbed) with the grammar off — which are *only* reachable that way, so the popup that exists to teach
     // them never appeared for the people who needed it most.
     let mut grammar = Grammar::new();
     for key in ['q', '@', 'z'] {
@@ -1059,19 +1066,16 @@ fn every_prefix_says_on_screen_that_it_is_waiting() {
     }
 
     let mut grammar = flat();
-    for key in ['w', 'k'] {
-        assert!(
-            matches!(grammar.feed(Mode::Normal, Key::ctrl(key)), Resolution::Pending(shown) if !shown.is_empty()),
-            "`ctrl-{key}` waits for a second key without saying so"
-        );
-        // Against the table rather than a literal: what the popup can offer continuations for is
-        // the thing that matters, and a hand-written string would drift from it.
-        assert!(
-            !dacode_input::commands::continuations(grammar.pending(), false).is_empty(),
-            "`ctrl-{key}` shows a prefix the which-key popup has nothing to say about"
-        );
-        grammar.feed(Mode::Normal, Key::named(KeyCode::Escape));
-    }
+    assert!(
+        matches!(grammar.feed(Mode::Normal, Key::ctrl('k')), Resolution::Pending(shown) if !shown.is_empty()),
+        "`ctrl-k` waits for a second key without saying so"
+    );
+    // Against the table rather than a literal: what the popup can offer continuations for is the
+    // thing that matters, and a hand-written string would drift from it.
+    assert!(
+        !dacode_input::commands::continuations(grammar.pending(), false).is_empty(),
+        "`ctrl-k` shows a prefix the which-key popup has nothing to say about"
+    );
 }
 
 #[test]
@@ -1097,4 +1101,191 @@ fn ctrl_backtick_reaches_the_terminal_from_every_mode_and_both_grammars() {
         Grammar::new().feed(Mode::Normal, Key::char('`')),
         Resolution::Action(Action::ToggleTerminal)
     ));
+}
+
+// ---- ctrl-w closes, ctrl-t is the terminal, ctrl-k is the window prefix ---------------------
+
+#[test]
+fn ctrl_w_closes_the_file_in_every_mode_of_both_grammars() {
+    // The key every tabbed application closes a tab with. It was the window prefix, so pressing it
+    // and then typing went on to split a pane or did nothing visible — and in Vim's insert mode it
+    // did nothing at all. One meaning everywhere, insert mode included, is the point of the move.
+    for mode in [Mode::Normal, Mode::Insert, Mode::Visual, Mode::Replace] {
+        assert_eq!(
+            action(mode, "<c-w>"),
+            Action::CloseBuffer,
+            "modal, {mode:?}"
+        );
+    }
+    let mut grammar = flat();
+    assert_eq!(
+        grammar.feed(Mode::Insert, Key::ctrl('w')),
+        Resolution::Action(Action::CloseBuffer)
+    );
+    assert!(grammar.is_idle(), "it is a whole command, not a prefix");
+}
+
+#[test]
+fn every_window_command_follows_ctrl_k_on_its_old_second_key() {
+    // The window commands moved prefix and nothing else, so the rule to relearn is one sentence.
+    // Checked in both grammars, since with Vim off this was the only way to split at all.
+    let expected = [
+        ("v", Action::SplitPane { vertical: true }),
+        ("s", Action::SplitPane { vertical: false }),
+        ("c", Action::ClosePane),
+        ("q", Action::ClosePane),
+        ("w", Action::FocusPane { forward: true }),
+        ("W", Action::FocusPane { forward: false }),
+        ("l", Action::FocusPane { forward: true }),
+        ("j", Action::FocusPane { forward: true }),
+        ("h", Action::FocusPane { forward: false }),
+        ("k", Action::FocusPane { forward: false }),
+    ];
+    for (second, want) in expected {
+        let keys = format!("<c-k>{second}");
+        assert_eq!(normal(&keys), want, "modal {keys}");
+        let mut grammar = flat();
+        assert_eq!(
+            feed(&mut grammar, Mode::Insert, &keys),
+            vec![want.clone()],
+            "flat {keys}"
+        );
+    }
+    // Ctrl held through the second key, as people type a chord.
+    assert_eq!(
+        normal("<c-k><c-s-w>"),
+        Action::FocusPane { forward: false },
+        "ctrl-shift-w after the prefix goes backwards, as `W` does"
+    );
+    // And the folder is still where it was.
+    assert_eq!(normal("<c-k>o"), Action::OpenFolder);
+}
+
+#[test]
+fn the_which_key_popup_teaches_the_window_commands_under_ctrl_k() {
+    // A prefix whose popup still described `ctrl-w` would teach a key that now closes the file.
+    use dacode_input::commands::continuations;
+    for modal in [true, false] {
+        assert!(continuations("<c-w>", modal).is_empty());
+        let offered: Vec<&str> = continuations("<c-k>", modal)
+            .iter()
+            .map(|(key, _)| *key)
+            .collect();
+        for key in ["o", "v", "s", "c", "w"] {
+            assert!(offered.contains(&key), "`ctrl-k {key}` is not offered");
+        }
+    }
+    let mut grammar = flat();
+    grammar.feed(Mode::Normal, Key::ctrl('k'));
+    assert_eq!(
+        grammar.pending(),
+        "<c-k>",
+        "the popup is keyed on what the statusline shows"
+    );
+}
+
+#[test]
+fn ctrl_t_toggles_the_terminal_and_ctrl_shift_t_finds_a_symbol() {
+    // ctrl-t is a second key for the terminal, in every mode where ctrl-` works; the project's
+    // symbol picker, which it used to be, moves to the shifted key in both grammars. Shifted
+    // first in the grammar — a shifted arm written after the plain one never matches, which is
+    // how five bindings shipped dead in 0.2.0.
+    for mode in [Mode::Normal, Mode::Insert, Mode::Visual] {
+        assert_eq!(
+            action(mode, "<c-t>"),
+            Action::ToggleTerminal,
+            "modal, {mode:?}"
+        );
+        assert_eq!(
+            action(mode, "<c-s-t>"),
+            Action::GotoSymbolInProject,
+            "modal, {mode:?}"
+        );
+    }
+    let mut grammar = flat();
+    assert_eq!(
+        grammar.feed(Mode::Insert, Key::ctrl('t')),
+        Resolution::Action(Action::ToggleTerminal)
+    );
+    assert_eq!(
+        grammar.feed(Mode::Insert, Key::ctrl('t').with_shift()),
+        Resolution::Action(Action::GotoSymbolInProject)
+    );
+    // `gS` is still the Vim spelling.
+    assert_eq!(normal("gS"), Action::GotoSymbolInProject);
+}
+
+// ---- counts on the structural objects ----------------------------------------------------------
+
+#[test]
+fn a_count_on_a_structural_object_reaches_it_from_either_side_of_the_operator() {
+    // `2daf` and `d2af` are the same command in Vim, as `2dw` and `d2w` are; and `2d3af` multiplies.
+    // The count used to be dropped on the floor, so both deleted the innermost function — the one
+    // thing the user had just said they did not mean.
+    let delete = |count| Action::Apply {
+        operator: Operator::Delete,
+        target: Target::Object(TextObject::Syntax {
+            kind: SyntaxObject::Function,
+            around: true,
+            count,
+        }),
+        register: None,
+    };
+    assert_eq!(normal("2daf"), delete(2));
+    assert_eq!(normal("d2af"), delete(2));
+    assert_eq!(normal("2d3af"), delete(6));
+    assert_eq!(normal("daf"), delete(1), "no count is the innermost");
+}
+
+#[test]
+fn a_count_in_visual_mode_selects_the_count_th_enclosing_object() {
+    // `v3aa`: the count is typed in visual mode before the object, with no operator to hold it.
+    assert_eq!(
+        action(Mode::Visual, "3aa"),
+        Action::SelectObject(TextObject::Syntax {
+            kind: SyntaxObject::Argument,
+            around: true,
+            count: 3,
+        })
+    );
+    assert_eq!(
+        action(Mode::Visual, "2it"),
+        Action::SelectObject(TextObject::Syntax {
+            kind: SyntaxObject::Type,
+            around: false,
+            count: 2,
+        })
+    );
+}
+
+#[test]
+fn shift_alt_left_shrinks_and_shift_alt_right_still_expands() {
+    // The pair VSCode users already have in their hands. Both before the unshifted alt-arrows,
+    // which are the jumplist and would swallow the shifted keys if they came first.
+    let mut grammar = flat();
+    assert_eq!(
+        grammar.feed(
+            Mode::Insert,
+            Key::from_platform(KeyCode::Left, false, true, true)
+        ),
+        Resolution::Action(Action::ShrinkSelection)
+    );
+    assert_eq!(
+        grammar.feed(
+            Mode::Insert,
+            Key::from_platform(KeyCode::Right, false, true, true)
+        ),
+        Resolution::Action(Action::ExpandSelection)
+    );
+    assert_eq!(
+        grammar.feed(
+            Mode::Insert,
+            Key::from_platform(KeyCode::Left, false, true, false)
+        ),
+        Resolution::Action(Action::Jump { forward: false })
+    );
+    assert_eq!(
+        Action::from_name("shrink_selection"),
+        Some(Action::ShrinkSelection)
+    );
 }

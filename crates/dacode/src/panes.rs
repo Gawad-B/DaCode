@@ -113,7 +113,7 @@ impl Panes {
 
     /// Moves focus to the next or previous pane, wrapping.
     ///
-    /// Wrapping because with two panes `ctrl-w w` twice should bring you home, rather than stopping
+    /// Wrapping because with two panes `ctrl-k w` twice should bring you home, rather than stopping
     /// at an edge you cannot see.
     pub fn cycle(&mut self, forward: bool) -> usize {
         let count = self.list.len();

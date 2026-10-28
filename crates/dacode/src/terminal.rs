@@ -42,12 +42,15 @@ pub enum KeyRoute {
 
 /// Which keys a focused terminal keeps for the editor. Everything else goes to the shell.
 ///
-/// Deliberately three. A terminal that lets the editor's shortcuts through is one where `ctrl-w`
+/// Deliberately four. A terminal that lets the editor's shortcuts through is one where `ctrl-w`
 /// closes a buffer instead of deleting a word and `ctrl-p` opens a file picker instead of recalling
 /// the last command — the shell eating keys, from the other side. So the editor keeps only what
 /// cannot mean anything to a shell, or is how you leave:
 ///
 /// - **`ctrl-``** toggles the terminal, so the key that brought you here takes you back.
+/// - **`ctrl-t`** toggles it too, for the same reason: it is the other key that opens it. This
+///   one does cost the shell something — readline's transpose-characters — and it is the one
+///   trade on the list; a key that opens the panel and cannot close it would be a trap.
 /// - **`ctrl-shift-v`** pastes. A shell has no binding for ctrl-shift anything: a terminal sends
 ///   the same control code with and without shift, which is why GNOME Terminal, Konsole and VSCode
 ///   all keep that family for themselves.
@@ -59,6 +62,8 @@ pub fn route(key: Key) -> KeyRoute {
         && !key.alt
         && match key.code {
             KeyCode::Char('`') => true,
+            // Not with shift, which is the project's symbol picker and nothing a shell is owed.
+            KeyCode::Char('t') => !key.shift,
             KeyCode::Char('v') | KeyCode::Char('p') => key.shift,
             _ => false,
         };
@@ -123,8 +128,10 @@ mod tests {
     }
 
     #[test]
-    fn the_escape_hatch_is_three_keys() {
-        for keys in ["<c-`>", "<c-s-v>", "<c-s-p>"] {
+    fn the_escape_hatch_is_four_keys() {
+        // `ctrl-t` among them: the editor's second key for the terminal must close it from inside
+        // as well, or it opens a panel only the other key can leave.
+        for keys in ["<c-`>", "<c-t>", "<c-s-v>", "<c-s-p>"] {
             let key = Key::parse_sequence(keys)[0];
             assert_eq!(route(key), KeyRoute::Editor, "{keys} is the editor's");
         }

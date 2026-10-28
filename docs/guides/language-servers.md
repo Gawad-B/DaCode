@@ -128,7 +128,7 @@ The full field list is in the [settings reference](../reference/settings.md#vexs
 | `gd` | <kbd>F12</kbd>, ctrl-click | go to definition |
 | `gu` | <kbd>shift</kbd>+<kbd>F12</kbd> | find references, into the results panel |
 | `gs` | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>o</kbd> | a symbol in this file — a searchable outline |
-| `gS` | <kbd>ctrl</kbd>+<kbd>t</kbd> | a symbol anywhere in the project |
+| `gS` | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>t</kbd> | a symbol anywhere in the project |
 | `gr` | <kbd>F2</kbd> | rename everywhere |
 | `gf` | right-click | format the buffer |
 | `ga` | right-click | code actions, into the palette |

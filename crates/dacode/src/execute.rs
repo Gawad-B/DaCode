@@ -119,6 +119,7 @@ pub fn execute(
         Action::SelectLine { count } => select_lines(state, *count),
         Action::SelectObject(object) => select_object(state, *object),
         Action::ExpandSelection => expand_selection(state),
+        Action::ShrinkSelection => shrink_selection(state),
         Action::SelectAll => {
             let end = state.document.text().len_chars();
             state
@@ -505,9 +506,11 @@ fn operator_ranges(state: &EditorState, target: Target) -> Vec<std::ops::Range<C
                 let last = (line + count.max(1) - 1).min(text.last_line());
                 Some(line_range(text, line, last))
             }
-            Target::Object(dacode_input::TextObject::Syntax { kind, around }) => {
-                syntax_object(state, selection.head, kind, around)
-            }
+            Target::Object(dacode_input::TextObject::Syntax {
+                kind,
+                around,
+                count,
+            }) => syntax_object(state, selection.head, kind, around, count),
             Target::Object(object) => resolve_object(text, selection.head, object),
         };
 
@@ -1185,10 +1188,11 @@ fn syntax_object(
     at: CharOffset,
     kind: dacode_input::SyntaxObject,
     around: bool,
+    count: usize,
 ) -> Option<std::ops::Range<CharOffset>> {
     let structure = state.fresh_structure()?;
     structure
-        .object(state.document.text(), at, syntax_kind(kind), around)
+        .object_nth(state.document.text(), at, syntax_kind(kind), around, count)
         .filter(|range| range.start < range.end)
 }
 
@@ -1216,9 +1220,11 @@ fn select_object(state: &mut EditorState, object: dacode_input::TextObject) {
     let mut found = false;
     for selection in selections.iter() {
         let range = match object {
-            dacode_input::TextObject::Syntax { kind, around } => {
-                syntax_object(state, selection.head, kind, around)
-            }
+            dacode_input::TextObject::Syntax {
+                kind,
+                around,
+                count,
+            } => syntax_object(state, selection.head, kind, around, count),
             other => resolve_object(&text, selection.head, other),
         };
         match range {
@@ -1247,6 +1253,9 @@ fn select_object(state: &mut EditorState, object: dacode_input::TextObject) {
 }
 
 /// One step outwards through the syntax tree, for every selection at once.
+///
+/// What every selection was before the step is pushed onto [`EditorState::expansions`], so
+/// [`shrink_selection`] can walk back down exactly the way it came rather than guessing.
 fn expand_selection(state: &mut EditorState) {
     let Some(structure) = state.fresh_structure() else {
         state.hover = Some(match state.structure {
@@ -1268,6 +1277,64 @@ fn expand_selection(state: &mut EditorState) {
                 selection.end()
             };
             match structure.expand(text, selection.start()..end) {
+                Some(range) if range.start < range.end => {
+                    let head = if visual {
+                        text.prev_grapheme(range.end).max(range.start)
+                    } else {
+                        range.end
+                    };
+                    Selection::new(range.start, head)
+                }
+                _ => *selection,
+            }
+        })
+        .collect();
+    let index = selections.primary_index();
+    let grown = SelectionSet::from_iter(updated, index);
+    // A step at the root changes nothing, and recording it would make the next shrink a step that
+    // changes nothing too.
+    let changed = grown != selections;
+    state.document.set_selections(grown);
+    if changed {
+        // What the document holds, rather than what was handed to it, so the comparison the next
+        // shrink makes cannot fail on a normalisation `set_selections` applied on the way in.
+        let now = state.document.selections().clone();
+        state.expansions.push(selections, now);
+    }
+}
+
+/// `shift-alt-←`: one step back inwards.
+///
+/// Retraces the expansions first — the selections are put back to exactly what they were before
+/// the last `expand_selection`, per selection, so expanding three times and shrinking three times
+/// leaves you where you started even where the tree alone could not say where that was (a caret
+/// in the middle of a word expands to the word, and no node of the word knows which character the
+/// caret was on). With nothing to retrace — the history is gone once the selections change any
+/// other way — each selection shrinks to the named node under its head inside it.
+fn shrink_selection(state: &mut EditorState) {
+    if let Some(previous) = state.expansions.pop(state.document.selections()) {
+        state.document.set_selections(previous);
+        return;
+    }
+    let Some(structure) = state.fresh_structure() else {
+        state.hover = Some(match state.structure {
+            Some(_) => "the syntax tree is catching up with your edit — try again".into(),
+            None => "there is no syntax tree for this file".into(),
+        });
+        return;
+    };
+    let text = state.document.text();
+    let visual = state.mode == Mode::Visual;
+    let selections = state.document.selections().clone();
+    let updated: Vec<Selection> = selections
+        .iter()
+        .map(|selection| {
+            let end = if visual {
+                text.next_grapheme(selection.end())
+            } else {
+                selection.end()
+            };
+            match structure.shrink(text, selection.start()..end, selection.head) {
                 Some(range) if range.start < range.end => {
                     let head = if visual {
                         text.prev_grapheme(range.end).max(range.start)

@@ -116,6 +116,9 @@ fn main() {
         "yat",
         "dia",
         "dac",
+        "2daf",
+        "d2af",
+        "y3at",
         "gA",
         "C",
         "S",
@@ -131,26 +134,28 @@ fn main() {
         "<c-`>",
         "<c-s-e>",
         "<c-1>",
+        "<c-t>",
+        "<c-w>",
         "<c-k>o",
-        "<c-k>s",
         "<c-,>",
         "<c-s>",
         "<c-q>",
-        "<c-w>v",
-        "<c-w>s",
-        "<c-w>c",
-        "<c-w>q",
-        "<c-w>w",
-        "<c-w>W",
-        "<c-w>h",
-        "<c-w>l",
-        "<c-w>j",
-        "<c-w>k",
+        "<c-k>v",
+        "<c-k>s",
+        "<c-k>c",
+        "<c-k>q",
+        "<c-k>w",
+        "<c-k>W",
+        "<c-k>h",
+        "<c-k>l",
+        "<c-k>j",
+        "<c-k>k",
         "K",
         "gd",
         "gu",
         "gs",
         "gS",
+        "<c-s-t>",
         "gr",
         "gf",
         "ga",
@@ -189,6 +194,12 @@ fn main() {
     if !resolves(Mode::Insert, "<c-space>") {
         missing.push("<c-space> (insert)");
     }
+    // The file closes and the terminal opens from insert mode too.
+    for keys in ["<c-w>", "<c-t>"] {
+        if !resolves(Mode::Insert, keys) {
+            missing.push(keys);
+        }
+    }
 
     // ctrl-p, ctrl-b and ctrl-f are handled by the application rather than the grammar — they open
     // palettes and panels, which the grammar knows nothing about. The grammar must leave them alone
@@ -200,7 +211,7 @@ fn main() {
     }
 
     // Visual mode: a text object with no operator selects itself.
-    for keys in ["af", "it", "aa", "ic", "iw"] {
+    for keys in ["af", "it", "aa", "ic", "iw", "2af", "3aa"] {
         if !resolves(Mode::Visual, keys) {
             missing.push(keys);
         }
@@ -212,7 +223,7 @@ fn main() {
         println!(
             "all {} documented keys resolve, and every one of the {} non-modal bindings in the \
              command table",
-            normal.len() + 5,
+            normal.len() + 11,
             commands::COMMANDS
                 .iter()
                 .filter(|command| !command.flat.is_empty())

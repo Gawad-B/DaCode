@@ -41,7 +41,7 @@ opinions about.
 | `ctrl-d` | select the word, then the next copy of it |
 | `ctrl-shift-l` | select every copy of it |
 | `alt-f` `alt-t` `alt-a` | select the enclosing function · type · this argument |
-| `shift-alt-→` | grow the selection to the enclosing piece of syntax |
+| `shift-alt-→` `shift-alt-←` | grow the selection to the enclosing piece of syntax · shrink it back |
 | `ctrl-alt-↑` `ctrl-alt-↓` | add a cursor above · below |
 | `alt-↑` `alt-↓` | move these lines |
 | `shift-alt-↑` `shift-alt-↓` | copy these lines |
@@ -53,8 +53,10 @@ opinions about.
 | `F3` `shift-F3` | next match · previous |
 | `ctrl-s` `ctrl-shift-s` | save · save as |
 | `ctrl-q` | quit |
+| `ctrl-w` | close this file |
+| ``ctrl-` `` `ctrl-t` | the terminal, and back out of it |
 | `F12` `shift-F12` | go to definition · find every use |
-| `ctrl-shift-o` `ctrl-t` | a symbol in this file · anywhere in the project |
+| `ctrl-shift-o` `ctrl-shift-t` | a symbol in this file · anywhere in the project |
 | `F2` | rename everywhere |
 | `F8` `shift-F8` | next problem · previous |
 | `F7` `shift-F7` | next change since the last commit · previous |
@@ -73,7 +75,7 @@ opinions about.
 **Never want to press ctrl-s?** Turn on **autosave** in the settings tab (the gear in the icon column): the file is written a moment after you stop typing. It waits for a pause rather
 than running on a timer, so what lands on disk is always something you stopped at.
 
-`ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w …`, `ctrl-k …`, `ctrl-,`, `F1`, `F10` and `ctrl-shift-p` are
+`ctrl-e`, `ctrl-p`, `ctrl-b`, `ctrl-w`, `ctrl-t`, `ctrl-k …`, `ctrl-,`, `F1`, `F10` and `ctrl-shift-p` are
 DaCode's own and work in both modes. Everything below this line describes the Vim grammar, which is on
 by default.
 
@@ -148,6 +150,11 @@ Python, JavaScript, TypeScript, C and C++ (HTML and CSS have comments and nothin
 Right after an edit the tree is a moment behind, and they do nothing and say so rather than select
 from text that has moved. In visual mode a text object selects itself: `vaf`.
 
+A count reaches outwards: `2af` (or `d2af`, `2daf`) is the function around the one you are in, and
+`v3at` the third type out. `2aa` is the argument of the next list out — the whole inner call — and
+never "two arguments". A count past the outermost finds nothing and says so; `2ac` always does,
+since comments do not nest. Only these four take a count: `2iw` and `2i(` still ignore theirs.
+
 ## Multiple cursors
 
 | Key | Does |
@@ -196,28 +203,30 @@ asks once and cannot be undone; nothing else here is destructive.
 
 | `ctrl-s` | save |
 | `ctrl-h` | find and replace in this file — `tab` between the two fields, `enter` replaces one and moves on, `ctrl-enter` replaces all as one undo |
-| `ctrl-f4` | close this file — or click the `x` on its tab |
+| `ctrl-w` · `ctrl-f4` | close this file — or click the `x` on its tab |
 | `ctrl-q` | quit |
-| `ctrl-w v` · `ctrl-w s` | split beside · split below |
-| `ctrl-w c` · `ctrl-w q` | close the pane |
-| `ctrl-w w` `ctrl-w l` `ctrl-w j` | focus the next pane |
-| `ctrl-w W` `ctrl-w h` `ctrl-w k` | focus the previous pane |
+| `ctrl-k v` · `ctrl-k s` | split beside · split below |
+| `ctrl-k c` · `ctrl-k q` | close the pane |
+| `ctrl-k w` `ctrl-k l` `ctrl-k j` | focus the next pane |
+| `ctrl-k W` `ctrl-k h` `ctrl-k k` | focus the previous pane |
 
 Every open file has a tab along the top: click one to switch, click its `x` to close. A dot beside
 the name means unsaved changes, and closing a file with unsaved changes warns once — pressing close
-again discards them. `ctrl-w` is the pane prefix here, which is why closing a file is `ctrl-f4`.
+again discards them. `ctrl-w` closes the file in every mode, insert included, as it does in every
+tabbed application — so Vim's window commands are after `ctrl-k` instead, each on the second key it
+had after `ctrl-w`.
 
 ## Terminal
 
 | Key | Does |
 |---|---|
-| ``ctrl-` `` | the terminal: open it under the code and give it the keys; from the terminal, hide it and give them back |
+| ``ctrl-` `` · `ctrl-t` | the terminal: open it under the code and give it the keys; from the terminal, hide it and give them back |
 | ``ctrl-` `` with the terminal showing | give it the keys, without hiding anything |
 
 The shell is your `$SHELL` (PowerShell on Windows), started in the project root. While the terminal
 has the keys **every key is the shell's** — `ctrl-w`, `ctrl-p`, `ctrl-c`, `esc` and the rest mean what
-they mean in a shell — except ``ctrl-` ``, `ctrl-shift-v` (paste) and `ctrl-shift-p` (the command
-palette). Clicking the code gives the keys back. The wheel over the panel scrolls its history,
+they mean in a shell — except ``ctrl-` ``, `ctrl-t`, `ctrl-shift-v` (paste) and `ctrl-shift-p` (the
+command palette). `ctrl-t` costs the shell its transpose-characters; `ctrl-w` stays the shell's. Clicking the code gives the keys back. The wheel over the panel scrolls its history,
 `exit` closes it, and its header's `+` and `×` start a fresh shell and hide it. The ▶ button types
 the project's run command into it.
 
@@ -229,7 +238,7 @@ the project's run command into it.
 | `gd` | go to definition |
 | `gu` | find references → results panel |
 | `gs` · `ctrl-shift-o` | go to a symbol in this file — an outline you can search |
-| `gS` · `ctrl-t` | go to a symbol anywhere in the project |
+| `gS` · `ctrl-shift-t` | go to a symbol anywhere in the project |
 | `gr` | rename everywhere |
 | `gf` | format the buffer |
 | `ga` | code actions → palette |
@@ -285,7 +294,7 @@ what `dacode import --snippets` writes.
 
 | Key | Does |
 |---|---|
-| `ctrl-,` · `ctrl-k s` | settings tab — or the gear; `ctrl-w` closes it |
+| `ctrl-,` | settings tab — or the gear; `ctrl-w` closes it |
 | `↑` `↓` · `pgup` `pgdn` · `home` `end` | move between settings |
 | `←` `→` · `space` · `enter` | change the selected setting — applies at once and saves itself 600 ms later |
 | `delete` | put the selected setting back to its default |

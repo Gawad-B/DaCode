@@ -288,7 +288,13 @@ pub const COMMANDS: &[Command] = &[
         "<c-k>o",
         "<c-k>o",
     ),
-    command("close_buffer", "close this file", Files, "<c-f4>", "<c-f4>"),
+    command(
+        "close_buffer",
+        "close this file",
+        Files,
+        "<c-w>  <c-f4>",
+        "<c-w>  <c-f4>",
+    ),
     // No keys: these act on what the tree has selected, and the tree is a mouse surface. The
     // palette and the tree's own right-click menu are the honest routes, and inventing a chord for
     // "delete a file" would be actively unkind.
@@ -406,6 +412,13 @@ pub const COMMANDS: &[Command] = &[
         Selection,
         "",
         "<s-a-→>",
+    ),
+    command(
+        "shrink_selection",
+        "shrink the selection back inwards",
+        Selection,
+        "",
+        "<s-a-←>",
     ),
     command(
         "select_next_occurrence",
@@ -555,8 +568,8 @@ pub const COMMANDS: &[Command] = &[
         "goto_symbol_in_project",
         "go to a symbol anywhere in the project",
         Language,
-        "gS",
-        "<c-t>",
+        "gS  <c-s-t>",
+        "<c-s-t>",
     ),
     command(
         "next_change",
@@ -618,8 +631,8 @@ pub const COMMANDS: &[Command] = &[
         "toggle_terminal",
         "show or hide the terminal",
         View,
-        "<c-`>",
-        "<c-`>",
+        "<c-`>  <c-t>",
+        "<c-`>  <c-t>",
     ),
     command("focus_terminal", "go to the terminal", View, "", ""),
     command("new_terminal", "start a new terminal", View, "", ""),
@@ -703,15 +716,16 @@ pub const COMMANDS: &[Command] = &[
         "<s-f10>",
     ),
     // ---- panes -------------------------------------------------------------------------
-    command("split_vertical", "split beside", Panes, "<c-w>v", "<c-w>v"),
-    command("split_horizontal", "split below", Panes, "<c-w>s", "<c-w>s"),
-    command("close_pane", "close this pane", Panes, "<c-w>c", "<c-w>c"),
+    // Vim's window keys, after `ctrl-k` rather than `ctrl-w`, which closes the file.
+    command("split_vertical", "split beside", Panes, "<c-k>v", "<c-k>v"),
+    command("split_horizontal", "split below", Panes, "<c-k>s", "<c-k>s"),
+    command("close_pane", "close this pane", Panes, "<c-k>c", "<c-k>c"),
     command(
         "next_pane",
         "focus the next pane",
         Panes,
-        "<c-w>w",
-        "<c-w>w",
+        "<c-k>w",
+        "<c-k>w",
     ),
     command("previous_pane", "focus the previous pane", Panes, "", ""),
 ];
@@ -754,13 +768,15 @@ pub fn continuations(prefix: &str, modal: bool) -> &'static [(&'static str, &'st
         return &[];
     }
     match prefix {
-        "<c-w>" => &[
+        // One prefix for two things: the folder, and the window commands that followed `ctrl-w`
+        // before it became the key that closes a file.
+        "<c-k>" => &[
+            ("o", "open a folder"),
             ("v", "split beside"),
             ("s", "split below"),
             ("c", "close this pane"),
             ("w", "focus the next pane"),
         ],
-        "<c-k>" => &[("<c-o>", "open a folder")],
         "g" => &[
             ("g", "go to the top"),
             ("d", "go to the definition"),
@@ -932,7 +948,7 @@ mod tests {
     fn every_continuation_describes_something_real() {
         // A which-key popup exists to be trusted. An entry here that no command matches is the popup
         // teaching a key that does nothing.
-        for prefix in ["<c-w>", "<c-k>", "g", "z", "]", "["] {
+        for prefix in ["<c-k>", "g", "z", "]", "["] {
             assert!(
                 !continuations(prefix, true).is_empty(),
                 "{prefix} lost its continuations"

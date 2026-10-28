@@ -107,9 +107,17 @@ pub enum TextObject {
     ///
     /// This crate cannot see a tree, so [`crate::resolve_object`] answers `None` for these and the
     /// editor resolves them itself, from a tree whose version matches the buffer or not at all.
+    ///
+    /// `count` is the count typed with it, and means *the count-th enclosing one, outwards*: `2af`
+    /// inside a closure is the function the closure is in. That includes arguments — `2aa` is the
+    /// argument of the next list out that contains this one, which is how targets.vim and
+    /// nvim-treesitter-textobjects both read a count on an object, rather than "this argument and
+    /// the next one", which neither does and which would make `2af` and `2aa` count in different
+    /// directions. Comments do not nest, so a count above one finds nothing there.
     Syntax {
         kind: SyntaxObject,
         around: bool,
+        count: usize,
     },
 }
 
@@ -214,6 +222,9 @@ pub enum Action {
     /// Grow every selection to the syntax node around it — the conventional editor's
     /// `shift-alt-→`.
     ExpandSelection,
+    /// The inverse, `shift-alt-←`: back to what each selection was before the last expansion, or
+    /// with no expansion to undo, down to the named node under the caret inside it.
+    ShrinkSelection,
 
     ToggleSoftWrap,
     /// `zh` / `zl` — slide the view sideways along a long line, without moving the caret.
@@ -270,19 +281,20 @@ pub enum Action {
     /// Reformat the buffer through the language server.
     Format,
 
-    /// `ctrl-w v` / `ctrl-w s` — show the current buffer in a second pane.
+    /// `ctrl-k v` / `ctrl-k s` — show the current buffer in a second pane.
     SplitPane {
         vertical: bool,
     },
-    /// `ctrl-w c` — close the focused pane. The last pane never closes.
+    /// `ctrl-k c` — close the focused pane. The last pane never closes.
     ClosePane,
-    /// `ctrl-F4` — close the file. Not the *pane* and not the editor: the buffer.
+    /// `ctrl-w` — close the file. Not the *pane* and not the editor: the buffer.
     ///
-    /// `ctrl-w` is what most people would reach for, and it is already the pane prefix in both
-    /// grammars. `ctrl-F4` is the other Windows convention, and the tab has a close button beside
-    /// its name for everyone who would never have guessed either.
+    /// `ctrl-w` in every mode of both grammars, because it is what every tabbed application closes a
+    /// tab with; Vim's window commands moved to `ctrl-k` to make room. `ctrl-F4` is the other
+    /// Windows convention, and the tab has a close button beside its name for everyone who would
+    /// never have guessed either.
     CloseBuffer,
-    /// `ctrl-w w` and the directional keys — move focus between panes.
+    /// `ctrl-k w` and the directional keys — move focus between panes.
     FocusPane {
         forward: bool,
     },
@@ -320,7 +332,7 @@ pub enum Action {
     RevertHunk,
     /// `gs` — every name in this file, as a searchable outline.
     GotoSymbol,
-    /// `gS` — every name in the project, searched as you type.
+    /// `gS` / `ctrl-shift-t` — every name in the project, searched as you type.
     GotoSymbolInProject,
     /// Show or hide inlay hints.
     ToggleInlayHints,
@@ -340,8 +352,8 @@ pub enum Action {
     Share,
     /// Run the project: its run command, typed into the terminal.
     Run,
-    /// `ctrl-`` — show the terminal and give it the keys, or, from the terminal, hide it and give
-    /// them back. The one key a focused terminal does not send to the shell.
+    /// `ctrl-`` or `ctrl-t` — show the terminal and give it the keys, or, from the terminal, hide
+    /// it and give them back. The two keys a focused terminal keeps from the shell for this.
     ToggleTerminal,
     /// Show the terminal and give it the keys, whatever has them now.
     FocusTerminal,
@@ -485,6 +497,7 @@ impl Action {
         "select_type",
         "select_argument",
         "expand_selection",
+        "shrink_selection",
         "toggle_soft_wrap",
         "scroll_left",
         "scroll_right",
@@ -647,6 +660,7 @@ impl Action {
             "select_type" => syntax(SyntaxObject::Type),
             "select_argument" => syntax(SyntaxObject::Argument),
             "expand_selection" => Action::ExpandSelection,
+            "shrink_selection" => Action::ShrinkSelection,
 
             // Appearance.
             "toggle_soft_wrap" => Action::ToggleSoftWrap,
@@ -775,7 +789,11 @@ impl Action {
     /// argument" is the argument, and the comma `aa` takes with it is a detail of deleting one.
     pub fn select_syntax(kind: SyntaxObject) -> Action {
         let around = kind != SyntaxObject::Argument;
-        Action::SelectObject(TextObject::Syntax { kind, around })
+        Action::SelectObject(TextObject::Syntax {
+            kind,
+            around,
+            count: 1,
+        })
     }
 
     /// Whether replaying this action is what `.` should do.

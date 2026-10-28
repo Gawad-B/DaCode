@@ -143,9 +143,15 @@ where it was when the blame was taken. Only drawing looks up, and only the rows 
 cost is viewport × the log's cap (256 steps; past it every line reads as unknown and a fresh blame
 is asked for). A request in flight keeps a log of its own, so its answer lands with the edits made
 while git ran already applied. `latency.rs` holds both halves: a document walk injected into the
-recording fails it at 10.6x, and one injected into the column's drawing at 112x. If you add a
-seventh, transform it in `mutate` beside the spans, clear it, version-gate it or log it, and say
-which.
+recording fails it at 10.6x, and one injected into the column's drawing at 112x.
+
+The expansion history (`EditorState::expansions`, `chrome::Expansions`) is the seventh, and is
+**cleared** at the top of `mutate` — before its early return — and on a buffer change: it records
+what each selection was before each `expand_selection`, so `shrink_selection` can retrace it, and a
+record of how a selection grew means nothing once the text under it has moved. It is also trusted
+only while the selections are exactly what the last expansion left, the way `vertical_goal` is. If
+you add an eighth, transform it in `mutate` beside the spans, clear it, version-gate it or log it,
+and say which.
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
@@ -536,7 +542,10 @@ From the syntax-tree work: indentation and the structural text objects read the 
 version is the buffer's, so Enter pressed within a parse of the last keystroke — fast typing — gets
 the lexical rules, and `daf` in that moment does nothing and says the tree is catching up. The indent
 query also hands back to the lexical rules inside a parse error, which is usually the line being
-typed. Text objects take no count (`2af`), and there is expand-selection but no shrink.
+typed. Only the structural objects take a count — `2af` is the function around this one, and `2aa`
+the argument of the next list out, never "two arguments" — while `2iw` and `2i(` still ignore theirs.
+Shrink-selection retraces the expansions it can see and otherwise steps to the named node under
+the caret, so shrinking a selection made by dragging picks a child rather than the one you meant.
 
 Smaller ones, from the non-modal work: a drag after a double-click extends by character rather than by
 word; and the which-key popup sits at the top left of the code area rather than following the cursor,
@@ -556,8 +565,9 @@ which stays at 0.60 on purpose — moving it moves every glyph of code and every
 From the terminal: no mouse selection or copy in the panel, one terminal rather than tabs, a panel
 of fixed proportion (two fifths of the editor) rather than a draggable one, no mouse reporting to
 full-screen programs, and OSC 10/11 colour queries and OSC 52 clipboard writes go unanswered. Every
-key goes to the shell while it has focus except `` ctrl-` ``, `ctrl-shift-v` and `ctrl-shift-p` —
-see `dacode::terminal::route` before adding a fourth.
+key goes to the shell while it has focus except `` ctrl-` ``, `ctrl-t`, `ctrl-shift-v` and
+`ctrl-shift-p` — see `dacode::terminal::route` before adding a fifth. `ctrl-t` costs the shell
+readline's transpose-characters; `ctrl-w` deliberately stays the shell's word delete.
 
 From the motion and scrolling work, each one stated rather than hidden:
 

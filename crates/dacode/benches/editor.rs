@@ -73,6 +73,7 @@ fn state(lines: usize) -> EditorState {
         modal: true,
         sticky_scroll: true,
         vertical_goal: None,
+        expansions: Default::default(),
         search: None,
         recording: None,
         diff: dacode::git::Diff::default(),

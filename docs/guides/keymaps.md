@@ -103,11 +103,22 @@ compose like any other — `daf`, `cif`, `yat`, `cia`, `dac` — and in visual m
 function. `t` is Vim's tag object, which DaCode never had, so nothing changes meaning. They read the
 tree only while it describes the text as it is: in the moment after an edit, before the background
 parse has answered, they do nothing and say so in a message, rather than act on a range that has
-since moved. A count (`2af` for the function around the function) is not supported yet.
+since moved.
+
+A count reaches outwards: `2af` is the function around the function you are in — inside a closure,
+the function holding it — and `d2af`, `2daf` and `v3at` work the way `d2w` does. For arguments the
+count climbs lists the same way, so `2aa` on an argument of an inner call is that whole call, as an
+argument of the outer one; it never means "two arguments", which is how targets.vim and
+nvim-treesitter-textobjects read it too. A count past the outermost one finds nothing and says so,
+rather than taking the outermost instead. Comments do not nest, so `2ac` finds nothing.
 
 With Vim keys off, the same objects are <kbd>alt</kbd>+<kbd>f</kbd>, <kbd>alt</kbd>+<kbd>t</kbd> and
 <kbd>alt</kbd>+<kbd>a</kbd>, and <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>→</kbd> grows the selection to
-the enclosing piece of syntax, as it does in VSCode. All four are in the Selection menu.
+the enclosing piece of syntax, as it does in VSCode. <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>←</kbd>
+shrinks it back the way it came — expand three times and shrink three times and the caret is on the
+character it started on. A selection made some other way, or one an edit has gone through since,
+has no way back to retrace, so shrinking steps to the piece of syntax under the cursor inside it.
+All five are in the Selection menu.
 
 ## The keys that are DaCode's own
 
@@ -120,13 +131,15 @@ These are the editor's, not Vim's, and they work in both keymaps:
 | <kbd>F10</kbd> · right-click | open the menu bar (it is always on the title bar to click) · context menu |
 | <kbd>ctrl</kbd>+<kbd>p</kbd> · <kbd>ctrl</kbd>+<kbd>b</kbd> | file palette · buffer palette |
 | <kbd>ctrl</kbd>+<kbd>e</kbd> | file tree |
-| <kbd>ctrl</kbd>+<kbd>`</kbd> | the terminal — and back out of it |
+| <kbd>ctrl</kbd>+<kbd>`</kbd> · <kbd>ctrl</kbd>+<kbd>t</kbd> | the terminal — and back out of it |
 | <kbd>ctrl</kbd>+<kbd>,</kbd> | settings |
 | <kbd>ctrl</kbd>+<kbd>h</kbd> | find and replace in this file |
 | <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>o</kbd> | open a folder |
-| <kbd>ctrl</kbd>+<kbd>w</kbd> <kbd>v</kbd> · <kbd>ctrl</kbd>+<kbd>w</kbd> <kbd>w</kbd> | split · move between panes |
+| <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>v</kbd> · <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>s</kbd> | split beside · split below |
+| <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>w</kbd> · <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>c</kbd> | move between panes · close the pane |
 | <kbd>ctrl</kbd>+<kbd>s</kbd> · <kbd>ctrl</kbd>+<kbd>q</kbd> | save · quit |
-| <kbd>ctrl</kbd>+<kbd>F4</kbd> | close this file |
+| <kbd>ctrl</kbd>+<kbd>w</kbd> · <kbd>ctrl</kbd>+<kbd>F4</kbd> | close this file |
+| <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>t</kbd> | go to a symbol anywhere in the project (`gS` with Vim keys) |
 | `gb`, or <kbd>alt</kbd>+<kbd>b</kbd> without Vim keys | who changed each line, as a column in the gutter |
 | `gB`, or <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>b</kbd> without Vim keys | the whole commit that changed this line |
 
@@ -135,8 +148,18 @@ with it off. Project-wide search is <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>f</kbd
 grammar and `:grep pattern` with it.
 
 Turning the grammar off does not cost you the file tree or the split commands: the
-<kbd>ctrl</kbd>+<kbd>w</kbd> and <kbd>ctrl</kbd>+<kbd>k</kbd> prefixes still wait for their second
-key, and the which-key popup still says what can follow.
+<kbd>ctrl</kbd>+<kbd>k</kbd> prefix still waits for its second key, and the which-key popup still
+says what can follow.
+
+**Vim's window commands are after <kbd>ctrl</kbd>+<kbd>k</kbd>, not <kbd>ctrl</kbd>+<kbd>w</kbd>.**
+<kbd>ctrl</kbd>+<kbd>w</kbd> closes the file, in every mode of both keymaps — insert mode included,
+where Vim would delete a word (<kbd>ctrl</kbd>+<kbd>backspace</kbd> does that) — because it is what
+every tabbed application on the desktop closes a tab with. The second keys did not change:
+`ctrl-w v` is <kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>v</kbd>, `ctrl-w s` is <kbd>ctrl</kbd>+<kbd>k</kbd>
+<kbd>s</kbd>, and so on through `c`, `q`, `w`, `W` and `h` `j` `k` `l`. Settings, which
+<kbd>ctrl</kbd>+<kbd>k</kbd> <kbd>s</kbd> also opened, is <kbd>ctrl</kbd>+<kbd>,</kbd>.
+<kbd>ctrl</kbd>+<kbd>t</kbd> is the terminal's second key, and the project's symbol picker it used
+to open is <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>t</kbd>.
 
 A few commands have no key at all in either keymap — toggling the theme and changing the font size
 among them, and installing a language server. They are in the command palette, which is why the
@@ -153,11 +176,11 @@ types the project's run command into it.
 
 While the terminal has the keys, **every key is the shell's** — <kbd>ctrl</kbd>+<kbd>w</kbd> deletes a
 word, <kbd>ctrl</kbd>+<kbd>p</kbd> recalls the last command, <kbd>ctrl</kbd>+<kbd>c</kbd> interrupts,
-<kbd>Esc</kbd> is Escape — with three exceptions, all ones a shell has no use for:
+<kbd>Esc</kbd> is Escape — with four exceptions:
 
 | Key | Does, from the terminal |
 |---|---|
-| <kbd>ctrl</kbd>+<kbd>`</kbd> | hide the terminal and give the keys back to the code |
+| <kbd>ctrl</kbd>+<kbd>`</kbd> · <kbd>ctrl</kbd>+<kbd>t</kbd> | hide the terminal and give the keys back to the code |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>v</kbd> | paste |
 | <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> | the command palette, from which everything else is reachable |
 
@@ -240,8 +263,8 @@ as you type. It is the one to reach for when you have just switched keymaps.
 <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> is every command, searchable, each with its key beside
 it. Use it twice for the same thing and you will have learned the shortcut.
 
-A **half-typed chord** shows what can follow it. Press <kbd>ctrl</kbd>+<kbd>w</kbd> and wait: the
-which-key popup lists the keys that complete it. Same for <kbd>ctrl</kbd>+<kbd>k</kbd>, and for `g`,
+A **half-typed chord** shows what can follow it. Press <kbd>ctrl</kbd>+<kbd>k</kbd> and wait: the
+which-key popup lists the keys that complete it — a folder, and the window commands. Same for `g`,
 `z` and `]` with the grammar on. It sits at the top left of the code area rather than following the
 cursor — a popup that moved as you typed would be harder to read than a still one.
 
