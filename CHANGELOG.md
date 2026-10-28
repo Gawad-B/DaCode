@@ -9,6 +9,30 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+### Added
+
+- **Text objects from the syntax tree**: `af`/`if` for a function, `at`/`it` for a type (class,
+  struct, enum, trait, impl, interface), `aa`/`ia` for an argument or parameter and `ac`/`ic` for a
+  comment, in Rust, Python, JavaScript, TypeScript, C and C++ (comments in HTML and CSS too). They
+  work with every operator — `daf`, `cif`, `yat`, `cia` — and in visual mode `vaf` selects the
+  function. Right after an edit, before the background parse has caught up, they do nothing and say
+  so instead of acting on text that has moved.
+- With Vim keys off: `alt-f`, `alt-t` and `alt-a` select the enclosing function, type and argument,
+  and `shift-alt-→` grows the selection to the enclosing piece of syntax. All four are in the
+  Selection menu and the command palette.
+
+### Changed
+
+- **Enter indents from the syntax tree** when the tree is up to date: after a call whose arguments
+  were aligned under its parenthesis, the next line goes back to the block's level instead of
+  copying sixteen columns of alignment, and a Python line after the last statement of a block stays
+  in it. The indentation follows the file's own style, tabs included. When the tree is a keystroke
+  behind, or the cursor is inside a parse error, the old rules answer as before.
+- A `}` typed on a blank line finds its `{` through the syntax tree when it can, so it lines up
+  however far above the opener is; the old scan stopped looking after about five hundred lines.
+- In visual mode, `i` and `a` now begin a text object (`viw`, `va(`), as in Vim, instead of
+  entering insert mode.
+
 ## [1.0.0] - 2026-10-27
 
 ### Changed

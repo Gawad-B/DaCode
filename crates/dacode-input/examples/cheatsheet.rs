@@ -111,6 +111,11 @@ fn main() {
         "di<",
         "dip",
         "dil",
+        "daf",
+        "cif",
+        "yat",
+        "dia",
+        "dac",
         "gA",
         "C",
         "S",
@@ -189,6 +194,13 @@ fn main() {
     // rather than treating them as plain letters, which is what `Unhandled` means here.
     for keys in ["<c-p>", "<c-b>", "<c-f>"] {
         if resolves(Mode::Normal, keys) {
+            missing.push(keys);
+        }
+    }
+
+    // Visual mode: a text object with no operator selects itself.
+    for keys in ["af", "it", "aa", "ic", "iw"] {
+        if !resolves(Mode::Visual, keys) {
             missing.push(keys);
         }
     }

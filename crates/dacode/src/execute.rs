@@ -55,14 +55,27 @@ pub fn execute(
             match (chars.next(), chars.next()) {
                 (Some(single), None) => {
                     let config = state.pairs.clone();
-                    state.mutate(|document| document.type_char(single, &config));
+                    // Only a closer can be electrically dedented, so only a closer asks the tree.
+                    let dedent = if config.is_closer(single) {
+                        state.fresh_structure().and_then(|structure| {
+                            structure.closer_indent(state.document.text(), state.cursor(), single)
+                        })
+                    } else {
+                        None
+                    };
+                    state.mutate(|document| document.type_char_indented(single, &config, dedent));
                 }
                 _ => state.mutate(|document| document.insert(text)),
             }
         }
         Action::Newline => {
             let config = state.pairs.clone();
-            state.mutate(|document| document.insert_newline_smart(&config));
+            // The tree's answer when it has one for the buffer as it is; otherwise — a parse still
+            // in flight, an error at the cursor, a file with no grammar — the lexical rules.
+            let indent = state.fresh_structure().and_then(|structure| {
+                structure.newline_indent(state.document.text(), state.cursor(), config.tab_width)
+            });
+            state.mutate(|document| document.insert_newline_indented(&config, indent));
         }
         Action::DeleteBackward => {
             let config = state.pairs.clone();
@@ -104,6 +117,8 @@ pub fn execute(
             state.set_mode(Mode::Normal);
         }
         Action::SelectLine { count } => select_lines(state, *count),
+        Action::SelectObject(object) => select_object(state, *object),
+        Action::ExpandSelection => expand_selection(state),
         Action::SelectAll => {
             let end = state.document.text().len_chars();
             state
@@ -476,6 +491,9 @@ fn operator_ranges(state: &EditorState, target: Target) -> Vec<std::ops::Range<C
                 let last = (line + count.max(1) - 1).min(text.last_line());
                 Some(line_range(text, line, last))
             }
+            Target::Object(dacode_input::TextObject::Syntax { kind, around }) => {
+                syntax_object(state, selection.head, kind, around)
+            }
             Target::Object(object) => resolve_object(text, selection.head, object),
         };
 
@@ -511,6 +529,9 @@ fn apply_operator(
 ) {
     let ranges = operator_ranges(state, target);
     if ranges.is_empty() {
+        if let Target::Object(dacode_input::TextObject::Syntax { kind, .. }) = target {
+            state.hover = Some(no_syntax_object(state, kind));
+        }
         return;
     }
 
@@ -1129,6 +1150,126 @@ fn repeat_search(state: &mut EditorState, forward: bool) {
     if let Some(found) = dacode_buffer::find_next(&state.search_matches, from, forward) {
         state.document.set_primary_caret(found.start);
     }
+}
+
+fn syntax_kind(kind: dacode_input::SyntaxObject) -> dacode_syntax::ObjectKind {
+    match kind {
+        dacode_input::SyntaxObject::Function => dacode_syntax::ObjectKind::Function,
+        dacode_input::SyntaxObject::Type => dacode_syntax::ObjectKind::Type,
+        dacode_input::SyntaxObject::Argument => dacode_syntax::ObjectKind::Argument,
+        dacode_input::SyntaxObject::Comment => dacode_syntax::ObjectKind::Comment,
+    }
+}
+
+/// A structural object at `at`, from a tree that describes the buffer as it is — or nothing.
+///
+/// Nothing, rather than a guess, whenever the tree is not fresh: the ranges it holds are byte
+/// offsets into text that has since changed, and `daf` deleting a range that used to be a function
+/// is a much worse outcome than `daf` doing nothing and saying why.
+fn syntax_object(
+    state: &EditorState,
+    at: CharOffset,
+    kind: dacode_input::SyntaxObject,
+    around: bool,
+) -> Option<std::ops::Range<CharOffset>> {
+    let structure = state.fresh_structure()?;
+    structure
+        .object(state.document.text(), at, syntax_kind(kind), around)
+        .filter(|range| range.start < range.end)
+}
+
+/// Why a structural object found nothing, as a sentence for the screen.
+fn no_syntax_object(state: &EditorState, kind: dacode_input::SyntaxObject) -> String {
+    let noun = syntax_kind(kind).noun();
+    if state.fresh_structure().is_some() {
+        format!("no {noun} here")
+    } else if state.structure.is_some() {
+        format!("no {noun} selected — the syntax tree is catching up with your edit")
+    } else {
+        format!("no {noun} selected — there is no syntax tree for this file")
+    }
+}
+
+/// `vaf`, and the menu's "select enclosing function": the object becomes the selection.
+///
+/// Visual mode draws the character under the head as selected, so the head goes on the object's
+/// last character there; everywhere else a selection's end is exclusive.
+fn select_object(state: &mut EditorState, object: dacode_input::TextObject) {
+    let text = state.document.text().clone();
+    let visual = state.mode == Mode::Visual;
+    let selections = state.document.selections().clone();
+    let mut updated: Vec<Selection> = Vec::with_capacity(selections.len());
+    let mut found = false;
+    for selection in selections.iter() {
+        let range = match object {
+            dacode_input::TextObject::Syntax { kind, around } => {
+                syntax_object(state, selection.head, kind, around)
+            }
+            other => resolve_object(&text, selection.head, other),
+        };
+        match range {
+            Some(range) if range.start < range.end => {
+                found = true;
+                let head = if visual {
+                    text.prev_grapheme(range.end).max(range.start)
+                } else {
+                    range.end
+                };
+                updated.push(Selection::new(range.start, head));
+            }
+            _ => updated.push(*selection),
+        }
+    }
+    if !found {
+        if let dacode_input::TextObject::Syntax { kind, .. } = object {
+            state.hover = Some(no_syntax_object(state, kind));
+        }
+        return;
+    }
+    let index = selections.primary_index();
+    state
+        .document
+        .set_selections(SelectionSet::from_iter(updated, index));
+}
+
+/// One step outwards through the syntax tree, for every selection at once.
+fn expand_selection(state: &mut EditorState) {
+    let Some(structure) = state.fresh_structure() else {
+        state.hover = Some(match state.structure {
+            Some(_) => "the syntax tree is catching up with your edit — try again".into(),
+            None => "there is no syntax tree for this file".into(),
+        });
+        return;
+    };
+    let text = state.document.text();
+    let visual = state.mode == Mode::Visual;
+    let selections = state.document.selections().clone();
+    let updated: Vec<Selection> = selections
+        .iter()
+        .map(|selection| {
+            // In visual mode the character under the head is part of the selection.
+            let end = if visual {
+                text.next_grapheme(selection.end())
+            } else {
+                selection.end()
+            };
+            match structure.expand(text, selection.start()..end) {
+                Some(range) if range.start < range.end => {
+                    let head = if visual {
+                        text.prev_grapheme(range.end).max(range.start)
+                    } else {
+                        range.end
+                    };
+                    Selection::new(range.start, head)
+                }
+                _ => *selection,
+            }
+        })
+        .collect();
+    let index = selections.primary_index();
+    state
+        .document
+        .set_selections(SelectionSet::from_iter(updated, index));
 }
 
 /// The word the cursor sits in or just after, for a bare project search.

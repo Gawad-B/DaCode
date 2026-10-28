@@ -377,6 +377,36 @@ pub const COMMANDS: &[Command] = &[
         "<c-a>",
     ),
     command("select_line", "select this line", Selection, "V", "<c-l>"),
+    // From the syntax tree. The modal keys are the text objects themselves, in visual mode; they
+    // compose with every operator as well (`daf`, `cia`, `yat`), which is the bigger half of them.
+    command(
+        "select_function",
+        "select the enclosing function",
+        Selection,
+        "vaf",
+        "<a-f>",
+    ),
+    command(
+        "select_type",
+        "select the enclosing type",
+        Selection,
+        "vat",
+        "<a-t>",
+    ),
+    command(
+        "select_argument",
+        "select this argument",
+        Selection,
+        "vaa",
+        "<a-a>",
+    ),
+    command(
+        "expand_selection",
+        "expand the selection to the enclosing node",
+        Selection,
+        "",
+        "<s-a-→>",
+    ),
     command(
         "select_next_occurrence",
         "select the word, then the next copy of it",

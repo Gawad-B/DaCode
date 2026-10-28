@@ -97,8 +97,17 @@ through soft-wrapped lines the way they look on screen rather than jumping a who
 time. And only far-reaching moves enter the jumplist — `gg`, `G`, `}`, `%`, `gd`, `n`, `]d` — so
 <kbd>ctrl</kbd>+<kbd>o</kbd> takes you somewhere useful instead of one word back.
 
-Structural text objects (`if`, `ic` — "inner function", "inner class") are not implemented. That is
-a deliberate gap with the reasoning in [PLAN.md](../../PLAN.md), not an oversight.
+The syntax tree adds four text objects of its own: `f` for a function, `t` for a type (class,
+struct, enum, trait, impl, interface), `a` for an argument or parameter and `c` for a comment. They
+compose like any other — `daf`, `cif`, `yat`, `cia`, `dac` — and in visual mode `vaf` selects the
+function. `t` is Vim's tag object, which DaCode never had, so nothing changes meaning. They read the
+tree only while it describes the text as it is: in the moment after an edit, before the background
+parse has answered, they do nothing and say so in a message, rather than act on a range that has
+since moved. A count (`2af` for the function around the function) is not supported yet.
+
+With Vim keys off, the same objects are <kbd>alt</kbd>+<kbd>f</kbd>, <kbd>alt</kbd>+<kbd>t</kbd> and
+<kbd>alt</kbd>+<kbd>a</kbd>, and <kbd>shift</kbd>+<kbd>alt</kbd>+<kbd>→</kbd> grows the selection to
+the enclosing piece of syntax, as it does in VSCode. All four are in the Selection menu.
 
 ## The keys that are DaCode's own
 

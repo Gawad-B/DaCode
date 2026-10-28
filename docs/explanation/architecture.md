@@ -244,8 +244,8 @@ What is portable is extension **data**, and `dacode import` takes it: themes, sn
 language configuration. What most valuable extensions really wrap is a language server, and DaCode
 drives those over LSP directly, so the loss is smaller than the omission sounds.
 
-**No integrated terminal, no git blame, no structural text objects** (`if`, `ic`). Each is deferred
-with reasoning rather than forgotten; `PLAN.md` has the account.
+**No integrated terminal, no git blame.** Each is deferred with reasoning rather than forgotten;
+`PLAN.md` has the account.
 
 And the limitations that are stated rather than hidden, because an honest limitation is better than
 a clever workaround:

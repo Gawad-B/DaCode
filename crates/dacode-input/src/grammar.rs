@@ -14,7 +14,7 @@
 //! Helix-style selection-first commands coexist here: they are separate keys, not a second
 //! grammar, so both paths produce the same Actions.
 
-use crate::action::{Action, InsertPosition, Motion, Operator, Target, TextObject};
+use crate::action::{Action, InsertPosition, Motion, Operator, SyntaxObject, Target, TextObject};
 use crate::key::{Key, KeyCode};
 use crate::keymap::{Keymap, Match};
 use dacode_theme::Mode;
@@ -240,10 +240,18 @@ impl Grammar {
             let action = match key.code {
                 KeyCode::Up if key.shift => Some(Action::DuplicateLine { down: false }),
                 KeyCode::Down if key.shift => Some(Action::DuplicateLine { down: true }),
+                // VSCode's "expand selection". Before the plain `alt-→` below, which is the
+                // jumplist and would otherwise take the shifted key too.
+                KeyCode::Right if key.shift => Some(Action::ExpandSelection),
                 KeyCode::Up => Some(Action::MoveLine { down: false }),
                 KeyCode::Down => Some(Action::MoveLine { down: true }),
                 KeyCode::Left => Some(Action::Jump { forward: false }),
                 KeyCode::Right => Some(Action::Jump { forward: true }),
+                // The structural selections. VSCode has no default for these, and alt with a
+                // letter was typing the letter, so nothing anyone relied on moves.
+                KeyCode::Char('f') => Some(Action::select_syntax(SyntaxObject::Function)),
+                KeyCode::Char('t') => Some(Action::select_syntax(SyntaxObject::Type)),
+                KeyCode::Char('a') => Some(Action::select_syntax(SyntaxObject::Argument)),
                 _ => None,
             };
             if let Some(action) = action {
@@ -615,8 +623,11 @@ impl Grammar {
             return Resolution::Pending(self.display.clone());
         }
 
-        // In target position, `i`/`a` introduce a text object rather than insert mode.
-        if self.stage == Stage::Target && (c == 'i' || c == 'a') {
+        // In target position, `i`/`a` introduce a text object rather than insert mode — and in
+        // visual mode too, where `vaf` selects the function, as it does in Vim.
+        let object_position = self.stage == Stage::Target
+            || (extend && self.stage == Stage::Start && self.operator.is_none());
+        if object_position && (c == 'i' || c == 'a') {
             self.stage = Stage::ObjectKind { around: c == 'a' };
             self.push_display(&key);
             return Resolution::Pending(self.display.clone());
@@ -908,21 +919,34 @@ impl Grammar {
             },
             'p' => TextObject::Paragraph { around },
             'l' => TextObject::Line { around },
+            // From the syntax tree. Vim's own `t` is the XML tag object, which this grammar never
+            // had; `f`, `a` and `c` were free too.
+            'f' => TextObject::Syntax {
+                kind: SyntaxObject::Function,
+                around,
+            },
+            't' => TextObject::Syntax {
+                kind: SyntaxObject::Type,
+                around,
+            },
+            'a' => TextObject::Syntax {
+                kind: SyntaxObject::Argument,
+                around,
+            },
+            'c' => TextObject::Syntax {
+                kind: SyntaxObject::Comment,
+                around,
+            },
             _ => {
                 self.clear();
                 return Resolution::Unhandled;
             }
         };
 
-        // A text object without an operator selects it — the Helix-style path into the same
-        // Action the operator path uses.
+        // A text object without an operator — visual mode's `vaf` — selects it.
         let Some(operator) = self.operator else {
             self.clear();
-            return Resolution::Action(Action::Apply {
-                operator: Operator::Yank,
-                target: Target::Object(object),
-                register: None,
-            });
+            return Resolution::Action(Action::SelectObject(object));
         };
 
         let register = self.register;

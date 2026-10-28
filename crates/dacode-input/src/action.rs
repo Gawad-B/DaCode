@@ -77,8 +77,7 @@ impl Motion {
     }
 }
 
-/// A structural region: `iw`, `a(`, `i"`. Tree-sitter adds `if`/`ic` (function, class) at M4;
-/// the shape of this enum is what makes that an addition rather than a redesign.
+/// A structural region: `iw`, `a(`, `i"`, and from the syntax tree `af`, `at`, `aa`, `ac`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextObject {
     /// `iw` / `aw`. `around` includes trailing whitespace.
@@ -104,6 +103,27 @@ pub enum TextObject {
     Line {
         around: bool,
     },
+    /// `af` / `it` / `aa` / `ic` — read from the syntax tree, not the text.
+    ///
+    /// This crate cannot see a tree, so [`crate::resolve_object`] answers `None` for these and the
+    /// editor resolves them itself, from a tree whose version matches the buffer or not at all.
+    Syntax {
+        kind: SyntaxObject,
+        around: bool,
+    },
+}
+
+/// The structural objects, by what they mean rather than by any grammar's node names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxObject {
+    /// `f`
+    Function,
+    /// `t` — a class, struct, enum, trait, impl or interface.
+    Type,
+    /// `a` — one argument or parameter.
+    Argument,
+    /// `c`
+    Comment,
 }
 
 /// Something that transforms a range of text.
@@ -188,6 +208,12 @@ pub enum Action {
         count: usize,
     },
     SelectAll,
+    /// Select a text object outright: `vaf` in visual mode, and "select enclosing function" in
+    /// the non-modal editor, which has no operator to put in front of one.
+    SelectObject(TextObject),
+    /// Grow every selection to the syntax node around it — the conventional editor's
+    /// `shift-alt-→`.
+    ExpandSelection,
 
     ToggleSoftWrap,
     /// `zh` / `zl` — slide the view sideways along a long line, without moving the caret.
@@ -444,6 +470,10 @@ impl Action {
         "collapse_selections",
         "select_line",
         "select_all",
+        "select_function",
+        "select_type",
+        "select_argument",
+        "expand_selection",
         "toggle_soft_wrap",
         "scroll_left",
         "scroll_right",
@@ -539,6 +569,7 @@ impl Action {
         use Motion as M;
 
         let motion = |motion: Motion| Action::Move { motion, count: 1 };
+        let syntax = Action::select_syntax;
 
         Some(match name {
             // Motions.
@@ -596,6 +627,10 @@ impl Action {
             "collapse_selections" => Action::CollapseSelections,
             "select_line" => Action::SelectLine { count: 1 },
             "select_all" => Action::SelectAll,
+            "select_function" => syntax(SyntaxObject::Function),
+            "select_type" => syntax(SyntaxObject::Type),
+            "select_argument" => syntax(SyntaxObject::Argument),
+            "expand_selection" => Action::ExpandSelection,
 
             // Appearance.
             "toggle_soft_wrap" => Action::ToggleSoftWrap,
@@ -710,6 +745,16 @@ impl Action {
 
             _ => return None,
         })
+    }
+
+    /// What "select the enclosing function" means from a menu or a non-modal key.
+    ///
+    /// The whole function or type, as `vaf` takes it — the inside alone would leave out the
+    /// signature most people mean by "the function". An argument is the other way round: "this
+    /// argument" is the argument, and the comma `aa` takes with it is a detail of deleting one.
+    pub fn select_syntax(kind: SyntaxObject) -> Action {
+        let around = kind != SyntaxObject::Argument;
+        Action::SelectObject(TextObject::Syntax { kind, around })
     }
 
     /// Whether replaying this action is what `.` should do.

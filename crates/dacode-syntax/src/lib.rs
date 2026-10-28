@@ -14,9 +14,11 @@
 //! coherent, and the mapping belongs here, next to the queries.
 
 pub mod highlight;
+pub mod structure;
 pub mod worker;
 
 pub use highlight::{Comment, Highlight, HighlightSpan, Highlighter, Language};
+pub use structure::{ObjectKind, Structure};
 pub use worker::{SyntaxRequest, SyntaxResult, SyntaxWorker};
 
 use dacode_text::Version;

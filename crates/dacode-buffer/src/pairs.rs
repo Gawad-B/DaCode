@@ -9,8 +9,13 @@
 //! So the rules here read the text directly — the previous line's indentation, its last meaningful
 //! character, and the delimiters around the cursor. That is bounded work on one or two lines, always
 //! instant, and predictable in a way tree-derived indentation is not when the tree is a version
-//! behind. Tree-sitter indent *queries* remain the better answer for pathological cases; they belong
-//! behind a synchronous parse of the current line, which is a later, separate decision.
+//! behind.
+//!
+//! The tree-sitter indent queries now answer first when they can: the editor asks its syntax tree
+//! *only when that tree's version is the buffer's*, and hands the answer in through
+//! [`crate::Document::insert_newline_indented`] and [`crate::Document::type_char_indented`]. Everything
+//! here is what happens when it cannot — a tree still being parsed, a parse error at the cursor, a
+//! file with no grammar — so these rules are the floor, not the whole of indentation.
 //!
 //! The one rule here that cannot be answered from one or two lines is electric dedent, which has to
 //! find the opener a `}` belongs to. That paragraph above was written as though it applied to this
@@ -273,6 +278,28 @@ pub fn dedent_for_closer(
     }
 
     None
+}
+
+/// Electric dedent to an indentation decided elsewhere: the same conditions as
+/// [`dedent_for_closer`] — a closer, typed as the first thing on its line — with the search for the
+/// opener already done. `None` when the line is not one to reindent, or already sits there.
+pub fn dedent_to(
+    text: &Text,
+    caret: CharOffset,
+    typed: char,
+    config: &PairConfig,
+    indent: String,
+) -> Option<String> {
+    if !config.is_closer(typed) {
+        return None;
+    }
+    let point = text.char_to_point(caret);
+    let line_start = text.line_to_char(point.line);
+    let before = text.slice_to_string(line_start..caret);
+    if !before.chars().all(|c| c == ' ' || c == '\t') {
+        return None;
+    }
+    (indent != before).then_some(indent)
 }
 
 fn char_at(text: &Text, offset: CharOffset) -> Option<char> {

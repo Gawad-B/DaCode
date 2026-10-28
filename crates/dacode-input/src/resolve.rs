@@ -340,6 +340,8 @@ pub fn resolve_object(
                 text.line_range(line)
             })
         }
+        // Needs the syntax tree, which the editor holds and this crate does not.
+        TextObject::Syntax { .. } => None,
     }
 }
 

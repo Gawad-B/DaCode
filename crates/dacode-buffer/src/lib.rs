@@ -299,6 +299,21 @@ impl Document {
     /// Multi-cursor safe: each caret is decided independently and the results become one
     /// transaction, so `(` with three cursors produces three pairs and one undo.
     pub fn type_char(&mut self, typed: char, config: &PairConfig) -> TypeAction {
+        self.type_char_indented(typed, config, None)
+    }
+
+    /// [`Document::type_char`], with the electric-dedent indentation already decided by someone who
+    /// knows more than this crate can — the editor's syntax tree, when it is fresh.
+    ///
+    /// `dedent` replaces only the *search for the opener*. The conditions under which a closer is
+    /// reindented at all — typed alone on a blank line, as a literal — are still decided here, so a
+    /// caller cannot make a `}` typed after code move that code.
+    pub fn type_char_indented(
+        &mut self,
+        typed: char,
+        config: &PairConfig,
+        dedent: Option<String>,
+    ) -> TypeAction {
         let text = self.text.clone();
         let primary = self.selections.primary().head;
 
@@ -323,7 +338,11 @@ impl Document {
         match action {
             TypeAction::Literal => {
                 // Electric dedent: a closer alone on its line pulls the line back to its opener.
-                if let Some(indent) = pairs::dedent_for_closer(&text, primary, typed, config) {
+                let indent = match dedent {
+                    Some(indent) => pairs::dedent_to(&text, primary, typed, config, indent),
+                    None => pairs::dedent_for_closer(&text, primary, typed, config),
+                };
+                if let Some(indent) = indent {
                     self.reindent_line(&indent);
                 }
                 self.insert(&typed.to_string());
@@ -409,9 +428,24 @@ impl Document {
 
     /// A newline that indents, and that opens a block when the cursor sits inside a pair.
     pub fn insert_newline_smart(&mut self, config: &PairConfig) {
+        self.insert_newline_indented(config, None);
+    }
+
+    /// [`Document::insert_newline_smart`], with the new line's indentation decided by the caller —
+    /// the editor's syntax tree, when it is fresh and can answer.
+    ///
+    /// Between a pair (`{|}`) the lexical rule keeps the decision: it puts the closer on a line of
+    /// its own as well, which is two lines' indentation from one rule, and the tree would only ever
+    /// agree with it there.
+    pub fn insert_newline_indented(&mut self, config: &PairConfig, indent: Option<String>) {
         let text = self.text.clone();
         let primary = self.selections.primary().head;
-        let action = pairs::on_newline(&text, primary, config);
+        let mut action = pairs::on_newline(&text, primary, config);
+        if action.closing_line.is_none()
+            && let Some(indent) = indent
+        {
+            action.indent = indent;
+        }
 
         match &action.closing_line {
             // Between `{` and `}`: two newlines, and the cursor lands on the blank one.

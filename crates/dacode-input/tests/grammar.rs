@@ -1,8 +1,8 @@
 //! The modal grammar: counts, registers, operators, motions, text objects, dot-repeat.
 
 use dacode_input::{
-    Action, Grammar, InsertPosition, Key, KeyCode, Keymap, Motion, Operator, Resolution, Target,
-    TextObject,
+    Action, Grammar, InsertPosition, Key, KeyCode, Keymap, Motion, Operator, Resolution,
+    SyntaxObject, Target, TextObject,
 };
 use dacode_theme::Mode;
 use proptest::prelude::*;
@@ -199,6 +199,66 @@ fn text_objects_resolve_after_an_operator() {
             }),
             register: None,
         }
+    );
+}
+
+#[test]
+fn structural_objects_compose_with_every_operator() {
+    // `daf`, `cia`, `yat`: the objects are only worth having because the grammar treats them like
+    // `iw` — any operator, any register — rather than as commands of their own.
+    let object = |kind, around| Target::Object(TextObject::Syntax { kind, around });
+    assert_eq!(
+        normal("daf"),
+        Action::Apply {
+            operator: Operator::Delete,
+            target: object(SyntaxObject::Function, true),
+            register: None,
+        }
+    );
+    assert_eq!(
+        normal("cia"),
+        Action::Apply {
+            operator: Operator::Change,
+            target: object(SyntaxObject::Argument, false),
+            register: None,
+        }
+    );
+    assert_eq!(
+        normal("\"ayat"),
+        Action::Apply {
+            operator: Operator::Yank,
+            target: object(SyntaxObject::Type, true),
+            register: Some('a'),
+        }
+    );
+    assert_eq!(
+        normal("dic"),
+        Action::Apply {
+            operator: Operator::Delete,
+            target: object(SyntaxObject::Comment, false),
+            register: None,
+        }
+    );
+}
+
+#[test]
+fn in_visual_mode_a_text_object_selects_itself() {
+    // `vaa` in Vim: with no operator waiting, `a` and `i` still introduce an object, and the object
+    // becomes the selection. Before the structural objects nothing reached this, and `a` in visual
+    // mode entered insert mode — which is not what it does in any Vim.
+    assert_eq!(
+        action(Mode::Visual, "aa"),
+        Action::SelectObject(TextObject::Syntax {
+            kind: SyntaxObject::Argument,
+            around: true,
+        })
+    );
+    assert_eq!(
+        action(Mode::Visual, "iw"),
+        Action::SelectObject(TextObject::Word {
+            around: false,
+            big: false,
+        })
     );
 }
 

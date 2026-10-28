@@ -19,7 +19,7 @@ pub mod key;
 pub mod keymap;
 pub mod resolve;
 
-pub use action::{Action, InsertPosition, Motion, Operator, Target, TextObject};
+pub use action::{Action, InsertPosition, Motion, Operator, SyntaxObject, Target, TextObject};
 pub use commands::{COMMANDS, Command, Group};
 pub use grammar::{Grammar, Resolution};
 pub use history::{Jump, JumpList, Macros, is_jump};

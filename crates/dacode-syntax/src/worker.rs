@@ -17,6 +17,7 @@
 //! building spans is not.
 
 use crate::highlight::{HighlightSpan, Highlighter, Language};
+use crate::structure::Structure;
 use dacode_text::{CharOffset, Edit, Text, Version};
 use std::ops::Range;
 use std::sync::Arc;
@@ -41,6 +42,10 @@ pub struct SyntaxResult {
     pub spans: Vec<HighlightSpan>,
     pub node_path: Vec<String>,
     pub has_error: bool,
+    /// The tree this result was read from, for the UI thread's indentation and text objects.
+    /// Tagged with the same version as everything else here, and as useless as the spans once
+    /// that version is not the buffer's.
+    pub structure: Option<Structure>,
 }
 
 impl SyntaxResult {
@@ -78,6 +83,7 @@ fn build(highlighter: &Highlighter, request: &SyntaxRequest) -> SyntaxResult {
         spans: highlighter.highlights(&request.text, request.range.clone()),
         node_path: highlighter.node_path(&request.text, request.range.start),
         has_error: highlighter.has_error(),
+        structure: highlighter.structure(request.version),
     }
 }
 

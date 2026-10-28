@@ -623,6 +623,44 @@ fn a_newline_between_a_pair_opens_a_block() {
 }
 
 #[test]
+fn an_indentation_from_the_syntax_tree_replaces_the_lexical_guess() {
+    // The editor hands in what its tree-sitter indent query said. The lexical rule would copy this
+    // line's sixteen columns; the tree knows the statement has ended.
+    let mut document = doc("                b);");
+    let end = document.text().len_chars();
+    document.set_primary_caret(end);
+    document.insert_newline_indented(&config(), Some("    ".into()));
+
+    assert_eq!(document.text().to_string(), "                b);\n    ");
+}
+
+#[test]
+fn between_a_pair_the_lexical_rule_keeps_the_decision() {
+    // `{|}` puts the closer on its own line too, two lines' indentation from one rule. A tree's
+    // answer for the middle line alone must not split that decision in half.
+    let mut document = doc("fn main() {}");
+    document.set_primary_caret(CharOffset(11));
+    document.insert_newline_indented(&config(), Some("        ".into()));
+
+    assert_eq!(document.text().to_string(), "fn main() {\n    \n}");
+}
+
+#[test]
+fn a_dedent_from_the_syntax_tree_applies_only_where_a_dedent_would() {
+    // The tree replaces the search for the opener, not the rule about when to reindent: a closer
+    // typed after code on its line must leave that code where it is.
+    let mut document = doc("        ");
+    document.set_primary_caret(CharOffset(8));
+    document.type_char_indented('}', &config(), Some("    ".into()));
+    assert_eq!(document.text().to_string(), "    }");
+
+    let mut document = doc("    x");
+    document.set_primary_caret(CharOffset(5));
+    document.type_char_indented('}', &config(), Some(String::new()));
+    assert_eq!(document.text().to_string(), "    x}");
+}
+
+#[test]
 fn a_newline_after_a_colon_indents_for_python() {
     let mut document = doc("def main():");
     let end = document.text().len_chars();

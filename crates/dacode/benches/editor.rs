@@ -54,6 +54,7 @@ fn state(lines: usize) -> EditorState {
         highlights: Vec::new(),
         node_path: Vec::new(),
         syntax_error: false,
+        structure: None,
         frame_ms: 0.0,
         worst_ms: 0.0,
         diagnostics: dacode_lsp::Diagnostics::default(),

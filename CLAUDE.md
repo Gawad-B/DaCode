@@ -125,8 +125,15 @@ The search matches are the fourth and are **deliberately left drifting**: they c
 the spans cover the viewport, so moving them per keystroke measured 24.6x on a hundred-thousand-line
 document (311 µs against 13 µs) and `latency.rs` holds that measurement to refuse the one-line
 version of the repair. Doing it properly means moving them lazily — at the viewport for drawing, once
-per `n` for stepping. If you add a fifth, transform it in `mutate` beside the spans or clear it, and
-say which.
+per `n` for stepping.
+
+The parse tree handed to the UI thread (`EditorState::structure`) is the fifth, and is neither moved
+nor cleared by `mutate`: it carries the version it was parsed from, and every reader goes through
+`fresh_structure`, which refuses it once an edit has moved the buffer on. Moving a tree by hand would
+be re-implementing tree-sitter's incremental edit on the UI thread. It *is* cleared on a buffer
+change, because a version is a number in one document's sequence and another document can reach the
+same number. If you add a sixth, transform it in `mutate` beside the spans, clear it, or version-gate
+it, and say which.
 
 **Everything is an `Action`.** Keys resolve to one, the palette lists them, macros record them, config
 binds them, tests drive them. That is why macros survive rebinding, and why `3dw` can be tested
@@ -497,6 +504,7 @@ anything platform-shaped:
 | Whether a path is inside the project | `crates/dacode-project/src/lib.rs` — `within`, lexical and testable |
 | Which buffer is which | `crates/dacode/src/main.rs` — `buffer_key` for identity, `stored_index` for order |
 | What survives an edit | `crates/dacode/src/chrome.rs` — `EditorState::mutate` |
+| Indentation on Enter, and `af`/`it`/`aa`/`ic` | `crates/dacode-syntax/src/structure.rs`, its queries in `crates/dacode-syntax/queries/`; the lexical fallback is `dacode-buffer`'s `pairs.rs` |
 | How a file is written | `crates/dacode/src/save.rs` — `write`, and `App::write_active` for buffers |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the
@@ -504,9 +512,15 @@ settings page. If you add it to fewer, it will silently not work somewhere.
 
 ## Known gaps
 
-Deliberate, with reasons in `PLAN.md`: no integrated terminal, no git blame, no structural text objects
-(`if`/`ic`), tree-sitter indent queries unused, column advance derived from the type scale rather than
-measured from the shaper, no macOS packaging. Cross-file rename is not undoable and says so.
+Deliberate, with reasons in `PLAN.md`: no integrated terminal, no git blame, column advance derived
+from the type scale rather than measured from the shaper, no macOS packaging. Cross-file rename is not
+undoable and says so.
+
+From the syntax-tree work: indentation and the structural text objects read the tree only while its
+version is the buffer's, so Enter pressed within a parse of the last keystroke — fast typing — gets
+the lexical rules, and `daf` in that moment does nothing and says the tree is catching up. The indent
+query also hands back to the lexical rules inside a parse error, which is usually the line being
+typed. Text objects take no count (`2af`), and there is expand-selection but no shrink.
 
 Smaller ones, from the non-modal work: a drag after a double-click extends by character rather than by
 word; and the which-key popup sits at the top left of the code area rather than following the cursor,

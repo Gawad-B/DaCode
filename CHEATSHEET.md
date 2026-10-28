@@ -40,6 +40,8 @@ opinions about.
 | `ctrl-a` `ctrl-l` | select all · select this line |
 | `ctrl-d` | select the word, then the next copy of it |
 | `ctrl-shift-l` | select every copy of it |
+| `alt-f` `alt-t` `alt-a` | select the enclosing function · type · this argument |
+| `shift-alt-→` | grow the selection to the enclosing piece of syntax |
 | `ctrl-alt-↑` `ctrl-alt-↓` | add a cursor above · below |
 | `alt-↑` `alt-↓` | move these lines |
 | `shift-alt-↑` `shift-alt-↓` | copy these lines |
@@ -135,6 +137,15 @@ Prefix `i` for inner, `a` for around.
 | `i<` `i>` | angle brackets |
 | `ip` | paragraph |
 | `il` | line |
+| `if` `af` | function — its body · the whole of it |
+| `it` `at` | type — class, struct, enum, trait, impl, interface |
+| `ia` `aa` | argument or parameter — alone · with its comma |
+| `ic` `ac` | comment — the words · the whole run of comment lines |
+
+The last four come from the syntax tree, so they work in the languages DaCode highlights: Rust,
+Python, JavaScript, TypeScript, C and C++ (HTML and CSS have comments and nothing else to select).
+Right after an edit the tree is a moment behind, and they do nothing and say so rather than select
+from text that has moved. In visual mode a text object selects itself: `vaf`.
 
 ## Multiple cursors
 

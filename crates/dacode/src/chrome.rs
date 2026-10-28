@@ -67,6 +67,13 @@ pub struct EditorState {
     /// The tree-sitter ancestor chain at the cursor.
     pub node_path: Vec<String>,
     pub syntax_error: bool,
+    /// The parse tree the last highlight result was read from, for indentation and the structural
+    /// text objects. **Neither moved nor cleared by [`EditorState::mutate`]**, unlike the spans:
+    /// it is tagged with the version it was parsed from, and every reader goes through
+    /// [`EditorState::fresh_structure`], which refuses it the moment an edit moves the buffer on.
+    /// Moving a tree by hand would be re-implementing tree-sitter's incremental edit on the UI
+    /// thread; ignoring it until the worker sends the next one costs nothing.
+    pub structure: Option<dacode_syntax::Structure>,
 
     pub frame_ms: f32,
     pub worst_ms: f32,
@@ -1006,6 +1013,14 @@ impl EditorState {
     /// viewport, so walking them per keystroke measured 24.6x on a hundred-thousand-line document
     /// against a thousand-line one. `latency.rs` holds that measurement. They drift until the search
     /// is re-run, and moving them needs to be lazy — at the viewport when drawing, once per `n`.
+    /// The syntax tree, if it describes the buffer as it is now — and `None` if an edit has moved
+    /// the buffer past it, which the next parse will put right.
+    pub fn fresh_structure(&self) -> Option<&dacode_syntax::Structure> {
+        self.structure
+            .as_ref()
+            .filter(|structure| structure.is_fresh_for(self.document.version()))
+    }
+
     pub fn mutate<T>(&mut self, change: impl FnOnce(&mut Document) -> T) -> T {
         // Nothing folded, colored or underlined, and this costs three `is_empty` calls.
         if self.display.folds.is_empty()

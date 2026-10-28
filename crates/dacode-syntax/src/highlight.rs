@@ -1,7 +1,9 @@
 //! Parsing and highlight-query evaluation.
 
-use dacode_text::{ByteOffset, CharOffset, Edit, Text};
+use crate::structure::{Queries, Structure};
+use dacode_text::{ByteOffset, CharOffset, Edit, Text, Version};
 use std::ops::Range;
+use std::sync::Arc;
 use tree_sitter::{
     InputEdit, Node, Parser, Point as TsPoint, Query, QueryCursor, StreamingIterator, TextProvider,
     Tree,
@@ -22,8 +24,8 @@ fn chunk_at(text: &Text, byte: usize) -> &[u8] {
 }
 
 /// Supplies node text to the query cursor from the rope, for the same reason.
-struct RopeText<'a> {
-    text: &'a Text,
+pub(crate) struct RopeText<'a> {
+    pub(crate) text: &'a Text,
 }
 
 impl<'a> TextProvider<&'a [u8]> for RopeText<'a> {
@@ -132,7 +134,7 @@ impl Language {
         }
     }
 
-    fn ts_language(self) -> tree_sitter::Language {
+    pub(crate) fn ts_language(self) -> tree_sitter::Language {
         match self {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
@@ -292,6 +294,9 @@ pub struct Highlighter {
     language: Language,
     parser: Parser,
     query: Query,
+    /// The indent and text-object queries, compiled here once and shared with every
+    /// [`Structure`] handed to the UI thread.
+    structure_queries: Arc<Queries>,
     tree: Option<Tree>,
 }
 
@@ -304,11 +309,13 @@ impl Highlighter {
             .map_err(|err| format!("loading the {language:?} grammar: {err}"))?;
         let query = Query::new(&ts_language, &language.highlights_query())
             .map_err(|err| format!("compiling the {language:?} highlight query: {err}"))?;
+        let structure_queries = Arc::new(Queries::new(language)?);
 
         Ok(Self {
             language,
             parser,
             query,
+            structure_queries,
             tree: None,
         })
     }
@@ -319,6 +326,20 @@ impl Highlighter {
 
     pub fn has_tree(&self) -> bool {
         self.tree.is_some()
+    }
+
+    /// The current tree, tagged with the version of the text it was parsed from, for the UI thread.
+    ///
+    /// Cheap: tree-sitter clones a tree by reference count, not by copying nodes. The caller supplies
+    /// the version because the highlighter does not know it; passing one that does not match the
+    /// last [`Self::parse`] is exactly the bug the tag exists to prevent.
+    pub fn structure(&self, version: Version) -> Option<Structure> {
+        let tree = self.tree.clone()?;
+        Some(Structure::new(
+            version,
+            tree,
+            Arc::clone(&self.structure_queries),
+        ))
     }
 
     /// Drops the tree so the next parse starts from scratch. Used when the editor cannot supply a

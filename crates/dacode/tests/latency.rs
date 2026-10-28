@@ -81,6 +81,7 @@ fn state(lines: usize) -> EditorState {
         highlights: Vec::new(),
         node_path: Vec::new(),
         syntax_error: false,
+        structure: None,
         frame_ms: 0.0,
         worst_ms: 0.0,
         diagnostics: dacode_lsp::Diagnostics::default(),
@@ -441,6 +442,59 @@ fn typing_a_closing_brace_costs_the_same_in_a_huge_file_as_in_a_small_one() {
 
     assert_flat("typing a closing brace", small, large);
     assert_under("typing a closing brace", large, Duration::from_micros(500));
+}
+
+/// What the syntax tree costs the UI thread: the indentation for Enter, the dedent for a `}`, the
+/// type around the cursor, and one step of expand-selection — each from a fresh tree, at the
+/// *end* of the document, where anything that walked from the start would pay in full.
+///
+/// Measured on the functions for the reason `dedent` is: through `execute`, the first iteration's
+/// edit makes the tree stale, and every iteration after it would time the version check and the
+/// lexical fallback instead of the query.
+fn tree_queries(lines: usize) -> [Duration; 4] {
+    let text = dacode_text::Text::from_str(&source(lines));
+    let mut highlighter =
+        dacode_syntax::Highlighter::new(dacode_syntax::Language::Rust).expect("grammar loads");
+    highlighter.parse(&text);
+    let structure = highlighter.structure(Version(1)).expect("parsed");
+
+    // Inside the last struct, at the end of its first field.
+    let last_field = text.len_lines() - 4;
+    let caret = text.line_range(last_field).end;
+    let closing = text.line_to_char(text.len_lines() - 2);
+
+    let enter = median(2_000, || {
+        std::hint::black_box(structure.newline_indent(&text, caret, 4));
+    });
+    let closer = median(2_000, || {
+        std::hint::black_box(structure.closer_indent(&text, closing, '}'));
+    });
+    let object = median(2_000, || {
+        std::hint::black_box(structure.object(&text, caret, dacode_syntax::ObjectKind::Type, true));
+    });
+    let expand = median(2_000, || {
+        std::hint::black_box(structure.expand(&text, caret..caret));
+    });
+    [enter, closer, object, expand]
+}
+
+#[test]
+fn asking_the_syntax_tree_is_bounded_by_its_depth_and_not_by_the_file() {
+    // Enter, `}`, `daf` and expand-selection all read the tree on the keystroke. Each walks the
+    // ancestors of one node and runs its query rooted at each with a start depth of zero; a query
+    // cursor over the root instead would visit every node in the file.
+    let small = tree_queries(SMALL);
+    let large = tree_queries(LARGE);
+    let names = [
+        "indenting a new line from the tree",
+        "dedenting a closer from the tree",
+        "finding the type around the cursor",
+        "expanding the selection",
+    ];
+    for ((what, small), large) in names.iter().zip(small).zip(large) {
+        assert_flat(what, small, large);
+        assert_under(what, large, Duration::from_millis(2));
+    }
 }
 
 /// A touchpad burst: two hundred three-pixel deltas, through the same function the wheel handler

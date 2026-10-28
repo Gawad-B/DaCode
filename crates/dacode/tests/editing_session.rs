@@ -41,6 +41,7 @@ impl Session {
                 highlights: Vec::new(),
                 node_path: Vec::new(),
                 syntax_error: false,
+                structure: None,
                 frame_ms: 0.0,
                 worst_ms: 0.0,
                 diagnostics: dacode_lsp::Diagnostics::default(),
@@ -950,4 +951,218 @@ fn escape_with_vim_on_still_leaves_insert_mode() {
     session.state.mode = Mode::Insert;
     session.press(Key::named(dacode_input::KeyCode::Escape));
     assert_eq!(session.state.mode, Mode::Normal);
+}
+
+// ---- the syntax tree: indentation and structural text objects ------------------------------
+//
+// The window receives its tree from the syntax worker with each highlight result. A test has no
+// worker, so `parsed` does what the worker does — parse the text and tag the tree with the version
+// it saw — synchronously, and everything after it is the real key path.
+
+impl Session {
+    /// Hands the session a tree for its text as it stands, as a highlight result would.
+    fn parsed(mut self, language: dacode_syntax::Language) -> Self {
+        self.reparse(language);
+        self
+    }
+
+    fn reparse(&mut self, language: dacode_syntax::Language) {
+        let mut highlighter = dacode_syntax::Highlighter::new(language).expect("grammar loads");
+        highlighter.parse(self.state.document.text());
+        self.state.structure = highlighter.structure(self.state.document.version());
+    }
+
+    fn selected(&self) -> String {
+        let selection = self.state.document.selections().primary();
+        self.state
+            .document
+            .text()
+            .slice_to_string(selection.start()..selection.end())
+    }
+}
+
+const RUST: &str =
+    "fn keep() {}\n\nfn gone(a: i32, b: i32) -> i32 {\n    a + b\n}\n\nfn after() {}\n";
+
+#[test]
+fn daf_deletes_the_function_around_the_cursor() {
+    let at = RUST.find("a + b").unwrap();
+    let mut s = session(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("daf");
+    assert_eq!(s.text(), "fn keep() {}\n\n\nfn after() {}\n");
+}
+
+#[test]
+fn cif_empties_the_body_and_leaves_you_typing_in_it() {
+    let at = RUST.find("a + b").unwrap();
+    let mut s = session(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("cif");
+    assert_eq!(s.mode(), Mode::Insert);
+    assert!(
+        s.text().contains("fn gone(a: i32, b: i32) -> i32 {\n}\n"),
+        "the braces stay where they were: {:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn cia_changes_one_argument() {
+    let at = RUST.find("b: i32").unwrap();
+    let mut s = session(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("ciac:u8");
+    assert!(
+        s.text().contains("fn gone(a: i32, c:u8) -> i32"),
+        "{:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn daa_takes_the_comma_with_the_argument() {
+    let at = RUST.find("a: i32").unwrap();
+    let mut s = session(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("daa");
+    assert!(
+        s.text().contains("fn gone(b: i32) -> i32"),
+        "{:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn yat_yanks_the_type_and_leaves_the_text_alone() {
+    let source = "struct Point {\n    x: i32,\n}\n";
+    let mut s = session(source).at(19).parsed(dacode_syntax::Language::Rust);
+    s.keys("yat");
+    assert_eq!(s.text(), source);
+    assert_eq!(s.registers.get(None), source);
+}
+
+#[test]
+fn vaa_selects_the_argument_in_visual_mode() {
+    let at = RUST.find("b: i32").unwrap();
+    let mut s = session(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("vaa");
+    assert_eq!(s.mode(), Mode::Visual);
+    // Visual mode draws the head's character as selected, so the selection's own range stops one
+    // short of what `d` would take.
+    s.keys("d");
+    assert!(
+        s.text().contains("fn gone(a: i32) -> i32"),
+        "{:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn dic_deletes_the_words_of_a_python_comment() {
+    let source = "def f(x):\n    # say what it is for\n    return x\n";
+    let at = source.find("what").unwrap();
+    let mut s = session(source)
+        .at(at)
+        .parsed(dacode_syntax::Language::Python);
+    s.keys("dic");
+    assert_eq!(s.text(), "def f(x):\n    # \n    return x\n");
+}
+
+#[test]
+fn daf_in_python_takes_the_whole_definition() {
+    let source = "def f(x):\n    y = x\n    return y\n\nz = 1\n";
+    let at = source.find("y = x").unwrap();
+    let mut s = session(source)
+        .at(at)
+        .parsed(dacode_syntax::Language::Python);
+    s.keys("daf");
+    assert_eq!(s.text(), "\nz = 1\n");
+}
+
+#[test]
+fn a_stale_tree_selects_nothing_and_says_so() {
+    // One keystroke after the parse the tree's offsets name text that has moved. `daf` must not
+    // delete whatever range used to be the function: it does nothing, and says why.
+    let at = RUST.find("a + b").unwrap();
+    let mut s = session(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("x");
+    let after_edit = s.text();
+    s.keys("daf");
+    assert_eq!(s.text(), after_edit, "nothing deleted");
+    let message = s.state.hover.clone().unwrap_or_default();
+    assert!(message.contains("catching up"), "{message:?}");
+
+    // And once the tree has caught up, the same keys work.
+    s.reparse(dacode_syntax::Language::Rust);
+    s.keys("daf");
+    assert_eq!(s.text(), "fn keep() {}\n\n\nfn after() {}\n");
+}
+
+#[test]
+fn no_function_there_is_a_message_not_a_guess() {
+    let mut s = session("use std::fmt;\n\nfn f() {}\n")
+        .at(5)
+        .parsed(dacode_syntax::Language::Rust);
+    s.keys("daf");
+    assert_eq!(s.text(), "use std::fmt;\n\nfn f() {}\n");
+    assert_eq!(s.state.hover.as_deref(), Some("no function here"));
+}
+
+#[test]
+fn enter_indents_from_the_tree_when_it_is_fresh() {
+    // The lexical rule copies this line's sixteen columns of alignment; the tree knows the call has
+    // closed and the statement has ended, so the next line belongs to the block.
+    let source = "fn main() {\n    let x = foo(a,\n                b);\n}\n";
+    let at = source.find("b);").unwrap() + 3;
+    let mut s = flat(source).at(at).parsed(dacode_syntax::Language::Rust);
+    s.press(Key::named(dacode_input::KeyCode::Enter));
+    assert!(
+        s.text().contains("                b);\n    \n}"),
+        "{:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn enter_falls_back_to_the_lexical_rule_when_the_tree_is_stale() {
+    // Typed a character since the parse: the tree is a version behind and is not asked.
+    let source = "fn main() {\n    let x = foo(a,\n                b);\n}\n";
+    let at = source.find("b);").unwrap() + 3;
+    let mut s = flat(source).at(at).parsed(dacode_syntax::Language::Rust);
+    s.keys("z");
+    s.press(Key::named(dacode_input::KeyCode::Enter));
+    assert!(
+        s.text().contains("b);z\n                \n}"),
+        "{:?}",
+        s.text()
+    );
+}
+
+#[test]
+fn the_non_modal_keys_select_function_type_and_argument() {
+    let at = RUST.find("b: i32").unwrap();
+    let mut s = flat(RUST).at(at).parsed(dacode_syntax::Language::Rust);
+    s.press(alt(dacode_input::KeyCode::Char('a')));
+    assert_eq!(s.selected(), "b: i32");
+    s.press(alt(dacode_input::KeyCode::Char('f')));
+    assert_eq!(
+        s.selected(),
+        "fn gone(a: i32, b: i32) -> i32 {\n    a + b\n}\n"
+    );
+
+    let source = "impl A {\n    fn f() {}\n}\n";
+    let mut s = flat(source).at(18).parsed(dacode_syntax::Language::Rust);
+    s.press(alt(dacode_input::KeyCode::Char('t')));
+    assert_eq!(s.selected(), source);
+}
+
+#[test]
+fn shift_alt_right_grows_the_selection_one_node_at_a_time() {
+    let source = "fn f() { g(a + b); }\n";
+    let at = source.find("a + b").unwrap();
+    let mut s = flat(source).at(at).parsed(dacode_syntax::Language::Rust);
+    let grow = alt(dacode_input::KeyCode::Right).with_shift();
+    s.press(grow);
+    assert_eq!(s.selected(), "a");
+    s.press(grow);
+    assert_eq!(s.selected(), "a + b");
+    s.press(grow);
+    assert_eq!(s.selected(), "(a + b)");
 }

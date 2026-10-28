@@ -229,6 +229,9 @@ what prevents a half-working engine with ten half-working features on top.
 > just copies the previous line's whitespace; the column advance is derived from the type scale
 > rather than measured from the shaper; and Lua config is decided but unwired.
 >
+> *Later:* the structural text objects and the indent queries both landed — see the M4 note on the
+> syntax tree reaching the UI thread.
+>
 > **Fonts are bundled.** Instrument Serif (Regular + Italic), IBM Plex Mono Regular and IBM Plex Sans
 > Medium are embedded in the binary with `include_bytes!` — 480KB, both families SIL OFL with licence
 > texts committed beside them. The editor now renders its own design on a machine with nothing
@@ -282,6 +285,33 @@ its own bug tracker.
 tree-sitter with incremental reparse on a background thread against version-tagged snapshots;
 highlight queries; theme file; tree-sitter-driven indent.
 **Bar:** typing in a 10k-line file never blocks; highlighting is never applied stale.
+
+> **The tree reaches the UI thread, version-tagged.** Indentation and the structural text objects
+> (`af`/`if`, `at`/`it`, `aa`/`ia`, `ac`/`ic`) have to be answered on the keystroke, and the tree
+> lives on the syntax worker. Rejected: asking the worker and waiting (the one rule), and a second
+> synchronous parse of the current line on the UI thread (a parse of one line has no context to
+> indent from). Chosen: each highlight result carries a `Structure` — `Tree::clone`, which
+> tree-sitter does by reference count — tagged with the version it was parsed from, and the compiled
+> queries behind an `Arc` so the UI thread compiles nothing. The editor uses it **only while that
+> version is the buffer's**. Enter falls back to the lexical rules in `pairs.rs`, which remain the
+> floor rather than being replaced; a text object does nothing and says the tree is catching up.
+> Acting on a stale tree's byte offsets is the stale-highlight bug again with `d` in front of it.
+>
+> The queries are Helix's capture names (`@indent`, `@extend`, `@outdent`; `function.around`,
+> `class.inside`, `parameter.inside`, `comment.around`) written here for the exact grammar crates
+> pinned, not copied, because Helix tracks different grammar versions and a node name a grammar
+> lacks fails the whole query. They are **bounded by depth, not size**: every function walks the
+> ancestors of one node and runs the query rooted at each with `set_max_start_depth(0)`, so no
+> cursor ever iterates the tree. `latency.rs` holds it flat; a whole-tree query injected into the
+> indent path measured 113x, and a tree walk injected into the object path 131x.
+>
+> Indentation is *relative*: the line the innermost enclosing `@indent` node starts on, plus one
+> unit — a tab if that line uses tabs. Counting levels from column zero would reformat every file
+> that does not indent the way the query author does. Inside a parse error the tree declines and the
+> lexical rules answer, since the error is usually the line being typed. Electric dedent asks the
+> tree too, which removes the scan's sixteen-thousand-character horizon when the tree is fresh.
+> Letters: `f`, `t`, `a` and `c` were all free — `t` is Vim's tag object, which this grammar never
+> had. No count yet (`2af`), and expand-selection has no shrink.
 
 > **M5 so far.** File discovery honors `.gitignore` (ripgrep's `ignore`), fuzzy ranking uses
 > `nucleo-matcher`, and project search uses ripgrep's own engine — all on background threads, all

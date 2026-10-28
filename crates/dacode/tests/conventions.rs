@@ -223,12 +223,14 @@ fn a_buffer_is_saved_through_one_path() {
 }
 
 /// Every `Document` method that changes the text, and so moves the lines folds are named by.
-const MUTATES_TEXT: [&str; 10] = [
+const MUTATES_TEXT: [&str; 12] = [
     "apply",
     "insert",
     "insert_newline",
     "insert_newline_smart",
+    "insert_newline_indented",
     "type_char",
+    "type_char_indented",
     "delete_forward",
     "delete_backward",
     "delete_backward_pairs",

@@ -279,6 +279,7 @@ fn new_state(
         highlights: Vec::new(),
         node_path: Vec::new(),
         syntax_error: false,
+        structure: None,
         frame_ms: 0.0,
         worst_ms: 0.0,
         diagnostics: dacode_lsp::Diagnostics::default(),
@@ -1083,6 +1084,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 state.node_path = highlighter.node_path(text, cursor);
                 state.syntax_error = highlighter.has_error();
                 state.syntax_version = state.document.version();
+                state.structure = highlighter.structure(state.document.version());
             }
             Err(err) => eprintln!("dacode: syntax unavailable: {err}"),
         }
@@ -4664,15 +4666,27 @@ impl App {
         self.state.syntax_version = version;
 
         let buffer = self.state.document.version();
-        if let Some(result) = worker.fresh_for(buffer)
-            && (result.spans != self.state.highlights
+        if let Some(result) = worker.fresh_for(buffer) {
+            // The tree changes nothing on screen, so it is taken without asking for a redraw —
+            // and taken even when the spans are unchanged, because a keystroke that leaves the
+            // colours alone still leaves the old tree describing text that has moved.
+            if self
+                .state
+                .structure
+                .as_ref()
+                .is_none_or(|held| held.version() != result.version)
+            {
+                self.state.structure = result.structure.clone();
+            }
+            if result.spans != self.state.highlights
                 || result.node_path != self.state.node_path
-                || result.has_error != self.state.syntax_error)
-        {
-            self.state.highlights = result.spans.clone();
-            self.state.node_path = result.node_path.clone();
-            self.state.syntax_error = result.has_error;
-            changed = true;
+                || result.has_error != self.state.syntax_error
+            {
+                self.state.highlights = result.spans.clone();
+                self.state.node_path = result.node_path.clone();
+                self.state.syntax_error = result.has_error;
+                changed = true;
+            }
         }
         changed
     }
@@ -9227,6 +9241,9 @@ impl App {
         // swapped with the buffer, so what is in `state` already belongs to the document in `state`.
         self.state.node_path.clear();
         self.state.syntax_error = false;
+        // The tree too: its version is a number in the *old* document's sequence, and a new
+        // document can reach the same number while holding different text.
+        self.state.structure = None;
         self.state.syntax_version = Version(0);
         self.requested_range = None;
 
