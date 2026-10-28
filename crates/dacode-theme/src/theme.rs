@@ -719,6 +719,59 @@ impl Theme {
         Oklch::new(self.mode_l, self.mode_c, mode.hue())
     }
 
+    /// The sixteen colours a terminal program names — `ls --color`, a compiler's red `error:`,
+    /// `git diff` — in this theme.
+    ///
+    /// Derived rather than stored, so every theme has them and none can be missing one: the six hues
+    /// are the conventional ones (red, green, yellow, blue, magenta, cyan) at the lightness and
+    /// chroma the theme already gives its mode accents, which is the pair it has tuned to read on its
+    /// own background — 0.72 on charcoal, 0.52 on paper. The bright half sits a step further from
+    /// the background. A stored palette per theme was rejected: twelve themes times sixteen colours
+    /// is a hundred and ninety-two values to keep legible by hand, and an imported theme would have
+    /// none.
+    ///
+    /// Black and white are the theme's own greys, by appearance. On a dark theme "black" is a grey a
+    /// little above the background and "white" is the dimmer ink, as most dark terminal palettes
+    /// have it, so black text is faint rather than invisible and a black *background* still reads as
+    /// a band. On a light theme the roles invert: black is the ink, and white is a grey a little
+    /// below the paper, which is as legible as white text on a light terminal ever is.
+    pub fn ansi(&self) -> [Oklch; 16] {
+        const HUES: [f32; 6] = [25.0, 145.0, 90.0, 255.0, 330.0, 200.0];
+        let dark = self.appearance == Appearance::Dark;
+        let step = if dark { 0.08 } else { -0.06 };
+        let colour = |hue: f32, bright: bool| {
+            let l = if bright {
+                (self.mode_l + step).clamp(0.3, 0.92)
+            } else {
+                self.mode_l
+            };
+            Oklch::new(l, self.mode_c.max(0.10), hue)
+        };
+        let grey = |l: f32| Oklch::new(l.clamp(0.0, 1.0), self.ink.c, self.ink.h);
+        let (black, bright_black, white, bright_white) = if dark {
+            (
+                grey(self.bg.l + 0.12),
+                // Halfway from the faint ink to the dim one: the faint ink alone is tuned for
+                // things meant to recede, and a shell's grey suggestions still have to be read.
+                self.ink_faint.mix(self.ink_dim, 0.5),
+                self.ink_dim,
+                self.ink,
+            )
+        } else {
+            (self.ink, self.ink_dim, grey(self.bg.l - 0.14), grey(self.bg.l - 0.07))
+        };
+
+        let mut palette = [black; 16];
+        palette[7] = white;
+        palette[8] = bright_black;
+        palette[15] = bright_white;
+        for (index, hue) in HUES.into_iter().enumerate() {
+            palette[1 + index] = colour(hue, false);
+            palette[9 + index] = colour(hue, true);
+        }
+        palette
+    }
+
     /// Tint behind the cursor's line. Resolved against the canvas so the renderer can emit it
     /// as an opaque quad.
     pub fn line_tint(&self, mode: Mode) -> [f32; 4] {

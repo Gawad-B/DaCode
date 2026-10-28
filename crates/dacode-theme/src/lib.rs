@@ -712,4 +712,32 @@ mod tests {
             assert_eq!(colors.len(), 4, "{name}: modes must stay visually distinct");
         }
     }
+
+    #[test]
+    fn every_theme_has_a_readable_terminal_palette() {
+        // A compiler's red `error:` and `ls`'s blue directories are drawn in these. Derived from
+        // the mode accents, so no theme can be missing them — and this is what keeps the derivation
+        // honest for all twelve: each colour clears 3:1 against the canvas, the floor WCAG sets for
+        // anything that has to be told apart, and the six hues stay six different colours.
+        for (name, _, build) in Theme::BUILT_IN {
+            let theme = build();
+            let palette = theme.ansi();
+            let dark = theme.appearance == Appearance::Dark;
+            let readable: Vec<usize> = (1..7)
+                .chain(9..15)
+                .chain(if dark { vec![7, 8, 15] } else { vec![0, 8] })
+                .collect();
+            for index in readable {
+                let ratio = contrast(palette[index], theme.bg);
+                assert!(
+                    ratio >= 3.0,
+                    "{name}: colour {index} is {ratio:.2}:1 against the background"
+                );
+            }
+            let mut hues: Vec<String> = (1..7).map(|i| palette[i].to_hex()).collect();
+            hues.sort();
+            hues.dedup();
+            assert_eq!(hues.len(), 6, "{name}: the six hues are distinct");
+        }
+    }
 }
