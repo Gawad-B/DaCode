@@ -17634,6 +17634,22 @@ mod terminal_tests {
     }
 
     fn type_text(app: &mut App, text: &str) {
+        // Into a shell, only once it has drawn its prompt. Typed sooner, the terminal echoes the
+        // keys before the prompt arrives, the prompt lands after them, and the command's output
+        // shares the prompt's line — `$ selectable` rather than `selectable` — so a test looking
+        // for the output's own line failed on whichever runner started its shell slowest.
+        if app.state.focus == Focus::Terminal && app.state.palette.is_none() {
+            let prompted = settle(app, |app| {
+                app.active_terminal().is_some_and(|terminal| {
+                    terminal
+                        .screen()
+                        .lines()
+                        .iter()
+                        .any(|line| !line.trim().is_empty())
+                })
+            });
+            assert!(prompted, "the shell drew a prompt");
+        }
         for c in text.chars() {
             let key = if c == '\r' {
                 Key::named(KeyCode::Enter)

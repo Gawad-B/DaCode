@@ -382,14 +382,16 @@ mod tests {
         // folder with nothing else to say what it is.
         let root = scratch("script");
         let file = root.join("hello.py");
+        // Quoted as each shell needs it: a runner's temp folder can be `C:\Users\RUNNER~1\…`,
+        // and an unquoted `~` is one sh would expand.
         let shown = file.to_string_lossy().into_owned();
         assert_eq!(
             run_command_for(&root, Some(&file), false),
-            Some(format!("python3 {shown}"))
+            Some(format!("python3 {}", quote(&shown, false)))
         );
         assert_eq!(
             run_command_for(&root, Some(&file), true),
-            Some(format!("py {shown}")),
+            Some(format!("py {}", quote(&shown, true))),
             "python.org's installer puts the launcher on PATH, not python3"
         );
         std::fs::remove_dir_all(&root).ok();

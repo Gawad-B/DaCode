@@ -26,7 +26,7 @@ jobs:
       # The live language-server tests skip without it. Installed so they actually run here, which is
       # the point of having them — a runner where they always skip verifies nothing.
       - run: rustup component add rust-analyzer
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo build --release
       # Renders each overlay offscreen and keeps the PNGs. The project's rule is that visual work is
@@ -76,7 +76,7 @@ jobs:
       # The whole point of this job: everything the Linux machine cannot check.
       - run: cargo build --release
       - run: rustup component add rust-analyzer
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       # Clippy runs here as well as on Linux, because the two disagree: code inside `#[cfg(unix)]` is
       # not linted on Windows and code that is only *used* there produces warnings that only Windows
       # sees. A `mut` that Linux needed and Windows did not sat in `main.rs` for months because of it.

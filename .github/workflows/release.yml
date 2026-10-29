@@ -33,7 +33,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y rpm libwayland-dev libxkbcommon-dev
       - run: rustup component add rust-analyzer
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       - run: cargo build --release
       - name: Package
         run: |
@@ -52,7 +52,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: rustup component add rust-analyzer
-      - run: cargo test --workspace
+      - run: cargo test --workspace --no-fail-fast
       - name: Build the installer
         shell: pwsh
         run: |

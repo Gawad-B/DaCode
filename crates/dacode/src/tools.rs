@@ -920,25 +920,39 @@ mod tests {
 
     #[test]
     fn a_release_is_downloaded_checked_unpacked_and_given_a_launcher() {
+        // For the machine running the test, as `install` is only ever asked for: a Linux tool's
+        // launcher is a symbolic link, which Windows does not make, and a Windows tool's is a
+        // `.cmd`.
+        let windows = cfg!(windows);
+        let platform = if windows {
+            Platform::WindowsX64
+        } else {
+            Platform::LinuxX64
+        };
+        let program = if windows {
+            "dist/fake.exe"
+        } else {
+            "dist/fake"
+        };
         let root = scratch("release");
-        let archive = zip_of(&[("dist/fake", b"#!/bin/sh\necho hi\n")]);
+        let archive = zip_of(&[(program, b"#!/bin/sh\necho hi\n")]);
         let url = "https://example.test/fake.zip";
         let tool = tool_from(Asset {
-            platform: Platform::LinuxX64,
+            platform,
             url,
             sha256: sha256(&archive),
             archive: Archive::Zip,
-            program: "dist/fake",
+            program,
         });
         let fetch = Fake(HashMap::from([(url.to_string(), archive)]));
         let mut lines = Vec::new();
-        install(&root, &tool, Platform::LinuxX64, &fetch, &mut |line| {
+        install(&root, &tool, platform, &fetch, &mut |line| {
             lines.push(line.to_string())
         })
         .unwrap();
-        assert!(installed(&root, &tool, false));
+        assert!(installed(&root, &tool, windows));
         assert!(
-            std::fs::symlink_metadata(bin_dir(&root).join("fake")).is_ok(),
+            std::fs::symlink_metadata(launcher(&root, "fake", windows)).is_ok(),
             "on PATH as `fake`"
         );
         assert!(
@@ -947,14 +961,7 @@ mod tests {
         );
         assert!(lines.last().unwrap().starts_with("installed fake"));
         // Asking again is not a second download.
-        install(
-            &root,
-            &tool,
-            Platform::LinuxX64,
-            &Fake(HashMap::new()),
-            &mut |_| {},
-        )
-        .unwrap();
+        install(&root, &tool, platform, &Fake(HashMap::new()), &mut |_| {}).unwrap();
         std::fs::remove_dir_all(&root).ok();
     }
 
