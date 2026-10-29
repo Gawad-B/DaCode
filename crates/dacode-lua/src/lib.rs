@@ -44,6 +44,9 @@ pub struct Config {
     pub autosave: Option<bool>,
     /// How much of the desktop shows through the window, as a percentage: 0 is opaque.
     pub transparency: Option<u8>,
+    /// How much larger than the desktop's scale everything is drawn, as a percentage: 100 is as the
+    /// desktop draws it. Clamped to 50–300, the bounds `dacode::chrome::Zoom` enforces.
+    pub interface_zoom: Option<u16>,
     /// How much the interface moves: "full", "reduced" or "off". Checked against [`ANIMATIONS`] here
     /// and parsed into the enum by the caller, which owns it.
     pub animations: Option<String>,
@@ -113,6 +116,7 @@ impl Config {
             && self.inline_blame.is_none()
             && self.autosave.is_none()
             && self.transparency.is_none()
+            && self.interface_zoom.is_none()
             && self.animations.is_none()
             && self.updates.is_none()
             && self.line_numbers.is_none()
@@ -218,6 +222,11 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             // stays solid — floats over whatever is behind with nothing to read it against.
             if let Some(percent) = number(&options, "transparency") {
                 config.transparency = Some(percent.clamp(0.0, 90.0).round() as u8);
+            }
+            // Clamped rather than refused, like the font size: a zoom of 1000 is someone who wants
+            // it very large, and the largest there is serves them better than an error does.
+            if let Some(percent) = number(&options, "interface_zoom") {
+                config.interface_zoom = Some(percent.clamp(50.0, 300.0).round() as u16);
             }
             // Validated here, unlike `line_numbers`, because a value that is not one of the three has
             // no sensible reading: "none" would otherwise leave the editor animating while its owner
@@ -563,6 +572,19 @@ mod tests {
 
     fn run(source: &str) -> Config {
         eval(source, "test.lua")
+    }
+
+    #[test]
+    fn interface_zoom_is_a_percentage_clamped_to_what_can_be_drawn() {
+        assert_eq!(
+            run("dacode.set { interface_zoom = 150 }").interface_zoom,
+            Some(150)
+        );
+        assert_eq!(
+            run("dacode.set { interface_zoom = 1000 }").interface_zoom,
+            Some(300)
+        );
+        assert_eq!(run("dacode.set { interface_zoom = 5 }").interface_zoom, Some(50));
     }
 
     #[test]

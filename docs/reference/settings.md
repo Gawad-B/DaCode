@@ -54,6 +54,7 @@ than logged.
 | `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
 | `inline_blame` | boolean | `true` | Write who last changed the caret's line, how long ago and the commit's summary, dimly after the line's end. A diagnostic on that line is shown instead. Nothing appears outside a git repository or for a file git does not track. |
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |
+| `interface_zoom` | number, 50–300 | `100` | Draws everything — code, menus, panels — this many percent of the desktop's own scale, in steps of 10. `ctrl-=`, `ctrl--` and `ctrl-0` change it from anywhere, including the terminal, and the change is kept. The font size above changes only the code. |
 | `transparency` | number, 0–90 | `0` | How much of the desktop shows through the window, in percent. Backgrounds go see-through; text, highlights and popups stay solid. Needs a compositor, and turning it on from `0` takes effect at the next start. |
 | `animations` | `"full"` \| `"reduced"` \| `"off"` | `"full"` | How much the interface moves. See below. |
 | `updates` | `"automatic"` \| `"notify"` \| `"off"` | `"automatic"` | Whether new releases are checked for once a day, and downloaded. See below. |

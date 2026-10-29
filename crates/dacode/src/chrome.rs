@@ -253,6 +253,49 @@ pub struct Leaving {
     pub help: Option<crate::help::Help>,
 }
 
+/// The interface zoom: a multiple of the desktop's scale factor that everything is drawn at.
+///
+/// One number on top of `scale_factor`, applied in `App::scale` and nowhere else. Every layout and
+/// hit test already works in physical pixels through that one function, so the code, the chrome,
+/// the mouse and the terminal's grid all move together — which is the reason it is a scale and
+/// not a second font size. The bounds live here and the settings page and `ctrl-=` both read
+/// them; `dacode-lua` clamps a configured value to the same numbers, from below the binary.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Zoom(u16);
+
+impl Zoom {
+    pub const MIN: u16 = 50;
+    pub const MAX: u16 = 300;
+    pub const STEP: u16 = 10;
+
+    /// `percent`, clamped and snapped to a step: a configured 133 is drawn at 130, as the page
+    /// would have shown it.
+    pub fn new(percent: u16) -> Zoom {
+        let snapped = (percent + Self::STEP / 2) / Self::STEP * Self::STEP;
+        Zoom(snapped.clamp(Self::MIN, Self::MAX))
+    }
+
+    pub fn percent(self) -> u16 {
+        self.0
+    }
+
+    pub fn factor(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+
+    /// One step larger for a positive `delta`, smaller for a negative one, stopping at the bounds.
+    pub fn step(self, delta: i32) -> Zoom {
+        let next = i32::from(self.0) + delta.signum() * i32::from(Self::STEP);
+        Zoom::new(next.clamp(0, i32::from(Self::MAX)) as u16)
+    }
+}
+
+impl Default for Zoom {
+    fn default() -> Zoom {
+        Zoom(100)
+    }
+}
+
 /// State belonging to the window's chrome rather than to any document.
 #[derive(Debug, Default)]
 pub struct Chrome {
@@ -279,6 +322,8 @@ pub struct Chrome {
     pub update: Option<crate::update::Offer>,
     /// How see-through the window's backgrounds are: 0 is opaque.
     pub transparency: f32,
+    /// How much larger than the desktop's own scale everything is drawn.
+    pub zoom: Zoom,
     /// Every animated quantity. Drawing reads it at [`EditorState::now`]; the executor and the event
     /// loop retarget it, at the same `now()`, which outside a frame is the wall clock.
     pub motion: crate::motion::Motion,
@@ -791,6 +836,7 @@ impl EditorState {
             inline_blame: self.blame.inline,
             autosave: self.autosave,
             transparency: (self.chrome.transparency * 100.0).round() as u8,
+            interface_zoom: self.chrome.zoom,
             animations: self.chrome.motion.animations(),
             updates: self.chrome.updates,
         }
@@ -7451,6 +7497,18 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
 #[cfg(test)]
 mod appear_tests {
     use super::*;
+
+    #[test]
+    fn a_zoom_snaps_to_its_steps_and_never_leaves_its_bounds() {
+        // A configured 133 is drawn at the 130 the page would show, and a stray 1000 or 0 is the
+        // nearest zoom that can still be drawn and read, rather than a window too big to use.
+        assert_eq!(Zoom::new(133).percent(), 130);
+        assert_eq!(Zoom::new(1000).percent(), Zoom::MAX);
+        assert_eq!(Zoom::new(0).percent(), Zoom::MIN);
+        assert_eq!(Zoom::default().step(1).percent(), 110);
+        assert_eq!(Zoom::new(Zoom::MIN).step(-1).percent(), Zoom::MIN);
+        assert_eq!(Zoom::new(Zoom::MAX).step(1).percent(), Zoom::MAX);
+    }
 
     #[test]
     fn an_overlay_grows_from_its_anchor_to_exactly_its_own_rectangle() {

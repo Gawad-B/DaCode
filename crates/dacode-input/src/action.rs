@@ -237,6 +237,12 @@ pub enum Action {
     ToggleTheme,
     IncreaseFontSize,
     DecreaseFontSize,
+    /// `ctrl-=` — the whole interface larger, code and chrome together. The font size steps only
+    /// the code, inside limits set for reading code; this is for someone who needs everything
+    /// bigger and was turning up the desktop's scale to get it.
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 
     Save,
     /// `ctrl-shift-s` — write this buffer somewhere else, and keep editing it there.
@@ -626,6 +632,9 @@ impl Action {
         "toggle_theme",
         "increase_font_size",
         "decrease_font_size",
+        "zoom_in",
+        "zoom_out",
+        "zoom_reset",
         "save",
         "save_as",
         "toggle_autosave",
@@ -823,6 +832,9 @@ impl Action {
             "toggle_theme" => Action::ToggleTheme,
             "increase_font_size" => Action::IncreaseFontSize,
             "decrease_font_size" => Action::DecreaseFontSize,
+            "zoom_in" => Action::ZoomIn,
+            "zoom_out" => Action::ZoomOut,
+            "zoom_reset" => Action::ZoomReset,
 
             // Files and search.
             "save" => Action::Save,

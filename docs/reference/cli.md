@@ -66,6 +66,7 @@ RENDERING WITHOUT A WINDOW
     --mode NAME                 normal, insert, visual …
     --no-vim                    render with Vim keys off
     --transparency PERCENT      see-through, over a checkerboard
+    --zoom PERCENT              at an interface zoom, as ctrl-= sets it
     --empty                     no file open
     --splash                    the cold-start screen
     --at LINE                   put the cursor on a line
@@ -198,6 +199,7 @@ cursor is parked at line 21, column 12, the view scrolled to line 8, and in norm
 | `--theme` | `NAME` | Render a named built-in. Only consulted if neither `--light` nor `--dark` is given. An unknown name falls back to config. |
 | `--mode` | `NAME` | `insert`, `visual` or `replace`. Anything else, including a missing flag, is normal mode. Visual mode also selects 24 characters from the cursor. |
 | `--no-vim` | — | Modal editing off: insert mode, and the seeded `3d` is cleared, since there is no operator-count to be half-way through without the grammar. |
+| `--zoom` | `PERCENT` | Draw at an interface zoom, as `ctrl-=` sets it. |
 | `--transparency` | `PERCENT` | Draw the window see-through, composited over a checkerboard so the capture shows what the desktop would. |
 
 Capture at more than one size. The harness was fixed at 1600x1000 for a long time and a whole family

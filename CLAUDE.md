@@ -378,6 +378,12 @@ reason: a server named in `init.lua` is not static, and pretending otherwise cos
 allocation does. A configured entry goes **ahead** of the built-ins rather than replacing them, so
 naming a venv does not also throw away the fallback.
 
+**The interface zoom is applied in `App::scale` and nowhere else.** `chrome::Zoom` multiplies the
+desktop's scale factor, and every layout and hit test already works in physical pixels through that
+one function — so code, chrome, mouse and the terminal grid move together. A site that reads
+`window.scale_factor()` itself draws at 100% while the mouse measures at the zoom; the one in the
+frame path that cannot call `scale()` (the renderer is borrowed) spells it out and says so.
+
 **One face, one weight — and a screenshot cannot see a substitution.** cosmic-text keeps a requested
 family only from a face of *exactly* the requested weight. Fira Code is bundled at 400 alone, so a 500
 or 600 request quietly drew the labels, the settings headings and the wordmark in Noto Sans on any
@@ -479,7 +485,7 @@ Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --se
 --settings-search Q --theme-dropdown --welcome STEP --folded
 --git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
---transparency PERCENT --help-panel --update-offer KIND --menu --menu-title TITLE --context-menu --commands
+--transparency PERCENT --zoom PERCENT --help-panel --update-offer KIND --menu --menu-title TITLE --context-menu --commands
 --which-key PREFIX --symbols QUERY --block LINE:COLUMN --capture-key NAME[=KEYS] --terminal --terminal-tabs N
 --terminal-height PERCENT --terminal-select R:C-R:C`.
 
@@ -623,7 +629,8 @@ does not is splitting a terminal, reordering tabs, reporting pointer *movement* 
 (`?1003` gets presses, drags and releases only), and OSC 52 clipboard writes, which go unanswered on
 purpose. OSC 10/11/4 colour queries are answered from the theme. Every key goes to the shell while
 it has focus except `` ctrl-` ``, `ctrl-t`, `ctrl-shift-c`, `ctrl-shift-v`, `ctrl-shift-p`,
-`ctrl-pageup` and `ctrl-pagedown` — see `dacode::terminal::route` before adding another. `ctrl-t`
+`ctrl-pageup`, `ctrl-pagedown` and the zoom keys `ctrl-=`, `ctrl--`, `ctrl-0` — see
+`dacode::terminal::route` before adding another. `ctrl-t`
 costs the shell readline's transpose-characters and `ctrl-pageup`/`pagedown` cost Vim its tab keys;
 `ctrl-w` deliberately stays the shell's word delete. The panel's height is a fraction on
 `terminal::Panel`, persisted in the session rather than as a setting (it is where you left things,

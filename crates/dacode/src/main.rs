@@ -326,6 +326,7 @@ fn new_state(
         menu: None,
         chrome: dacode::chrome::Chrome {
             transparency: f32::from(settings.transparency) / 100.0,
+            zoom: settings.interface_zoom,
             motion: dacode::motion::Motion::new(settings.animations),
             updates: settings.updates,
             ..Default::default()
@@ -377,7 +378,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 29] = [
+const VALUE_FLAGS: [&str; 30] = [
     "--which-key",
     "--menu-title",
     "--screenshot",
@@ -401,6 +402,7 @@ const VALUE_FLAGS: [&str; 29] = [
     "--symbols",
     "--block",
     "--transparency",
+    "--zoom",
     "--at-ms",
     "--scroll-px",
     "--terminal-tabs",
@@ -418,7 +420,7 @@ const VALUE_FLAGS: [&str; 29] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 55] = [
+const FLAGS: [(&str, &str, &str); 56] = [
     // Opening.
     (
         "--no-session",
@@ -444,6 +446,11 @@ const FLAGS: [(&str, &str, &str); 55] = [
         "--transparency",
         "PERCENT",
         "see-through, over a checkerboard",
+    ),
+    (
+        "--zoom",
+        "PERCENT",
+        "at an interface zoom, as ctrl-= sets it",
     ),
     ("--empty", "", "no file open"),
     ("--splash", "", "the cold-start screen"),
@@ -862,7 +869,12 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     state.frame_ms = 3.1;
     state.worst_ms = 6.4;
     state.scroll = ScrollAnchor::at_line(8);
-    fit_wrap_columns(&mut state, width as f32, 1.0);
+    // `--zoom PERCENT` draws at an interface zoom, so a capture can show what ctrl-= does.
+    if let Some(percent) = value("--zoom").and_then(|v| v.parse::<u16>().ok()) {
+        state.chrome.zoom = dacode::chrome::Zoom::new(percent);
+    }
+    let zoom = state.chrome.zoom.factor();
+    fit_wrap_columns(&mut state, width as f32, zoom);
     // Again just before drawing, once each view has opened whatever sidebar it opens: the code's
     // width depends on it, and fitting it here alone wrapped a narrow capture past its own edge.
     if let Some(percent) = value("--transparency").and_then(|v| v.parse::<u8>().ok()) {
@@ -871,7 +883,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     let forced_columns = value("--columns").is_some();
     let refit = |state: &mut EditorState| {
         if !forced_columns {
-            fit_wrap_columns(state, width as f32, 1.0);
+            fit_wrap_columns(state, width as f32, zoom);
         }
     };
 
@@ -1200,10 +1212,10 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
     // The requested view's transitions start at `t0`, from closed: everything the flags opened is
     // retargeted through the same function the event loop calls, so a capture at `--at-ms 80` is the
     // frame a person would see 80 ms after opening it.
-    let start = |state: &mut EditorState| state.sync_motion(bounds, 1.0, t0);
+    let start = |state: &mut EditorState| state.sync_motion(bounds, zoom, t0);
     let mut frame = Frame::default();
     if flag("--splash") {
-        chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, 1.0);
+        chrome::draw_splash(&mut frame, &state.theme, &state.typography, bounds, zoom);
     } else if flag("--git") {
         // A canned diff against the file on screen, so the gutter marks are inspectable without
         // depending on what happens to be uncommitted right now.
@@ -1219,7 +1231,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         );
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--blame") {
         // A canned blame, for the same reason as `--git`'s canned diff: what a capture shows must
         // not depend on whoever last committed to the file on screen. Runs of lines from three
@@ -1228,7 +1240,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.blame.show(canned_blame(&state));
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--folded") {
         // Fold every top-level block, so the marker and the hidden-line count are inspectable.
         let mut line = 0;
@@ -1245,12 +1257,12 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         }
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--diagnostics-list") {
         state.show_diagnostics = true;
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--source-control") || flag("--no-repository") {
         // Canned, for the same reason as `--git`: what is uncommitted in this checkout right now
         // is not something a capture may depend on. Read through the real parser, so the capture
@@ -1271,7 +1283,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         }
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--diff-view") {
         state.document = Document::from_str(CANNED_DIFF);
         state.review = Some(dacode::scm::Show::Changes {
@@ -1288,7 +1300,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.scm.accept(version, canned_status());
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--branches") {
         let version = state.scm.ask();
         state.scm.accept(version, canned_status());
@@ -1297,7 +1309,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.palette = Some(palette);
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--terminal") {
         // No shell: a capture must draw the same thing every time, so the transcript is fed to the
         // same parser a live terminal runs, at the size the panel's grid has here.
@@ -1306,11 +1318,11 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         if let Some(percent) = value("--terminal-height").and_then(|v| v.parse::<f32>().ok()) {
             state.terminal.fraction = (percent / 100.0).clamp(0.0, 1.0);
         }
-        let panel = dacode::layout::Layout::of(bounds, 1.0, None, state.sidebar_fraction())
-            .with_terminal(true, state.terminal.fraction, 1.0)
+        let panel = dacode::layout::Layout::of(bounds, zoom, None, state.sidebar_fraction())
+            .with_terminal(true, state.terminal.fraction, zoom)
             .terminal
             .expect("asked for one");
-        let rects = dacode::layout::terminal_panel(panel, &state.typography, 1.0);
+        let rects = dacode::layout::terminal_panel(panel, &state.typography, zoom);
         let mut emulator = dacode_terminal::Emulator::new(
             dacode_terminal::GridSize::new(rects.columns, rects.rows),
             dacode_terminal::SCROLLBACK,
@@ -1347,7 +1359,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             .collect();
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if let Some(step) = value("--welcome") {
         let mut welcome = dacode::welcome::Welcome::new();
         // Walk to the requested step, so each screen can be captured on its own.
@@ -1375,7 +1387,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             &welcome,
             &state.typography,
             bounds,
-            1.0,
+            zoom,
             arrival,
         );
     } else if let Some(kind) = value("--update-offer") {
@@ -1408,40 +1420,40 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.chrome.show_notifications = true;
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--help-panel") {
         state.help = Some(dacode::help::Help::new(state.modal));
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--menu") {
         state.menu = Some(dacode::menu::Menu::bar(state.modal));
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if let Some(title) = value("--menu-title") {
         // A named title opens its menu as F10 and the arrows reach it — with the header that names
         // it when it is behind the overflow — and `…` opens the overflow's list, as a click does.
         let bar = dacode::layout::title_bar(
-            dacode::layout::title_strip(bounds, 1.0),
-            1.0,
+            dacode::layout::title_strip(bounds, zoom),
+            zoom,
             &state.typography,
         );
         state.menu = menu_for_title(&title, bar.menus.len(), state.modal)?;
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--context-menu") {
         state.menu = Some(dacode::menu::Menu::context((420.0, 300.0), state.modal));
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if let Some(prefix) = value("--which-key") {
         // The popup is driven by the pending display, exactly as a half-typed chord drives it.
         state.pending = prefix;
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if let Some(query) = value("--symbols") {
         // A canned outline, so the palette's indenting and its kind column are inspectable without
         // a language server — the same reason `--complete` has a canned list.
@@ -1476,14 +1488,14 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.palette = Some(palette);
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--commands") {
         let mut palette = dacode::palette::Palette::new(dacode::palette::PaletteKind::Commands);
         palette.refresh_commands(state.modal);
         state.palette = Some(palette);
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--settings")
         // Each of these only means something on the settings tab, so asking for one is asking for
         // the tab. Without this `--settings-page Editor` alone drew the plain editor, which reads
@@ -1522,10 +1534,10 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         }
         // `--row N` selects entry N and scrolls to it, as ↓ would: the only way to see a row below
         // the fold, which on the Keys and Languages pages is most of them.
-        let editor = dacode::layout::Layout::of(bounds, 1.0, None, 0.0).editor;
+        let editor = dacode::layout::Layout::of(bounds, zoom, None, 0.0).editor;
         if let Some(row) = value("--row").and_then(|at| at.parse::<usize>().ok()) {
             page.select(row, modal);
-            page.reveal(editor, 1.0, modal, &state.typography);
+            page.reveal(editor, zoom, modal, &state.typography);
         }
         // A command row waiting for its key, as a click leaves it — and with `=KEYS`, those keys
         // pressed into it, as the real key path presses them: a taken key leaves it asking, any
@@ -1539,7 +1551,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 ) {
                     page.select(at, modal);
                 }
-                page.reveal(editor, 1.0, modal, &state.typography);
+                page.reveal(editor, zoom, modal, &state.typography);
                 page.start_capture(command);
                 for key in Key::parse_sequence(keys) {
                     let step = page.capture_key(key, modal);
@@ -1555,7 +1567,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                     }
                     dacode_input::shortcuts::install(shortcuts);
                 }
-                page.reveal(editor, 1.0, modal, &state.typography);
+                page.reveal(editor, zoom, modal, &state.typography);
             }
         }
         // The theme row's list, opened as a click on its control opens it: on the theme in use and
@@ -1569,18 +1581,18 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             {
                 page.select(at, modal);
             }
-            page.reveal(editor, 1.0, modal, &state.typography);
+            page.reveal(editor, zoom, modal, &state.typography);
             page.open_dropdown(state.setting_values().theme);
             let values = state.setting_values();
-            let rows = page.geometry(editor, 1.0, &values, modal, &state.typography);
-            page.reveal_dropdown(&rows, editor, 1.0, &state.typography);
+            let rows = page.geometry(editor, zoom, &values, modal, &state.typography);
+            page.reveal_dropdown(&rows, editor, zoom, &state.typography);
         }
         state.settings_page = Some(page);
         state.settings_active = true;
         state.snap_settings_scroll();
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if flag("--tree") {
         // The tree needs a file list; the screenshot path has no background walk, so index inline.
         let root = find_root(&std::path::PathBuf::from("."));
@@ -1599,7 +1611,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.tree = Some(tree);
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     } else if let Some(split) = value("--split") {
         refit(&mut state);
         start(&mut state);
@@ -1637,12 +1649,12 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 chrome::PaneLayout::Vertical
             },
             bounds,
-            1.0,
+            zoom,
         );
     } else {
         refit(&mut state);
         start(&mut state);
-        chrome::draw(&mut frame, &state, bounds, 1.0);
+        chrome::draw(&mut frame, &state, bounds, zoom);
     }
 
     headless
@@ -2705,11 +2717,14 @@ impl App {
         }
     }
 
+    /// Physical pixels per logical one: the desktop's scale factor times the interface zoom. The
+    /// only place the zoom is applied, and every other reader of the scale factor goes through it.
     fn scale(&self) -> f32 {
         self.window
             .as_ref()
             .map(|window| window.scale_factor() as f32)
             .unwrap_or(1.0)
+            * self.state.chrome.zoom.factor()
     }
 
     /// Points every animated value at what the state now says, at `now`. See
@@ -3797,9 +3812,24 @@ impl App {
 
         // Font size changes the column advance, so the wrap width has to be recomputed or text
         // keeps wrapping at the old width.
-        if matches!(action, Action::IncreaseFontSize | Action::DecreaseFontSize) {
+        if matches!(
+            action,
+            Action::IncreaseFontSize
+                | Action::DecreaseFontSize
+                | Action::ZoomIn
+                | Action::ZoomOut
+                | Action::ZoomReset
+        ) {
             let (width, scale) = (self.window_width(), self.scale());
             fit_wrap_columns(&mut self.state, width, scale);
+        }
+        // Kept, unlike a ctrl-scroll of the font: someone who needs the interface larger needs it
+        // larger tomorrow too, and should not have to find the settings page to say so.
+        if matches!(action, Action::ZoomIn | Action::ZoomOut | Action::ZoomReset) {
+            self.settings_changed(
+                dacode::settings_ui::Field::InterfaceZoom,
+                std::time::Instant::now(),
+            );
         }
 
         matches!(outcome, Outcome::Quit)
@@ -7487,7 +7517,7 @@ impl App {
             Field::FontSize => {
                 self.state.typography = dacode_theme::Typography::with_code_size(values.font_size);
                 if let Some(window) = &self.window {
-                    let scale = window.scale_factor() as f32;
+                    let scale = self.scale();
                     let width = window.inner_size().width as f32;
                     fit_wrap_columns(&mut self.state, width, scale);
                 }
@@ -7526,6 +7556,11 @@ impl App {
             Field::Transparency => self.set_transparency(values.transparency),
             Field::Animations => self.state.chrome.motion.set_animations(values.animations),
             Field::Updates => self.state.chrome.updates = values.updates,
+            Field::InterfaceZoom => {
+                self.state.chrome.zoom = values.interface_zoom;
+                let (width, scale) = (self.window_width(), self.scale());
+                fit_wrap_columns(&mut self.state, width, scale);
+            }
         }
     }
 
@@ -11482,6 +11517,7 @@ impl App {
             self.blame_wanted = true;
         }
         self.set_transparency(settings.transparency);
+        self.state.chrome.zoom = settings.interface_zoom;
         self.state.chrome.motion.set_animations(settings.animations);
         self.state.chrome.updates = settings.updates;
         self.grammar.set_keymap(settings.keymap);
@@ -11508,7 +11544,7 @@ impl App {
 
         // Wrap width is in columns and follows the font size, which may just have changed.
         if let Some(window) = &self.window {
-            let scale = window.scale_factor() as f32;
+            let scale = self.scale();
             let width = window.inner_size().width as f32;
             fit_wrap_columns(&mut self.state, width, scale);
         }
@@ -11921,11 +11957,13 @@ impl App {
         }
 
         let (width, height) = renderer.size();
+        // `scale()` spelled out: the renderer is borrowed. Keep the two the same.
         let scale = self
             .window
             .as_ref()
             .map(|window| window.scale_factor() as f32)
-            .unwrap_or(1.0);
+            .unwrap_or(1.0)
+            * self.state.chrome.zoom.factor();
         // Opening or closing the sidebar changes how wide the code is, and any action can do that.
         // Constant work, so it is simply asked every frame rather than at each of those actions.
         fit_wrap_columns(&mut self.state, width as f32, scale);
@@ -13340,7 +13378,7 @@ mod wiring_tests {
         app
     }
 
-    /// Down to Appearance › Colours and type › Font size, then three steps up, by the keys.
+    /// Down to Accessibility › Size › Font size, then three steps up, by the keys.
     fn three_font_size_steps(app: &mut App) -> Vec<std::time::Instant> {
         app.press(Key::named(KeyCode::Down));
         assert_eq!(
@@ -13369,7 +13407,7 @@ mod wiring_tests {
         // until the pause has run from the *last* of them, so clicking on is never interrupted by a
         // write of a value about to be replaced.
         let dir = scratch("settings-autosave");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         let init = app.config_dir.join("init.lua");
         let size = app.state.typography.code_size;
 
@@ -13712,7 +13750,7 @@ mod wiring_tests {
         // A file where the config directory should be makes the write fail for every user on every
         // platform; a read-only directory does not stop root, and CI is sometimes root.
         let dir = scratch("settings-unwritable");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         std::fs::write(dir.join("blocked"), "").unwrap();
         app.config_dir = dir.join("blocked").join("dacode");
 
@@ -13766,7 +13804,7 @@ mod wiring_tests {
     fn leaving_with_a_settings_change_still_waiting_writes_it() {
         // Quitting inside the pause must not drop the change the pause was waiting to write.
         let dir = scratch("settings-quit");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         let size = app.state.typography.code_size;
         three_font_size_steps(&mut app);
 
@@ -14256,7 +14294,7 @@ mod wiring_tests {
         // mouse, which only cycled upwards, so − raised the font size.
         use dacode::settings_ui::Field;
         let dir = scratch("settings-stepper");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         let size = app.state.typography.code_size;
         let (down, up) = page_row(&app, Field::FontSize)
             .stepper
@@ -14299,7 +14337,7 @@ mod wiring_tests {
         // Every auto-save came back through the watcher as an outside edit: a reload that walked
         // PATH for the report, reset the keymap and said "config reloaded" after every change.
         let dir = scratch("settings-own-write");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         let sentinel = vec![dacode::settings_ui::ServerRow {
             language: "Sentinel".into(),
             program: "untouched".into(),
@@ -14367,6 +14405,35 @@ mod wiring_tests {
             Some(app.state.line_numbers.name()),
             "the setting changed on the page is"
         );
+    }
+
+    #[test]
+    fn ctrl_equals_zooms_the_whole_interface_in_both_grammars_and_is_kept() {
+        // The keys every application zooms with did nothing at all: the only binding was Vim's
+        // plain `=`, and it stepped the code font, which stops at 18 px and leaves the menus and
+        // panels as they were. Someone who needed everything larger was raising the desktop's
+        // scale to get it.
+        use dacode::chrome::Zoom;
+        use dacode::settings_ui::Field;
+        for modal in [true, false] {
+            let dir = scratch(&format!("interface-zoom-{modal}"));
+            let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+            app.grammar.set_modal(modal);
+            app.state.modal = modal;
+            let before = app.scale();
+            app.press(Key::ctrl('='));
+            assert!((app.scale() - before * 1.1).abs() < 1e-4, "modal {modal}");
+            assert!(
+                app.settings_touched.contains(&Field::InterfaceZoom),
+                "a zoom someone needs is written, not lost at the next start"
+            );
+            app.press(Key::ctrl('0'));
+            assert_eq!(app.scale(), before);
+            for _ in 0..40 {
+                app.press(Key::ctrl('-'));
+            }
+            assert_eq!(app.state.chrome.zoom.percent(), Zoom::MIN, "and it stops");
+        }
     }
 
     #[test]
@@ -14556,7 +14623,7 @@ mod wiring_tests {
         // written stays, and is then written on top.
         use dacode::settings_ui::Field;
         let dir = scratch("settings-outside-edit");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         let chosen = app.state.typography.code_size + 1.0;
         step_on_page(&mut app, Field::FontSize);
         let changed = app.settings_changed_at.unwrap();
@@ -14585,7 +14652,7 @@ mod wiring_tests {
         // page over it reverted the user's 17.0 to 14.5, live and in their file.
         use dacode::settings_ui::Field;
         let dir = scratch("settings-newer-hand-edit");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         step_on_page(&mut app, Field::FontSize);
         let changed = app.settings_changed_at.unwrap();
 
@@ -14617,7 +14684,7 @@ mod wiring_tests {
         // change to DaCode's own default. Taken out, the file says only what the user chose.
         use dacode::settings_ui::Field;
         let dir = scratch("settings-reset-removes");
-        let mut app = with_settings(&dir, dacode::settings_ui::Category::Appearance);
+        let mut app = with_settings(&dir, dacode::settings_ui::Category::Accessibility);
         let mut configured = app.state.setting_values();
         configured.font_size = 15.0;
         let init = app.config_dir.join("init.lua");

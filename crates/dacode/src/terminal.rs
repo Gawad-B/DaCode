@@ -116,8 +116,11 @@ pub fn route(key: Key) -> KeyRoute {
 }
 
 /// The commands a focused terminal keeps a key for.
-const TERMINAL_COMMANDS: [Action; 6] = [
+const TERMINAL_COMMANDS: [Action; 9] = [
     Action::ToggleTerminal,
+    Action::ZoomIn,
+    Action::ZoomOut,
+    Action::ZoomReset,
     Action::TerminalCopy,
     Action::TerminalPaste,
     Action::ToggleCommandPalette,
@@ -138,6 +141,12 @@ fn built_in(key: Key) -> KeyRoute {
         KeyCode::Char('p') if key.shift => Some(Action::ToggleCommandPalette),
         KeyCode::PageDown if !key.shift => Some(Action::NextTerminal),
         KeyCode::PageUp if !key.shift => Some(Action::PreviousTerminal),
+        // Zoom works wherever the keys are, or the person who needs it larger finds it stops
+        // working the moment they click into the shell. No shell binds these: readline's undo is
+        // `ctrl-_`, which arrives as a different key.
+        KeyCode::Char('=') | KeyCode::Char('+') => Some(Action::ZoomIn),
+        KeyCode::Char('-') if !key.shift => Some(Action::ZoomOut),
+        KeyCode::Char('0') => Some(Action::ZoomReset),
         _ => None,
     };
     match action {

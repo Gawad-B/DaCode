@@ -846,6 +846,9 @@ pub const COMMANDS: &[Command] = &[
     ),
     command("increase_font_size", "bigger text", View, "", ""),
     command("decrease_font_size", "smaller text", View, "", ""),
+    command("zoom_in", "zoom in — everything bigger", View, "<c-=>", "<c-=>"),
+    command("zoom_out", "zoom out — everything smaller", View, "<c-->", "<c-->"),
+    command("zoom_reset", "actual size", View, "<c-0>", "<c-0>"),
     command("menu", "the menu bar", View, "<f10>", "<f10>"),
     command(
         "context_menu",

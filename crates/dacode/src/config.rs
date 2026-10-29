@@ -166,6 +166,7 @@ pub struct Settings {
     pub autosave: bool,
     /// How much of the desktop shows through the window, as a percentage. 0 is opaque.
     pub transparency: u8,
+    pub interface_zoom: crate::chrome::Zoom,
     /// How much the interface moves.
     pub animations: crate::motion::Animations,
     /// Whether new releases are checked for, downloaded and offered.
@@ -220,6 +221,7 @@ impl Default for Settings {
             // Opaque: see-through is a taste, and on a desktop without a compositor it is not
             // available at all.
             transparency: 0,
+            interface_zoom: crate::chrome::Zoom::default(),
             animations: crate::motion::Animations::Full,
             // On: reinstalling by hand for every release is the thing this exists to end, and
             // nothing is installed without a restart the user presses.
@@ -358,6 +360,10 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     if let Some(percent) = config.transparency {
         settings.transparency = percent.min(90);
         settings.sources.insert("transparency".into(), from_config);
+    }
+    if let Some(percent) = config.interface_zoom {
+        settings.interface_zoom = crate::chrome::Zoom::new(percent);
+        settings.sources.insert("interface_zoom".into(), from_config);
     }
     if let Some(name) = &config.animations {
         // `dacode-lua` has already refused a bad spelling and said so; this only fails if the two lists

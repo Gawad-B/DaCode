@@ -62,6 +62,8 @@ pub enum Field {
     Animations,
     /// Whether new releases are fetched and offered: automatic, notify or off.
     Updates,
+    /// Everything drawn larger or smaller than the desktop's scale: `ctrl-=` and `ctrl--`.
+    InterfaceZoom,
 }
 
 /// The index a field's glow is keyed by (`motion::Key::Glow`): its place in [`Field::ALL`], a set
@@ -74,7 +76,7 @@ pub fn glow_index(field: Field) -> u32 {
 }
 
 impl Field {
-    pub const ALL: [Field; 14] = [
+    pub const ALL: [Field; 15] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -89,6 +91,7 @@ impl Field {
         Field::Transparency,
         Field::Animations,
         Field::Updates,
+        Field::InterfaceZoom,
     ];
 
     pub fn name(self) -> &'static str {
@@ -107,6 +110,7 @@ impl Field {
             Field::Transparency => "transparency",
             Field::Animations => "animations",
             Field::Updates => "updates",
+            Field::InterfaceZoom => "interface_zoom",
         }
     }
 }
@@ -332,6 +336,7 @@ pub struct Values {
     pub transparency: u8,
     pub animations: crate::motion::Animations,
     pub updates: crate::update::Policy,
+    pub interface_zoom: crate::chrome::Zoom,
 }
 
 impl Values {
@@ -370,6 +375,7 @@ impl Values {
             },
             Field::Animations => self.animations.name().to_string(),
             Field::Updates => self.updates.name().to_string(),
+            Field::InterfaceZoom => format!("{}%", self.interface_zoom.percent()),
         }
     }
 
@@ -390,6 +396,7 @@ impl Values {
             Field::FontSize => self.font_size >= Typography::MAX_CODE_SIZE,
             Field::TabWidth => self.tab_width >= Self::MAX_TAB_WIDTH,
             Field::Transparency => self.transparency >= Self::MAX_TRANSPARENCY,
+            Field::InterfaceZoom => self.interface_zoom.percent() >= crate::chrome::Zoom::MAX,
             _ => false,
         };
         if at_limit {
@@ -397,6 +404,9 @@ impl Values {
                 Field::FontSize => self.font_size = Typography::MIN_CODE_SIZE,
                 Field::TabWidth => self.tab_width = Self::MIN_TAB_WIDTH,
                 Field::Transparency => self.transparency = 0,
+                Field::InterfaceZoom => {
+                    self.interface_zoom = crate::chrome::Zoom::new(crate::chrome::Zoom::MIN)
+                }
                 _ => {}
             }
             return;
@@ -487,6 +497,7 @@ impl Values {
                     .clamp(0, Self::MAX_TRANSPARENCY as i32)
                     as u8;
             }
+            Field::InterfaceZoom => self.interface_zoom = self.interface_zoom.step(delta),
         }
     }
 }
@@ -529,6 +540,7 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
         Field::Transparency => values.transparency.to_string(),
         Field::Animations => format!("\"{}\"", values.animations.name()),
         Field::Updates => format!("\"{}\"", values.updates.name()),
+        Field::InterfaceZoom => values.interface_zoom.percent().to_string(),
     };
     Some(format!("  {} = {value},", field.name()))
 }
@@ -749,6 +761,9 @@ use std::cell::{Ref, RefCell};
 pub enum Category {
     #[default]
     Appearance,
+    /// Interface zoom, the code font size and motion: what someone who finds the editor hard to
+    /// read looks for, in one place.
+    Accessibility,
     Editor,
     Files,
     Keys,
@@ -757,8 +772,9 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 6] = [
+    pub const ALL: [Category; 7] = [
         Category::Appearance,
+        Category::Accessibility,
         Category::Editor,
         Category::Files,
         Category::Keys,
@@ -774,6 +790,7 @@ impl Category {
     pub fn title(self) -> &'static str {
         match self {
             Category::Appearance => "Appearance",
+            Category::Accessibility => "Accessibility",
             Category::Editor => "Editor",
             Category::Files => "Files",
             Category::Keys => "Keys",
@@ -804,12 +821,25 @@ pub struct Section {
 // called "Theme" was the kind of sub-header that says nothing, which is what was asked to go.
 const APPEARANCE: &[Section] = &[
     Section {
-        title: "Colours and type",
-        fields: &[Field::Theme, Field::FontSize],
+        title: "Colours",
+        fields: &[Field::Theme],
     },
     Section {
         title: "Window",
-        fields: &[Field::Transparency, Field::Animations],
+        fields: &[Field::Transparency],
+    },
+];
+
+// What someone who finds the interface too small, or the motion too much, looks for — gathered on
+// one page rather than left under the names an editor's author would file them by.
+const ACCESSIBILITY: &[Section] = &[
+    Section {
+        title: "Size",
+        fields: &[Field::InterfaceZoom, Field::FontSize],
+    },
+    Section {
+        title: "Motion",
+        fields: &[Field::Animations],
     },
 ];
 
@@ -853,6 +883,7 @@ const FILES: &[Section] = &[
 pub fn sections(category: Category) -> &'static [Section] {
     match category {
         Category::Appearance => APPEARANCE,
+        Category::Accessibility => ACCESSIBILITY,
         Category::Editor => EDITOR,
         Category::Files => FILES,
         Category::Keys | Category::Languages | Category::Import => &[],
@@ -956,6 +987,7 @@ impl Field {
             Field::Transparency => "Transparency",
             Field::Animations => "Animations",
             Field::Updates => "Updates",
+            Field::InterfaceZoom => "Interface zoom",
         }
     }
 
@@ -1015,6 +1047,10 @@ impl Field {
                 "How much the interface moves. Full: panels and popups spring into place. \
                  Reduced: the same movement with no overshoot. Off: everything appears at once."
             }
+            Field::InterfaceZoom => {
+                "Draws everything larger or smaller — code, menus, panels and this page — on top \
+                 of the desktop's own scale. Ctrl+= and Ctrl+- change it anywhere; Ctrl+0 resets."
+            }
             Field::Updates => {
                 "Automatic: new releases are checked for daily, downloaded and verified, then \
                  offered as a restart. Notify: only told. Off: never checked unless asked."
@@ -1031,7 +1067,9 @@ impl Field {
             | Field::InlayHints
             | Field::InlineBlame
             | Field::Autosave => Control::Switch,
-            Field::FontSize | Field::TabWidth | Field::Transparency => Control::Stepper,
+            Field::FontSize | Field::TabWidth | Field::Transparency | Field::InterfaceZoom => {
+                Control::Stepper
+            }
             Field::Theme => Control::Dropdown(&THEMES),
             Field::LineNumbers => Control::Choice(&LINE_NUMBERS),
             Field::Animations => Control::Choice(&ANIMATIONS),
@@ -1081,6 +1119,7 @@ impl Values {
             transparency: settings.transparency,
             animations: settings.animations,
             updates: settings.updates,
+            interface_zoom: settings.interface_zoom,
         }
     }
 
@@ -1101,6 +1140,7 @@ impl Values {
             Field::Transparency => self.transparency != defaults.transparency,
             Field::Animations => self.animations != defaults.animations,
             Field::Updates => self.updates != defaults.updates,
+            Field::InterfaceZoom => self.interface_zoom != defaults.interface_zoom,
         }
     }
 
@@ -1128,6 +1168,7 @@ impl Values {
             Field::Transparency => self.transparency = defaults.transparency,
             Field::Animations => self.animations = defaults.animations,
             Field::Updates => self.updates = defaults.updates,
+            Field::InterfaceZoom => self.interface_zoom = defaults.interface_zoom,
         }
     }
 }
@@ -1952,7 +1993,10 @@ impl Page {
     fn groups(&self, category: Category, modal: bool) -> Vec<(&'static str, Vec<Entry>)> {
         let lines = |lines: Vec<Line>| lines.into_iter().map(Entry::Line).collect::<Vec<_>>();
         match category {
-            Category::Appearance | Category::Editor | Category::Files => sections(category)
+            Category::Appearance
+            | Category::Accessibility
+            | Category::Editor
+            | Category::Files => sections(category)
                 .iter()
                 .map(|section| {
                     (
@@ -2930,6 +2974,7 @@ mod tests {
             transparency: 0,
             animations: crate::motion::Animations::Full,
             updates: crate::update::Policy::Automatic,
+            interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
             inlay_hints: false,
             inline_blame: true,
@@ -3007,6 +3052,7 @@ mod tests {
             transparency: 0,
             animations: crate::motion::Animations::Full,
             updates: crate::update::Policy::Automatic,
+            interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
             inlay_hints: false,
             inline_blame: true,
@@ -3320,6 +3366,7 @@ mod click_tests {
             transparency: 0,
             animations: crate::motion::Animations::Full,
             updates: crate::update::Policy::Automatic,
+            interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
             inlay_hints: false,
             inline_blame: true,

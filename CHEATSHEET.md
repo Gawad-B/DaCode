@@ -328,6 +328,7 @@ rewritten, and a setting you did not touch is never written.
 | `zh` `zl` | with wrap off, look left / right along a long line — 8 columns a press |
 | `gt` | toggle light / dark |
 | `=` `+` · `-` | larger · smaller font |
+| `ctrl-=` · `ctrl--` · `ctrl-0` | zoom everything in · out · back to 100%, in any grammar and in the terminal |
 
 ## Commands
 

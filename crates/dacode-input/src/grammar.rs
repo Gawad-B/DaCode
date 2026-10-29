@@ -328,6 +328,11 @@ impl Grammar {
                 KeyCode::Char('s') if key.shift => Some(Action::SaveAs),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
+                // Every application's zoom keys. `+` is what arrives when shift is needed to type
+                // it, which on a US layout it is.
+                KeyCode::Char('=') | KeyCode::Char('+') => Some(Action::ZoomIn),
+                KeyCode::Char('-') => Some(Action::ZoomOut),
+                KeyCode::Char('0') => Some(Action::ZoomReset),
                 KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
                 KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
                 KeyCode::Char('h') => Some(Action::StartReplace),
@@ -470,6 +475,11 @@ impl Grammar {
                 KeyCode::Char('r') => Some(Action::Redo),
                 KeyCode::Char('s') => Some(Action::Save),
                 KeyCode::Char('q') => Some(Action::Quit),
+                // Every application's zoom keys. `+` is what arrives when shift is needed to type
+                // it, which on a US layout it is.
+                KeyCode::Char('=') | KeyCode::Char('+') => Some(Action::ZoomIn),
+                KeyCode::Char('-') => Some(Action::ZoomOut),
+                KeyCode::Char('0') => Some(Action::ZoomReset),
                 KeyCode::Char('e') if key.shift => Some(Action::FocusExplorer),
                 KeyCode::Char('e') => Some(Action::ToggleTree),
                 // Only shifted: Vim's own `ctrl-g` (file info) is left where it is.

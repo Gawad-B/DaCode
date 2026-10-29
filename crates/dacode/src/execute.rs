@@ -155,6 +155,9 @@ pub fn execute(
             state.typography =
                 dacode_theme::Typography::with_code_size(state.typography.code_size - 1.0);
         }
+        Action::ZoomIn => state.chrome.zoom = state.chrome.zoom.step(1),
+        Action::ZoomOut => state.chrome.zoom = state.chrome.zoom.step(-1),
+        Action::ZoomReset => state.chrome.zoom = crate::chrome::Zoom::default(),
 
         // The app saves, not the executor: a save also clears the recovery copy, tells the watcher
         // the write was its own, checks nobody else changed the file, and may start a format. This
