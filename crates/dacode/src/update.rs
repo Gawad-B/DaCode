@@ -584,7 +584,14 @@ pub const NO_CURL: &str = "checking for updates needs curl, which is not install
 pub struct Curl;
 
 impl Curl {
-    fn run(&self, url: &str, extra: &[&std::ffi::OsStr], seconds: u32) -> Result<Vec<u8>, String> {
+    /// `seconds` bounds the whole request; `None` bounds only a stall, for a download whose size
+    /// says nothing about how long it may honestly take.
+    fn run(
+        &self,
+        url: &str,
+        extra: &[&std::ffi::OsStr],
+        seconds: Option<u32>,
+    ) -> Result<Vec<u8>, String> {
         let Some(curl) = dacode_lsp::resolve("curl") else {
             return Err(NO_CURL.to_string());
         };
@@ -593,7 +600,17 @@ impl Curl {
         // a redirect that downgraded would be followed silently otherwise.
         command
             .args(["-fsSL", "--proto", "=https", "--proto-redir", "=https"])
-            .args(["--max-time", &seconds.to_string()])
+            .args(match seconds {
+                Some(seconds) => vec!["--max-time".to_string(), seconds.to_string()],
+                // Under a kilobyte a second for a whole minute is a stall. A fixed ceiling was
+                // fifteen minutes, which a 118 MB clangd on a slow line runs straight into.
+                None => vec![
+                    "--speed-limit".to_string(),
+                    "1024".to_string(),
+                    "--speed-time".to_string(),
+                    "60".to_string(),
+                ],
+            })
             .args(["-H", "Accept: application/vnd.github+json"])
             .args([
                 "-H",
@@ -616,12 +633,12 @@ impl Curl {
 
 impl Fetch for Curl {
     fn text(&self, url: &str) -> Result<String, String> {
-        let bytes = self.run(url, &[], 30)?;
+        let bytes = self.run(url, &[], Some(30))?;
         String::from_utf8(bytes).map_err(|_| "GitHub's answer was not text".to_string())
     }
 
     fn file(&self, url: &str, to: &Path) -> Result<(), String> {
-        self.run(url, &["-o".as_ref(), to.as_os_str()], 900)
+        self.run(url, &["-o".as_ref(), to.as_os_str()], None)
             .map(|_| ())
     }
 }
