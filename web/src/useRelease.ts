@@ -53,23 +53,23 @@ export type Release = {
 const ASSETS = "https://github.com/Gawad-B/DaCode/releases/download";
 
 const RELEASE: Release = {
-  version: "1.1.0",
-  published: "2026-10-28",
+  version: "1.1.1",
+  published: "2026-10-29",
   assets: {
     "dacode-setup.exe": {
-      url: `${ASSETS}/v1.1.0/dacode-setup.exe`,
+      url: `${ASSETS}/v1.1.1/dacode-setup.exe`,
       size: 8533988,
     },
-    "dacode_1.1.0_amd64.deb": {
-      url: `${ASSETS}/v1.1.0/dacode_1.1.0_amd64.deb`,
+    "dacode_1.1.1_amd64.deb": {
+      url: `${ASSETS}/v1.1.1/dacode_1.1.1_amd64.deb`,
       size: 10658444,
     },
-    "dacode-1.1.0-1.x86_64.rpm": {
-      url: `${ASSETS}/v1.1.0/dacode-1.1.0-1.x86_64.rpm`,
+    "dacode-1.1.1-1.x86_64.rpm": {
+      url: `${ASSETS}/v1.1.1/dacode-1.1.1-1.x86_64.rpm`,
       size: 10552509,
     },
-    "dacode-1.1.0-x86_64-linux.tar.gz": {
-      url: `${ASSETS}/v1.1.0/dacode-1.1.0-x86_64-linux.tar.gz`,
+    "dacode-1.1.1-x86_64-linux.tar.gz": {
+      url: `${ASSETS}/v1.1.1/dacode-1.1.1-x86_64-linux.tar.gz`,
       size: 10660762,
     },
   },

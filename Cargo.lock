@@ -672,7 +672,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dacode"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-buffer"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "dacode-text",
  "proptest",
@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-display"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "dacode-text",
  "proptest",
@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-import"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "dacode-input",
@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-input"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "dacode-text",
  "dacode-theme",
@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-lsp"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "dacode-text",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-lua"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "dacode-input",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-project"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "dacode-text",
@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-render"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-syntax"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "criterion",
  "dacode-text",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-terminal"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "alacritty_terminal",
  "dacode-input",
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-text"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "proptest",
  "ropey",
@@ -830,7 +830,7 @@ dependencies = [
 
 [[package]]
 name = "dacode-theme"
-version = "1.1.0"
+version = "1.1.1"
 
 [[package]]
 name = "data-url"

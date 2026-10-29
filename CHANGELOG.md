@@ -9,6 +9,43 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-29
+
+### Added
+
+- **Formatters and language servers download themselves.** `dacode tools install pyright ruff`, or
+  **install a language server** from the palette, or a click on a missing row of the Languages
+  settings page: DaCode fetches a pinned release of rust-analyzer, ruff, clangd,
+  lua-language-server, stylua, pyright, the TypeScript server or prettier for 64-bit or ARM64
+  Linux or 64-bit Windows, checks it against a SHA-256 built into DaCode, and uses it. The npm ones
+  run on a copy of Node DaCode keeps for them, so nothing has to be installed first. A server's
+  install brings its formatter. Ones you installed yourself are always used first.
+- **Images, PDFs and office documents open in a tab.** Pictures fit or zoom over a checkerboard,
+  PDF pages render as you scroll to them, and `.docx`, `.xlsx`, `.pptx` and their OpenDocument
+  cousins show their text and tables, read only. Nothing in a viewed tab can be saved over the file.
+  An SVG still opens as text; **File ▸ show as picture** switches it.
+- **Zoom the whole interface** with `ctrl-=`, `ctrl--` and `ctrl-0`, from 50% to 300%, in either
+  keymap and inside the terminal. It is kept between sessions, and a new **Accessibility** settings
+  page holds it beside the font size and animations.
+- **Rainbow CSV.** Each column of a `.csv`, `.tsv` or `.psv` file has a colour of its own, quoted
+  commas and all, and the status line names the column under the caret from the header row.
+
+### Changed
+
+- **Run runs the open file.** It used to know only whole projects, so a Python script on its own
+  was told there was nothing to run. It now runs the file by its kind — `python3`, `node`, `go run`,
+  a compiler and then the program — saving it first, and keeps the project's command for a file
+  that belongs to the project's toolchain.
+- **The terminal folds to its tab strip while the Settings tab is in front**, so it no longer covers
+  the settings; click it to bring it back at its height.
+- Downloads, the updater's included, give up when they stall for a minute rather than after a fixed
+  fifteen minutes, which a large download on a slow line reached while still making progress.
+
+### Fixed
+
+- **Closing a terminal tab could leave its shell running** until DaCode quit. bash can take the
+  hang-up without exiting; a shell still there two seconds after it is now ended.
+
 ## [1.1.0] - 2026-10-28
 
 ### Added
@@ -627,7 +664,8 @@ language-server support, drawn directly on the GPU with wgpu.
 - Packaging for deb, rpm, Windows and a portable tarball, with a desktop entry and window icon that
   the desktop actually picks up.
 
-[Unreleased]: https://github.com/Gawad-B/DaCode/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Gawad-B/DaCode/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/Gawad-B/DaCode/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Gawad-B/DaCode/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Gawad-B/DaCode/compare/v0.4.3...v1.0.0
 [0.4.3]: https://github.com/Gawad-B/DaCode/compare/v0.4.2...v0.4.3

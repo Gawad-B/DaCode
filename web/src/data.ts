@@ -171,64 +171,50 @@ export const SHOTS: { id: ShotId; label: string; bullets: string[] }[] = [
 ];
 
 /*
- * What the current release added, from the changelog's 1.1.0 section. Each entry
+ * What the current release added, from the changelog's 1.1.1 section. Each entry
  * is a claim about the download above.
  */
 export const OVERHAUL: { title: string; bullets: string[] }[] = [
   {
-    title: "Source control, as in VSCode",
+    title: "Servers that install themselves",
     bullets: [
-      "Ctrl+Shift+G: stage, unstage, discard and commit from the sidebar.",
-      "Diffs in a tab, a branch picker, pull, push, stash and history.",
+      "pyright, rust-analyzer, clangd, ruff, prettier and more, downloaded for you.",
+      "No npm, pip or rustup needed first; every download is checksummed.",
     ],
   },
   {
-    title: "A terminal under the code",
+    title: "Images and PDFs in a tab",
     bullets: [
-      "Ctrl+T opens your shell in the project folder, in tabs.",
-      "Drag to resize; select and copy; htop and vim get the mouse.",
+      "Zoom and scroll pictures and PDF pages beside your code.",
+      "Word, Excel and PowerPoint files show their text, read only.",
     ],
   },
   {
-    title: "Who wrote this line",
+    title: "Zoom everything",
     bullets: [
-      "Blame after the caret's line, or a column beside the numbers.",
-      "Commits made in a terminal show up at once.",
+      "Ctrl+= and Ctrl+- scale menus, panels and code together.",
+      "A new Accessibility page in Settings keeps it.",
     ],
   },
   {
-    title: "Select this function",
+    title: "Rainbow CSV",
     bullets: [
-      "af, at, aa, ac — function, type, argument, comment. 2af goes out one.",
-      "Shift+Alt+→ grows a selection by syntax, Shift+Alt+← shrinks it.",
+      "A colour for each column, quoted commas and all.",
+      "The status line names the column under the caret.",
     ],
   },
   {
-    title: "Indentation from the syntax tree",
+    title: "Run the file you have open",
     bullets: [
-      "Enter and closing brackets follow tree-sitter's rules.",
-      "Rust, Python, JS/TS, C/C++, HTML and CSS.",
+      "▶ runs a lone Python, Node, Go or C file in the terminal.",
+      "A file in a project still runs the project.",
     ],
   },
   {
-    title: "Rebind keys in Settings",
+    title: "Fixed",
     bullets: [
-      "Click a command on the Keys page and press the new key.",
-      "Conflicts are named; every menu shows the key you chose.",
-    ],
-  },
-  {
-    title: "Updates itself",
-    bullets: [
-      "Checks once a day, downloads and verifies in the background.",
-      "Restart to update — from now on, no reinstalling by hand.",
-    ],
-  },
-  {
-    title: "Keys you already know",
-    bullets: [
-      "Ctrl+W closes the file. Ctrl+T toggles the terminal.",
-      "Window commands moved under Ctrl+K.",
+      "Closing a terminal tab no longer leaves its shell running.",
+      "The terminal steps aside while Settings is open.",
     ],
   },
 ];
@@ -286,8 +272,13 @@ export const RELEASES: ReleaseCard[] = [
     state: "shipped",
   },
   {
-    name: "1.1.0 · the missing pieces ←",
+    name: "1.1.0 · the missing pieces",
     body: "Source control, a terminal, blame, text objects, key rebinding, self-update.",
+    state: "shipped",
+  },
+  {
+    name: "1.1.1 · nothing to install first ←",
+    body: "Servers and formatters download themselves; images and PDFs in a tab; zoom.",
     state: "current",
   },
   {
