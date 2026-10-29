@@ -78,7 +78,13 @@
   /* The logo's amber, from `Theme::brand()` in dacode-theme: "Da" in the wordmark. */
   --brand: oklch(0.8134 0.1404 80.2);
 
-  --pad-x: 56px;
+  /*
+    The side padding grows with the window so content never runs wider than
+    about 1240px: a line of 12px monospace across a 1440px screen is two
+    hundred characters, and nobody reads that. Backgrounds and rules still run
+    edge to edge; only what is on them is held in.
+  */
+  --pad-x: max(56px, calc((100vw - 1240px) / 2));
 
   /* Under 80ms, per the handoff: ambient tints may cross-fade, nothing else. */
   --tint: 70ms linear;
@@ -278,6 +284,19 @@ em {
   color: var(--accent-hover);
 }
 
+/* The one filled control in the bar: the thing the page exists to get you to do. */
+.nav-cta {
+  margin-left: 12px;
+  padding: 9px 16px;
+  background: var(--accent);
+  color: var(--black);
+  transition: background-color 140ms ease;
+}
+
+.nav-cta:hover {
+  background: var(--accent-hover);
+}
+
 .chip {
   color: var(--ink-faint);
   border: 1px solid var(--rule);
@@ -355,18 +374,19 @@ em {
 
 /* ── The name and the mark ───────────────────────────────────────────────── */
 
-/* Scoped to the section: the cards use `.name` for their titles too, and an unscoped rule gave
-   every one of them this section's padding and grid. */
-.section.name {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 56px;
-  align-items: center;
-  padding: 62px var(--pad-x) 68px;
+/* The name, the mark and the identity specs are one band now, two rows. */
+.about-name {
+  padding: 96px var(--pad-x);
+  display: flex;
+  flex-direction: column;
+  gap: 64px;
 }
 
-.section.name > * {
-  min-width: 0;
+.name-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 56px;
+  align-items: center;
 }
 
 .name-mark {
@@ -375,24 +395,30 @@ em {
   border: 1px solid var(--rule);
 }
 
-.section.name h2 {
-  font-family: var(--serif);
-  font-size: clamp(26px, 2.6vw, 34px);
-  letter-spacing: -0.03em;
-  font-weight: 400;
-  margin: 0 0 24px;
+.name-text .section-head {
+  padding-bottom: 22px;
 }
 
-.section.name .bullets {
-  font-size: 15px;
+.name-text .bullets {
+  font-size: 14.5px;
   max-width: 62ch;
 }
 
 /* ── Hero ────────────────────────────────────────────────────────────────── */
 
+/*
+  One promise, one action, and the product. The copy column is held to a
+  reading measure; the screenshot takes the rest and bleeds off the right
+  edge, so the first screen is mostly editor rather than mostly text.
+*/
 .hero {
   display: grid;
-  grid-template-columns: 1.15fr 1fr;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  gap: 56px;
+  align-items: center;
+  padding: 88px 0 88px var(--pad-x);
+  border-bottom: 1px solid var(--rule);
+  overflow: hidden;
 }
 
 /*
@@ -404,16 +430,18 @@ em {
 .hero > *,
 .split > *,
 .scope > *,
-.hero-left > *,
+.get > *,
+.cov-body > *,
+.hero-copy > *,
 .mode-panel > * {
   min-width: 0;
 }
 
-.hero-left {
-  padding: 92px var(--pad-x) 80px;
+.hero-copy {
   display: flex;
   flex-direction: column;
-  gap: 34px;
+  gap: 28px;
+  max-width: 560px;
 }
 
 /*
@@ -424,7 +452,7 @@ em {
 .headline {
   margin: 0;
   font-family: var(--serif);
-  font-size: clamp(30px, 3.7vw, 54px);
+  font-size: clamp(32px, 3.6vw, 52px);
   line-height: 1.08;
   letter-spacing: -0.035em;
   text-wrap: balance;
@@ -434,38 +462,46 @@ em {
   color: var(--accent);
 }
 
-.project-note {
-  display: grid;
-  gap: 10px;
-  max-width: 46ch;
-  padding: 14px 16px;
-  background: var(--accent-tint);
-  border: 1px solid var(--accent-deep);
-  border-left: 3px solid var(--accent);
-}
-
-.project-note .label {
-  color: var(--accent-soft);
-}
-
-.project-note ul {
+.hero-lede {
   margin: 0;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+  max-width: 48ch;
+  text-wrap: pretty;
 }
 
-.hero-blurb {
-  font-size: 15px;
-  max-width: 54ch;
-}
-
-.specs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 40px;
-  font-family: var(--sans);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+.hero-note {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
   color: var(--ink-faint);
+  max-width: 52ch;
+}
+
+.hero-note a {
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--rule-strong);
+  transition: color 140ms ease;
+}
+
+.hero-note a:hover {
+  color: var(--accent-hover);
+}
+
+.hero-shot {
+  border: 1px solid var(--rule-strong);
+  border-right: none;
+  background: var(--bg-panel);
+  padding: 1px 0 1px 1px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(20, 184, 166, 0.08);
+}
+
+.hero-shot img {
+  display: block;
+  width: 100%;
+  min-width: 640px;
+  height: auto;
 }
 
 /* ── Download ────────────────────────────────────────────────────────────── */
@@ -605,14 +641,27 @@ em {
   color: var(--ink);
 }
 
+.dl-more {
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  transition: color 140ms ease;
+}
+
+.dl-more:hover {
+  color: var(--accent-hover);
+}
+
 /* ── Mode panel ──────────────────────────────────────────────────────────── */
 
+/* A card inside the Keys section now, next to the grammar it demonstrates. */
 .mode-panel {
-  padding: 56px var(--pad-x) 48px;
+  margin-top: 10px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 18px;
   background: var(--bg-alt);
+  border: 1px solid var(--rule);
   transition: background-color var(--tint);
 }
 
@@ -749,11 +798,12 @@ em {
 
 .triple {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 56px;
+  padding: 88px var(--pad-x);
 }
 
 .principle {
-  padding: 54px 44px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -784,14 +834,19 @@ em {
 
 .split {
   display: grid;
-  grid-template-columns: 1fr 1.15fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 72px;
+  padding: 96px var(--pad-x);
 }
 
 .split-left {
-  padding: 58px var(--pad-x);
   display: flex;
   flex-direction: column;
   gap: 22px;
+}
+
+.split-left .section-head {
+  padding-bottom: 6px;
 }
 
 .split-left h2 {
@@ -804,9 +859,9 @@ em {
 }
 
 .split-right {
-  padding: 58px var(--pad-x);
   display: flex;
   flex-direction: column;
+  padding-top: 8px;
 }
 
 .keytable {
@@ -867,23 +922,7 @@ em {
 /* ── Screenshots ─────────────────────────────────────────────────────────── */
 
 .shots {
-  padding: 62px var(--pad-x) 68px;
-}
-
-.shots-head {
-  display: flex;
-  align-items: baseline;
-  gap: 22px;
-  flex-wrap: wrap;
-  padding-bottom: 30px;
-}
-
-.shots-head h2 {
-  font-family: var(--serif);
-  font-size: clamp(26px, 2.6vw, 34px);
-  letter-spacing: -0.03em;
-  font-weight: 400;
-  margin: 0;
+  padding: 96px var(--pad-x);
 }
 
 .shot-tabs {
@@ -959,7 +998,98 @@ em {
 
 .releases,
 .overhaul {
-  padding: 62px var(--pad-x) 68px;
+  padding: 96px var(--pad-x);
+}
+
+.overhaul {
+  background: var(--bg-alt);
+}
+
+/* What is current, beside what is next; the history folded under both. */
+/* Each column carries its own surface, so a short one ends rather than stretching into a slab. */
+.rel-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+}
+
+.rel-now {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rel-now .card {
+  padding: 28px 30px;
+  gap: 12px;
+}
+
+.rel-now .card .name {
+  font-size: 18px;
+}
+
+.rel-now .card .body {
+  font-size: 13.5px;
+}
+
+.rel-now a {
+  font-size: 12.5px;
+  color: var(--accent);
+}
+
+.rel-next {
+  background: var(--bg-alt);
+  border: 1px solid var(--rule);
+  padding: 28px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.rel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.rel-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 15em) minmax(0, 1fr);
+  gap: 24px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.rel-list li:last-child {
+  border-bottom: none;
+}
+
+.rel-next .rel-list li {
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.rel-name {
+  color: var(--ink);
+}
+
+.rel-body {
+  color: var(--ink-dim);
+}
+
+.rel-history {
+  margin-top: 28px;
+  border-top: 1px solid var(--rule);
+  padding-top: 12px;
+}
+
+.rel-history .rel-list {
+  padding-top: 8px;
 }
 
 .releases-head {
@@ -1056,171 +1186,731 @@ em {
   color: var(--ink-faint);
 }
 
-/* ── Against VSCode ──────────────────────────────────────────────────────── */
+/* ── Section heads ───────────────────────────────────────────────────────── */
 
-.versus {
-  padding: 62px var(--pad-x) 68px;
+/*
+  Every section opens the same way: a small label saying what kind of thing
+  this is, the heading, and at most one sentence. Repetition is what lets a
+  long page be scanned — the eye learns where to look after the second one.
+*/
+.section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 44px;
+  max-width: 72ch;
 }
 
-.vs-figures {
+.section-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(28px, 3vw, 40px);
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  font-weight: 400;
+}
+
+.eyebrow {
+  color: var(--accent);
+}
+
+.section-sub {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+  text-wrap: pretty;
+}
+
+/* A disclosure: the detail is one click away rather than in the way. */
+details > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--ink-dim);
+  transition: color 140ms ease;
+}
+
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+details > summary::before {
+  content: "+";
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--rule-strong);
+  color: var(--accent);
+  font-size: 12px;
+}
+
+details[open] > summary::before {
+  content: "−";
+}
+
+details > summary:hover {
+  color: var(--ink);
+}
+
+/* ── Proof strip ─────────────────────────────────────────────────────────── */
+
+.proof {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, 1fr) auto;
+  align-items: end;
   gap: 1px;
   background: var(--rule);
-  margin-bottom: 44px;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
 }
 
-.vs-figure {
-  background: var(--bg);
-  padding: 22px 26px 24px;
+.proof-item,
+.proof-more {
+  background: var(--bg-alt);
+  height: 100%;
+  padding: 28px 32px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: background-color 160ms ease;
+}
+
+.proof-item:first-child {
+  padding-left: var(--pad-x);
+}
+
+.proof-more {
+  justify-content: flex-end;
+  padding-right: var(--pad-x);
+  color: var(--accent);
+}
+
+.proof:hover .proof-item,
+.proof:hover .proof-more {
+  background: var(--bg-panel);
+}
+
+.proof-number {
+  font-size: clamp(36px, 4vw, 52px);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  color: var(--accent);
+}
+
+.proof-what {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.proof-detail {
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+/* ── Benchmarks ──────────────────────────────────────────────────────────── */
+
+.versus,
+.coverage {
+  padding: 96px var(--pad-x);
+}
+
+.vs-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.vs-key {
+  display: inline-block;
+  width: 12px;
+  height: 8px;
+  flex: none;
+}
+
+.vs-legend .vs-key + .vs-key,
+.vs-legend .vs-key:not(:first-child) {
+  margin-left: 16px;
+}
+
+/* The chart pair, validated on this surface: accent for DaCode, recessive grey for VSCode. */
+.vs-key.dacode,
+.vs-bar.dacode,
+.vs-dot.dacode,
+.vs-range.dacode {
+  --series: #11a697;
+  background: var(--series);
+}
+
+.vs-key.vscode,
+.vs-bar.vscode,
+.vs-dot.vscode,
+.vs-range.vscode {
+  --series: #6b6b6b;
+  background: var(--series);
+}
+
+.vs-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+}
+
+.vs-card {
+  margin: 0;
+  background: var(--bg-alt);
+  padding: 30px 32px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  min-width: 0;
+}
+
+.vs-card.wide {
+  grid-column: 1 / -1;
+}
+
+.vs-card figcaption {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.vs-number {
-  font-size: clamp(40px, 5vw, 64px);
-  letter-spacing: -0.04em;
-  line-height: 1;
-  color: var(--accent);
+.vs-card h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
-.vs-figure .prose {
-  font-size: 13px;
+.vs-card figcaption p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+  max-width: 78ch;
 }
 
-.vs-table {
+/*
+  The plot leaves a column for the lane names and room at the right for the
+  value printed past the longest bar, so no label is ever clipped by its box.
+*/
+.vs-plot {
+  --names: 96px;
+  --room: 72px;
+  position: relative;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--rule);
+  gap: 14px;
+  padding: 0 var(--room) 30px 0;
 }
 
-.vs-legend {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--rule-soft);
-}
-
-.vs-key {
-  width: 14px;
-  height: 8px;
-  margin-left: 10px;
-}
-
-.vs-key:first-child {
-  margin-left: 0;
-}
-
-.vs-key.ours,
-.vs-bar.ours .vs-fill {
-  background: var(--accent);
-}
-
-.vs-key.theirs,
-.vs-bar.theirs .vs-fill {
-  background: var(--rule-strong);
-}
-
-.vs-row {
+.vs-lane,
+.vs-group {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 2fr) 128px;
-  gap: 28px;
+  grid-template-columns: var(--names) minmax(0, 1fr);
   align-items: center;
-  padding: 16px 0;
-  border-bottom: 1px solid var(--rule-soft);
 }
 
-.vs-what {
+.vs-lane-name {
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+
+.vs-group-bars {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+  gap: 2px;
 }
 
-.vs-label {
+.vs-track {
+  position: relative;
+  height: 22px;
+}
+
+.vs-track.thin {
+  height: 16px;
+}
+
+/*
+  Square at both ends. The chart guidance rounds a bar's data end by 4px, but this page has no
+  rounded corner anywhere and every graphic on it is a rectangle; the brand wins, and the median
+  marker is a square for the same reason.
+*/
+.vs-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 2px;
+  transition: filter 140ms ease;
+}
+
+.vs-bar:hover,
+.vs-bar:focus-visible,
+.vs-range:hover,
+.vs-dot:hover {
+  filter: brightness(1.25);
+}
+
+.vs-notch {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink);
+  box-shadow: 0 0 0 2px var(--bg-alt);
+}
+
+/* A wider invisible target than the 2px it draws. */
+.vs-notch::after {
+  content: "";
+  position: absolute;
+  inset: 0 -11px;
+}
+
+.vs-end {
+  position: absolute;
+  top: 50%;
+  transform: translate(10px, -50%);
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--ink);
+  pointer-events: none;
+}
+
+.vs-range {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+}
+
+.vs-range::after {
+  content: "";
+  position: absolute;
+  inset: -10px 0;
+}
+
+.vs-dot {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  box-shadow: 0 0 0 2px var(--bg-alt);
+}
+
+.vs-dot::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+}
+
+/* Gridlines, axis and reference share the tracks' box: after the names, before the label room. */
+.vs-grid-lines,
+.vs-axis,
+.vs-overlay {
+  position: absolute;
+  left: var(--names);
+  right: var(--room);
+  pointer-events: none;
+}
+
+.vs-grid-lines,
+.vs-overlay {
+  top: -6px;
+  bottom: 24px;
+}
+
+.vs-grid-lines span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--rule-soft);
+}
+
+.vs-axis {
+  bottom: 0;
+  height: 18px;
+}
+
+.vs-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.vs-axis span:first-child {
+  transform: none;
+}
+
+/* A reference, not data: ink rather than a series colour, and named where it stands. */
+.vs-plot.has-ref {
+  padding-top: 26px;
+}
+
+.has-ref .vs-overlay {
+  top: 0;
+}
+
+.vs-ref {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--ink-faint);
+}
+
+.vs-ref span {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--ink-faint);
+}
+
+.vs-tip {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 11px;
+  background: var(--bg-raised);
+  border: 1px solid var(--rule-strong);
+  box-shadow: 0 8px 24px var(--shadow);
+  pointer-events: none;
+  font-size: 12px;
+}
+
+.vs-tip strong {
+  font-weight: 400;
   font-size: 14px;
   color: var(--ink);
 }
 
-.vs-note {
-  font-size: 11.5px;
-  line-height: 1.5;
+.vs-tip span {
   color: var(--ink-faint);
 }
 
-.vs-bars {
+.vs-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-top: none;
+}
+
+.vs-tile {
+  background: var(--bg-alt);
+  padding: 22px 26px 24px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  min-width: 0;
+  gap: 8px;
 }
 
-/* Every bar gets the same track, so its length is the value's share and nothing else; the number
-   sits in its own column beside it, where a 2px bar can still say it. */
-.vs-bar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 64px;
+.vs-tile-value {
+  display: flex;
   align-items: center;
-  gap: 12px;
-  height: 16px;
-}
-
-.vs-track {
-  height: 100%;
-  min-width: 0;
-}
-
-.vs-fill {
-  display: block;
-  height: 100%;
-}
-
-.vs-value {
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--ink-dim);
-}
-
-.vs-bar.ours .vs-value {
+  gap: 10px;
+  font-size: 26px;
+  letter-spacing: -0.03em;
   color: var(--ink);
 }
 
-.vs-verdict {
-  font-size: 13px;
-  text-align: right;
+.vs-tile-theirs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+}
+
+.vs-tile-note {
+  font-size: 11.5px;
   color: var(--ink-faint);
 }
 
-.vs-verdict.lead {
-  color: var(--accent);
-}
-
-.vs-method {
+.vs-more {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 30px 0 0;
-  max-width: 88ch;
+  padding-top: 18px;
 }
 
-.vs-method .bullets {
-  font-size: 12.5px;
+.vs-more details[open] {
+  padding-bottom: 14px;
 }
 
-.vs-method a {
+.vs-more .bullets {
+  font-size: 13px;
+  max-width: 84ch;
+}
+
+.vs-more a,
+.cov-gaps a {
   color: var(--accent);
 }
 
-.vs-parity-head {
-  padding-top: 62px;
+.vs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
 }
 
-.vs-parity {
-  list-style: none;
+.vs-table th,
+.vs-table td {
+  text-align: left;
+  padding: 11px 16px 11px 0;
+  border-bottom: 1px solid var(--rule-soft);
+  font-weight: 400;
+  vertical-align: top;
+}
+
+.vs-table thead th {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.vs-table tbody th {
+  color: var(--ink);
+}
+
+.vs-table tbody th span {
+  display: block;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+.vs-table td {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-dim);
+}
+
+.vs-table td:last-child {
+  color: var(--accent);
+}
+
+/* ── Coverage ────────────────────────────────────────────────────────────── */
+
+.coverage {
+  background: var(--bg-alt);
+}
+
+.cov-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 64px;
+  align-items: start;
+}
+
+.cov-headline {
+  display: flex;
+  align-items: flex-end;
+  gap: 20px;
+  padding-bottom: 18px;
+}
+
+.cov-percent {
+  font-size: clamp(56px, 6vw, 80px);
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+  color: var(--accent);
+}
+
+.cov-of {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--ink);
+  padding-bottom: 4px;
+}
+
+.cov-hint {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
+/* Segments separated by a 2px surface gap, never by a stroke. */
+.cov-meter {
+  display: flex;
+  gap: 2px;
+  height: 18px;
+}
+
+.cov-seg {
+  min-width: 4px;
+  transition: filter 140ms ease;
+}
+
+
+
+
+.cov-seg:hover,
+.cov-seg:focus-visible {
+  filter: brightness(1.3);
+}
+
+.cov-seg.yes,
+.cov-key.yes {
+  background: #14b8a6;
+}
+
+.cov-seg.partial,
+.cov-key.partial {
+  background: #0f766e;
+}
+
+.cov-seg.no,
+.cov-key.no {
+  background: #164e4a;
+}
+
+.cov-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0 34px;
+}
+
+.cov-key {
+  width: 12px;
+  height: 8px;
+}
+
+.cov-key:not(:first-child) {
+  margin-left: 14px;
+}
+
+.cov-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid var(--rule-soft);
+  padding-top: 26px;
+}
+
+.cov-group {
+  display: grid;
+  grid-template-columns: 136px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 16px;
+}
+
+.cov-group .cov-meter {
+  height: 10px;
+}
+
+.cov-group-name {
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+
+.cov-group-count {
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+.cov-gaps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 28px;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+}
+
+.cov-gaps h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 400;
+}
+
+.cov-gaps h3 + .cov-list {
+  margin-bottom: 14px;
+}
+
+.cov-list {
   margin: 0;
   padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.cov-list li {
+  position: relative;
+  padding-left: 20px;
+}
+
+/* An empty box for missing, a half-filled one for partial: the meter's own marks, small. */
+.cov-list li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--ink-faint);
+}
+
+.cov-list.partial li::before {
+  background: linear-gradient(90deg, #0f766e 50%, transparent 50%);
+  border-color: #0f766e;
+}
+
+.cov-list span {
+  color: var(--ink-faint);
+}
+
+.cov-all {
+  margin-top: 40px;
+  border-top: 1px solid var(--rule);
+  padding-top: 12px;
+}
+
+.cov-checklist {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 30px 40px;
+  padding: 20px 0 6px;
+}
+
+.cov-check-group h4 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.cov-check-group ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
   display: flex;
   flex-direction: column;
   gap: 7px;
@@ -1229,54 +1919,30 @@ em {
   color: var(--ink-dim);
 }
 
-.vs-parity li {
+.cov-check-group li {
   display: grid;
-  grid-template-columns: 40px 1fr;
-  gap: 10px;
-  align-items: baseline;
+  grid-template-columns: 62px 1fr;
+  gap: 8px;
 }
 
-.vs-mark {
+.cov-mark {
   font-size: 9.5px;
+  padding-top: 0.25em;
 }
 
-.vs-parity .yes .vs-mark {
+.cov-check-group .yes .cov-mark {
   color: var(--accent);
 }
 
-.vs-parity .partial .vs-mark {
-  color: var(--ink-dim);
-}
-
-/* A missing feature is listed in full ink, not greyed out of sight: the gap is the point. */
-.vs-parity .no {
+.cov-check-group .no {
   color: var(--ink);
 }
 
-.vs-parity .no .vs-mark {
-  color: var(--ink-faint);
-  text-decoration: line-through;
-}
-
-.vs-aside {
+.cov-aside {
   color: var(--ink-faint);
 }
 
 /* ── Identity ────────────────────────────────────────────────────────────── */
-
-.identity {
-  padding: 62px var(--pad-x) 68px;
-  background: var(--bg-alt);
-  transition: background-color var(--tint);
-}
-
-.identity h2 {
-  font-family: var(--serif);
-  font-size: clamp(26px, 2.6vw, 34px);
-  letter-spacing: -0.03em;
-  font-weight: 400;
-  margin: 0 0 36px;
-}
 
 .quad {
   display: grid;
@@ -1330,11 +1996,13 @@ em {
 
 .scope {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 56px;
+  padding: 88px var(--pad-x);
+  background: var(--bg-alt);
 }
 
 .scope > div {
-  padding: 58px var(--pad-x) 66px;
   display: flex;
   flex-direction: column;
   gap: 18px;
@@ -1363,6 +2031,16 @@ em {
   width: 26px;
   height: 2px;
   background: var(--accent);
+}
+
+/* ── Get it ──────────────────────────────────────────────────────────────── */
+
+.get {
+  padding: 96px var(--pad-x);
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 56px;
+  align-items: start;
 }
 
 /* ── Footer ──────────────────────────────────────────────────────────────── */
@@ -1418,26 +2096,52 @@ em {
     --pad-x: 34px;
   }
 
-  .hero,
   .split,
-  .scope {
+  .scope,
+  .get,
+  .cov-body {
     grid-template-columns: 1fr;
   }
 
-  .hero-left {
-    padding-top: 62px;
-    padding-bottom: 52px;
+  .split,
+  .cov-body {
+    gap: 48px;
   }
 
-  .rule-v {
-    border-right: none;
-    border-bottom: 1px solid var(--rule-soft);
+  /* The screenshot goes under the copy and keeps its bleed off the right edge. */
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 48px;
+    padding-top: 64px;
+    padding-bottom: 64px;
+  }
+
+  .hero-copy {
+    padding-right: var(--pad-x);
   }
 
   .triple,
   .ruled-grid,
-  .quad {
-    grid-template-columns: repeat(2, 1fr);
+  .quad,
+  .vs-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vs-charts {
+    grid-template-columns: 1fr;
+  }
+
+  .cov-checklist {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .proof {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .proof-more {
+    grid-column: 1 / -1;
+    padding: 14px var(--pad-x);
   }
 
   .quad {
@@ -1450,7 +2154,25 @@ em {
     --pad-x: 16px;
   }
 
-  .section.name {
+  .versus,
+  .coverage,
+  .shots,
+  .releases,
+  .overhaul,
+  .split,
+  .about-name,
+  .get {
+    padding-top: 64px;
+    padding-bottom: 64px;
+  }
+
+  .triple,
+  .scope {
+    padding-top: 56px;
+    padding-bottom: 56px;
+  }
+
+  .name-row {
     grid-template-columns: 1fr;
     gap: 28px;
   }
@@ -1460,13 +2182,8 @@ em {
   }
 
   .name-mark .logo {
-    width: 120px;
-    height: 120px;
-  }
-
-  .hero-mark .logo {
-    width: 80px;
-    height: 80px;
+    width: 96px;
+    height: 96px;
   }
 
   .nav {
@@ -1476,18 +2193,66 @@ em {
 
   .nav-links {
     gap: 18px;
+    order: 3;
     width: 100%;
+  }
+
+  .nav-cta {
+    margin-left: 0;
+  }
+
+  .hero-shot img {
+    min-width: 520px;
   }
 
   .triple,
   .ruled-grid,
-  .quad {
+  .quad,
+  .cov-checklist,
+  .rel-top,
+  .proof {
     grid-template-columns: 1fr;
+  }
+
+  .vs-tile {
+    padding: 18px 16px;
+  }
+
+  .vs-tile-value {
+    font-size: 21px;
+  }
+
+  .proof-item,
+  .proof-item:first-child {
+    padding: 20px var(--pad-x);
   }
 
   /* One column: a filler would be an empty card, not a closed row. */
   .ruled-grid .filler {
     display: none;
+  }
+
+  .vs-card {
+    padding: 24px 18px 20px;
+  }
+
+  .vs-plot {
+    --names: 64px;
+    --room: 58px;
+  }
+
+  .vs-lane-name {
+    font-size: 11.5px;
+  }
+
+  .cov-group {
+    grid-template-columns: 96px minmax(0, 1fr) 34px;
+    gap: 10px;
+  }
+
+  .rel-list li {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .shot-caption {
@@ -1507,24 +2272,6 @@ em {
   .keyrow {
     grid-template-columns: 84px 1fr;
     gap: 14px;
-  }
-
-  .vs-figures {
-    grid-template-columns: 1fr;
-  }
-
-  .vs-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px 16px;
-  }
-
-  .vs-bars {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
-
-  .specs {
-    gap: 18px;
   }
 }
 

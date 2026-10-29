@@ -18,11 +18,10 @@ export function Screens() {
 
   return (
     <section className="section shots" id="editor">
-      <div className="shots-head reveal">
-        <h2>The editor itself</h2>
-        <span className="prose" style={{ fontSize: 13, color: "var(--ink-faint)" }}>
-          rendered offscreen by DaCode, not captured from a screen
-        </span>
+      <div className="section-head reveal">
+        <span className="eyebrow label">the editor</span>
+        <h2>A tour, in five screens</h2>
+        <p className="section-sub">Rendered offscreen by DaCode itself, not captured from a screen.</p>
       </div>
 
       <div className="shot-tabs reveal">

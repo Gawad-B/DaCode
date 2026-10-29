@@ -16,7 +16,12 @@ const OS_LABEL: Record<Os, string> = {
   unknown: "other",
 };
 
-export function Download({ reduced }: { reduced: boolean }) {
+/**
+ * `compact` is the hero's version: the button, what it downloads and the command. The note,
+ * the other packages and the other platforms are in the full one at the end of the page, so
+ * the first screen has one thing to do rather than six.
+ */
+export function Download({ reduced, compact = false }: { reduced: boolean; compact?: boolean }) {
   const release = useRelease();
   const [os, setOs] = useState<Os>("unknown");
   const [copied, setCopied] = useState(false);
@@ -60,11 +65,13 @@ export function Download({ reduced }: { reduced: boolean }) {
         {platform.primary?.size ? ` · ${formatSize(platform.primary.size)}` : ""}
       </div>
 
-      <div className="prose" style={{ fontSize: 13, maxWidth: "46ch" }}>
-        {platform.note}
-      </div>
+      {!compact && (
+        <div className="prose" style={{ fontSize: 13, maxWidth: "46ch" }}>
+          {platform.note}
+        </div>
+      )}
 
-      {platform.alternatives.length > 0 && (
+      {!compact && platform.alternatives.length > 0 && (
         <div className="dl-alts">
           {platform.alternatives.map((a) => (
             <a className="dl-alt" key={a.url} href={a.url} title={`${a.detail} · ${formatSize(a.size)}`}>
@@ -93,15 +100,21 @@ export function Download({ reduced }: { reduced: boolean }) {
         </button>
       </div>
 
-      <div className="dl-alts">
-        {(["windows", "linux", "macos"] as Os[])
-          .filter((o) => o !== os)
-          .map((o) => (
-            <button className="dl-alt" key={o} onClick={() => setOs(o)}>
-              {OS_LABEL[o]} instead
-            </button>
-          ))}
-      </div>
+      {compact ? (
+        <a className="dl-more" href="#get">
+          other platforms and packages →
+        </a>
+      ) : (
+        <div className="dl-alts">
+          {(["windows", "linux", "macos"] as Os[])
+            .filter((o) => o !== os)
+            .map((o) => (
+              <button className="dl-alt" key={o} onClick={() => setOs(o)}>
+                {OS_LABEL[o]} instead
+              </button>
+            ))}
+        </div>
+      )}
     </div>
   );
 }

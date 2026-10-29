@@ -45,6 +45,22 @@ been taken away. `i`, `v`, `R` and `Esc` work, as they do in the editor.
 at 70ms. Shape is what communicates the mode — it survives a colourblind reader and a bad screen —
 so it must not arrive late.
 
+**The page is ordered for a first-time visitor.** Promise, action and the product on the first
+screen; then proof (the three ratios, the benchmarks, the VSCode coverage); then the tour, what is
+new, the keys; then history, the name and the scope, with the full download last. Every section
+opens with the same head — a teal label, the heading, one sentence — and detail a reader may not
+want (every number, the method, the full checklist, older releases) sits behind a `details`
+disclosure rather than on the page. Content is held to about 1240px by `--pad-x`; backgrounds still
+run edge to edge.
+
+**The charts are drawn from `benchmark.json`, and only from it.** `components/Versus.tsx` is the
+emphasis form: DaCode in `#11a697`, VSCode in `#6b6b6b`, a pair checked with a palette validator on
+this surface, one axis per chart and a legend because there are two series. The coverage meter is
+one teal stepping darker (`#14b8a6`, `#0f766e`, track `#164e4a`), so "missing" reads as empty track
+rather than as a third colour. Every mark has a tooltip on hover *and* focus, and every value is
+also printed beside its mark or in the table under "every number" — a tooltip never gates a value.
+Marks are square, like everything else here.
+
 ## Two things worth not breaking
 
 **The hidden state of a scroll reveal is applied by script, never by the stylesheet.** `useReveal`

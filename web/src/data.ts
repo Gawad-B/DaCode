@@ -58,6 +58,9 @@ export const BLURBS: Record<Mode, string> = {
 };
 
 export const HERO = {
+  // One sentence under the headline. The four bullets below are the long form, and live
+  // further down the page, where there is room to read them.
+  lede: "Written in Rust and drawn on the GPU. Parsing, language servers, search and git all run off the UI thread, so typing never waits for them.",
   bullets: [
     "Nothing unbounded ever runs on the UI thread.",
     "Parsing, LSP, search and git run on snapshots, off-thread.",
@@ -302,9 +305,13 @@ export const RELEASES: ReleaseCard[] = [
  * The name and the mark. The cursor reading of the amber block is an
  * interpretation, not something the repository states — confirm or correct it.
  */
-/** Said up front, before the download: what kind of project this is and who made which part. */
+/**
+ * Said up front, before the download: what kind of project this is and who made which part.
+ * The hero carries `short`; the full note is in the About section, one click away.
+ */
 export const PROJECT_NOTE = {
   title: "A vibe-coded project",
+  short: "Vibe-coded: AI wrote the Rust; I chose the architecture and designed the editor.",
   bullets: [
     "I don't know Rust: the code was written with AI.",
     "I chose the architecture and the design system.",
