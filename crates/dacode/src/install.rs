@@ -135,7 +135,13 @@ fn run(request: &Request) -> Installed {
     // Checked first, so "npm is not installed" is the answer rather than an operating-system error
     // number that names no cause. This is also why `needs` is a field: the program that installs a
     // server is usually not the server, and the thing missing is usually the *toolchain*.
-    let Some(resolved) = dacode_lsp::resolve(&installer.needs) else {
+    // DaCode as its own installer is the running executable, whatever PATH says.
+    let resolved = if installer.needs == dacode_lsp::SELF {
+        std::env::current_exe().ok()
+    } else {
+        dacode_lsp::resolve(&installer.needs)
+    };
+    let Some(resolved) = resolved else {
         return Installed {
             program: request.program.clone(),
             language: request.language.clone(),

@@ -60,10 +60,26 @@ fn main() -> Result<()> {
     // First, so everything after it — the import included — reads the configuration vex left.
     dacode::paths::migrate_from_vex();
 
+    // The downloaded formatters and servers go on the *end* of PATH, so one the user installed is
+    // found first — and for everything that looks a program up: the server table, the formatters,
+    // the installer's check afterwards, and the terminal's shell. Here, before a single thread
+    // exists: `set_var` races every `getenv` on another thread, which once deadlocked the test
+    // suite inside glibc. It is the only place the editor changes its own environment.
+    if let Some(path) =
+        dacode::tools::path_with_tools(std::env::var_os("PATH").as_deref(), &dacode::tools::root())
+    {
+        // SAFETY: the process is still single-threaded here; nothing has been spawned yet.
+        unsafe { std::env::set_var("PATH", path) };
+    }
+
     // `dacode import …` is a separate operation: it rewrites configuration, so it happens when asked
     // rather than at startup.
     if args.first().map(String::as_str) == Some("import") {
         return dacode::import_cli::run(&args);
+    }
+    // `dacode tools list` and `dacode tools install NAME…`: what the editor's own installer runs.
+    if args.first().map(String::as_str) == Some("tools") {
+        std::process::exit(dacode::tools::run_cli(&args[1..]));
     }
 
     // Before anything that could open a window. `dacode --version` used to fall through `positional`
@@ -4264,6 +4280,41 @@ impl App {
         });
     }
 
+    /// Arms a download of `tool`, or runs it when it is the one already armed — choosing a row twice,
+    /// the same agreement `request_install_server` asks for, because this fetches and runs a program.
+    fn offer_download(&mut self, tool: &dacode::tools::Tool, program: String, language: String) {
+        let request = dacode::install::Request {
+            installer: dacode_lsp::Installer {
+                program: dacode_lsp::SELF.to_string(),
+                args: vec!["tools".into(), "install".into(), tool.name.into()],
+                needs: dacode_lsp::SELF.to_string(),
+            },
+            program,
+            language,
+        };
+        let armed = self
+            .confirm_install
+            .as_ref()
+            .is_some_and(|armed| armed.installer.args == request.installer.args);
+        if armed {
+            self.confirm_install = None;
+            self.state.hover = Some(format!(
+                "downloading {} {} — this can take a minute",
+                tool.name, tool.version
+            ));
+            self.installer.request(request);
+            return;
+        }
+        self.state.hover = Some(format!(
+            "download {} {} ({})? dacode will run: {} — choose it again to go ahead",
+            tool.name,
+            tool.version,
+            tool.what,
+            request.installer.line()
+        ));
+        self.confirm_install = Some(request);
+    }
+
     /// Collects an install when it finishes, and starts the server it just put on disk.
     /// Asks about releases at startup, when the setting allows it and a day has passed since the
     /// last time. Never for a cargo build, which is not offered updates and so has no reason to
@@ -4540,6 +4591,15 @@ impl App {
             return false;
         };
         self.state.hover = Some(installed.message);
+        // The Languages page reports what is on disk; it was asked when the page opened.
+        if self.state.settings_page.is_some() {
+            let servers = self.detect_servers();
+            let formatters = self.detect_formatters();
+            let modal = self.state.modal;
+            if let Some(page) = &mut self.state.settings_page {
+                page.set_reports(servers, formatters, modal);
+            }
+        }
 
         if installed.ok {
             // The point of installing it. Without this the editor would sit there knowing a server
@@ -7474,7 +7534,23 @@ impl App {
                         page.servers().get(at)
                     }
                 });
-                if let Some(report) = report {
+                // A missing one DaCode can download is offered, armed by this choice and run by the
+                // next — the mouse's way to what `install_language_server` does from the keys.
+                let offer = report
+                    .filter(|report| !report.found && !report.configured)
+                    .and_then(|report| {
+                        dacode::tools::TOOLS
+                            .iter()
+                            .find(|tool| tool.provides.contains(&report.program.as_str()))
+                            .map(|tool| (tool, report.program.clone(), report.language.clone()))
+                    })
+                    .filter(|(tool, _, _)| {
+                        dacode::tools::Platform::current()
+                            .is_some_and(|platform| dacode::tools::available(tool, platform))
+                    });
+                if let Some((tool, program, language)) = offer {
+                    self.offer_download(tool, program, language);
+                } else if let Some(report) = report {
                     self.state.hover = Some(format!(
                         "{} — {} · {}",
                         report.language, report.program, report.status

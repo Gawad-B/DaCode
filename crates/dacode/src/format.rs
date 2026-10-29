@@ -72,7 +72,7 @@ struct Known {
 /// parser to use, `black` and `ruff` need a literal `-`, and `clang-format` wants `--assume-filename`
 /// for the same reason prettier does. A formatter that only rewrites files in place is deliberately
 /// absent: it would edit the file behind a dirty buffer.
-const KNOWN: [Known; 8] = [
+const KNOWN: [Known; 9] = [
     Known {
         id: "rust",
         name: "Rust",
@@ -88,7 +88,11 @@ const KNOWN: [Known; 8] = [
         name: "JavaScript and TypeScript",
         extensions: &["ts", "tsx", "js", "jsx", "mjs", "cjs"],
         programs: &[
-            builtin("prettier", &["--stdin-filepath"], "npm i -g prettier"),
+            builtin(
+                "prettier",
+                &["--stdin-filepath"],
+                "dacode tools install prettier",
+            ),
             builtin(
                 "biome",
                 &["format", "--stdin-file-path"],
@@ -101,7 +105,7 @@ const KNOWN: [Known; 8] = [
         name: "Python",
         extensions: &["py", "pyi"],
         programs: &[
-            builtin("ruff", &["format", "-"], "pip install ruff"),
+            builtin("ruff", &["format", "-"], "dacode tools install ruff"),
             builtin("black", &["-", "-q"], "pip install black"),
         ],
     },
@@ -128,7 +132,7 @@ const KNOWN: [Known; 8] = [
         programs: &[builtin(
             "prettier",
             &["--stdin-filepath"],
-            "npm i -g prettier",
+            "dacode tools install prettier",
         )],
     },
     Known {
@@ -138,8 +142,14 @@ const KNOWN: [Known; 8] = [
         programs: &[builtin(
             "prettier",
             &["--stdin-filepath"],
-            "npm i -g prettier",
+            "dacode tools install prettier",
         )],
+    },
+    Known {
+        id: "lua",
+        name: "Lua",
+        extensions: &["lua"],
+        programs: &[builtin("stylua", &["-"], "dacode tools install stylua")],
     },
     Known {
         id: "markdown",
@@ -148,7 +158,7 @@ const KNOWN: [Known; 8] = [
         programs: &[builtin(
             "prettier",
             &["--stdin-filepath"],
-            "npm i -g prettier",
+            "dacode tools install prettier",
         )],
     },
 ];

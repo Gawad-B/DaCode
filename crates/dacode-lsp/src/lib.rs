@@ -82,15 +82,31 @@ pub struct Installer {
     pub needs: String,
 }
 
+/// An installer's `program` and `needs` when the installer is DaCode itself — `dacode tools install`,
+/// which downloads a pinned, checksummed release and needs nothing else on the machine. A sentinel
+/// rather than `"dacode"`: the editor running is the one to ask, and on Windows it is usually not on
+/// `PATH` at all. `dacode::install` resolves it to the running executable.
+pub const SELF: &str = "@dacode";
+
 impl Installer {
     /// The command as one line, for showing before it is run. Nothing is ever *parsed* back out of
     /// this — it exists so a person can read what they are about to agree to.
     pub fn line(&self) -> String {
-        if self.args.is_empty() {
-            self.program.clone()
+        let program = if self.program == SELF {
+            "dacode"
         } else {
-            format!("{} {}", self.program, self.args.join(" "))
+            &self.program
+        };
+        if self.args.is_empty() {
+            program.to_string()
+        } else {
+            format!("{program} {}", self.args.join(" "))
         }
+    }
+
+    /// Whether this machine has what the installer needs.
+    pub fn runnable(&self) -> bool {
+        self.needs == SELF || resolve(&self.needs).is_some()
     }
 }
 
@@ -104,7 +120,7 @@ impl ServerSpec {
     pub fn installer(&self) -> Option<&Installer> {
         self.installers
             .iter()
-            .find(|installer| resolve(&installer.needs).is_some())
+            .find(|installer| installer.runnable())
     }
 }
 
@@ -247,7 +263,10 @@ pub const LANGUAGES: [Language; 8] = [
         servers: &[installable(
             "rust-analyzer",
             &[],
-            &[("rustup", "rustup", &["component", "add", "rust-analyzer"])],
+            &[
+                (SELF, SELF, &["tools", "install", "rust-analyzer"]),
+                ("rustup", "rustup", &["component", "add", "rust-analyzer"]),
+            ],
         )],
     },
     // JavaScript and TypeScript are two entries running one program, which is not a duplication:
@@ -264,16 +283,23 @@ pub const LANGUAGES: [Language; 8] = [
         servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
-            &[(
-                "npm",
-                "npm",
-                &[
-                    "install",
-                    "--global",
-                    "typescript-language-server",
-                    "typescript",
-                ],
-            )],
+            &[
+                (
+                    SELF,
+                    SELF,
+                    &["tools", "install", "typescript-language-server", "prettier"],
+                ),
+                (
+                    "npm",
+                    "npm",
+                    &[
+                        "install",
+                        "--global",
+                        "typescript-language-server",
+                        "typescript",
+                    ],
+                ),
+            ],
         )],
     },
     Language {
@@ -284,16 +310,23 @@ pub const LANGUAGES: [Language; 8] = [
         servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
-            &[(
-                "npm",
-                "npm",
-                &[
-                    "install",
-                    "--global",
-                    "typescript-language-server",
-                    "typescript",
-                ],
-            )],
+            &[
+                (
+                    SELF,
+                    SELF,
+                    &["tools", "install", "typescript-language-server", "prettier"],
+                ),
+                (
+                    "npm",
+                    "npm",
+                    &[
+                        "install",
+                        "--global",
+                        "typescript-language-server",
+                        "typescript",
+                    ],
+                ),
+            ],
         )],
     },
     Language {
@@ -305,7 +338,10 @@ pub const LANGUAGES: [Language; 8] = [
             installable(
                 "pyright-langserver",
                 &["--stdio"],
-                &[("npm", "npm", &["install", "--global", "pyright"])],
+                &[
+                    (SELF, SELF, &["tools", "install", "pyright", "ruff"]),
+                    ("npm", "npm", &["install", "--global", "pyright"]),
+                ],
             ),
             installable(
                 "basedpyright-langserver",
@@ -332,10 +368,12 @@ pub const LANGUAGES: [Language; 8] = [
         id: "cpp",
         aliases: &["c", "c++"],
         extensions: &["c", "h", "cpp", "hpp", "cc", "cxx", "hh"],
-        servers: &[builtin(
+        // Downloaded, where clangd publishes a build; elsewhere (ARM64 Linux) the download says so
+        // and that it will find one installed from the system's packages.
+        servers: &[installable(
             "clangd",
             &[],
-            "install LLVM, or `apt install clangd`",
+            &[(SELF, SELF, &["tools", "install", "clangd"])],
         )],
     },
     Language {
@@ -354,10 +392,14 @@ pub const LANGUAGES: [Language; 8] = [
         id: "lua",
         aliases: &[],
         extensions: &["lua"],
-        servers: &[builtin(
+        servers: &[installable(
             "lua-language-server",
             &[],
-            "install lua-language-server from your package manager",
+            &[(
+                SELF,
+                SELF,
+                &["tools", "install", "lua-language-server", "stylua"],
+            )],
         )],
     },
     Language {

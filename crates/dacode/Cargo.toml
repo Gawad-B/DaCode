@@ -42,6 +42,10 @@ resvg = { version = "0.45", default-features = false }
 hayro = "0.8"
 # Office documents are zip files of XML; their text is read out of them.
 zip.workspace = true
+# Formatters and language servers downloaded on demand (`tools.rs`): `.gz` and `.tar.gz` releases,
+# unpacked in-process so the paths inside an archive are checked rather than trusted to a `tar`.
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 criterion.workspace = true

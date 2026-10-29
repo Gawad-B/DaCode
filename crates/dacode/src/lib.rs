@@ -42,6 +42,7 @@ pub mod share;
 pub mod snippet;
 pub mod source_control;
 pub mod terminal;
+pub mod tools;
 pub mod tree;
 pub mod update;
 pub mod viewer;
