@@ -6252,7 +6252,20 @@ impl App {
                 // Typed into the terminal and entered, as if you had: the command stays in the
                 // shell's history, its output scrolls where you can read it, and ctrl-c stops it.
                 let root = self.state.project_root.clone();
-                match dacode::share::run_command(&root) {
+                // A file path may be relative to the project; the shell gets it whole, because
+                // the person may have `cd`'d somewhere else in it since.
+                let file = self
+                    .state
+                    .file_path
+                    .as_deref()
+                    .filter(|_| self.state.review.is_none())
+                    .map(|path| std::path::PathBuf::from(absolute_in(&root, path)));
+                if file.is_some() && self.state.document.is_dirty() {
+                    // What runs is what is on disk, so what is on screen goes there first. As
+                    // autosave does, which never overwrites a file changed from outside.
+                    self.write_active(Saving::Auto);
+                }
+                match dacode::share::run_command_for(&root, file.as_deref(), cfg!(windows)) {
                     Some(command) => {
                         if self.show_terminal(true) {
                             if let Some(terminal) = self.active_terminal() {
@@ -6262,8 +6275,8 @@ impl App {
                     }
                     None => {
                         self.state.hover = Some(
-                            "no run command found for this project — the terminal is open to type \
-                             one"
+                            "nothing here DaCode knows how to run — the terminal is open to type \
+                             a command"
                             .to_string(),
                         );
                         self.show_terminal(true);

@@ -11,8 +11,10 @@
 //! are a few small files, and a process spawn is exactly the kind of unbounded wait that must not
 //! happen on the thread drawing the window.
 //!
-//! **Run** finds the command this kind of project is run with, and the event loop types it into the
-//! terminal. It went on the clipboard before there was a terminal to type it into.
+//! **Run** runs the open file, or the project when the file belongs to its toolchain, and the event
+//! loop types the command into the terminal. It went on the clipboard before there was a terminal
+//! to type it into. It once knew only projects, so a Python script on its own — the commonest thing
+//! anyone presses Run on — was told there was nothing to run.
 
 use std::path::Path;
 
@@ -130,6 +132,100 @@ fn format_link(
     } else {
         // GitHub's shape, which Codeberg, Gitea and Forgejo share.
         format!("{base}/blob/{commit}/{relative}#L{line}")
+    }
+}
+
+/// The command the Run button types: the project's when `file` is part of that project's
+/// toolchain, otherwise one that runs `file` itself, otherwise the project's anyway.
+///
+/// `windows` picks PowerShell's quoting and chaining, which is the shell the terminal starts there,
+/// and `py` over `python3`, which is what python.org's installer puts on `PATH`. It is a parameter
+/// so those rules have tests that run here.
+pub fn run_command_for(root: &Path, file: Option<&Path>, windows: bool) -> Option<String> {
+    let project = run_command(root);
+    let Some(file) = file else {
+        return project;
+    };
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    if let Some(project) = &project {
+        let tool = project.split_whitespace().next().unwrap_or_default();
+        let belongs = match extension.as_str() {
+            "rs" => tool == "cargo",
+            "dart" => tool == "flutter" || tool == "dart",
+            "go" => tool == "go",
+            "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "vue" | "svelte" => {
+                ["npm", "pnpm", "yarn", "bun"].contains(&tool)
+            }
+            // A Django project is run as a server whatever module is open; a script beside a
+            // `main.py` is still that script.
+            "py" => project.contains("manage.py"),
+            "c" | "cc" | "cpp" | "cxx" | "h" | "hpp" => tool == "make",
+            _ => true,
+        };
+        if belongs {
+            return Some(project.clone());
+        }
+    }
+    file_command(file, &extension, windows).or(project)
+}
+
+/// A command that runs one file by its kind, or `None` for a kind nobody runs directly.
+fn file_command(file: &Path, extension: &str, windows: bool) -> Option<String> {
+    let path = quote(&file.to_string_lossy(), windows);
+    let built = |compile: String| {
+        let binary = file.with_extension(if windows { "exe" } else { "" });
+        let binary = quote(&binary.to_string_lossy(), windows);
+        let compile = compile.replace("{out}", &binary);
+        // `&&` is not PowerShell 5's, which is the one every Windows machine has.
+        if windows {
+            format!("{compile}; if ($?) {{ & {binary} }}")
+        } else {
+            format!("{compile} && {binary}")
+        }
+    };
+    let interpreted = |program: &str| Some(format!("{program} {path}"));
+    match extension {
+        "py" | "pyw" => interpreted(if windows { "py" } else { "python3" }),
+        "js" | "mjs" | "cjs" => interpreted("node"),
+        "ts" | "mts" => interpreted("deno run"),
+        "rb" => interpreted("ruby"),
+        "lua" => interpreted("lua"),
+        "pl" => interpreted("perl"),
+        "php" => interpreted("php"),
+        "r" => interpreted("Rscript"),
+        "jl" => interpreted("julia"),
+        "dart" => interpreted("dart run"),
+        "go" => interpreted("go run"),
+        "kts" => interpreted("kotlinc -script"),
+        "java" => interpreted("java"),
+        "sh" | "bash" => interpreted(if windows { "bash" } else { "sh" }),
+        "zsh" => interpreted("zsh"),
+        "ps1" => interpreted("powershell -File"),
+        "bat" | "cmd" if windows => Some(format!("& {path}")),
+        "rs" => Some(built(format!("rustc {path} -o {{out}}"))),
+        "c" => Some(built(format!("gcc {path} -o {{out}}"))),
+        "cc" | "cpp" | "cxx" => Some(built(format!("g++ {path} -o {{out}}"))),
+        _ => None,
+    }
+}
+
+/// `text` as one argument to the shell the terminal runs: single quotes for a POSIX shell, double
+/// for PowerShell, and left bare when nothing in it needs either.
+fn quote(text: &str, windows: bool) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/\\._-:+".contains(c));
+    if plain {
+        text.to_string()
+    } else if windows {
+        format!("\"{}\"", text.replace('`', "``").replace('"', "`\"").replace('$', "`$"))
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
     }
 }
 
@@ -272,6 +368,77 @@ mod tests {
         assert_eq!(run_command(&root).as_deref(), Some("flutter run"));
         std::fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
         assert_eq!(run_command(&root).as_deref(), Some("cargo run"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_lone_script_is_run_by_its_own_interpreter() {
+        // The case the button used to answer with "no run command found": a Python file in a
+        // folder with nothing else to say what it is.
+        let root = scratch("script");
+        let file = root.join("hello.py");
+        let shown = file.to_string_lossy().into_owned();
+        assert_eq!(
+            run_command_for(&root, Some(&file), false),
+            Some(format!("python3 {shown}"))
+        );
+        assert_eq!(
+            run_command_for(&root, Some(&file), true),
+            Some(format!("py {shown}")),
+            "python.org's installer puts the launcher on PATH, not python3"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_file_of_the_projects_toolchain_runs_the_project() {
+        let root = scratch("toolchain");
+        std::fs::write(root.join("Cargo.toml"), "[package]\n").unwrap();
+        let rust = root.join("src/main.rs");
+        assert_eq!(
+            run_command_for(&root, Some(&rust), false).as_deref(),
+            Some("cargo run")
+        );
+        // A helper script in a Rust project is not the Rust project.
+        let script = root.join("tools/gen.py");
+        assert!(run_command_for(&root, Some(&script), false)
+            .unwrap()
+            .starts_with("python3 "));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_compiled_file_is_built_then_run_in_each_shells_own_syntax() {
+        let file = Path::new("/w/a.c");
+        assert_eq!(
+            run_command_for(Path::new("/nowhere"), Some(file), false).as_deref(),
+            Some("gcc /w/a.c -o /w/a && /w/a")
+        );
+        let file = Path::new(r"C:\w\a.cpp");
+        assert_eq!(
+            run_command_for(Path::new("/nowhere"), Some(file), true).as_deref(),
+            Some(r"g++ C:\w\a.cpp -o C:\w\a.exe; if ($?) { & C:\w\a.exe }"),
+            "PowerShell 5 has no &&"
+        );
+    }
+
+    #[test]
+    fn a_path_with_spaces_or_quotes_reaches_the_shell_as_one_argument() {
+        assert_eq!(quote("/home/me/my file.py", false), "'/home/me/my file.py'");
+        assert_eq!(quote("/it's.py", false), r"'/it'\''s.py'");
+        assert_eq!(quote(r"C:\My Files\a$b.py", true), r#""C:\My Files\a`$b.py""#);
+    }
+
+    #[test]
+    fn a_file_nobody_runs_falls_back_to_the_project_or_nothing() {
+        let root = scratch("unknown");
+        let notes = root.join("notes.txt");
+        assert_eq!(run_command_for(&root, Some(&notes), false), None);
+        std::fs::write(root.join("Makefile"), "all:\n").unwrap();
+        assert_eq!(
+            run_command_for(&root, Some(&notes), false).as_deref(),
+            Some("make")
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }
