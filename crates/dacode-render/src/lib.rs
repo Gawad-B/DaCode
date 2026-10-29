@@ -11,6 +11,7 @@
 pub mod frame;
 mod headless;
 pub mod icon;
+mod image;
 mod mark;
 mod painter;
 mod quad;
@@ -19,10 +20,11 @@ mod text;
 mod timer;
 
 pub use frame::{
-    Align, Frame, Layer, MARK_INK_LEFT, Mark, Quad, Rect, Shape, ShapeKind, TextRun, Zoom,
+    Align, Frame, Image, Layer, MARK_INK_LEFT, Mark, Quad, Rect, Shape, ShapeKind, TextRun, Zoom,
 };
 pub use headless::Headless;
 pub use icon::Icon;
+pub use image::{MAX_SIDE, Picture};
 pub use text::fira_code_draws;
 pub use timer::FrameTimer;
 

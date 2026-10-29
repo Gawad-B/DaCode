@@ -5,6 +5,7 @@
 //! texture and be compared against a reference image, with no compositor involved.
 
 use crate::frame::{Frame, Layer};
+use crate::image::ImagePipeline;
 use crate::mark::MarkPipeline;
 use crate::quad::QuadPipeline;
 use crate::shape::ShapePipeline;
@@ -16,6 +17,7 @@ pub struct Painter {
     pub queue: wgpu::Queue,
     quads: QuadPipeline,
     marks: MarkPipeline,
+    images: ImagePipeline,
     shapes: ShapePipeline,
     text: TextStack,
 }
@@ -24,6 +26,7 @@ impl Painter {
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let quads = QuadPipeline::new(&device, format);
         let marks = MarkPipeline::new(&device, &queue, format);
+        let images = ImagePipeline::new(&device, format);
         let shapes = ShapePipeline::new(&device, format);
         let text = TextStack::new(&device, &queue, format);
         Self {
@@ -31,6 +34,7 @@ impl Painter {
             queue,
             quads,
             marks,
+            images,
             shapes,
             text,
         }
@@ -54,6 +58,8 @@ impl Painter {
             .prepare(&self.device, &self.queue, width, height, &frame.quads);
         self.marks
             .prepare(&self.device, &self.queue, width, height, &frame.marks);
+        self.images
+            .prepare(&self.device, &self.queue, width, height, &frame.images);
         self.shapes
             .prepare(&self.device, &self.queue, width, height, &frame.shapes);
         self.text
@@ -86,6 +92,9 @@ impl Painter {
         // would leave every overlay transparent, because the text beneath would be painted over it.
         for layer in Layer::ALL {
             self.quads.render(&mut pass, layer);
+            // A picture is content on a surface: over its layer's rectangles, under its text, so
+            // a page indicator drawn over a PDF stays readable.
+            self.images.render(&mut pass, layer);
             // Between the rectangles and the glyphs: the mark sits on a surface and never over
             // text — it is chrome, not content.
             self.marks.render(&mut pass, layer);

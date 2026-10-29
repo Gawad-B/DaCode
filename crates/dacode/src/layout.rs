@@ -1065,6 +1065,12 @@ pub struct PaneRects {
     pub footer: Option<Rect>,
 }
 
+/// The air around a viewed picture inside its pane, at `scale`. Read by drawing, by the render
+/// requests and by the wheel, so a page is asked for at the width it is drawn at.
+pub fn viewer_margin(scale: f32) -> f32 {
+    dacode_theme::space::MD * scale
+}
+
 /// Whether a point is inside a rectangle.
 pub fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()

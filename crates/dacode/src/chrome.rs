@@ -34,6 +34,8 @@ pub struct PaneView<'a> {
     /// when it was last focused are still correct for its text. Missing spans render as plain text,
     /// which degrades honestly rather than painting one file's colors onto another's.
     pub highlights: &'a [HighlightSpan],
+    /// What this buffer shows instead of its text, when it is a viewed file.
+    pub preview: Option<&'a crate::viewer::Preview>,
 }
 
 /// The selections each `expand_selection` started from, so `shrink_selection` can retrace them.
@@ -174,6 +176,10 @@ pub struct EditorState {
     /// What the active buffer is, when it is a diff or the history rather than a file: **read
     /// only**, which [`EditorState::mutate`] enforces. Travels with its buffer, as the highlights do.
     pub review: Option<crate::scm::Show>,
+    /// What the active buffer is, when it is a picture, a PDF or an office document rather than
+    /// text: **read only**, the same way and for the same reason as `review`, and travelling with
+    /// its buffer as `review` does. See [`crate::viewer`].
+    pub preview: Option<crate::viewer::Preview>,
     /// The macro register being recorded into, if any.
     pub recording: Option<char>,
     /// What changed since the last commit, per line.
@@ -1181,10 +1187,12 @@ impl EditorState {
         // A diff or the history is git's answer, not a file: an edit to it would be an edit to
         // nothing, saved nowhere. The change is run against a copy and thrown away, so whatever
         // asked gets an answer of the type it expects and the text on screen stays git's.
-        if self.review.is_some() {
-            self.hover = Some(
-                "this tab is git's answer, not a file — open the file to change it".to_string(),
-            );
+        if self.review.is_some() || self.preview.is_some() {
+            self.hover = Some(if self.review.is_some() {
+                "this tab is git's answer, not a file — open the file to change it".to_string()
+            } else {
+                "this tab shows a file DaCode views and does not edit".to_string()
+            });
             let mut copy = Document::from_str(&self.document.text().to_string());
             return change(&mut copy);
         }
@@ -1902,6 +1910,7 @@ pub fn draw(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
         path: &state.path,
         focused: true,
         highlights: &state.highlights,
+        preview: state.preview.as_ref(),
     };
     draw_panes(frame, state, &[pane], PaneLayout::Vertical, bounds, scale);
 }
@@ -1973,6 +1982,16 @@ pub fn draw_panes(
                 },
                 theme.rule,
             );
+        }
+
+        // A viewed file has no text to draw — or, for an office document, only the text, which is
+        // drawn as code is. A picture takes the whole slot, gutter and all.
+        if let Some(preview) = pane.preview.filter(|preview| preview.kind.is_drawn()) {
+            draw_preview(frame, state, preview, rects.slot, scale);
+            if pane.focused {
+                focused_code = rects.slot;
+            }
+            continue;
         }
 
         // Sticky scroll takes its strip before anything measures against the code area — including
@@ -6473,6 +6492,143 @@ fn draw_tabs(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
         if growing {
             frame.set_opacity(1.0);
             frame.set_zoom(None);
+        }
+    }
+}
+
+/// A viewed image or PDF, fitted, zoomed and scrolled as its [`crate::viewer::Preview`] says.
+///
+/// Only the placed pages are drawn — the view's two or three, however long the document. A page
+/// without its raster yet is a white sheet the size it will be, so scrolling through a PDF faster
+/// than it renders shows paper arriving rather than a jumping layout.
+fn draw_preview(
+    frame: &mut Frame,
+    state: &EditorState,
+    preview: &crate::viewer::Preview,
+    area: Rect,
+    scale: f32,
+) {
+    use crate::viewer::{Kind, Status};
+    let theme = &state.theme;
+    frame.fill_backdrop(area, theme.bg_alt);
+    let margin = crate::layout::viewer_margin(scale);
+    let message = |frame: &mut Frame, text: &str| {
+        frame.text(run(
+            state,
+            Role::Ui,
+            elide(state, Role::Ui, text, area.width - margin * 2.0, scale),
+            area,
+            theme.ink_dim,
+            Align::Center,
+            scale,
+        ));
+    };
+    match &preview.status {
+        Status::Loading => {
+            let name = preview
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            message(frame, &format!("opening {name}…"));
+            return;
+        }
+        Status::Failed(why) => {
+            message(frame, why);
+            return;
+        }
+        Status::Ready => {}
+    }
+
+    for placed in preview.placed(area, margin) {
+        let page = &preview.pages[placed.index];
+        let rect = placed.rect;
+        let shown = rect.intersect(area);
+        if !shown.is_visible() {
+            continue;
+        }
+        if preview.kind == Kind::Pdf {
+            // A hairline round the sheet, so a white page reads as paper on a light theme too.
+            let line = border::BORDER * scale;
+            frame.fill(
+                Rect::new(
+                    rect.x - line,
+                    rect.y - line,
+                    rect.width + line * 2.0,
+                    rect.height + line * 2.0,
+                )
+                .intersect(area),
+                theme.rule,
+            );
+            frame.fill(shown, Oklch::new(1.0, 0.0, 0.0));
+        } else {
+            draw_checkerboard(frame, theme, shown, scale);
+        }
+        if let Some(picture) = &page.picture {
+            frame.image(rect, picture, area);
+        }
+    }
+
+    // What is shown and how large, in a chip at the bottom right, the way an image viewer says it.
+    let summary = preview.summary(area, margin);
+    let advance = crate::layout::measured_advance(&state.typography, Role::Label, scale);
+    let width = (summary.chars().count() as f32 * advance + space::MD * 2.0 * scale)
+        .min(area.width - margin * 2.0);
+    let height = 26.0 * scale;
+    let chip = Rect::new(
+        area.right() - margin - width,
+        area.bottom() - margin - height,
+        width,
+        height,
+    );
+    // A layer up: a picture is painted over its own layer's rectangles, so on the base layer a
+    // white page covered the chip's background and left its words floating on the paper.
+    let below = frame.layer();
+    frame.set_layer(Layer::Panel);
+    frame.fill_rounded(chip, theme.bg_panel.with_alpha(0.92), height / 2.0);
+    let mut words = label(
+        state,
+        elide(
+            state,
+            Role::Label,
+            &summary,
+            chip.width - space::MD * scale,
+            scale,
+        ),
+        chip,
+        theme.ink_dim,
+        Align::Center,
+        scale,
+    );
+    words.layer = Layer::Panel;
+    frame.text(words);
+    frame.set_layer(below);
+}
+
+/// Grey and lighter grey squares behind a picture with transparency, as every image editor draws
+/// it. Bounded by the part of the picture on screen, in squares large enough that a full window is
+/// a few thousand rectangles rather than tens of thousands.
+fn draw_checkerboard(frame: &mut Frame, theme: &Theme, rect: Rect, scale: f32) {
+    let light = theme.appearance == dacode_theme::Appearance::Light;
+    let (a, b) = if light {
+        (Oklch::new(0.97, 0.0, 0.0), Oklch::new(0.90, 0.0, 0.0))
+    } else {
+        (Oklch::new(0.34, 0.0, 0.0), Oklch::new(0.28, 0.0, 0.0))
+    };
+    frame.fill(rect, a);
+    let side = (12.0 * scale).max(4.0);
+    let columns = (rect.width / side).ceil() as usize;
+    let rows = (rect.height / side).ceil() as usize;
+    for row in 0..rows {
+        for column in (row % 2..columns).step_by(2) {
+            let square = Rect::new(
+                rect.x + column as f32 * side,
+                rect.y + row as f32 * side,
+                side,
+                side,
+            )
+            .intersect(rect);
+            frame.fill(square, b);
         }
     }
 }

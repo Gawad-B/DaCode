@@ -30,6 +30,9 @@ const SNIFF_BYTES: usize = 8 * 1024;
 #[derive(Debug)]
 pub enum Opened {
     Text(String),
+    /// Not text, but something the viewer shows: an image, a PDF, an office document. Its bytes
+    /// are read by the viewer's own worker, not here.
+    View(crate::viewer::Kind),
     /// Why not, in words meant for the person who asked.
     Refused(String),
 }
@@ -42,7 +45,8 @@ pub fn read(path: &Path) -> Opened {
         .unwrap_or_else(|| path.display().to_string());
 
     match std::fs::metadata(path) {
-        Ok(data) if data.len() > MAX_BYTES => {
+        // The viewer has a cap of its own, larger: a scanned PDF is big without being pathological.
+        Ok(data) if data.len() > MAX_BYTES && crate::viewer::Kind::opened(path).is_none() => {
             return Opened::Refused(format!(
                 "{name} is {} and dacode opens files up to {}",
                 describe_size(data.len()),
@@ -56,6 +60,11 @@ pub fn read(path: &Path) -> Opened {
         // how `dacode newfile.rs` is meant to work.
         Err(err) => return Opened::Refused(format!("could not open {name}: {err}")),
         Ok(_) => {}
+    }
+
+    // Before the read and the binary sniff, both of which would refuse a photo.
+    if let Some(kind) = crate::viewer::Kind::opened(path) {
+        return Opened::View(kind);
     }
 
     let bytes = match std::fs::read(path) {
@@ -103,7 +112,7 @@ mod tests {
     fn refusal(opened: Opened) -> String {
         match opened {
             Opened::Refused(why) => why,
-            Opened::Text(_) => panic!("expected a refusal"),
+            Opened::Text(_) | Opened::View(_) => panic!("expected a refusal"),
         }
     }
 
@@ -116,7 +125,27 @@ mod tests {
         match read(&file) {
             Opened::Text(text) => assert_eq!(text, "fn main() {}\n"),
             Opened::Refused(why) => panic!("refused ordinary text: {why}"),
+            Opened::View(kind) => panic!("viewed ordinary text as {kind:?}"),
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_photo_or_a_pdf_goes_to_the_viewer_and_an_svg_stays_text() {
+        // Both of the first used to be refused as binary. An SVG is text people edit, so it opens
+        // as text and `preview_file` shows the picture.
+        let dir = scratch("viewer");
+        for (name, bytes) in [
+            ("photo.png", &[0x89, b'P', b'N', b'G', 0, 0][..]),
+            ("paper.pdf", b"%PDF-1.4\n\0"),
+        ] {
+            let file = dir.join(name);
+            std::fs::write(&file, bytes).unwrap();
+            assert!(matches!(read(&file), Opened::View(_)), "{name}");
+        }
+        let svg = dir.join("logo.svg");
+        std::fs::write(&svg, "<svg/>").unwrap();
+        assert!(matches!(read(&svg), Opened::Text(_)));
         std::fs::remove_dir_all(&dir).ok();
     }
 

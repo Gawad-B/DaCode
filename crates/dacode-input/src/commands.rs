@@ -750,6 +750,7 @@ pub const COMMANDS: &[Command] = &[
     ),
     command("skip_update", "update: skip this version", Files, "", ""),
     command("share", "copy link to line", Files, "", ""),
+    command("preview_file", "show as picture / as text", Files, "", ""),
     command("run", "run the project in the terminal", Files, "", ""),
     command(
         "toggle_terminal",

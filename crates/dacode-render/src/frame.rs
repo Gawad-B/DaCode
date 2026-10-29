@@ -185,6 +185,17 @@ pub struct Mark {
     pub layer: Layer,
 }
 
+/// A picture drawn into a rectangle: an image file, a PDF page. See `image.rs`.
+#[derive(Debug, Clone)]
+pub struct Image {
+    pub rect: Rect,
+    /// The part of the picture shown, as `x0, y0, x1, y1` fractions of it.
+    pub uv: [f32; 4],
+    pub picture: std::sync::Arc<crate::image::Picture>,
+    pub opacity: f32,
+    pub layer: Layer,
+}
+
 /// Below this many pixels the mark switches to the small variant, as the logo sheet specifies.
 pub const SMALL_BELOW: f32 = 64.0;
 
@@ -275,6 +286,7 @@ pub struct Frame {
     pub texts: Vec<TextRun>,
     pub marks: Vec<Mark>,
     pub shapes: Vec<Shape>,
+    pub images: Vec<Image>,
     /// The layer subsequent drawing lands on.
     layer: Layer,
     /// Where subsequent rectangles and text may appear, until it is cleared. See [`Frame::set_clip`].
@@ -295,6 +307,7 @@ impl Frame {
         self.texts.clear();
         self.marks.clear();
         self.shapes.clear();
+        self.images.clear();
         self.layer = Layer::Base;
         self.clip = None;
         self.opacity = None;
@@ -468,6 +481,37 @@ impl Frame {
 
     pub fn marks_on(&self, layer: Layer) -> impl Iterator<Item = &Mark> {
         self.marks.iter().filter(move |mark| mark.layer == layer)
+    }
+
+    /// Draws `picture` stretched to `rect`, cut to `within` and to the frame's clip. The cut is
+    /// made in the picture's coordinates, so a page larger than the view shows the part of it that
+    /// is in the view rather than being squeezed into it.
+    pub fn image(
+        &mut self,
+        rect: Rect,
+        picture: &std::sync::Arc<crate::image::Picture>,
+        within: Rect,
+    ) {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return;
+        }
+        let rect = self.zoomed(rect);
+        let mut shown = rect.intersect(self.zoomed(within));
+        if let Some(clip) = self.clip {
+            shown = shown.intersect(clip);
+        }
+        if shown.width <= 0.0 || shown.height <= 0.0 {
+            return;
+        }
+        let u = |x: f32| (x - rect.x) / rect.width;
+        let v = |y: f32| (y - rect.y) / rect.height;
+        self.images.push(Image {
+            rect: shown,
+            uv: [u(shown.x), v(shown.y), u(shown.right()), v(shown.bottom())],
+            picture: picture.clone(),
+            opacity: self.opacity(),
+            layer: self.layer,
+        });
     }
 
     /// Draws the mark, as large as fits in `rect` and centred in it: the letter in `ink`, the

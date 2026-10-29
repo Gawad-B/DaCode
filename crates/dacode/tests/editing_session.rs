@@ -64,6 +64,7 @@ impl Session {
                 search: None,
                 scm: Default::default(),
                 review: None,
+                preview: None,
                 recording: None,
                 diff: dacode::git::Diff::default(),
                 blame: Default::default(),

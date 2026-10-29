@@ -44,5 +44,6 @@ pub mod source_control;
 pub mod terminal;
 pub mod tree;
 pub mod update;
+pub mod viewer;
 pub mod wake;
 pub mod welcome;

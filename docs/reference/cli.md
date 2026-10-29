@@ -132,7 +132,7 @@ The first argument that is not a flag — and is not the value belonging to one 
 
 | Argument | Takes | What it does |
 |---|---|---|
-| *(positional)* `FILE` | — | Opens the file. A path that does not exist yet becomes a named empty buffer, so `dacode newfile.rs` works. A file that is too large, binary or not UTF-8 is refused with a sentence and the buffer keeps no path, so it can never be saved over what it failed to read. |
+| *(positional)* `FILE` | — | Opens the file. A path that does not exist yet becomes a named empty buffer, so `dacode newfile.rs` works. An image, a PDF or an office document opens in the viewer ([Viewing files](../guides/viewing-files.md)). Any other file that is too large, binary or not UTF-8 is refused with a sentence and the buffer keeps no path, so it can never be saved over what it failed to read. |
 | *(positional)* `DIR` | — | Opens the directory as the project root and shows the file tree. The directory itself becomes the root rather than searching upwards for a `.git`, because naming a folder is an explicit choice about what the project is. |
 | `--no-session` | — | Do not restore the previous session, and do not fall back to the last project when started with no argument. |
 | `--no-welcome` | — | Skip the first-run wizard even when no configuration exists. |

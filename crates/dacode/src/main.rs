@@ -306,6 +306,7 @@ fn new_state(
         search: None,
         scm: Default::default(),
         review: None,
+        preview: None,
         recording: None,
         diff: dacode::git::Diff::default(),
         blame: dacode::blame::Tracker::new(settings.inline_blame),
@@ -755,6 +756,11 @@ fn load(path: Option<String>) -> Result<(Text, Vec<String>, Option<String>)> {
             let crumbs = relative_crumbs(&path);
             Ok((Text::from_str(&contents), crumbs, Some(path)))
         }
+        // An empty buffer with the file's name; `App::ensure_preview` gives it its viewer.
+        dacode::open::Opened::View(_) => {
+            let crumbs = relative_crumbs(&path);
+            Ok((Text::from_str(""), crumbs, Some(path)))
+        }
         // `dacode newfile.rs` is meant to work, so a path that does not exist yet is a buffer that
         // knows its name. Anything else — too large, binary, another encoding — keeps `file_path`
         // as `None`, because a buffer that could be saved over a file it never managed to read is
@@ -874,6 +880,39 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.chrome.zoom = dacode::chrome::Zoom::new(percent);
     }
     let zoom = state.chrome.zoom.factor();
+    // A viewed file, as `App::ensure_preview` would start it — but waited for, since a capture
+    // has no event loop to wake: the file is read, then the pages on screen are rendered.
+    if let Some(path) = state.file_path.clone() {
+        let path = std::path::PathBuf::from(path);
+        if let Some(kind) = dacode::viewer::Kind::opened(&path) {
+            if !kind.is_drawn() {
+                match dacode::viewer::office_text(&path) {
+                    Ok(text) => state.document = Document::from_str(&text),
+                    Err(why) => state.hover = Some(why),
+                }
+            }
+            let mut preview = dacode::viewer::Preview::open(kind, path, None);
+            let window = Rect::new(0.0, 0.0, width as f32, height as f32);
+            let slot = dacode::layout::Layout::of(window, zoom, None, 0.0)
+                .pane(0, 1, true, zoom)
+                .slot;
+            let margin = dacode::layout::viewer_margin(zoom);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            while kind.is_drawn() && std::time::Instant::now() < deadline {
+                preview.poll();
+                let placed = preview.placed(slot, margin);
+                preview.request(&placed);
+                let drawn = placed
+                    .iter()
+                    .all(|at| preview.pages[at.index].picture.is_some());
+                if preview.status != dacode::viewer::Status::Loading && drawn {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            state.preview = Some(preview);
+        }
+    }
     fit_wrap_columns(&mut state, width as f32, zoom);
     // Again just before drawing, once each view has opened whatever sidebar it opens: the code's
     // width depends on it, and fitting it here alone wrapped a narrow capture past its own edge.
@@ -1644,6 +1683,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 path: &state.path,
                 focused: index == 0,
                 highlights: &state.highlights,
+                preview: None,
             })
             .collect();
 
@@ -2170,6 +2210,8 @@ struct Buffer {
     /// What this buffer is when it is a diff or the history rather than a file — see
     /// [`EditorState::review`], which it is swapped with.
     review: Option<dacode::scm::Show>,
+    /// What this buffer shows when it is a viewed file — see [`EditorState::preview`].
+    preview: Option<dacode::viewer::Preview>,
 }
 
 impl ApplicationHandler<dacode::wake::Wake> for App {
@@ -2987,6 +3029,34 @@ impl App {
             MouseScrollDelta::PixelDelta(position) => (position.x as f32, position.y as f32, true),
         };
 
+        // Over a viewed picture the wheel moves the picture, and with ctrl zooms *it* rather than
+        // the code font, which the picture is not drawn in. Not under a modal surface, which owns
+        // the wheel wherever the pointer is.
+        let over_preview = self
+            .state
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.kind.is_drawn())
+            && !self.state.settings_showing()
+            && self.state.palette.is_none()
+            && self.state.help.is_none()
+            && self.state.menu.is_none()
+            && dacode::layout::contains(self.preview_slot(), self.pointer.0, self.pointer.1);
+        if over_preview {
+            let (down, sideways) = if pixels {
+                (-dy, -dx)
+            } else {
+                (-dy * 3.0 * row_height, -dx * 3.0 * row_height)
+            };
+            let (down, sideways) = if self.modifiers.shift_key() && sideways == 0.0 {
+                (0.0, down)
+            } else {
+                (down, sideways)
+            };
+            self.scroll_preview(sideways, down, self.modifiers.control_key());
+            return;
+        }
+
         // ctrl-scroll resizes the text, as it does in every browser and every other editor.
         // The wheel handler ignored modifiers entirely, so the one gesture people try first
         // when the type is too small did nothing.
@@ -3522,6 +3592,11 @@ impl App {
             && self.state.settings_showing()
             && self.handle_page_key(key)
         {
+            return false;
+        }
+        // A viewed picture likewise: there is no text for the grammar to move through, and the
+        // keys it would have taken scroll and zoom the picture instead.
+        if !self.state.settings_showing() && self.handle_preview_key(&key) {
             return false;
         }
 
@@ -5584,7 +5659,92 @@ impl App {
         changed |= self.sync_scm();
         changed |= self.poll_terminal();
         changed |= self.poll_updates();
+        changed |= self.sync_preview();
         changed
+    }
+
+    /// The focused pane's whole slot: where a viewed picture is drawn. The rectangle `draw_panes`
+    /// gives `draw_preview`, from the same `Layout::pane`.
+    fn preview_slot(&self) -> Rect {
+        let count = self.panes.len().max(1);
+        let vertical = self.panes.layout == chrome::PaneLayout::Vertical;
+        self.layout()
+            .pane(self.panes.active(), count, vertical, self.scale())
+            .slot
+    }
+
+    /// The viewer's part of the idle step: takes what its worker finished, and asks it for the
+    /// pages now on screen at the width they are drawn at. Returns whether there is something new
+    /// to draw.
+    fn sync_preview(&mut self) -> bool {
+        let slot = self.preview_slot();
+        let margin = dacode::layout::viewer_margin(self.scale());
+        let Some(preview) = &mut self.state.preview else {
+            return false;
+        };
+        let changed = preview.poll();
+        let placed = preview.placed(slot, margin);
+        preview.request(&placed);
+        changed
+    }
+
+    /// A key on a viewed picture: zoom and scroll, the keys an image viewer and a PDF reader share.
+    /// Returns whether it was used; everything else — closing the tab, the palette — passes on.
+    fn handle_preview_key(&mut self, key: &Key) -> bool {
+        if key.ctrl || key.alt || self.state.focus != dacode::focus::Focus::Editor {
+            return false;
+        }
+        let slot = self.preview_slot();
+        let scale = self.scale();
+        let margin = dacode::layout::viewer_margin(scale);
+        let row = 48.0 * scale;
+        let Some(preview) = self
+            .state
+            .preview
+            .as_mut()
+            .filter(|preview| preview.kind.is_drawn())
+        else {
+            return false;
+        };
+        let page = slot.height - margin * 2.0;
+        match key.code {
+            KeyCode::Char('+') | KeyCode::Char('=') => preview.zoom_by(1.25),
+            KeyCode::Char('-') => preview.zoom_by(0.8),
+            KeyCode::Char('0') => preview.fit_view(),
+            KeyCode::Down | KeyCode::Char('j') => preview.scroll_by(row, 0.0, slot, margin),
+            KeyCode::Up | KeyCode::Char('k') => preview.scroll_by(-row, 0.0, slot, margin),
+            KeyCode::Right | KeyCode::Char('l') => preview.scroll_by(0.0, row, slot, margin),
+            KeyCode::Left | KeyCode::Char('h') => preview.scroll_by(0.0, -row, slot, margin),
+            KeyCode::PageDown | KeyCode::Char(' ') => preview.scroll_by(page, 0.0, slot, margin),
+            KeyCode::PageUp => preview.scroll_by(-page, 0.0, slot, margin),
+            KeyCode::Home | KeyCode::Char('g') => preview.scroll_by(f32::MIN, 0.0, slot, margin),
+            KeyCode::End | KeyCode::Char('G') => preview.scroll_by(f32::MAX, 0.0, slot, margin),
+            _ => return false,
+        }
+        self.sync_preview();
+        true
+    }
+
+    /// The wheel over a viewed picture: scrolls it, or with ctrl held zooms it. Returns whether
+    /// there was a picture to move.
+    fn scroll_preview(&mut self, dx: f32, dy: f32, zoom: bool) -> bool {
+        let slot = self.preview_slot();
+        let margin = dacode::layout::viewer_margin(self.scale());
+        let Some(preview) = self
+            .state
+            .preview
+            .as_mut()
+            .filter(|preview| preview.kind.is_drawn())
+        else {
+            return false;
+        };
+        if zoom {
+            preview.zoom_by(if dy < 0.0 { 1.1 } else { 1.0 / 1.1 });
+        } else {
+            preview.scroll_by(dy, dx, slot, margin);
+        }
+        self.sync_preview();
+        true
     }
 
     /// Takes whatever the highlighter has finished and applies it if it still describes the buffer.
@@ -6064,6 +6224,7 @@ fn pane_views<'a>(
                     path: &state.path,
                     focused,
                     highlights: &state.highlights,
+                    preview: state.preview.as_ref(),
                 }
             } else {
                 let stored = stored_index(pane.buffer, state.active_buffer);
@@ -6074,6 +6235,7 @@ fn pane_views<'a>(
                         path: &buffer.path,
                         focused,
                         highlights: &buffer.highlights,
+                        preview: buffer.preview.as_ref(),
                     },
                     // The buffer went away — a pane pointing at nothing draws the live one
                     // rather than vanishing.
@@ -6083,6 +6245,7 @@ fn pane_views<'a>(
                         path: &state.path,
                         focused,
                         highlights: &state.highlights,
+                        preview: state.preview.as_ref(),
                     },
                 }
             }
@@ -6285,6 +6448,25 @@ impl App {
                 let link = dacode::share::link(&root, std::path::Path::new(&path), line);
                 dacode::clipboard::set(&link);
                 self.state.hover = Some(format!("copied {link}"));
+            }
+            Action::PreviewFile => {
+                // Only an SVG goes back to its text: every other viewed file has no text to show,
+                // and an office document's is already what is on screen.
+                match self.state.preview.as_ref().map(|preview| preview.kind) {
+                    Some(dacode::viewer::Kind::Svg) => self.state.preview = None,
+                    Some(_) => {}
+                    None if self.state.document.is_dirty() => {
+                        self.warn(
+                            "save the file first — the picture is drawn from what is on disk",
+                        );
+                    }
+                    None => {
+                        self.ensure_preview(true);
+                        if self.state.preview.is_none() {
+                            self.warn("this file is not something DaCode can show as a picture");
+                        }
+                    }
+                }
             }
             Action::Run => {
                 // Typed into the terminal and entered, as if you had: the command stays in the
@@ -6518,6 +6700,8 @@ impl App {
         // that has since become a 4GB log is exactly the case `open.rs` exists to bound.
         let contents = match dacode::open::read(path) {
             dacode::open::Opened::Text(contents) => contents,
+            // Restored as an empty buffer with the file's name; the viewer starts when it is shown.
+            dacode::open::Opened::View(_) => String::new(),
             dacode::open::Opened::Refused(why) => {
                 eprintln!("dacode: not restoring {}: {why}", path.display());
                 return;
@@ -6555,6 +6739,7 @@ impl App {
             scroll: ScrollAnchor::default(),
             highlights: Vec::new(),
             review: None,
+            preview: None,
         });
         self.state.buffer_count = self.buffers.len() + 1;
     }
@@ -8142,6 +8327,15 @@ impl App {
     /// none of what follows — the recovery copy stayed behind to be offered again, the watcher saw
     /// the write as someone else's, and `format_on_save` never ran for the key most people press.
     fn write_active(&mut self, saving: Saving) {
+        // A viewed file's buffer is not its contents — an image's is empty, a document's is the
+        // text read out of it — so writing it would replace a PDF with nothing, or a .docx with
+        // plain text. It is refused before anything else, autosave included.
+        if self.state.preview.is_some() {
+            if saving == Saving::Asked {
+                self.warn("this tab views the file — DaCode does not write it");
+            }
+            return;
+        }
         let Some(path) = self.state.file_path.clone() else {
             let message = if self.state.modal {
                 "this buffer has no file name — use :w <path>".to_string()
@@ -8498,6 +8692,12 @@ impl App {
                             Some(path_string),
                         );
                     }
+                    // `open_document` reaches `after_buffer_change`, which starts the viewer.
+                    dacode::open::Opened::View(_) => self.open_document(
+                        Document::from_str(""),
+                        relative_crumbs(&path_string),
+                        Some(path_string),
+                    ),
                     // On screen, not to a console: a release build on Windows has none, so this
                     // was a click on a file in the tree that appeared to do nothing at all.
                     dacode::open::Opened::Refused(why) => {
@@ -8576,6 +8776,44 @@ impl App {
         self.code_actions.clear();
     }
 
+    /// Gives the active buffer its viewer, when its file is one the viewer shows and it has none
+    /// yet — at startup, after a session restore, and on every switch, so a buffer restored as an
+    /// empty placeholder starts reading its file only once it is looked at. `forced` is
+    /// `preview_file`, which views a kind that otherwise opens as text: an SVG.
+    ///
+    /// An office document's text is read here, on the UI thread, bounded as `open::read` is; its
+    /// pictures are not, which is what would make it slow.
+    fn ensure_preview(&mut self, forced: bool) {
+        if self.state.preview.is_some() {
+            return;
+        }
+        let Some(path) = self.state.file_path.clone() else {
+            return;
+        };
+        let path = std::path::PathBuf::from(path);
+        let kind = if forced {
+            dacode::viewer::Kind::of(&path)
+        } else {
+            dacode::viewer::Kind::opened(&path)
+        };
+        let Some(kind) = kind else {
+            return;
+        };
+        if kind.is_drawn() {
+            self.state.preview = Some(dacode::viewer::Preview::open(
+                kind,
+                path,
+                self.waker.clone(),
+            ));
+            return;
+        }
+        match dacode::viewer::office_text(&path) {
+            Ok(text) => self.state.document = Document::from_str(&text),
+            Err(why) => self.state.hover = Some(why),
+        }
+        self.state.preview = Some(dacode::viewer::Preview::open(kind, path, None));
+    }
+
     /// Makes a new document the active one, keeping the previous buffer.
     fn open_document(&mut self, document: Document, path: Vec<String>, file_path: Option<String>) {
         self.hide_settings_tab();
@@ -8586,6 +8824,7 @@ impl App {
             scroll: std::mem::take(&mut self.state.scroll),
             highlights: std::mem::take(&mut self.state.highlights),
             review: self.state.review.take(),
+            preview: self.state.preview.take(),
         };
         // An untouched scratch buffer is a placeholder for "nothing open yet", not a document: kept,
         // it sat in the tab strip as `untitled` beside every file opened after it.
@@ -8646,6 +8885,7 @@ impl App {
             self.state.scroll = ScrollAnchor::default();
             self.state.highlights = Vec::new();
             self.state.review = None;
+            self.state.preview = None;
             self.after_buffer_change();
             self.refresh_buffer_tabs();
             return;
@@ -8853,6 +9093,7 @@ impl App {
             // Highlights travel with the buffer so an unfocused pane keeps its colors.
             highlights: std::mem::replace(&mut self.state.highlights, target.highlights),
             review: std::mem::replace(&mut self.state.review, target.review),
+            preview: std::mem::replace(&mut self.state.preview, target.preview),
         };
 
         // Where the buffer that was live belongs: at its own number, in a list that now skips the
@@ -11855,6 +12096,7 @@ impl App {
         // The focused pane shows whatever is live. Without this it keeps drawing the buffer it
         // remembers, which is how choosing a file from the tree came to display an empty one.
         self.panes.follow(self.state.active_buffer);
+        self.ensure_preview(false);
 
         // The names in the tab strip. Here rather than per frame: the list changes when a buffer
         // opens, closes or is switched to, and nothing else moves it.
@@ -14420,6 +14662,60 @@ mod wiring_tests {
             Some(app.state.line_numbers.name()),
             "the setting changed on the page is"
         );
+    }
+
+    #[test]
+    fn a_viewed_image_opens_as_a_picture_and_saving_never_writes_over_it() {
+        // An image used to be refused as binary. Its buffer is empty — the picture is drawn from
+        // the file — so a save of that buffer would replace the photo with nothing; ctrl-s and
+        // the keys the grammar would have taken must leave the file exactly as it was.
+        let dir = scratch("viewer");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        let mut png = Vec::new();
+        image::RgbaImage::from_pixel(4, 2, image::Rgba([200, 10, 10, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let path = dir.join("photo.png");
+        std::fs::write(&path, &png).unwrap();
+
+        app.activate(Target::File(path.clone()));
+        assert!(app.state.preview.is_some(), "opened in the viewer");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.state.preview.as_ref().unwrap().status == dacode::viewer::Status::Loading
+            && std::time::Instant::now() < deadline
+        {
+            app.collect_background();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let preview = app.state.preview.as_ref().unwrap();
+        assert_eq!(preview.status, dacode::viewer::Status::Ready);
+        assert_eq!(
+            (preview.pages[0].width, preview.pages[0].height),
+            (4.0, 2.0)
+        );
+
+        app.press(Key::char('x'));
+        app.press(Key::ctrl('s'));
+        assert!(
+            app.state
+                .prompt
+                .as_ref()
+                .is_some_and(|p| p.message.is_some()),
+            "and says why"
+        );
+        app.press(Key::named(KeyCode::Escape));
+        assert_eq!(std::fs::read(&path).unwrap(), png, "the file is untouched");
+        assert!(!app.state.document.is_dirty());
+
+        // The keys the text would have had zoom the picture instead.
+        app.press(Key::char('+'));
+        assert!(app.state.preview.as_ref().unwrap().zoom > 1.0);
+        app.press(Key::char('0'));
+        assert_eq!(app.state.preview.as_ref().unwrap().zoom, 1.0);
+
+        // And it travels with its buffer: away and back, it is still the picture.
+        let _ = app.run(Action::CloseBuffer);
+        assert!(app.state.preview.is_none(), "the code file has no viewer");
     }
 
     #[test]

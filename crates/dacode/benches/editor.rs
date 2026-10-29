@@ -77,6 +77,7 @@ fn state(lines: usize) -> EditorState {
         search: None,
         scm: Default::default(),
         review: None,
+        preview: None,
         recording: None,
         diff: dacode::git::Diff::default(),
         blame: Default::default(),

@@ -306,7 +306,9 @@ pub fn execute(
             state.chrome.unread = 0;
         }
         // Both need the machine: the clipboard, and the files a link is read from.
-        Action::Share | Action::Run => return Outcome::Window(action.clone()),
+        Action::Share | Action::Run | Action::PreviewFile => {
+            return Outcome::Window(action.clone());
+        }
         // The updater is a process and a thread the event loop owns, as the language server is.
         Action::CheckForUpdates
         | Action::DownloadUpdate

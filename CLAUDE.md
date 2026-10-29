@@ -161,6 +161,19 @@ asked gets a value of the type it expects and the text on screen stays git's. Ga
 instead (`edits_text`) would be a list that is wrong the first time an action is added. Saving it
 under a name (Save As, `:w path`) clears `review`, because a patch on disk is a file.
 
+**A viewed file is a buffer `mutate` and `write_active` both refuse.** An image, a PDF or an office
+document opens as an ordinary buffer marked by `EditorState::preview` (`crate::viewer`), which
+travels with its `Buffer` as `review` does. The buffer of a picture is *empty*, so the save refusal
+is not politeness: without it `ctrl-s` would replace a PDF with nothing. `open::read` answers
+`Opened::View` before its binary sniff, and `App::ensure_preview` — in `after_buffer_change` —
+starts the viewer, so a buffer restored as an empty placeholder reads its file only when shown.
+Decoding is a worker's; a PDF keeps a worker for its tab's life and renders a page when asked, at
+the width it is drawn, and only `Preview::placed` pages — the viewport's — are ever asked for.
+Answers are keyed by (page, width): a raster for a zoom since left is dropped. SVG opens as text,
+because people edit it; `preview_file` shows the picture. Pictures are drawn by
+`dacode-render`'s `image.rs`, which paints over its layer's rectangles, so anything drawn on top of
+one goes a layer up.
+
 **Every git command the source-control view runs goes through `scm::Worker`, one at a time and in
 order** — "stage, then tell me the status" must not answer with the status from before the stage.
 Statuses carry a `Version` from `source_control::View::ask` and only the newest asked is accepted; a
@@ -588,6 +601,7 @@ anything platform-shaped:
 | What git is asked, and how | `crates/dacode/src/scm.rs` — `parse_status` (porcelain v2), `parse_branches`, `Op`, `Worker`; `App::sync_scm` collects, `App::git_action` dispatches every `Action::Git` |
 | A diff tab | `App::show_review` opens it, `EditorState::review` marks it, `EditorState::mutate` keeps it read-only, `chrome::diff_line_kind` colours it |
 | Updating DaCode | `crates/dacode/src/update.rs` — the release JSON, `install_kind`, `SHA256SUMS`, staging and `apply`, behind a `Fetch` trait so tests never reach the network; `App::poll_updates`, `update_action` and `restart_for_update` in `main.rs`; `chrome::notifications_panel` for the offer's buttons; `.github/workflows/release.yml` writes the sums |
+| A viewed image, PDF or document | `crates/dacode/src/viewer.rs` — `Kind`, `Preview` and its worker, `office_text`; `chrome::draw_preview`, `App::ensure_preview`, `handle_preview_key`; pictures in `crates/dacode-render/src/image.rs` |
 | Who changed a line | `crates/dacode/src/blame.rs` — the porcelain reader, the edit log, `Tracker` and `BlameWorker`; `App::sync_blame` asks and collects, `chrome::line_note` decides between a diagnostic and the inline blame |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the

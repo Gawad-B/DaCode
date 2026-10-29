@@ -35,6 +35,13 @@ arboard.workspace = true
 # For decoding the embedded window icon; already here for the offscreen capture.
 png.workspace = true
 anyhow.workspace = true
+# The viewer. Pure Rust, each of them, so a PDF or a photo opens on any machine with no system
+# library to install: `image` for the raster formats, `resvg` for SVG, `hayro` for PDF pages.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
+resvg = { version = "0.45", default-features = false }
+hayro = "0.8"
+# Office documents are zip files of XML; their text is read out of them.
+zip.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

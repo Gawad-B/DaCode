@@ -366,6 +366,9 @@ pub enum Action {
     /// Copy a reference to the cursor's line — a link to it on the repository's host when there is
     /// one, `path:line` when there is not.
     Share,
+    /// Shows the file as the picture it describes, or back as its text: an SVG, which opens as
+    /// text because it is something people edit.
+    PreviewFile,
     /// Run the project: its run command, typed into the terminal.
     Run,
     /// `ctrl-`` or `ctrl-t` — show the terminal and give it the keys, or, from the terminal, hide
@@ -686,6 +689,7 @@ impl Action {
         "update_release_notes",
         "skip_update",
         "share",
+        "preview_file",
         "run",
         "toggle_terminal",
         "focus_terminal",
@@ -890,6 +894,7 @@ impl Action {
             "update_release_notes" => Action::UpdateReleaseNotes,
             "skip_update" => Action::SkipUpdate,
             "share" => Action::Share,
+            "preview_file" => Action::PreviewFile,
             "run" => Action::Run,
             "toggle_terminal" => Action::ToggleTerminal,
             "focus_terminal" => Action::FocusTerminal,

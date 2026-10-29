@@ -120,6 +120,7 @@ const MENUS: [&[&str]; 8] = [
         "save",
         "save_as",
         "share",
+        "preview_file",
         "close_buffer",
         "settings",
         "quit",
