@@ -80,7 +80,7 @@ mod tests {
         // editor is drawn at as well as an ordinary one.
         for (width, height) in [(640.0, 480.0), (1400.0, 900.0)] {
             let layout = Layout::of(Rect::new(0.0, 0.0, width, height), 1.0, None, 0.0)
-                .with_terminal(true, crate::terminal::DEFAULT_FRACTION, 1.0);
+                .with_terminal(true, crate::terminal::DEFAULT_FRACTION, false, 1.0);
             let terminal = layout.terminal.expect("asked for one");
             assert_eq!(
                 focus_for(&layout, terminal.x + 20.0, terminal.bottom() - 5.0),

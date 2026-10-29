@@ -923,12 +923,21 @@ impl Layout {
     /// `fraction` of the editor's height — two fifths until the edge is dragged, the share VSCode
     /// opens its panel at — clamped by [`terminal_height`] so the code above stays a place you can
     /// read and the panel stays a terminal.
-    pub fn with_terminal(mut self, open: bool, fraction: f32, scale: f32) -> Self {
+    ///
+    /// `folded` leaves the panel only its header — while the settings page is in front, which
+    /// needs the height, and the panel would otherwise cover the rows it is scrolling to. The
+    /// shells keep running and the grid they were told stays the size it was; a click on the
+    /// header gives the terminal the keys, which unfolds it (`EditorState::terminal_folded`).
+    pub fn with_terminal(mut self, open: bool, fraction: f32, folded: bool, scale: f32) -> Self {
         if !open {
             return self;
         }
         let editor = self.editor;
-        let height = terminal_height(editor.height, fraction, scale);
+        let height = if folded {
+            (TERMINAL_HEADER * scale).min(editor.height).floor()
+        } else {
+            terminal_height(editor.height, fraction, scale)
+        };
         let (panel, rest) = editor.split_bottom(height);
         self.editor = rest;
         self.terminal = Some(panel);
@@ -1604,6 +1613,7 @@ mod tests {
                 let with = Layout::of(window, scale, None, 0.0).with_terminal(
                     true,
                     crate::terminal::DEFAULT_FRACTION,
+                    false,
                     scale,
                 );
                 let what = format!("{width}x{height} at {scale}");
@@ -1667,7 +1677,7 @@ mod tests {
     fn a_closed_terminal_changes_nothing() {
         let window = Rect::new(0.0, 0.0, 1200.0, 800.0);
         let plain = Layout::of(window, 1.0, Some(3), 1.0);
-        let closed = Layout::of(window, 1.0, Some(3), 1.0).with_terminal(false, 0.4, 1.0);
+        let closed = Layout::of(window, 1.0, Some(3), 1.0).with_terminal(false, 0.4, false, 1.0);
         assert_eq!(plain.editor, closed.editor);
         assert_eq!(closed.terminal, None);
     }
@@ -1687,7 +1697,7 @@ mod tests {
             let shared = plain.editor.height;
             for fraction in [0.0, 1.0] {
                 let layout =
-                    Layout::of(window, scale, None, 0.0).with_terminal(true, fraction, scale);
+                    Layout::of(window, scale, None, 0.0).with_terminal(true, fraction, false, scale);
                 let panel = layout.terminal.expect("open");
                 let rects = terminal_panel(panel, &typography, scale);
                 assert!(

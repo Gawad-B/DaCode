@@ -733,6 +733,13 @@ impl EditorState {
         self.settings_active && self.settings_page.is_some()
     }
 
+    /// Whether the terminal panel is folded to its header: while the settings page is in front and
+    /// the terminal does not have the keys. Giving it the keys — a click on it, `` ctrl-` ``, Run —
+    /// unfolds it, because a terminal you are typing into has to be one you can see.
+    pub fn terminal_folded(&self) -> bool {
+        self.settings_showing() && self.focus != crate::focus::Focus::Terminal
+    }
+
     /// The blame column for [`crate::layout::Layout::with_blame`]: in the focused pane, at its
     /// wanted width, while it is switched on and there is a blame for it — or one on its way.
     ///
@@ -1311,7 +1318,12 @@ impl EditorState {
             None,
             0.0,
         )
-        .with_terminal(self.terminal.open, self.terminal.fraction, scale)
+        .with_terminal(
+            self.terminal.open,
+            self.terminal.fraction,
+            self.terminal_folded(),
+            scale,
+        )
         .terminal
         .map_or(0.0, |panel| panel.height);
         (chrome - terminal).max(0.0)
@@ -1915,7 +1927,12 @@ pub fn draw_panes(
         state.results.as_ref().map(|results| results.wanted_rows()),
         state.sidebar_fraction(),
     )
-    .with_terminal(state.terminal.open, state.terminal.fraction, scale)
+    .with_terminal(
+        state.terminal.open,
+        state.terminal.fraction,
+        state.terminal_folded(),
+        scale,
+    )
     .with_blame(state.blame_column(
         panes.iter().position(|pane| pane.focused).unwrap_or(0),
         scale,

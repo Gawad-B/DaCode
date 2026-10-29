@@ -1319,7 +1319,7 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             state.terminal.fraction = (percent / 100.0).clamp(0.0, 1.0);
         }
         let panel = dacode::layout::Layout::of(bounds, zoom, None, state.sidebar_fraction())
-            .with_terminal(true, state.terminal.fraction, zoom)
+            .with_terminal(true, state.terminal.fraction, false, zoom)
             .terminal
             .expect("asked for one");
         let rects = dacode::layout::terminal_panel(panel, &state.typography, zoom);
@@ -1357,6 +1357,14 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state.terminal.tabs = std::iter::once("~/dacode".to_string())
             .chain((1..count).map(|n| others[(n - 1) % others.len()].to_string()))
             .collect();
+        // With `--settings` too, the page is in front and has the keys, which folds the panel to
+        // its header: the case where the terminal used to cover the rows being read.
+        if flag("--settings") {
+            state.settings_page = Some(dacode::settings_ui::Page::new());
+            state.settings_active = true;
+            state.focus = dacode::focus::Focus::Editor;
+            state.snap_settings_scroll();
+        }
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, zoom);
@@ -9841,6 +9849,7 @@ impl App {
         .with_terminal(
             self.state.terminal.open,
             self.state.terminal.fraction,
+            self.state.terminal_folded(),
             self.scale(),
         )
         .with_blame(self.state.blame_column(self.panes.active(), self.scale()))
@@ -9867,6 +9876,7 @@ impl App {
     fn spawn_terminal(&mut self) -> bool {
         let (size, cell) = self
             .terminal_rects()
+            .filter(|_| !self.state.terminal_folded())
             .map(|rects| {
                 (
                     dacode_terminal::GridSize::new(rects.columns, rects.rows),
@@ -10018,6 +10028,11 @@ impl App {
     /// has already redrawn for the panel it will be shown in. Constant work per shell and a no-op
     /// when nothing changed, so it is simply asked whenever the loop looks.
     fn fit_terminal(&mut self) {
+        // Folded, the panel has no rows to speak of, and telling a shell it has one would make
+        // every program in it redraw for a strip, then again when it unfolds.
+        if self.state.terminal_folded() {
+            return;
+        }
         let Some(rects) = self.terminal_rects() else {
             return;
         };
@@ -14404,6 +14419,33 @@ mod wiring_tests {
             config.line_numbers.as_deref(),
             Some(app.state.line_numbers.name()),
             "the setting changed on the page is"
+        );
+    }
+
+    #[test]
+    fn the_terminal_folds_to_its_header_while_the_settings_page_is_in_front() {
+        // The panel kept its height over the settings tab, so the rows being read were under the
+        // shell. Folded, the page has the height; giving the terminal the keys — a click on its
+        // strip, ctrl-` — brings it back at the height it had.
+        let dir = scratch("terminal-fold");
+        let mut app = editor(&dir, "a.rs", "fn main() {}\n");
+        app.state.terminal.open = true;
+        let open = app.layout().terminal.expect("open").height;
+        let _ = app.run(Action::ToggleSettings);
+        app.state.focus = dacode::focus::Focus::Editor;
+        let folded = app.layout().terminal.expect("still there").height;
+        assert_eq!(folded, dacode::layout::TERMINAL_HEADER);
+        assert!(open > folded * 3.0);
+
+        app.state.focus = dacode::focus::Focus::Terminal;
+        assert_eq!(app.layout().terminal.expect("open").height, open);
+        app.state.focus = dacode::focus::Focus::Editor;
+        let _ = app.run(Action::CloseBuffer);
+        assert!(!app.state.settings_showing());
+        assert_eq!(
+            app.layout().terminal.expect("open").height,
+            open,
+            "and back over code, at the height it had"
         );
     }
 

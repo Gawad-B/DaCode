@@ -635,7 +635,9 @@ costs the shell readline's transpose-characters and `ctrl-pageup`/`pagedown` cos
 `ctrl-w` deliberately stays the shell's word delete. The panel's height is a fraction on
 `terminal::Panel`, persisted in the session rather than as a setting (it is where you left things,
 per project, and a setting would rewrite `init.lua` on every drag); `layout::terminal_height` is the
-one clamp, read by the layout and the drag alike. Each tab's shell has its own dirty flag and the
+one clamp, read by the layout and the drag alike. While the settings page is in front and the
+terminal does not have the keys, `EditorState::terminal_folded` leaves the panel only its header,
+and the shells are not resized for it; giving the terminal the keys unfolds it. Each tab's shell has its own dirty flag and the
 shared waker, so a busy hidden tab wakes the loop once and never again until it is shown.
 
 From the motion and scrolling work, each one stated rather than hidden:
