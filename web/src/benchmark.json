@@ -1,0 +1,77 @@
+{
+  "date": "2026-10-29",
+  "machine": {
+    "cpu": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
+    "cores": 8,
+    "ram_gb": 7,
+    "os": "Fedora Linux 44 (Workstation Edition)",
+    "kernel": "7.2.12-200.fc44.x86_64",
+    "display": "Xwayland Version 24.1.14 (12401014)"
+  },
+  "window": "1600x1000",
+  "method": {
+    "runs": 10,
+    "keystrokes": 200,
+    "settle_seconds": 2.0,
+    "idle_seconds": 20.0,
+    "big_file_lines": 100000
+  },
+  "editors": {
+    "dacode": {
+      "label": "DaCode",
+      "version": "1.1.1",
+      "startup_first_paint_ms": {
+        "median": 157.94,
+        "p95": 173.56,
+        "min": 147.8,
+        "n": 10
+      },
+      "startup_ready_ms": {
+        "median": 179.48,
+        "p95": 210.71,
+        "min": 156.12,
+        "n": 10
+      },
+      "keystroke_ms": {
+        "median": 5.16,
+        "p95": 5.82,
+        "min": 4.48,
+        "n": 200
+      },
+      "idle_memory_mb": 51.7,
+      "idle_processes": 1,
+      "idle_cpu_percent": 0.0,
+      "big_file_settled_ms": 1129,
+      "big_file_memory_mb": 95.3,
+      "install_mb": 40.8
+    },
+    "vscode": {
+      "label": "VSCode",
+      "version": "1.143.1",
+      "startup_first_paint_ms": {
+        "median": 533.4,
+        "p95": 567.6,
+        "min": 458.01,
+        "n": 10
+      },
+      "startup_ready_ms": {
+        "median": 3388.12,
+        "p95": 3610.88,
+        "min": 735.09,
+        "n": 10
+      },
+      "keystroke_ms": {
+        "median": 12.8,
+        "p95": 17.69,
+        "min": 10.7,
+        "n": 200
+      },
+      "idle_memory_mb": 847.3,
+      "idle_processes": 10,
+      "idle_cpu_percent": 1.95,
+      "big_file_settled_ms": 3720,
+      "big_file_memory_mb": 877.7,
+      "install_mb": 1031.1
+    }
+  }
+}

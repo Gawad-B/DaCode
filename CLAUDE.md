@@ -580,6 +580,7 @@ anything platform-shaped:
 | A command-line flag | `crates/dacode/src/main.rs` — `FLAGS` and `VALUE_FLAGS`, both checked against the source |
 | What the docs say | `docs/` — tutorial, guides, reference, explanation; `README.md` is the landing page |
 | The web landing page | `web/` — Vite + React, no framework beyond it; `web/README.md` says what drives it |
+| The numbers against VSCode | `bench/compare/compare.py` measures both from outside and writes `web/src/benchmark.json`; the feature checklist is `web/src/versus.ts`, by hand |
 | How something looks | `crates/dacode/src/chrome.rs` |
 | Where something is | `crates/dacode/src/layout.rs` |
 | A config option | `dacode-lua/src/lib.rs`, `dacode/src/config.rs`, `dacode/src/settings_ui.rs` (all three) |

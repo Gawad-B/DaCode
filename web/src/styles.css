@@ -355,7 +355,9 @@ em {
 
 /* ── The name and the mark ───────────────────────────────────────────────── */
 
-.name {
+/* Scoped to the section: the cards use `.name` for their titles too, and an unscoped rule gave
+   every one of them this section's padding and grid. */
+.section.name {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 56px;
@@ -363,7 +365,7 @@ em {
   padding: 62px var(--pad-x) 68px;
 }
 
-.name > * {
+.section.name > * {
   min-width: 0;
 }
 
@@ -373,7 +375,7 @@ em {
   border: 1px solid var(--rule);
 }
 
-.name h2 {
+.section.name h2 {
   font-family: var(--serif);
   font-size: clamp(26px, 2.6vw, 34px);
   letter-spacing: -0.03em;
@@ -381,7 +383,7 @@ em {
   margin: 0 0 24px;
 }
 
-.name .bullets {
+.section.name .bullets {
   font-size: 15px;
   max-width: 62ch;
 }
@@ -1054,6 +1056,212 @@ em {
   color: var(--ink-faint);
 }
 
+/* ── Against VSCode ──────────────────────────────────────────────────────── */
+
+.versus {
+  padding: 62px var(--pad-x) 68px;
+}
+
+.vs-figures {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--rule);
+  margin-bottom: 44px;
+}
+
+.vs-figure {
+  background: var(--bg);
+  padding: 22px 26px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vs-number {
+  font-size: clamp(40px, 5vw, 64px);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.vs-figure .prose {
+  font-size: 13px;
+}
+
+.vs-table {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--rule);
+}
+
+.vs-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.vs-key {
+  width: 14px;
+  height: 8px;
+  margin-left: 10px;
+}
+
+.vs-key:first-child {
+  margin-left: 0;
+}
+
+.vs-key.ours,
+.vs-bar.ours .vs-fill {
+  background: var(--accent);
+}
+
+.vs-key.theirs,
+.vs-bar.theirs .vs-fill {
+  background: var(--rule-strong);
+}
+
+.vs-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 2fr) 128px;
+  gap: 28px;
+  align-items: center;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.vs-what {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vs-label {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.vs-note {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.vs-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* Every bar gets the same track, so its length is the value's share and nothing else; the number
+   sits in its own column beside it, where a 2px bar can still say it. */
+.vs-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px;
+  align-items: center;
+  gap: 12px;
+  height: 16px;
+}
+
+.vs-track {
+  height: 100%;
+  min-width: 0;
+}
+
+.vs-fill {
+  display: block;
+  height: 100%;
+}
+
+.vs-value {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--ink-dim);
+}
+
+.vs-bar.ours .vs-value {
+  color: var(--ink);
+}
+
+.vs-verdict {
+  font-size: 13px;
+  text-align: right;
+  color: var(--ink-faint);
+}
+
+.vs-verdict.lead {
+  color: var(--accent);
+}
+
+.vs-method {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 30px 0 0;
+  max-width: 88ch;
+}
+
+.vs-method .bullets {
+  font-size: 12.5px;
+}
+
+.vs-method a {
+  color: var(--accent);
+}
+
+.vs-parity-head {
+  padding-top: 62px;
+}
+
+.vs-parity {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-dim);
+}
+
+.vs-parity li {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.vs-mark {
+  font-size: 9.5px;
+}
+
+.vs-parity .yes .vs-mark {
+  color: var(--accent);
+}
+
+.vs-parity .partial .vs-mark {
+  color: var(--ink-dim);
+}
+
+/* A missing feature is listed in full ink, not greyed out of sight: the gap is the point. */
+.vs-parity .no {
+  color: var(--ink);
+}
+
+.vs-parity .no .vs-mark {
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+
+.vs-aside {
+  color: var(--ink-faint);
+}
+
 /* ── Identity ────────────────────────────────────────────────────────────── */
 
 .identity {
@@ -1242,7 +1450,7 @@ em {
     --pad-x: 16px;
   }
 
-  .name {
+  .section.name {
     grid-template-columns: 1fr;
     gap: 28px;
   }
@@ -1299,6 +1507,20 @@ em {
   .keyrow {
     grid-template-columns: 84px 1fr;
     gap: 14px;
+  }
+
+  .vs-figures {
+    grid-template-columns: 1fr;
+  }
+
+  .vs-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px 16px;
+  }
+
+  .vs-bars {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .specs {

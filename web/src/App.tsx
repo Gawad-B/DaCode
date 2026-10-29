@@ -20,6 +20,7 @@ import { useMode, usePrefersReducedMotion, useReveal, useScrolled } from "./hook
 import { MiniEditor } from "./components/MiniEditor";
 import { Download } from "./components/Download";
 import { Screens } from "./components/Screens";
+import { Versus } from "./components/Versus";
 import { useRelease } from "./useRelease";
 // The ض mark, built from the editor's own coverage mask
 // (crates/dacode-render/assets/mark.png): ink in the editor's light grey, the
@@ -54,6 +55,7 @@ export default function App() {
         {/* One link per section that exists, in the order they appear. */}
         <nav className="nav-links label">
           <a href="#why">why</a>
+          <a href="#vs">vs code</a>
           <a href="#new">new</a>
           <a href="#editor">editor</a>
           <a href="#keys">keys</a>
@@ -145,6 +147,9 @@ export default function App() {
           </div>
         ))}
       </section>
+
+      {/* ── Measured against VSCode ──────────────────────────────────────── */}
+      <Versus />
 
       {/* ── What the current release added ───────────────────────────────── */}
       <section className="section overhaul" id="new">
