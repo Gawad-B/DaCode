@@ -661,7 +661,10 @@ costs the shell readline's transpose-characters and `ctrl-pageup`/`pagedown` cos
 per project, and a setting would rewrite `init.lua` on every drag); `layout::terminal_height` is the
 one clamp, read by the layout and the drag alike. While the settings page is in front and the
 terminal does not have the keys, `EditorState::terminal_folded` leaves the panel only its header,
-and the shells are not resized for it; giving the terminal the keys unfolds it. Each tab's shell has its own dirty flag and the
+and the shells are not resized for it; giving the terminal the keys unfolds it. Closing a tab hangs its shell up and alacritty then waits for it without limit; bash can swallow
+that SIGHUP while blocked reading the terminal, so the reaper kills a shell still there after
+`HANG_UP_GRACE` (two seconds) — that swallowed hang-up was the terminal tests' "flake", which failed
+6 runs in 10 under parallel load and 0 in 20 after. Each tab's shell has its own dirty flag and the
 shared waker, so a busy hidden tab wakes the loop once and never again until it is shown.
 
 From the motion and scrolling work, each one stated rather than hidden:

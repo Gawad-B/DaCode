@@ -14,3 +14,8 @@ dacode-input = { path = "../dacode-input" }
 # hand and the one whose bugs cost the most, so it is taken whole from the emulator that has had the
 # most people typing into it. Default features off: `serde` is for alacritty's own config files.
 alacritty_terminal = { version = "0.26", default-features = false }
+
+# `kill` for a shell that will not exit when hung up (`session.rs`). Already in the build through
+# alacritty_terminal; named here because the call is ours.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

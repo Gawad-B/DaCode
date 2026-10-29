@@ -256,6 +256,7 @@ impl Terminal {
             ..Default::default()
         };
         let pty = tty::new(&options, window, 0)?;
+        let shell_pid = shell_pid(&pty);
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let sender = event_loop.channel();
         let _ = shared.sender.set(sender.clone());
@@ -266,7 +267,26 @@ impl Terminal {
         let thread = std::thread::Builder::new()
             .name("PTY reaper".into())
             .spawn(move || {
-                let _ = handle.join();
+                let stopped = handle.join();
+                // alacritty's drop sends SIGHUP and then waits for the shell with no limit. bash
+                // can take the hang-up without acting on it when it lands while bash is blocked
+                // reading the terminal, and a program can ignore it outright; then that wait never
+                // returned, and every closed tab left this thread and its shell behind. So the
+                // shell gets a grace to go by itself, and is killed if it has not.
+                let gone = Arc::new(AtomicBool::new(false));
+                if let Some(pid) = shell_pid {
+                    let gone = gone.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("PTY hang-up".into())
+                        .spawn(move || {
+                            std::thread::sleep(HANG_UP_GRACE);
+                            if !gone.load(Ordering::Acquire) {
+                                kill(pid);
+                            }
+                        });
+                }
+                drop(stopped);
+                gone.store(true, Ordering::Release);
             })?;
 
         Ok(Self {
@@ -488,6 +508,38 @@ impl Terminal {
     }
 }
 
+/// How long a hung-up shell is given to exit before it is killed. Long enough for a shell to write
+/// its history and for a program that catches SIGHUP to save what it was doing, short enough that a
+/// closed tab is not a process left running.
+const HANG_UP_GRACE: Duration = Duration::from_secs(2);
+
+/// The shell's process id, where it can be signalled: on Windows the pseudoconsole closing is what
+/// ends it, and there is no hang-up to be swallowed.
+#[cfg(unix)]
+fn shell_pid(pty: &tty::Pty) -> Option<u32> {
+    Some(pty.child().id())
+}
+
+#[cfg(not(unix))]
+fn shell_pid(_pty: &tty::Pty) -> Option<u32> {
+    None
+}
+
+/// SIGKILL to a shell that did not go when hung up. Only reached while the reaper has not yet said
+/// the wait returned, so the process is unreaped and its id still its own — but for the instant
+/// between the wait returning and the flag being set, two seconds after the hang-up, in which the
+/// kernel would have had to hand the same id to a new process. Stated rather than ruled out.
+#[cfg(unix)]
+fn kill(pid: u32) {
+    // SAFETY: `kill` takes no pointers and touches no memory; the id's freshness is the caller's.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+fn kill(_pid: u32) {}
+
 impl Drop for Terminal {
     fn drop(&mut self) {
         // The event loop drops the PTY on its way out, which sends the shell SIGHUP (or closes the
@@ -533,6 +585,30 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_shell_that_will_not_hang_up_is_ended_anyway() {
+        // Closing a terminal hangs its shell up and alacritty then waits for it, unconditionally.
+        // bash can swallow that hang-up when it lands while bash is reading the terminal, and a
+        // program can ignore it outright; either way the wait never ended, a thread and a shell
+        // were left behind each time a tab closed, and the terminal tests failed at random.
+        if cfg!(windows) {
+            return;
+        }
+        let terminal = spawn(run("trap '' HUP; echo ready; read line"), None);
+        assert!(wait_for(&terminal, Duration::from_secs(10), |screen| {
+            screen.lines().iter().any(|line| line.trim() == "ready")
+        }));
+        let started = Instant::now();
+        assert!(
+            terminal.shutdown(Duration::from_secs(10)),
+            "the shell was ended rather than waited on forever"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(8),
+            "within the grace and a little"
+        );
     }
 
     #[test]
