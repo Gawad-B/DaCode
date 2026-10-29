@@ -1993,18 +1993,17 @@ impl Page {
     fn groups(&self, category: Category, modal: bool) -> Vec<(&'static str, Vec<Entry>)> {
         let lines = |lines: Vec<Line>| lines.into_iter().map(Entry::Line).collect::<Vec<_>>();
         match category {
-            Category::Appearance
-            | Category::Accessibility
-            | Category::Editor
-            | Category::Files => sections(category)
-                .iter()
-                .map(|section| {
-                    (
-                        section.title,
-                        section.fields.iter().copied().map(Entry::Field).collect(),
-                    )
-                })
-                .collect(),
+            Category::Appearance | Category::Accessibility | Category::Editor | Category::Files => {
+                sections(category)
+                    .iter()
+                    .map(|section| {
+                        (
+                            section.title,
+                            section.fields.iter().copied().map(Entry::Field).collect(),
+                        )
+                    })
+                    .collect()
+            }
             // `available` rather than the whole table: with the grammar off there is no visual
             // mode to list a key for.
             // The way to change a key first, where someone who came to change one looks; then every

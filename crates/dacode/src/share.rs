@@ -223,7 +223,12 @@ fn quote(text: &str, windows: bool) -> String {
     if plain {
         text.to_string()
     } else if windows {
-        format!("\"{}\"", text.replace('`', "``").replace('"', "`\"").replace('$', "`$"))
+        format!(
+            "\"{}\"",
+            text.replace('`', "``")
+                .replace('"', "`\"")
+                .replace('$', "`$")
+        )
     } else {
         format!("'{}'", text.replace('\'', "'\\''"))
     }
@@ -401,9 +406,11 @@ mod tests {
         );
         // A helper script in a Rust project is not the Rust project.
         let script = root.join("tools/gen.py");
-        assert!(run_command_for(&root, Some(&script), false)
-            .unwrap()
-            .starts_with("python3 "));
+        assert!(
+            run_command_for(&root, Some(&script), false)
+                .unwrap()
+                .starts_with("python3 ")
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -426,7 +433,10 @@ mod tests {
     fn a_path_with_spaces_or_quotes_reaches_the_shell_as_one_argument() {
         assert_eq!(quote("/home/me/my file.py", false), "'/home/me/my file.py'");
         assert_eq!(quote("/it's.py", false), r"'/it'\''s.py'");
-        assert_eq!(quote(r"C:\My Files\a$b.py", true), r#""C:\My Files\a`$b.py""#);
+        assert_eq!(
+            quote(r"C:\My Files\a$b.py", true),
+            r#""C:\My Files\a`$b.py""#
+        );
     }
 
     #[test]

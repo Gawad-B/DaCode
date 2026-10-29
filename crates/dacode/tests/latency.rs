@@ -405,6 +405,43 @@ fn building_a_frame_is_bounded_by_the_viewport_and_not_by_the_file() {
     assert_under("building a frame", large, Duration::from_millis(8));
 }
 
+/// A table of `lines` rows, drawn as `data.csv`, so every row on screen is split into columns.
+fn csv_frame_build(lines: usize) -> Duration {
+    let rows: String = (0..lines)
+        .map(|i| format!("{i},\"Name, {i}\",city {i},{},\"say \"\"hi\"\"\"\n", i * 7))
+        .collect();
+    let mut state = state(SMALL);
+    state.document = Document::from_text(dacode_text::Text::from_str(&rows));
+    state.document.set_primary_caret(CharOffset(400));
+    state.path = vec!["data.csv".into()];
+    state.file_path = Some("data.csv".into());
+    let mut frame = Frame::default();
+    median(200, || {
+        frame.clear();
+        chrome::draw(
+            &mut frame,
+            &state,
+            Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1),
+            1.0,
+        );
+    })
+}
+
+#[test]
+fn colouring_a_tables_columns_is_bounded_by_the_viewport_and_not_by_the_file() {
+    // The columns are worked out per row as it is drawn and never stored, which is only sound
+    // while that work is the viewport's: a parse of the whole table per frame would be the
+    // sidebar defect again, and the status line's column name reads two lines, not the file.
+    let small = csv_frame_build(SMALL);
+    let large = csv_frame_build(LARGE);
+    assert_flat("building a frame of a table", small, large);
+    assert_under(
+        "building a frame of a table",
+        large,
+        Duration::from_millis(8),
+    );
+}
+
 #[test]
 fn scrolling_walks_the_viewport_and_not_the_document() {
     let rows = |lines: usize| {

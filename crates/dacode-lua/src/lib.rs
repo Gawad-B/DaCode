@@ -584,7 +584,10 @@ mod tests {
             run("dacode.set { interface_zoom = 1000 }").interface_zoom,
             Some(300)
         );
-        assert_eq!(run("dacode.set { interface_zoom = 5 }").interface_zoom, Some(50));
+        assert_eq!(
+            run("dacode.set { interface_zoom = 5 }").interface_zoom,
+            Some(50)
+        );
     }
 
     #[test]

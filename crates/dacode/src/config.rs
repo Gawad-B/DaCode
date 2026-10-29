@@ -363,7 +363,9 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     }
     if let Some(percent) = config.interface_zoom {
         settings.interface_zoom = crate::chrome::Zoom::new(percent);
-        settings.sources.insert("interface_zoom".into(), from_config);
+        settings
+            .sources
+            .insert("interface_zoom".into(), from_config);
     }
     if let Some(name) = &config.animations {
         // `dacode-lua` has already refused a bad spelling and said so; this only fails if the two lists

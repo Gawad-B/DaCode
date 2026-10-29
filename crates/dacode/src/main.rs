@@ -6315,7 +6315,7 @@ impl App {
                         self.state.hover = Some(
                             "nothing here DaCode knows how to run — the terminal is open to type \
                              a command"
-                            .to_string(),
+                                .to_string(),
                         );
                         self.show_terminal(true);
                     }

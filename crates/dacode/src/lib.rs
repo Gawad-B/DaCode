@@ -9,6 +9,7 @@ pub mod chrome;
 pub mod clipboard;
 pub mod completion;
 pub mod config;
+pub mod csv;
 pub mod edits;
 pub mod execute;
 pub mod focus;

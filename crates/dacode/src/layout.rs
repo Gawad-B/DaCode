@@ -1696,8 +1696,8 @@ mod tests {
             let plain = Layout::of(window, scale, None, 0.0);
             let shared = plain.editor.height;
             for fraction in [0.0, 1.0] {
-                let layout =
-                    Layout::of(window, scale, None, 0.0).with_terminal(true, fraction, false, scale);
+                let layout = Layout::of(window, scale, None, 0.0)
+                    .with_terminal(true, fraction, false, scale);
                 let panel = layout.terminal.expect("open");
                 let rects = terminal_panel(panel, &typography, scale);
                 assert!(

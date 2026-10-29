@@ -6500,6 +6500,11 @@ fn draw_code(
         theme.ink_faint
     };
     let text = pane.document.text();
+    // A table is coloured by its columns instead of by a grammar; see `crate::csv`.
+    let csv = pane
+        .path
+        .last()
+        .and_then(|name| crate::csv::delimiter_for(name));
     let cursor = pane.document.selections().primary().head;
     let cursor_line = text.char_to_point(cursor).line;
 
@@ -6921,7 +6926,11 @@ fn draw_code(
         // syntax-highlighted row has many segments.
         let mut column = 0usize;
 
-        for segment in segments(pane.highlights, row.range.clone()) {
+        let segments = match csv {
+            Some(delimiter) => csv_segments(text, row.line, row.range.clone(), delimiter, theme),
+            None => segments(pane.highlights, row.range.clone()),
+        };
+        for segment in segments {
             let raw = text.slice_to_string(segment.range.clone());
             let content = expand_tabs(state, &raw);
             let at = row.indent + column;
@@ -6948,10 +6957,12 @@ fn draw_code(
                 },
                 content,
                 Rect::new(x, y, (code.right() - x).max(0.0), row_height),
-                segment
-                    .highlight
-                    .map(|highlight| syntax_color(theme, highlight))
-                    .unwrap_or(theme.ink),
+                segment.color.unwrap_or_else(|| {
+                    segment
+                        .highlight
+                        .map(|highlight| syntax_color(theme, highlight))
+                        .unwrap_or(theme.ink)
+                }),
                 Align::Left,
                 scale,
             ));
@@ -7052,6 +7063,71 @@ fn draw_cursor(frame: &mut Frame, state: &EditorState, geometry: CursorGeometry)
 struct Segment {
     range: std::ops::Range<CharOffset>,
     highlight: Option<Highlight>,
+    /// A colour that is not a highlight's: a table's column.
+    color: Option<Oklch>,
+}
+
+/// The colours a table's columns cycle through: the syntax palette's, so a table sits in the
+/// theme it is drawn in, plus the ANSI cyan to make eight — few enough to tell apart, and enough
+/// that neighbouring columns never share one.
+pub fn csv_palette(theme: &Theme) -> [Oklch; 8] {
+    let syntax = &theme.syntax;
+    [
+        syntax.keyword,
+        syntax.string,
+        syntax.function,
+        syntax.number,
+        syntax.type_,
+        syntax.constant,
+        syntax.attribute,
+        theme.ansi()[14],
+    ]
+}
+
+/// A row of a table split into its columns' colours. The row's own line is read up to the row's
+/// end and no further (and never past [`crate::csv::SCAN_LIMIT`]), so a wrapped row deep into a
+/// long line costs that line's prefix, which the soft-wrap rows of that line on screen share.
+fn csv_segments(
+    text: &dacode_text::Text,
+    line: usize,
+    row: std::ops::Range<CharOffset>,
+    delimiter: char,
+    theme: &Theme,
+) -> Vec<Segment> {
+    let start = text.line_to_char(line);
+    let scanned = CharOffset(row.end.0.min(start.0 + crate::csv::SCAN_LIMIT));
+    let content = text.slice_to_string(start..scanned.max(start));
+    let palette = csv_palette(theme);
+    let mut out = Vec::new();
+    let mut at = row.start;
+    for (column, field) in crate::csv::fields(&content, delimiter) {
+        let from = CharOffset(start.0 + field.start).max(row.start);
+        let to = CharOffset(start.0 + field.end).min(row.end);
+        if to <= from {
+            continue;
+        }
+        if from > at {
+            out.push(Segment {
+                range: at..from,
+                highlight: None,
+                color: Some(theme.ink_faint),
+            });
+        }
+        out.push(Segment {
+            range: from..to,
+            highlight: None,
+            color: Some(palette[column % palette.len()]),
+        });
+        at = to;
+    }
+    if at < row.end {
+        out.push(Segment {
+            range: at..row.end,
+            highlight: None,
+            color: (at < scanned).then_some(theme.ink_faint),
+        });
+    }
+    out
 }
 
 /// Splits a row into highlighted segments, filling the gaps with unhighlighted text.
@@ -7078,12 +7154,14 @@ fn segments(highlights: &[HighlightSpan], row: std::ops::Range<CharOffset>) -> V
             out.push(Segment {
                 range: at..start,
                 highlight: None,
+                color: None,
             });
         }
         if end > start {
             out.push(Segment {
                 range: start..end,
                 highlight: Some(span.highlight),
+                color: None,
             });
             at = end;
         }
@@ -7093,6 +7171,7 @@ fn segments(highlights: &[HighlightSpan], row: std::ops::Range<CharOffset>) -> V
         out.push(Segment {
             range: at..row.end,
             highlight: None,
+            color: None,
         });
     }
 
@@ -7203,6 +7282,42 @@ fn draw_sidebar_view(frame: &mut Frame, state: &EditorState, rect: Rect, scale: 
             _ => {}
         }
     }
+}
+
+/// For a table, which column the caret is in and the header's name for it: `csv · 3 age`. Two
+/// lines read, the header and the caret's, each only as far as the scan limit.
+fn csv_column_label(state: &EditorState) -> Option<String> {
+    let path = state.file_path.as_deref()?;
+    let delimiter = crate::csv::delimiter_for(path)?;
+    let text = state.document.text();
+    let line_text = |line: usize| {
+        let start = text.line_to_char(line);
+        let end = if line + 1 < text.len_lines() {
+            text.line_to_char(line + 1)
+        } else {
+            text.len_chars()
+        };
+        let end = CharOffset(end.0.min(start.0 + crate::csv::SCAN_LIMIT));
+        text.slice_to_string(start..end.max(start))
+    };
+    let caret = state.document.selections().primary().head;
+    let line = text.char_to_line(caret);
+    let column = crate::csv::column_at(
+        &line_text(line),
+        delimiter,
+        caret.0 - text.line_to_char(line).0,
+    );
+    let kind = match delimiter {
+        '\t' => "tsv",
+        '|' => "psv",
+        _ => "csv",
+    };
+    Some(
+        match crate::csv::header_name(&line_text(0), delimiter, column) {
+            Some(name) if line > 0 => format!("{kind} · {} {name}", column + 1),
+            _ => format!("{kind} · column {}", column + 1),
+        },
+    )
 }
 
 fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f32) {
@@ -7462,12 +7577,15 @@ fn draw_statusline(frame: &mut Frame, state: &EditorState, rect: Rect, scale: f3
                 "{} · utf-8 · lf{}",
                 // The detected language, not a hardcoded one: a Python file reading "rust" is the
                 // kind of detail that makes an editor feel unfinished.
-                state
-                    .file_path
-                    .as_deref()
-                    .and_then(dacode_syntax::Language::from_path)
-                    .map(|language| language.name())
-                    .unwrap_or("text"),
+                csv_column_label(state).unwrap_or_else(|| {
+                    state
+                        .file_path
+                        .as_deref()
+                        .and_then(dacode_syntax::Language::from_path)
+                        .map(|language| language.name())
+                        .unwrap_or("text")
+                        .to_string()
+                }),
                 if state.document.is_dirty() {
                     " · mod"
                 } else {
