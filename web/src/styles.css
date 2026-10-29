@@ -326,11 +326,6 @@ em {
   object-fit: contain;
 }
 
-.hero-mark {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
 
 /*
   One fact per line. The marker is a small teal square — the page's accent, and
@@ -438,36 +433,17 @@ em {
 
 .hero-copy {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-  grid-template-areas:
-    "mark mark"
-    "headline lede"
-    "headline download"
-    "headline note";
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   column-gap: 72px;
-  row-gap: 22px;
+  row-gap: 32px;
   align-items: start;
 }
 
-.hero-copy .hero-mark {
-  grid-area: mark;
-}
-
-.hero-copy .headline {
-  grid-area: headline;
-  align-self: center;
-}
-
-.hero-copy .hero-lede {
-  grid-area: lede;
-}
-
-.hero-copy .hero-download {
-  grid-area: download;
-}
-
-.hero-copy .hero-note {
-  grid-area: note;
+/* The lede, the download and the note travel together, one column, even spacing. */
+.hero-side {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
 }
 
 /*
@@ -2144,7 +2120,6 @@ details > summary:hover {
 
   .hero-copy {
     grid-template-columns: 1fr;
-    grid-template-areas: "mark" "headline" "lede" "download" "note";
   }
 
   .triple,

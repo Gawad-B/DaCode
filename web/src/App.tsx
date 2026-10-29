@@ -66,27 +66,27 @@ export default function App() {
         </a>
       </header>
 
-      {/* ── Hero: one promise, one action, the product itself ────────────── */}
+      {/*
+        ── Hero: one promise, one action, the product itself ──────────────
+        No scroll reveal here: it is on screen at load, and an element that
+        waits to be revealed is an element that can be left blank — the
+        download did exactly that after a hot reload swapped it out.
+        The mark is in the nav already, so it is not repeated above the headline.
+      */}
       <section className="hero" id="top">
         <div className="hero-copy">
-          <div className="hero-mark reveal">
-            <Logo size={52} />
-            <Wordmark style={{ fontSize: 26 }} />
-          </div>
-          <h1 className="headline reveal">
+          <h1 className="headline">
             A code editor that never <em>stalls</em> on your keystroke.
           </h1>
-          <p className="hero-lede reveal" style={{ "--delay": "60ms" } as React.CSSProperties}>
-            {HERO.lede}
-          </p>
-          <div className="hero-download reveal" style={{ "--delay": "120ms" } as React.CSSProperties}>
+          <div className="hero-side">
+            <p className="hero-lede">{HERO.lede}</p>
             <Download reduced={reduced} compact />
+            <p className="hero-note">
+              {PROJECT_NOTE.short} <a href="#about">More about the project</a>
+            </p>
           </div>
-          <p className="hero-note reveal" style={{ "--delay": "180ms" } as React.CSSProperties}>
-            {PROJECT_NOTE.short} <a href="#about">More about the project</a>
-          </p>
         </div>
-        <div className="hero-shot reveal" style={{ "--delay": "100ms" } as React.CSSProperties}>
+        <div className="hero-shot">
           <img
             src={editorShot}
             width={1440}
