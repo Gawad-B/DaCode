@@ -11,8 +11,9 @@ language server; having the Rust toolchain does not give you rust-analyzer. They
 programs, installed separately, and DaCode drives whichever one it finds over LSP.
 
 DaCode has no marketplace and no extension runtime, so there is nothing to install *inside* the editor
-in the VSCode sense. What there is instead: DaCode knows the common servers by name, will run the
-install command for you if you ask, and will use any other server you name in `init.lua`.
+in the VSCode sense. What there is instead: DaCode knows the common servers by name, can download
+them itself — no npm, pip or rustup needed first — and will use any other server you name in
+`init.lua`.
 
 When it cannot find one, the statusline says `no python server` — the *language*, not a binary you
 have never heard of — and the message box says what it looked for and what would fix it. Once per
@@ -20,18 +21,19 @@ language per session: useful the first time you open a `.py` file, nagging by th
 
 ## What DaCode looks for
 
-The first program on this list that exists on `PATH` is the one that starts.
+The first program on this list that exists on `PATH` is the one that starts. DaCode's own downloads
+are on the *end* of `PATH`, so one you installed yourself always wins.
 
-| Language | Files | Servers DaCode looks for, in order | Installed by |
-|---|---|---|---|
-| Rust | `.rs` | `rust-analyzer` | `rustup component add rust-analyzer` |
-| JavaScript | `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server` | `npm install --global typescript-language-server typescript` |
-| TypeScript | `.ts` `.tsx` | `typescript-language-server` | `npm install --global typescript-language-server typescript` |
-| Python | `.py` `.pyi` | `pyright-langserver`, `basedpyright-langserver`, `pylsp` | `npm install --global pyright`; or `uv`/`pipx`/`pip` for the other two |
-| C and C++ | `.c` `.h` `.cpp` `.hpp` `.cc` `.cxx` `.hh` | `clangd` | install LLVM, or `apt install clangd` |
-| Go | `.go` | `gopls` | `go install golang.org/x/tools/gopls@latest` |
-| Lua | `.lua` | `lua-language-server` | your package manager |
-| Dart | `.dart` | `dart` (as `dart language-server --protocol=lsp`) | the Dart SDK |
+| Language | Files | Servers DaCode looks for, in order | DaCode downloads | Or installed by |
+|---|---|---|---|---|
+| Rust | `.rs` | `rust-analyzer` | `dacode tools install rust-analyzer` | `rustup component add rust-analyzer` |
+| JavaScript | `.js` `.jsx` `.mjs` `.cjs` | `typescript-language-server` | `dacode tools install typescript-language-server prettier` | `npm install --global typescript-language-server typescript` |
+| TypeScript | `.ts` `.tsx` | `typescript-language-server` | the same | the same |
+| Python | `.py` `.pyi` | `pyright-langserver`, `basedpyright-langserver`, `pylsp` | `dacode tools install pyright ruff` | `npm install --global pyright`; or `uv`/`pipx`/`pip` for the other two |
+| C and C++ | `.c` `.h` `.cpp` `.hpp` `.cc` `.cxx` `.hh` | `clangd` | `dacode tools install clangd` (not on ARM64 Linux) | LLVM, or `apt install clangd` |
+| Go | `.go` | `gopls` | — it needs Go itself | `go install golang.org/x/tools/gopls@latest` |
+| Lua | `.lua` | `lua-language-server` | `dacode tools install lua-language-server stylua` | your package manager |
+| Dart | `.dart` | `dart` (as `dart language-server --protocol=lsp`) | — | the Dart SDK |
 
 Python has three because "the Python server" is not one program: pyright comes from npm and pylsp
 from pip, and a machine has whichever its owner happened to install. Offering only the first and
@@ -46,7 +48,29 @@ what hands it to the server.
 
 ## Installing one from inside the editor
 
-New in 0.4.1. Open the command palette with <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> and run
+**Downloaded by DaCode** (new): for every language in the table above with an entry in the
+"DaCode downloads" column, the install below runs DaCode itself, which downloads a pinned release
+for your machine — 64-bit or ARM64 Linux, or 64-bit Windows — and brings the language's formatter
+with it. Nothing else has to be installed first: the npm-based servers (pyright, the TypeScript
+server, prettier) run on a copy of Node DaCode downloads for them once, which stays out of your
+terminal's way. You can run the same thing yourself:
+
+```bash
+dacode tools list
+```
+
+```bash
+dacode tools install pyright ruff
+```
+
+Every release file is checked against a SHA-256 written into DaCode itself, not one downloaded
+beside it, so a replaced file is refused rather than installed; npm packages are pinned to a version
+and checked by npm against the registry. Tools go in DaCode's own state folder —
+`~/.local/share/dacode/tools` on Linux, `%LOCALAPPDATA%\dacode\tools` on Windows — and nothing is
+downloaded until you choose to. On the **Languages** page of the settings tab, a server or formatter
+that is missing offers the download when you click its row; click it again to go ahead.
+
+The rest of this section is how the install works whichever command it runs. Open the command palette with <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>p</kbd> and run
 **install a language server for this file**. It has no key of its own in either keymap, by design —
 it is not something to fire off by muscle memory.
 
@@ -71,10 +95,10 @@ because "an editor that runs package managers" is a reasonable thing to be wary 
   Windows both `pip install --user` and `go install` write to directories `PATH` does not cover, so
   after a successful install DaCode looks for the program again and says so if it is still not there,
   rather than claiming a server it cannot start.
-- **It offers nothing it cannot honestly run.** clangd, lua-language-server and the Dart SDK come
-  from a system package manager whose name differs per distribution and which wants root, so they
-  keep the advice and get no button. An editor offering a button that cannot work is worse than one
-  that does not offer it.
+- **It offers nothing it cannot honestly run.** The Dart SDK and Go come from places whose name
+  differs per platform, and a system package manager would want root, so they keep the advice and
+  get no button; clangd on ARM64 Linux, which publishes no build there, says so and that it will find
+  one you install. An editor offering a button that cannot work is worse than one that does not.
 
 The install runs on a worker thread — `rustup component add` takes tens of seconds — so the editor
 stays live while it happens. Output is collected and reported at the end rather than streamed: a

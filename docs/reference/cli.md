@@ -7,6 +7,7 @@ Every flag and every environment variable, derived from `crates/dacode/src/main.
 dacode [FILE|DIR] [--no-session] [--no-welcome]
 dacode --screenshot OUT.png [RENDERING FLAGS] [FILE]
 dacode import [SOURCE] [WHAT...] [--out DIR]
+dacode tools list | install NAME...
 dacode --help | --version
 ```
 
@@ -47,6 +48,7 @@ USAGE
     dacode [FOLDER]            open a folder as the project
     dacode                     reopen the last project
     dacode import …            bring settings over from VSCode (`dacode import --help`)
+    dacode tools …             download formatters and servers (`dacode tools list`)
 
 OPTIONS
     --no-session                start empty rather than reopening the last session
@@ -317,6 +319,21 @@ Selecting nothing is an error rather than a silent no-op.
 `import_cli::default_config_dir` is `$HOME/.config/dacode`, hard-coded: it does not consult
 `DACODE_CONFIG_DIR`, and it does not fall back to `USERPROFILE` the way `paths::home` does, so on
 Windows without `HOME` it resolves relative to the working directory. Use `--out` to be sure.
+
+## `dacode tools`
+
+```
+dacode tools list
+dacode tools install NAME...
+```
+
+`list` prints every formatter and language server DaCode can download, its pinned version, and
+whether it is installed, available, or has no build for this machine. `install` downloads each
+`NAME`, checks it against the SHA-256 DaCode carries for it, unpacks it into the state directory's
+`tools/` folder and puts a launcher in `tools/bin`, which every run of DaCode appends to the end of
+`PATH`. An npm-based tool first downloads the copy of Node it runs on. Installing one already
+installed does nothing. Exits non-zero if any `NAME` failed or is unknown. See
+[Language servers](../guides/language-servers.md#installing-one-from-inside-the-editor).
 
 ## Environment variables
 

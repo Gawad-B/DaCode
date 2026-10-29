@@ -174,6 +174,15 @@ because people edit it; `preview_file` shows the picture. Pictures are drawn by
 `dacode-render`'s `image.rs`, which paints over its layer's rectangles, so anything drawn on top of
 one goes a layer up.
 
+**DaCode's downloaded tools are on the end of `PATH`, put there once in `main` before any thread
+exists.** That one `set_var` is the only place the editor changes its own environment, and it is
+safe only because nothing has been spawned yet — move it later and it races every `getenv`. Being
+on `PATH` is the whole integration: the server table, the formatters, and the installer's check
+afterwards all find a tool by asking for its program, so none of them knows `tools.rs` exists.
+Appended, never prepended, so a server the user installed wins. A release download is checked
+against a SHA-256 compiled into `tools::TOOLS`; never fetch the sum beside the file, which would
+make the check worthless against a replaced asset.
+
 **Every git command the source-control view runs goes through `scm::Worker`, one at a time and in
 order** — "stage, then tell me the status" must not answer with the status from before the stage.
 Statuses carry a `Version` from `source_control::View::ask` and only the newest asked is accepted; a
@@ -602,6 +611,7 @@ anything platform-shaped:
 | A diff tab | `App::show_review` opens it, `EditorState::review` marks it, `EditorState::mutate` keeps it read-only, `chrome::diff_line_kind` colours it |
 | Updating DaCode | `crates/dacode/src/update.rs` — the release JSON, `install_kind`, `SHA256SUMS`, staging and `apply`, behind a `Fetch` trait so tests never reach the network; `App::poll_updates`, `update_action` and `restart_for_update` in `main.rs`; `chrome::notifications_panel` for the offer's buttons; `.github/workflows/release.yml` writes the sums |
 | A viewed image, PDF or document | `crates/dacode/src/viewer.rs` — `Kind`, `Preview` and its worker, `office_text`; `chrome::draw_preview`, `App::ensure_preview`, `handle_preview_key`; pictures in `crates/dacode-render/src/image.rs` |
+| A downloaded formatter or language server | `crates/dacode/src/tools.rs` — `TOOLS` (pinned versions and SHA-256s), `install`, `run_cli` for `dacode tools`; `dacode_lsp::SELF` is the installer that runs it, `App::offer_download` the Languages page's click |
 | Who changed a line | `crates/dacode/src/blame.rs` — the porcelain reader, the edit log, `Tracker` and `BlameWorker`; `App::sync_blame` asks and collects, `chrome::line_note` decides between a diagnostic and the inline blame |
 
 Adding a config option touches three places by design: the Lua reader, the settings struct, and the

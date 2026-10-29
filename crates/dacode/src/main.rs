@@ -640,6 +640,7 @@ fn usage() -> String {
          \x20   dacode [FOLDER]            open a folder as the project\n\
          \x20   dacode                     reopen the last project\n\
          \x20   dacode import …            bring settings over from VSCode (`dacode import --help`)\n\
+         \x20   dacode tools …             download formatters and servers (`dacode tools list`)\n\
          \n\
          OPTIONS\n\
          {}\n\
