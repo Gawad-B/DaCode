@@ -413,8 +413,9 @@ em {
 */
 .hero {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
-  gap: 56px;
+  /* The copy keeps a reading width; the screenshot takes everything else. */
+  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+  gap: 64px;
   align-items: center;
   padding: 88px 0 88px var(--pad-x);
   border-bottom: 1px solid var(--rule);
@@ -1260,40 +1261,44 @@ details > summary:hover {
 
 /* ── Proof strip ─────────────────────────────────────────────────────────── */
 
+/*
+  The strip's background runs edge to edge; its columns sit inside the same
+  margins as everything else. Padding only the first cell by the margin made
+  that cell's text column 340px narrower than its neighbours' at 1920px.
+*/
 .proof {
   display: grid;
-  grid-template-columns: repeat(3, 1fr) auto;
-  align-items: end;
-  gap: 1px;
-  background: var(--rule);
-  border-top: 1px solid var(--rule);
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  padding: 0 var(--pad-x);
+  background: var(--bg-alt);
   border-bottom: 1px solid var(--rule);
+  transition: background-color 160ms ease;
+}
+
+.proof:hover {
+  background: var(--bg-panel);
 }
 
 .proof-item,
 .proof-more {
-  background: var(--bg-alt);
-  height: 100%;
   padding: 28px 32px 30px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: background-color 160ms ease;
+}
+
+.proof-item {
+  border-right: 1px solid var(--rule);
 }
 
 .proof-item:first-child {
-  padding-left: var(--pad-x);
+  padding-left: 0;
 }
 
 .proof-more {
   justify-content: flex-end;
-  padding-right: var(--pad-x);
+  padding-right: 0;
   color: var(--accent);
-}
-
-.proof:hover .proof-item,
-.proof:hover .proof-more {
-  background: var(--bg-panel);
 }
 
 .proof-number {
@@ -2139,9 +2144,13 @@ details > summary:hover {
     grid-template-columns: repeat(3, 1fr);
   }
 
+  .proof-item:nth-child(3) {
+    border-right: none;
+  }
+
   .proof-more {
     grid-column: 1 / -1;
-    padding: 14px var(--pad-x);
+    padding: 0 0 18px;
   }
 
   .quad {
@@ -2224,7 +2233,9 @@ details > summary:hover {
 
   .proof-item,
   .proof-item:first-child {
-    padding: 20px var(--pad-x);
+    padding: 20px 0;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
   }
 
   /* One column: a filler would be an empty card, not a closed row. */
