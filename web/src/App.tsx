@@ -79,7 +79,7 @@ export default function App() {
           <p className="hero-lede reveal" style={{ "--delay": "60ms" } as React.CSSProperties}>
             {HERO.lede}
           </p>
-          <div className="reveal" style={{ "--delay": "120ms" } as React.CSSProperties}>
+          <div className="hero-download reveal" style={{ "--delay": "120ms" } as React.CSSProperties}>
             <Download reduced={reduced} compact />
           </div>
           <p className="hero-note reveal" style={{ "--delay": "180ms" } as React.CSSProperties}>

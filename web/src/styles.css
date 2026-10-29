@@ -407,19 +407,17 @@ em {
 /* ── Hero ────────────────────────────────────────────────────────────────── */
 
 /*
-  One promise, one action, and the product. The copy column is held to a
-  reading measure; the screenshot takes the rest and bleeds off the right
-  edge, so the first screen is mostly editor rather than mostly text.
+  One promise, one action, and the product. The copy sits on top at a reading
+  measure; the screenshot sits under it, whole and framed, at the full content
+  width. Two earlier layouts put it beside the copy: bled off the right edge it
+  read as a picture cut off, and held inside the margins it shrank to 640px.
 */
 .hero {
-  display: grid;
-  /* The copy keeps a reading width; the screenshot takes everything else. */
-  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 64px;
-  align-items: center;
-  padding: 88px 0 88px var(--pad-x);
+  padding: 88px var(--pad-x) 96px;
   border-bottom: 1px solid var(--rule);
-  overflow: hidden;
 }
 
 /*
@@ -439,10 +437,37 @@ em {
 }
 
 .hero-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
-  max-width: 560px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-template-areas:
+    "mark mark"
+    "headline lede"
+    "headline download"
+    "headline note";
+  column-gap: 72px;
+  row-gap: 22px;
+  align-items: start;
+}
+
+.hero-copy .hero-mark {
+  grid-area: mark;
+}
+
+.hero-copy .headline {
+  grid-area: headline;
+  align-self: center;
+}
+
+.hero-copy .hero-lede {
+  grid-area: lede;
+}
+
+.hero-copy .hero-download {
+  grid-area: download;
+}
+
+.hero-copy .hero-note {
+  grid-area: note;
 }
 
 /*
@@ -492,16 +517,14 @@ em {
 
 .hero-shot {
   border: 1px solid var(--rule-strong);
-  border-right: none;
   background: var(--bg-panel);
-  padding: 1px 0 1px 1px;
+  padding: 1px;
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(20, 184, 166, 0.08);
 }
 
 .hero-shot img {
   display: block;
   width: 100%;
-  min-width: 640px;
   height: auto;
 }
 
@@ -2113,16 +2136,15 @@ details > summary:hover {
     gap: 48px;
   }
 
-  /* The screenshot goes under the copy and keeps its bleed off the right edge. */
   .hero {
-    grid-template-columns: 1fr;
     gap: 48px;
     padding-top: 64px;
     padding-bottom: 64px;
   }
 
   .hero-copy {
-    padding-right: var(--pad-x);
+    grid-template-columns: 1fr;
+    grid-template-areas: "mark" "headline" "lede" "download" "note";
   }
 
   .triple,
@@ -2208,10 +2230,6 @@ details > summary:hover {
 
   .nav-cta {
     margin-left: 0;
-  }
-
-  .hero-shot img {
-    min-width: 520px;
   }
 
   .triple,
