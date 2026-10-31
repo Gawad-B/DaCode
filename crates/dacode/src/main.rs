@@ -65,12 +65,39 @@ fn main() -> Result<()> {
     // the installer's check afterwards, and the terminal's shell. Here, before a single thread
     // exists: `set_var` races every `getenv` on another thread, which once deadlocked the test
     // suite inside glibc. It is the only place the editor changes its own environment.
-    if let Some(path) =
-        dacode::tools::path_with_tools(std::env::var_os("PATH").as_deref(), &dacode::tools::root())
-    {
+    //
+    // On a Mac a launch from the Finder first asks the user's login shell what `PATH` it builds,
+    // then adds what a login shell usually would if that failed (`dacode::macos`), so the user's
+    // own Homebrew, nvm and cargo directories still come before DaCode's downloads.
+    let mut path = std::env::var_os("PATH");
+    if dacode::macos::wants_login_shell(
+        std::env::var_os("TERM").as_deref(),
+        cfg!(target_os = "macos"),
+    ) {
+        let shell = std::env::var_os("SHELL")
+            .filter(|shell| !shell.is_empty())
+            .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
+        if let Some(login) =
+            dacode::macos::login_shell_path(&shell, dacode::macos::LOGIN_SHELL_TIMEOUT)
+        {
+            path = Some(login);
+        }
+    }
+    if cfg!(target_os = "macos") {
+        let etc = dacode::macos::read_etc_paths();
+        if let Some(mended) =
+            dacode::macos::finder_path(path.as_deref(), &dacode::paths::home(), &etc)
+        {
+            path = Some(mended);
+        }
+    }
+    let path = dacode::tools::path_with_tools(path.as_deref(), &dacode::tools::root()).or(path);
+    if let Some(path) = path.filter(|path| Some(path) != std::env::var_os("PATH").as_ref()) {
         // SAFETY: the process is still single-threaded here; nothing has been spawned yet.
         unsafe { std::env::set_var("PATH", path) };
     }
+    // Every menu, tooltip and chip is drawn on this thread, so this is the one place it is said.
+    dacode_input::commands::print_for_mac(cfg!(target_os = "macos"));
 
     // `dacode import …` is a separate operation: it rewrites configuration, so it happens when asked
     // rather than at startup.
@@ -165,9 +192,22 @@ fn main() -> Result<()> {
     eprintln!("dacode: project root {}", root.display());
     dacode::session::remember_project(&dacode::session::session_dir(), &root);
 
-    let event_loop = EventLoop::<dacode::wake::Wake>::with_user_event()
-        .build()
-        .context("creating the event loop")?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = EventLoop::<dacode::wake::Wake>::with_user_event();
+    // winit's default macOS menu puts Quit on ⌘Q, and the menu takes the key before the window
+    // sees it: `terminate:` ends the process there and then, with no unsaved-files question and no
+    // session written. Without the menu, ⌘Q arrives as a key, which is ctrl-q (`dacode::macos`) —
+    // the editor's own Quit. What goes with it is ⌘H, Hide, which nothing else provides.
+    #[cfg(target_os = "macos")]
+    {
+        use winit::platform::macos::EventLoopBuilderExtMacOS;
+        builder.with_default_menu(false);
+    }
+    let event_loop = builder.build().context("creating the event loop")?;
+    // Between building the loop and running it: the delegate's class exists now, and AppKit asks
+    // it about files during the launch that `run_app` starts (`dacode::macos`).
+    #[cfg(target_os = "macos")]
+    dacode::macos::listen_for_opened_files();
     // Wait, not Poll: an editor redraws in response to input, not continuously. Polling would
     // spin the GPU and the fan for a screen that is not changing.
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -195,6 +235,7 @@ fn main() -> Result<()> {
     let (waker, wake_pending) = dacode::wake::coalescing(move || {
         let _ = proxy.send_event(dacode::wake::Wake);
     });
+    dacode::macos::wake_for_opened_files(waker.clone());
     let mut app = App::new(
         root.clone(),
         state,
@@ -349,6 +390,7 @@ fn new_state(
             zoom: settings.interface_zoom,
             motion: dacode::motion::Motion::new(settings.animations),
             updates: settings.updates,
+            option_as_alt: settings.option_as_alt,
             ..Default::default()
         },
     };
@@ -2000,6 +2042,9 @@ struct App {
     headless_size: (u32, u32),
     frame: Frame,
     modifiers: ModifiersState,
+    /// Which Option keys are down, left and right — `modifiers` says only that one is. On a Mac
+    /// the side decides whether it is Alt or a key for typing (`dacode::macos::alt_held`).
+    option_sides: (bool, bool),
     state: EditorState,
     /// The modal state machine. Keys go in, Actions come out.
     grammar: Grammar,
@@ -2289,8 +2334,8 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             return;
         }
 
-        // `mut` only where something mutates it. The X11 and Wayland names below are the only thing
-        // that does, and they are Unix-only — so on Windows this was an unused `mut`, a warning that
+        // `mut` only where something mutates it. The X11 and Wayland names and the Mac's Option key
+        // below are the only things that do, and none of them is Windows — so on Windows this was an unused `mut`, a warning that
         // clippy would have failed the build on if clippy had ever run there. It runs on Linux in CI,
         // where the `mut` is used, so nothing saw it until the workspace was built on Windows.
         // The size the last session ended at, in physical pixels — the stored value came from
@@ -2301,7 +2346,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
             None => winit::dpi::Size::Logical((1280.0, 820.0).into()),
         };
 
-        #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(unused_mut))]
+        #[cfg_attr(windows, allow(unused_mut))]
         let mut attributes = Window::default_attributes()
             .with_title("DaCode")
             // Asked for only when it is wanted: a transparent window costs the compositor a blend
@@ -2319,6 +2364,14 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
         // WM_CLASS that `StartupWMClass=dacode` in that file refers to. Without this, the running editor
         // shows a generic placeholder in the dock and the alt-tab switcher even though the icon is
         // correctly installed.
+        // Without it winit gives Option's character — `ƒ` for Option-F — and no `alt-…` binding is
+        // reachable on a Mac at all (`dacode::macos::OptionKey`).
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attributes = attributes
+                .with_option_as_alt(dacode::macos::winit_option(self.state.chrome.option_as_alt));
+        }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
@@ -2479,7 +2532,14 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                 event_loop.exit();
             }
 
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                use winit::keyboard::ModifiersKeyState::Pressed;
+                self.modifiers = modifiers.state();
+                self.option_sides = (
+                    modifiers.lalt_state() == Pressed,
+                    modifiers.ralt_state() == Pressed,
+                );
+            }
 
             // Coming back to the window is when work done elsewhere — a commit in another
             // terminal, a pull in another tool — is most likely to have happened. The watch on the
@@ -2652,6 +2712,9 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                     },
                 ..
             } => {
+                if self.window_key(event_loop, &logical_key) {
+                    return;
+                }
                 if self.key_event(logical_key) {
                     // The same refusal `CloseRequested` makes, for the same reason: ctrl-q with
                     // three dirty buffers must not be one keystroke away from leaving them.
@@ -2717,6 +2780,7 @@ impl App {
             headless_size: (1280, 820),
             frame: Frame::default(),
             modifiers: ModifiersState::empty(),
+            option_sides: (false, false),
             grammar,
             registers: Registers::new(),
             last_change: None,
@@ -3115,7 +3179,7 @@ impl App {
             } else {
                 (down, sideways)
             };
-            self.scroll_preview(sideways, down, self.modifiers.control_key());
+            self.scroll_preview(sideways, down, self.ctrl_held());
             return;
         }
 
@@ -3126,7 +3190,7 @@ impl App {
         // Counted in lines and accumulated: a wheel notch is one line and one step, and a touchpad
         // sends dozens of fractions of one per flick. A step per event ran the type from smallest to
         // largest in one gesture.
-        if self.modifiers.control_key() {
+        if self.ctrl_held() {
             let lines = if pixels { dy / row_height } else { dy };
             let steps = self
                 .gestures
@@ -3527,8 +3591,8 @@ impl App {
         // that mean it.
         Some(Key::from_platform(
             code,
-            self.modifiers.control_key(),
-            self.modifiers.alt_key(),
+            self.ctrl_held(),
+            self.alt_held(),
             self.modifiers.shift_key(),
         ))
     }
@@ -5856,7 +5920,23 @@ impl App {
         changed |= self.poll_terminal();
         changed |= self.poll_updates();
         changed |= self.sync_preview();
+        changed |= self.open_finder_files();
         changed
+    }
+
+    /// Opens what the Finder handed over (`dacode::macos::files_opened`): a folder becomes the
+    /// project, as choosing it in the folder picker would, and a file opens in a tab. Empty
+    /// anywhere but a Mac.
+    fn open_finder_files(&mut self) -> bool {
+        let opened = dacode::macos::take_opened_files();
+        for path in &opened {
+            if path.is_dir() {
+                self.open_folder(path);
+            } else {
+                self.activate(Target::File(path.clone()));
+            }
+        }
+        !opened.is_empty()
     }
 
     /// The focused pane's whole slot: where a viewed picture is drawn. The rectangle `draw_panes`
@@ -6562,6 +6642,7 @@ fn this_install() -> dacode::update::Install {
     dacode::update::install_kind(
         &exe,
         cfg!(windows),
+        cfg!(target_os = "macos"),
         &dacode::paths::home(),
         local.as_deref(),
     )
@@ -7972,6 +8053,7 @@ impl App {
             Field::Transparency => self.set_transparency(values.transparency),
             Field::Animations => self.state.chrome.motion.set_animations(values.animations),
             Field::Updates => self.state.chrome.updates = values.updates,
+            Field::OptionAsAlt => self.set_option_as_alt(values.option_as_alt),
             Field::InterfaceZoom => {
                 self.state.chrome.zoom = values.interface_zoom;
                 let (width, scale) = (self.window_width(), self.scale());
@@ -10569,7 +10651,14 @@ impl App {
     /// A key while the terminal has focus. Everything goes to the shown shell except the few keys
     /// [`dacode::terminal::route`] keeps for the editor, which run the action it names.
     fn handle_terminal_key(&mut self, key: Key) -> bool {
-        match dacode::terminal::route(key) {
+        // ⌘ arrives as ctrl (`ctrl_held`), and ⌘C must copy rather than interrupt — so a key with ⌘
+        // on it is routed as the Mac's own, never as the shell's.
+        let route = if self.command_held() {
+            dacode::terminal::route_command(key)
+        } else {
+            dacode::terminal::route(key)
+        };
+        match route {
             dacode::terminal::KeyRoute::Shell => {
                 if let Some(terminal) = self.active_terminal() {
                     terminal.key(key);
@@ -10577,7 +10666,83 @@ impl App {
                 false
             }
             dacode::terminal::KeyRoute::Editor(action) => self.run(action),
+            dacode::terminal::KeyRoute::Nothing => false,
         }
+    }
+
+    /// Whether a binding should see ctrl: Ctrl, or ⌘ on a Mac (`dacode::macos`).
+    fn ctrl_held(&self) -> bool {
+        dacode::macos::ctrl_held(
+            self.modifiers.control_key(),
+            self.modifiers.super_key(),
+            cfg!(target_os = "macos"),
+        )
+    }
+
+    /// Whether ⌘ is held on a Mac. Never true elsewhere, where the same key is the desktop's.
+    /// ⌘H, ⌥⌘H and ⌘M on a Mac (`dacode::macos::window_key`): the window's keys, taken before the
+    /// editor sees them, as the menu winit no longer installs took them. True if it was one.
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+    fn window_key(&mut self, event_loop: &ActiveEventLoop, key: &WinitKey) -> bool {
+        let WinitKey::Character(text) = key else {
+            return false;
+        };
+        let Some(character) = text.chars().next() else {
+            return false;
+        };
+        let Some(what) = dacode::macos::window_key(
+            character,
+            self.command_held(),
+            self.modifiers.control_key(),
+            self.modifiers.alt_key(),
+            self.modifiers.shift_key(),
+        ) else {
+            return false;
+        };
+        #[cfg(target_os = "macos")]
+        {
+            use dacode::macos::WindowKey;
+            use winit::platform::macos::ActiveEventLoopExtMacOS;
+            match what {
+                WindowKey::Hide => event_loop.hide_application(),
+                WindowKey::HideOthers => event_loop.hide_other_applications(),
+                WindowKey::Minimise => {
+                    if let Some(window) = &self.window {
+                        window.set_minimized(true);
+                    }
+                }
+            }
+        }
+        let _ = what;
+        true
+    }
+
+    /// Whether a binding should see alt: on a Mac only the Option key the setting names, unless
+    /// ⌘ or Ctrl is down too (`dacode::macos::alt_held`).
+    fn alt_held(&self) -> bool {
+        dacode::macos::alt_held(
+            self.modifiers.alt_key(),
+            self.option_sides.0,
+            self.option_sides.1,
+            self.ctrl_held(),
+            self.state.chrome.option_as_alt,
+            cfg!(target_os = "macos"),
+        )
+    }
+
+    /// Makes `key` the Option key that is Alt, here and in the window, which on a Mac decides
+    /// what character the other one sends.
+    fn set_option_as_alt(&mut self, key: dacode::macos::OptionKey) {
+        self.state.chrome.option_as_alt = key;
+        #[cfg(target_os = "macos")]
+        if let Some(window) = &self.window {
+            use winit::platform::macos::WindowExtMacOS;
+            window.set_option_as_alt(dacode::macos::winit_option(key));
+        }
+    }
+
+    fn command_held(&self) -> bool {
+        cfg!(target_os = "macos") && self.modifiers.super_key()
     }
 
     /// Puts the shown terminal's selection on the clipboard.
@@ -11118,7 +11283,7 @@ impl App {
 
         // Ctrl-click is "go to definition", as it is in every editor with a language server. The
         // caret moves first, because the request is about where the caret is.
-        if self.modifiers.control_key() {
+        if self.ctrl_held() {
             let _ = self.run(Action::GotoDefinition);
             return;
         }
@@ -12013,6 +12178,7 @@ impl App {
         self.state.chrome.zoom = settings.interface_zoom;
         self.state.chrome.motion.set_animations(settings.animations);
         self.state.chrome.updates = settings.updates;
+        self.set_option_as_alt(settings.option_as_alt);
         self.grammar.set_keymap(settings.keymap);
         // A key moved on the page and not yet written wins over the file it is about to be written
         // into, as a pending setting does.

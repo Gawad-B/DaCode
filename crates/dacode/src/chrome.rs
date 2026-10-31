@@ -333,6 +333,8 @@ pub struct Chrome {
     pub show_notifications: bool,
     /// The `updates` setting.
     pub updates: crate::update::Policy,
+    /// The `option_as_alt` setting: which Option key is Alt on a Mac.
+    pub option_as_alt: crate::macos::OptionKey,
     /// An update on offer, drawn at the top of the bell's panel with its buttons. Set by the event
     /// loop, which owns the updater; drawing and the click both read [`notifications_panel`].
     pub update: Option<crate::update::Offer>,
@@ -864,6 +866,7 @@ impl EditorState {
             interface_zoom: self.chrome.zoom,
             animations: self.chrome.motion.animations(),
             updates: self.chrome.updates,
+            option_as_alt: self.chrome.option_as_alt,
         }
     }
 
@@ -3833,10 +3836,14 @@ fn draw_empty_state(frame: &mut Frame, state: &EditorState, code: Rect, scale: f
     // The one line of teaching in the whole editor, and it goes here because this is the screen
     // someone is looking at when they have no idea what to do next. Not a tips carousel, not a
     // tour: two keys, as the chips every card draws them as, and the second answers everything else.
-    let open = if state.modal { "<c-p>" } else { "Ctrl+P" };
+    let open = if state.modal {
+        "<c-p>".to_string()
+    } else {
+        dacode_input::commands::pretty("<c-p>")
+    };
     let help = key_hint(state, "help");
     for (index, (keys, words)) in [
-        (open, "open a file"),
+        (open.as_str(), "open a file"),
         (help.as_str(), "every key that works"),
     ]
     .into_iter()

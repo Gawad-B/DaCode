@@ -57,6 +57,9 @@ pub struct Config {
     /// Whether DaCode checks for, downloads and offers new releases: "automatic", "notify" or
     /// "off". Checked against [`UPDATES`] here, like `animations`.
     pub updates: Option<String>,
+    /// Which Option key is Alt on a Mac: "left", "right", "both" or "none". Checked against
+    /// [`OPTION_AS_ALT`] here, like `animations`.
+    pub option_as_alt: Option<String>,
     /// "absolute", "relative" or "off" — parsed by the caller, which owns the enum.
     pub line_numbers: Option<String>,
     pub appearance: Option<Appearance>,
@@ -85,6 +88,10 @@ pub const ANIMATIONS: [&str; 3] = ["full", "reduced", "off"];
 /// The spellings `updates` accepts. The binary owns `dacode::update::Policy` and checks every name it
 /// prints is here.
 pub const UPDATES: [&str; 3] = ["automatic", "notify", "off"];
+
+/// The spellings `option_as_alt` accepts. The binary owns `dacode::macos::OptionKey` and checks every
+/// name it prints is here.
+pub const OPTION_AS_ALT: [&str; 4] = ["left", "right", "both", "none"];
 
 /// A language server named by `dacode.server(language, { command = …, args = {…} })`.
 ///
@@ -125,6 +132,7 @@ impl Config {
             && self.interface_zoom.is_none()
             && self.animations.is_none()
             && self.updates.is_none()
+            && self.option_as_alt.is_none()
             && self.line_numbers.is_none()
             && self.appearance.is_none()
             && self.theme_name.is_none()
@@ -268,6 +276,27 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             // The same shape as `animations`, for the same reason: `updates = false` is the
             // natural way to write "off", and dropping it silently would leave the editor fetching
             // from the network while its owner believed it never would.
+            // `option_as_alt = true` reads naturally and means nothing certain — which side? — so a
+            // boolean is refused by name rather than guessed at.
+            match options.get::<Value>("option_as_alt") {
+                Ok(Value::Nil) | Err(_) => {}
+                Ok(Value::String(name)) => {
+                    let name = name.to_string_lossy();
+                    if OPTION_AS_ALT.contains(&name.as_str()) {
+                        config.option_as_alt = Some(name);
+                    } else {
+                        config.problems.push(format!(
+                            "option_as_alt must be \"left\", \"right\", \"both\" or \"none\", \
+                             got {name:?}"
+                        ));
+                    }
+                }
+                Ok(_) => config.problems.push(
+                    "option_as_alt must be \"left\", \"right\", \"both\" or \"none\" (a string, \
+                     not a boolean or number)"
+                        .into(),
+                ),
+            }
             match options.get::<Value>("updates") {
                 Ok(Value::Nil) | Err(_) => {}
                 Ok(Value::String(name)) => {
@@ -631,6 +660,24 @@ mod tests {
             assert_eq!(config.updates, None, "{bad}");
             assert!(
                 config.problems.iter().any(|p| p.contains("updates")),
+                "{bad}: {:?}",
+                config.problems
+            );
+        }
+    }
+
+    #[test]
+    fn option_as_alt_names_a_side_and_refuses_a_boolean() {
+        // `option_as_alt = true` does not say which Option key, and guessing one would leave the
+        // other unable to type `@` on a layout that needs it.
+        let config = run("dacode.set { option_as_alt = \"right\" }");
+        assert_eq!(config.option_as_alt, Some("right".into()));
+        assert!(config.problems.is_empty(), "{:?}", config.problems);
+        for bad in ["true", "\"lft\"", "1"] {
+            let config = run(&format!("dacode.set {{ option_as_alt = {bad} }}"));
+            assert_eq!(config.option_as_alt, None, "{bad}");
+            assert!(
+                config.problems.iter().any(|p| p.contains("option_as_alt")),
                 "{bad}: {:?}",
                 config.problems
             );

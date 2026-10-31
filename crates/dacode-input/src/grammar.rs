@@ -333,6 +333,10 @@ impl Grammar {
                 KeyCode::Char('=') | KeyCode::Char('+') => Some(Action::ZoomIn),
                 KeyCode::Char('-') => Some(Action::ZoomOut),
                 KeyCode::Char('0') => Some(Action::ZoomReset),
+                // A second key for replace because a Mac takes the first: ⌘H hides the
+                // application there (`dacode::macos`), and ⌥⌘F is where VSCode puts replace on one.
+                // Before the shifted and plain arms, which would otherwise take it as a search.
+                KeyCode::Char('f') if key.alt => Some(Action::StartReplace),
                 KeyCode::Char('f') if key.shift => Some(Action::SearchProject),
                 KeyCode::Char('f') => Some(Action::StartSearch { forward: true }),
                 KeyCode::Char('h') => Some(Action::StartReplace),
@@ -495,8 +499,10 @@ impl Grammar {
                 KeyCode::Char('w') => Some(Action::CloseBuffer),
                 // In both grammars. Vim's own answer is `:s/a/b/g`, which is a fine thing to know
                 // and a poor thing to be the only way — and the prompt it opens is the same one, so
-                // there is no second implementation to keep in step.
+                // there is no second implementation to keep in step. `ctrl-alt-f` for a Mac, where
+                // ⌘H hides the application — see `feed_flat`.
                 KeyCode::Char('h') => Some(Action::StartReplace),
+                KeyCode::Char('f') if key.alt => Some(Action::StartReplace),
                 // Shifted first, or the plain arm swallows it — see `feed_editor_chords`.
                 KeyCode::Char('o') if key.shift => Some(Action::GotoSymbol),
                 KeyCode::Char('o') => Some(Action::Jump { forward: false }),

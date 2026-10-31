@@ -20,6 +20,7 @@ pub mod icon;
 pub mod import_cli;
 pub mod install;
 pub mod layout;
+pub mod macos;
 pub mod menu;
 pub mod motion;
 pub mod open;

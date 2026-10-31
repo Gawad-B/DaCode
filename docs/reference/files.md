@@ -38,8 +38,8 @@ and joining onto it would put the config directory at the filesystem root.
 
 `paths::resolve` branches on `cfg!(windows)` and nothing else, so **macOS takes the Unix rows
 above**: `~/.config/dacode` and `~/.local/state/dacode`, not `~/Library/Application Support`. That is what
-the code does; nobody has ever run DaCode on macOS, so treat the row as documented rather than
-verified.
+the code does, deliberately: the same `init.lua` path on every Unix is the one the guides can name,
+and it is where people who move between a Mac and Linux already keep their dotfiles.
 
 The home directory is `HOME` first and `USERPROFILE` second — `HOME` is set and correct under a
 POSIX shell on Windows too, so trying it first is right on every platform.

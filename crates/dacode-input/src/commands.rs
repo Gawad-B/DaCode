@@ -14,6 +14,8 @@
 //! means the command has no key in that mode and the palette is the only way to it — which is the
 //! honest thing for the palette to show, and better than inventing a binding.
 
+use std::cell::Cell;
+
 use crate::action::Action;
 
 /// One command: what it is called, what it does, and how to reach it.
@@ -79,7 +81,52 @@ impl Command {
 /// `Ctrl+Y  Ctrl+Shift+Z`, two keys that each do it, while `<c-k>o` is `Ctrl+K O`, one key after
 /// another. Collapsing both to a single space made "Ctrl+K O" and "Ctrl+Y Ctrl+Shift+Z" read alike,
 /// and a reader could take the `O` for a key of its own.
+///
+/// On a Mac (see [`print_for_mac`]) the same keys are written the way a Mac writes them: `<c-s-p>`
+/// is `⇧⌘P`, because ⌘ is what runs every `ctrl` binding there and a menu that says `Ctrl+Shift+P`
+/// sends the reader to the wrong key — Ctrl works too, but nobody on a Mac reaches for it.
 pub fn pretty(keys: &str) -> String {
+    pretty_on(keys, MAC.with(Cell::get))
+}
+
+thread_local! {
+    static MAC: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Prints every key on this thread the Mac way from now on. Per thread for the reason
+/// [`crate::shortcuts::install`] is: `main` sets it once for the UI thread, and tests, which cargo
+/// runs one to a thread, keep printing `Ctrl+S` on a Mac runner as on any other.
+pub fn print_for_mac(mac: bool) {
+    MAC.with(|cell| cell.set(mac));
+}
+
+/// [`pretty`] with the platform as a parameter, so the Mac spelling has tests that run anywhere.
+pub fn pretty_on(keys: &str, mac: bool) -> String {
+    if mac {
+        return pretty_keys(&mac_reachable(keys), true);
+    }
+    pretty_keys(keys, false)
+}
+
+/// The chords a Mac keeps for itself whatever the application binds: ⌘H hides it, ⌥⌘H hides
+/// everything else, ⌘M minimises (`dacode::macos::window_key`). `c` because ⌘ is ctrl there.
+pub const MAC_RESERVED: [&str; 3] = ["<c-h>", "<c-a-h>", "<c-m>"];
+
+/// `keys` without the alternatives that begin with a [`MAC_RESERVED`] chord: on a Mac they hide the
+/// window rather than run the command, and printing them would teach a key that does something
+/// else. Physical Ctrl still reaches them, but nobody reads `⌘H` as "press Ctrl".
+fn mac_reachable(keys: &str) -> String {
+    keys.split("  ")
+        .filter(|alternative| {
+            !MAC_RESERVED
+                .iter()
+                .any(|reserved| alternative.trim().starts_with(reserved))
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn pretty_keys(keys: &str, mac: bool) -> String {
     let mut out = String::new();
     let mut rest = keys;
     let mut alternative = false;
@@ -97,7 +144,7 @@ pub fn pretty(keys: &str) -> String {
         let piece = match group {
             Some(inner) => {
                 rest = &rest[inner.len() + 2..];
-                chord(inner)
+                if mac { mac_chord(inner) } else { chord(inner) }
             }
             None => {
                 rest = &rest[first.len_utf8()..];
@@ -116,13 +163,24 @@ pub fn pretty(keys: &str) -> String {
 /// Keys in every spelling someone might search for them by, lower case: the table's `<c-w>`, the
 /// desktop's `ctrl+w`, and the `ctrl-w` people type when they mean either. The help panel and the
 /// Keys page match a query against this, so the one key is found however it is asked for.
+///
+/// On a Mac it also holds `⇧⌘P` and `cmd-shift-p`, the two ways a Mac user writes the key they see.
 pub fn searchable(keys: &str) -> String {
-    let pretty = pretty(keys).to_lowercase();
-    format!(
+    let pretty = pretty_on(keys, false).to_lowercase();
+    let mut out = format!(
         "{}\n{pretty}\n{}",
         keys.to_lowercase(),
         pretty.replace('+', "-")
-    )
+    );
+    if MAC.with(Cell::get) {
+        let cmd = pretty.replace("ctrl", "cmd");
+        out.push_str(&format!(
+            "\n{}\n{cmd}\n{}",
+            pretty_on(keys, true).to_lowercase(),
+            cmd.replace('+', "-")
+        ));
+    }
+    out
 }
 
 fn chord(inner: &str) -> String {
@@ -164,6 +222,51 @@ fn chord(inner: &str) -> String {
     names.join("+")
 }
 
+/// One chord as a Mac menu prints it: the modifier symbols in Apple's order — ⌃⌥⇧⌘ — run together
+/// and then the key, `⇧⌘P`. `c` is ⌘ because ⌘ is what runs it (`dacode::macos`); Super is ⌘ too,
+/// being the same key. Keys with a symbol of their own on a Mac keyboard get it, and every one of
+/// these is in the bundled face, which `typeface.rs` checks.
+fn mac_chord(inner: &str) -> String {
+    let parts: Vec<&str> = inner.split('-').collect();
+    let (modifiers, key) = match parts.split_last() {
+        Some((&"", before)) if !before.is_empty() => (&before[..before.len() - 1], "-"),
+        Some((key, before)) => (before, *key),
+        None => (&[][..], inner),
+    };
+    let has = |names: &[&str]| modifiers.iter().any(|modifier| names.contains(modifier));
+    let mut out = String::new();
+    for (names, symbol) in [
+        (&["a"][..], '⌥'),
+        (&["s"][..], '⇧'),
+        (&["c", "m", "d"][..], '⌘'),
+    ] {
+        if has(names) {
+            out.push(symbol);
+        }
+    }
+    // Anything the table might one day spell that this does not know, kept rather than dropped.
+    for other in modifiers {
+        if !["a", "s", "c", "m", "d"].contains(other) {
+            out.push_str(other);
+            out.push('+');
+        }
+    }
+    out.push_str(&match key {
+        "bs" => "⌫".to_string(),
+        "del" => "⌦".to_string(),
+        "cr" | "enter" => "↩".to_string(),
+        "esc" => "⎋".to_string(),
+        "tab" => "⇥".to_string(),
+        "space" => "Space".to_string(),
+        "home" => "↖".to_string(),
+        "end" => "↘".to_string(),
+        "pageup" | "pgup" => "⇞".to_string(),
+        "pagedown" | "pgdn" => "⇟".to_string(),
+        other => other.to_uppercase(),
+    });
+    out
+}
+
 #[cfg(test)]
 mod pretty_tests {
     use super::pretty;
@@ -188,6 +291,50 @@ mod pretty_tests {
     fn alternatives_stay_apart_from_the_presses_of_one_key() {
         assert_eq!(pretty("<c-y>  <c-s-z>"), "Ctrl+Y  Ctrl+Shift+Z");
         assert_eq!(pretty("<c-k>o"), "Ctrl+K O");
+    }
+
+    #[test]
+    fn a_mac_reads_the_symbols_on_its_own_keys_in_its_own_order() {
+        use super::pretty_on;
+        // Apple's order is ⌃⌥⇧⌘ whatever order the table wrote them in; a menu that printed
+        // `⌘⇧P` would look wrong to everyone who has read a Mac menu.
+        assert_eq!(pretty_on("<c-s-p>", true), "⇧⌘P");
+        assert_eq!(pretty_on("<s-c-p>", true), "⇧⌘P");
+        assert_eq!(pretty_on("<c-a-↑>", true), "⌥⌘↑");
+        assert_eq!(pretty_on("<c-bs>", true), "⌘⌫");
+        assert_eq!(pretty_on("<c-->", true), "⌘-");
+        assert_eq!(pretty_on("<c-k>o", true), "⌘K O");
+        assert_eq!(pretty_on("<c-y>  <c-s-z>", true), "⌘Y  ⇧⌘Z");
+        assert_eq!(pretty_on("<f8>", true), "F8");
+        assert_eq!(pretty_on("gD", true), "G D");
+    }
+
+    #[test]
+    fn a_mac_is_not_shown_a_key_it_keeps_for_itself() {
+        use super::pretty_on;
+        // ⌘H hides the application before the editor sees it, so replace is offered by its
+        // other key there and by both everywhere else.
+        assert_eq!(pretty_on("<c-h>  <c-a-f>", true), "⌥⌘F");
+        assert_eq!(pretty_on("<c-h>  <c-a-f>", false), "Ctrl+H  Ctrl+Alt+F");
+        assert_eq!(pretty_on("<c-m>", true), "");
+    }
+
+    #[test]
+    fn a_mac_finds_a_key_by_command_as_well_as_by_ctrl() {
+        use super::{print_for_mac, searchable};
+        print_for_mac(true);
+        let found = searchable("<c-s-p>");
+        print_for_mac(false);
+        for spelling in [
+            "⇧⌘p",
+            "cmd-shift-p",
+            "cmd+shift+p",
+            "ctrl-shift-p",
+            "<c-s-p>",
+        ] {
+            assert!(found.contains(spelling), "{spelling} in {found:?}");
+        }
+        assert!(!searchable("<c-s-p>").contains("cmd"));
     }
 
     #[test]
@@ -542,8 +689,8 @@ pub const COMMANDS: &[Command] = &[
         "replace",
         "find and replace in this file",
         Search,
-        "<c-h>",
-        "<c-h>",
+        "<c-h>  <c-a-f>",
+        "<c-h>  <c-a-f>",
     ),
     command("search_next", "next match", Search, "n", "<f3>"),
     command("search_previous", "previous match", Search, "N", "<s-f3>"),

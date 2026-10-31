@@ -74,6 +74,11 @@ dacode.set {
   -- "notify" only says one is out; "off" never checks unless you ask (Help > Check for updates).
   updates = "automatic",
 
+  -- On a Mac, which Option key is Alt for the alt-… bindings: "left", "right", "both" or "none".
+  -- The other one still types what Option types on your keyboard — @, {, € — and with ⌘ held
+  -- either is ⌥. Ignored on Linux and Windows.
+  option_as_alt = "left",
+
   -- What <leader> means in the bindings below.
   leader = "<space>",
 }

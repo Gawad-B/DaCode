@@ -29,8 +29,8 @@
 //!
 //! # The limits, said
 //!
-//! Linux on x86-64 and ARM64 and Windows on x86-64 only — there is no macOS packaging of DaCode to
-//! serve. clangd publishes no ARM64 Linux build, and the musl builds are used where a project offers
+//! Linux on x86-64 and ARM64, Windows on x86-64, and macOS on Apple Silicon and Intel. clangd
+//! publishes no ARM64 Linux build, and one Mac build for both Mac CPUs; the musl builds are used where a project offers
 //! them so a distribution's C library does not matter; rust-analyzer, clangd and Node are glibc
 //! builds and will not run on Alpine. Nothing here updates by itself: `dacode tools install` again
 //! after DaCode moves a pin is how a tool is updated.
@@ -43,6 +43,8 @@ pub enum Platform {
     LinuxX64,
     LinuxArm64,
     WindowsX64,
+    MacArm64,
+    MacX64,
 }
 
 impl Platform {
@@ -57,6 +59,10 @@ impl Platform {
             ("linux", "x86_64") => Some(Platform::LinuxX64),
             ("linux", "aarch64") => Some(Platform::LinuxArm64),
             ("windows", "x86_64") => Some(Platform::WindowsX64),
+            // The editor is one universal binary, so this is the machine's own CPU and never
+            // Rosetta's: an Apple Silicon Mac gets the ARM64 tools.
+            ("macos", "aarch64") => Some(Platform::MacArm64),
+            ("macos", "x86_64") => Some(Platform::MacX64),
             _ => None,
         }
     }
@@ -70,6 +76,8 @@ impl Platform {
             Platform::LinuxX64 => "64-bit Linux",
             Platform::LinuxArm64 => "ARM64 Linux",
             Platform::WindowsX64 => "64-bit Windows",
+            Platform::MacArm64 => "Apple Silicon macOS",
+            Platform::MacX64 => "Intel macOS",
         }
     }
 }
@@ -150,6 +158,20 @@ pub const NODE: Tool = Tool {
             archive: Archive::Zip,
             program: "node-v24.22.0-win-x64/node.exe",
         },
+        Asset {
+            platform: Platform::MacArm64,
+            url: "https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-arm64.tar.gz",
+            sha256: "6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5",
+            archive: Archive::TarGz,
+            program: "node-v24.22.0-darwin-arm64/bin/node",
+        },
+        Asset {
+            platform: Platform::MacX64,
+            url: "https://nodejs.org/dist/v24.22.0/node-v24.22.0-darwin-x64.tar.gz",
+            sha256: "495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91",
+            archive: Archive::TarGz,
+            program: "node-v24.22.0-darwin-x64/bin/node",
+        },
     ]),
 };
 
@@ -182,6 +204,20 @@ pub const TOOLS: [Tool; 9] = [
                 archive: Archive::Zip,
                 program: "rust-analyzer.exe",
             },
+            Asset {
+                platform: Platform::MacArm64,
+                url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-12/rust-analyzer-aarch64-apple-darwin.gz",
+                sha256: "a2e45e828b37bfc4b507c2ca456e8b61096e0bdfbae225f3d33295546d1eeacf",
+                archive: Archive::Gz,
+                program: "rust-analyzer",
+            },
+            Asset {
+                platform: Platform::MacX64,
+                url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-10-12/rust-analyzer-x86_64-apple-darwin.gz",
+                sha256: "56a5698a2e0d495c3ec28155416db310c879f21a70f6f38db549166cf157cfab",
+                archive: Archive::Gz,
+                program: "rust-analyzer",
+            },
         ]),
     },
     Tool {
@@ -211,6 +247,20 @@ pub const TOOLS: [Tool; 9] = [
                 archive: Archive::Zip,
                 program: "ruff.exe",
             },
+            Asset {
+                platform: Platform::MacArm64,
+                url: "https://github.com/astral-sh/ruff/releases/download/0.17.0/ruff-aarch64-apple-darwin.tar.gz",
+                sha256: "59afe64c227e5f9a39d85c4d6be6e2d8e9a85c55f0887baad9c9e2f775a1c119",
+                archive: Archive::TarGz,
+                program: "ruff-aarch64-apple-darwin/ruff",
+            },
+            Asset {
+                platform: Platform::MacX64,
+                url: "https://github.com/astral-sh/ruff/releases/download/0.17.0/ruff-x86_64-apple-darwin.tar.gz",
+                sha256: "1b6a10f57aa06f0de2d90666878dd875836e3e2d04f61868fa175a74149fb2ad",
+                archive: Archive::TarGz,
+                program: "ruff-x86_64-apple-darwin/ruff",
+            },
         ]),
     },
     Tool {
@@ -232,6 +282,20 @@ pub const TOOLS: [Tool; 9] = [
                 sha256: "23412a240756a162e7b98a282f36aa2a23a88db5ce16a0cbc4fef7253768c810",
                 archive: Archive::Zip,
                 program: "clangd_23.1.0/bin/clangd.exe",
+            },
+            Asset {
+                platform: Platform::MacArm64,
+                url: "https://github.com/clangd/clangd/releases/download/23.1.0/clangd-mac-23.1.0.zip",
+                sha256: "1082e6638223b785ca2daf0939f13afcd0bb95c84ee9a4bbaff4745365159253",
+                archive: Archive::Zip,
+                program: "clangd_23.1.0/bin/clangd",
+            },
+            Asset {
+                platform: Platform::MacX64,
+                url: "https://github.com/clangd/clangd/releases/download/23.1.0/clangd-mac-23.1.0.zip",
+                sha256: "1082e6638223b785ca2daf0939f13afcd0bb95c84ee9a4bbaff4745365159253",
+                archive: Archive::Zip,
+                program: "clangd_23.1.0/bin/clangd",
             },
         ]),
     },
@@ -262,6 +326,20 @@ pub const TOOLS: [Tool; 9] = [
                 archive: Archive::Zip,
                 program: "bin/lua-language-server.exe",
             },
+            Asset {
+                platform: Platform::MacArm64,
+                url: "https://github.com/LuaLS/lua-language-server/releases/download/3.19.2/lua-language-server-3.19.2-darwin-arm64.tar.gz",
+                sha256: "79149584320a23bd5fcd5bc31f47a1975acd8a4560a0e89036bb1016fa61687f",
+                archive: Archive::TarGz,
+                program: "bin/lua-language-server",
+            },
+            Asset {
+                platform: Platform::MacX64,
+                url: "https://github.com/LuaLS/lua-language-server/releases/download/3.19.2/lua-language-server-3.19.2-darwin-x64.tar.gz",
+                sha256: "6f2174ece5ec63bcd9d5b22b2c902445c1cd9045fafe48c62602448ebf4c09cc",
+                archive: Archive::TarGz,
+                program: "bin/lua-language-server",
+            },
         ]),
     },
     Tool {
@@ -290,6 +368,20 @@ pub const TOOLS: [Tool; 9] = [
                 sha256: "fd13b4014e3b779c244bbc03f2c282e357f15bc526de6a6fa5ecbc447538313c",
                 archive: Archive::Zip,
                 program: "stylua.exe",
+            },
+            Asset {
+                platform: Platform::MacArm64,
+                url: "https://github.com/JohnnyMorganz/StyLua/releases/download/v2.6.0/stylua-macos-aarch64.zip",
+                sha256: "dab9b66d340ca5ffc8225211f1dcf89b84783e09b8cbec8c518497eba81f3c42",
+                archive: Archive::Zip,
+                program: "stylua",
+            },
+            Asset {
+                platform: Platform::MacX64,
+                url: "https://github.com/JohnnyMorganz/StyLua/releases/download/v2.6.0/stylua-macos-x86_64.zip",
+                sha256: "90779aa873837b2dff8eb3361bd27950303914c24265a59cae0a0d0629d71585",
+                archive: Archive::Zip,
+                program: "stylua",
             },
         ]),
     },
@@ -889,11 +981,9 @@ mod tests {
             Platform::of("windows", "x86_64"),
             Some(Platform::WindowsX64)
         );
-        assert_eq!(
-            Platform::of("macos", "aarch64"),
-            None,
-            "no macOS packaging to serve"
-        );
+        assert_eq!(Platform::of("macos", "aarch64"), Some(Platform::MacArm64));
+        assert_eq!(Platform::of("macos", "x86_64"), Some(Platform::MacX64));
+        assert_eq!(Platform::of("freebsd", "x86_64"), None);
     }
 
     #[test]
@@ -905,6 +995,8 @@ mod tests {
                 Platform::LinuxX64,
                 Platform::LinuxArm64,
                 Platform::WindowsX64,
+                Platform::MacArm64,
+                Platform::MacX64,
             ] {
                 let expected = !(tool.name == "clangd" && platform == Platform::LinuxArm64);
                 assert_eq!(

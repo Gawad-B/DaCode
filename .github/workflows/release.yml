@@ -2,14 +2,15 @@
 #
 # `build.yml` proves a commit works; this turns one into something people can install. It exists
 # because the artifacts cannot all be built on one machine — the .deb, .rpm and tarball need Linux,
-# and the installer needs a Windows box with a C toolchain for tree-sitter and Lua. Doing that by hand
+# the installer needs a Windows box with a C toolchain for tree-sitter and Lua, and the .app needs
+# Apple's lipo, codesign and hdiutil. Doing that by hand
 # is how a release ends up carrying a Windows binary from a different commit than its Linux one.
 #
 # Tag and push, and this does the rest:
 #
 #     git tag -a v0.1.1 -m "dacode 0.1.1" && git push origin v0.1.1
 #
-# Nothing is published unless both builds *and both test suites* pass, so a bad tag fails loudly
+# Nothing is published unless every build *and every test suite* passes, so a bad tag fails loudly
 # rather than shipping.
 name: release
 
@@ -65,8 +66,22 @@ jobs:
           name: windows
           path: target/packages/dacode-setup.exe
 
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup component add rust-analyzer
+      - run: cargo test --workspace --no-fail-fast
+      # The .dmg for people, the .zip for the updater (`update::mac_zip`).
+      - run: packaging/macos/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: target/packages/dacode-*-macos.*
+
   publish:
-    needs: [linux, windows]
+    needs: [linux, windows, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,6 +130,17 @@ jobs:
           Run \`dacode-setup.exe\`. It installs per-user under \`%LOCALAPPDATA%\Programs\dacode\` — no
           administrator rights, no UAC prompt — and adds a Start Menu entry, \`dacode\` on your \`PATH\`,
           "Open with dacode" on a folder's right-click menu, and an uninstaller.
+
+          **macOS** (Apple Silicon and Intel, macOS 11 or later)
+
+          Open \`dacode-${version}-macos.dmg\` and drag DaCode into Applications. The app is not
+          signed by an Apple Developer ID yet, so the first time, right-click DaCode in Applications
+          and choose **Open**, then **Open** again — or allow it under System Settings → Privacy &
+          Security. After that it opens normally, and updates itself. For \`dacode\` in a terminal:
+
+          \`\`\`sh
+          sudo ln -sf /Applications/DaCode.app/Contents/MacOS/dacode /usr/local/bin/dacode
+          \`\`\`
 
           **Debian, Ubuntu, Mint**
 

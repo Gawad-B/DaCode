@@ -8,6 +8,22 @@ DaCode ships two keymaps. Vim's modal grammar is the default; turning it off giv
 editor. The choice is one setting, it changes live, and nothing about your open files is affected by
 flipping it.
 
+On a Mac, every <kbd>ctrl</kbd> key in this guide is also <kbd>⌘</kbd>: <kbd>⌘</kbd><kbd>S</kbd>,
+<kbd>⌘</kbd><kbd>P</kbd>, <kbd>⌘</kbd>-click for go to definition, <kbd>⌘</kbd>-scroll to zoom.
+<kbd>ctrl</kbd> itself keeps working, so Vim's <kbd>ctrl</kbd> keys stay where your hands expect
+them. The menus, the palette and the help panel print keys the Mac way — `⇧⌘P`, `⌥⌘F`.
+<kbd>⌘</kbd><kbd>H</kbd> hides DaCode, <kbd>⌥</kbd><kbd>⌘</kbd><kbd>H</kbd> hides everything else and
+<kbd>⌘</kbd><kbd>M</kbd> minimises, as in every Mac application; that is why find and replace, which
+is <kbd>ctrl</kbd>+<kbd>h</kbd> elsewhere, is <kbd>⌥</kbd><kbd>⌘</kbd><kbd>F</kbd> there (physical
+<kbd>ctrl</kbd>+<kbd>h</kbd> still works). <kbd>⌘</kbd><kbd>Q</kbd> quits and asks about unsaved files
+first.
+
+The **left** <kbd>option</kbd> key is <kbd>alt</kbd> for every <kbd>alt</kbd> binding below; the
+**right** one still types what <kbd>option</kbd> types on your keyboard — `@`, `{`, `€` and the rest.
+The *Option as Alt (Mac)* row on the Editor page of the settings, or `option_as_alt` in `init.lua`,
+swaps them, makes both Alt, or neither. With <kbd>⌘</kbd> held, either <kbd>option</kbd> is
+<kbd>⌥</kbd>.
+
 ## Switching
 
 The first row of the settings tab's **Editor** page is the switch, called *Vim keys* (or *Modal

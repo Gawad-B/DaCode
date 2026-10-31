@@ -66,6 +66,8 @@ pub enum Field {
     Animations,
     /// Whether new releases are fetched and offered: automatic, notify or off.
     Updates,
+    /// Which Option key is Alt on a Mac.
+    OptionAsAlt,
     /// Everything drawn larger or smaller than the desktop's scale: `ctrl-=` and `ctrl--`.
     InterfaceZoom,
 }
@@ -80,7 +82,7 @@ pub fn glow_index(field: Field) -> u32 {
 }
 
 impl Field {
-    pub const ALL: [Field; 17] = [
+    pub const ALL: [Field; 18] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -98,6 +100,7 @@ impl Field {
         Field::Animations,
         Field::Updates,
         Field::InterfaceZoom,
+        Field::OptionAsAlt,
     ];
 
     pub fn name(self) -> &'static str {
@@ -119,6 +122,7 @@ impl Field {
             Field::Animations => "animations",
             Field::Updates => "updates",
             Field::InterfaceZoom => "interface_zoom",
+            Field::OptionAsAlt => "option_as_alt",
         }
     }
 }
@@ -347,6 +351,7 @@ pub struct Values {
     pub animations: crate::motion::Animations,
     pub updates: crate::update::Policy,
     pub interface_zoom: crate::chrome::Zoom,
+    pub option_as_alt: crate::macos::OptionKey,
 }
 
 impl Values {
@@ -388,6 +393,7 @@ impl Values {
             Field::Animations => self.animations.name().to_string(),
             Field::Updates => self.updates.name().to_string(),
             Field::InterfaceZoom => format!("{}%", self.interface_zoom.percent()),
+            Field::OptionAsAlt => self.option_as_alt.name().to_string(),
         }
     }
 
@@ -505,6 +511,19 @@ impl Values {
                 };
                 self.updates = all[next];
             }
+            Field::OptionAsAlt => {
+                let all = crate::macos::OptionKey::ALL;
+                let at = all
+                    .iter()
+                    .position(|value| *value == self.option_as_alt)
+                    .unwrap_or(0);
+                let next = if delta < 0 {
+                    (at + all.len() - 1) % all.len()
+                } else {
+                    (at + 1) % all.len()
+                };
+                self.option_as_alt = all[next];
+            }
             Field::Transparency => {
                 let step = Self::TRANSPARENCY_STEP as i32;
                 self.transparency = (self.transparency as i32 + delta.signum() * step)
@@ -556,6 +575,7 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
         Field::Transparency => values.transparency.to_string(),
         Field::Animations => format!("\"{}\"", values.animations.name()),
         Field::Updates => format!("\"{}\"", values.updates.name()),
+        Field::OptionAsAlt => format!("\"{}\"", values.option_as_alt.name()),
         Field::InterfaceZoom => values.interface_zoom.percent().to_string(),
     };
     Some(format!("  {} = {value},", field.name()))
@@ -879,6 +899,12 @@ const EDITOR: &[Section] = &[
             Field::InlineBlame,
         ],
     },
+    // Last, and under its own name: it does nothing off a Mac, and a row that does nothing should
+    // not sit among the ones that do.
+    Section {
+        title: "Mac keyboard",
+        fields: &[Field::OptionAsAlt],
+    },
 ];
 
 const FILES: &[Section] = &[
@@ -971,6 +997,17 @@ const ANIMATIONS: [&str; crate::motion::Animations::ALL.len()] = {
     names
 };
 
+const OPTION_AS_ALT: [&str; crate::macos::OptionKey::ALL.len()] = {
+    let all = crate::macos::OptionKey::ALL;
+    let mut names = [""; crate::macos::OptionKey::ALL.len()];
+    let mut at = 0;
+    while at < names.len() {
+        names[at] = all[at].name();
+        at += 1;
+    }
+    names
+};
+
 const UPDATES: [&str; crate::update::Policy::ALL.len()] = {
     let all = crate::update::Policy::ALL;
     let mut names = [""; crate::update::Policy::ALL.len()];
@@ -1008,6 +1045,7 @@ impl Field {
             Field::Animations => "Animations",
             Field::Updates => "Updates",
             Field::InterfaceZoom => "Interface zoom",
+            Field::OptionAsAlt => "Option as Alt (Mac)",
         }
     }
 
@@ -1079,6 +1117,11 @@ impl Field {
                 "Draws everything larger or smaller — code, menus, panels and this page — on top \
                  of the desktop's own scale. Ctrl+= and Ctrl+- change it anywhere; Ctrl+0 resets."
             }
+            Field::OptionAsAlt => {
+                "On a Mac, which Option key works as Alt in shortcuts. The other still types what \
+                 Option types — @, {, € on many keyboards. With ⌘ held, either is ⌥. Does nothing \
+                 on Linux or Windows."
+            }
             Field::Updates => {
                 "Automatic: new releases are checked for daily, downloaded and verified, then \
                  offered as a restart. Notify: only told. Off: never checked unless asked."
@@ -1104,6 +1147,7 @@ impl Field {
             Field::LineNumbers => Control::Choice(&LINE_NUMBERS),
             Field::Animations => Control::Choice(&ANIMATIONS),
             Field::Updates => Control::Choice(&UPDATES),
+            Field::OptionAsAlt => Control::Choice(&OPTION_AS_ALT),
         }
     }
 
@@ -1152,6 +1196,7 @@ impl Values {
             animations: settings.animations,
             updates: settings.updates,
             interface_zoom: settings.interface_zoom,
+            option_as_alt: settings.option_as_alt,
         }
     }
 
@@ -1174,6 +1219,7 @@ impl Values {
             Field::Transparency => self.transparency != defaults.transparency,
             Field::Animations => self.animations != defaults.animations,
             Field::Updates => self.updates != defaults.updates,
+            Field::OptionAsAlt => self.option_as_alt != defaults.option_as_alt,
             Field::InterfaceZoom => self.interface_zoom != defaults.interface_zoom,
         }
     }
@@ -1204,6 +1250,7 @@ impl Values {
             Field::Transparency => self.transparency = defaults.transparency,
             Field::Animations => self.animations = defaults.animations,
             Field::Updates => self.updates = defaults.updates,
+            Field::OptionAsAlt => self.option_as_alt = defaults.option_as_alt,
             Field::InterfaceZoom => self.interface_zoom = defaults.interface_zoom,
         }
     }
@@ -3009,6 +3056,7 @@ mod tests {
             transparency: 0,
             animations: crate::motion::Animations::Full,
             updates: crate::update::Policy::Automatic,
+            option_as_alt: crate::macos::OptionKey::Left,
             interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
             bracket_colors: true,
@@ -3089,6 +3137,7 @@ mod tests {
             transparency: 0,
             animations: crate::motion::Animations::Full,
             updates: crate::update::Policy::Automatic,
+            option_as_alt: crate::macos::OptionKey::Left,
             interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
             bracket_colors: true,
@@ -3405,6 +3454,7 @@ mod click_tests {
             transparency: 0,
             animations: crate::motion::Animations::Full,
             updates: crate::update::Policy::Automatic,
+            option_as_alt: crate::macos::OptionKey::Left,
             interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
             bracket_colors: true,
@@ -3831,7 +3881,7 @@ mod page_tests {
                 field.is_default(&defaults),
                 "{field:?} is not at its own default"
             );
-            let page = page(category_of(field), "", true);
+            let page = page_for(field, true);
             let geometry = page.geometry(rect, 1.0, &defaults, true, &typography);
             for row in &geometry.rows {
                 assert_eq!(row.reset, None, "a reset on a default row: {row:?}");
@@ -3873,8 +3923,24 @@ mod page_tests {
         }
     }
 
+    /// The page a field is on, scrolled to it as selecting it would scroll it: a page taller than
+    /// the window shows its last rows only once you get there.
     fn page_for(field: Field, modal: bool) -> Page {
-        page(category_of(field), "", modal)
+        let mut page = page(category_of(field), "", modal);
+        if let Some(index) = page
+            .entries(modal)
+            .iter()
+            .position(|entry| matches!(entry, Entry::Field(candidate) if *candidate == field))
+        {
+            page.select(index, modal);
+            page.reveal(
+                editor(1600.0, 1000.0, 1.0),
+                1.0,
+                modal,
+                &Typography::default(),
+            );
+        }
+        page
     }
 
     #[test]

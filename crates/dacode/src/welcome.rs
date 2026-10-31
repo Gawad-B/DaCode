@@ -438,6 +438,7 @@ pub fn config_from(answers: &Answers, existing: &str) -> String {
         transparency: 0,
         animations: crate::motion::Animations::Full,
         updates: crate::update::Policy::Automatic,
+        option_as_alt: crate::macos::OptionKey::Left,
         interface_zoom: crate::chrome::Zoom::default(),
         sticky_scroll: true,
         bracket_colors: true,

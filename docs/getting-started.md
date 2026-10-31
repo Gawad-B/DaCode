@@ -21,6 +21,36 @@ per-user — no administrator rights and no UAC prompt. When it finishes you hav
 Windows may warn that the publisher is unknown. The installer is unsigned; code-signing certificates
 cost money this project does not have. You can verify what you downloaded against the release page.
 
+### macOS
+
+Download `dacode-<version>-macos.dmg`, open it, and drag **DaCode** onto **Applications**. It is one
+build for Apple Silicon and Intel Macs, and needs macOS 11 (Big Sur) or later.
+
+The app is not signed with an Apple Developer ID — that needs a paid Apple account this project does
+not have yet — so the first time you open it macOS says it cannot check it for malicious software.
+Right-click DaCode in Applications, choose **Open**, then **Open** again; or open it once, then go to
+**System Settings → Privacy & Security** and press **Open Anyway**. You are asked once. Updates
+DaCode installs itself are not asked about again.
+
+To start it from a terminal as `dacode`:
+
+```sh
+sudo ln -sf /Applications/DaCode.app/Contents/MacOS/dacode /usr/local/bin/dacode
+```
+
+<kbd>⌘</kbd> does everything <kbd>ctrl</kbd> does in this guide — <kbd>⌘</kbd><kbd>S</kbd> saves,
+<kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> opens the palette — and <kbd>ctrl</kbd> still works too, which
+is where Vim's <kbd>ctrl</kbd>+<kbd>r</kbd> and a shell's <kbd>ctrl</kbd>+<kbd>c</kbd> live. In the
+terminal panel <kbd>⌘</kbd><kbd>C</kbd> and <kbd>⌘</kbd><kbd>V</kbd> copy and paste. <kbd>⌘</kbd><kbd>H</kbd>
+hides DaCode and <kbd>⌘</kbd><kbd>M</kbd> minimises it. The left <kbd>option</kbd> key is
+<kbd>alt</kbd> and the right one types `@`, `{` and the rest as usual — the
+[keymaps guide](guides/keymaps.md) says how to change that.
+
+Right-click a file or a folder in the Finder and choose **Open With → DaCode**, or drop one on
+DaCode's Dock icon: a file opens in a tab, a folder becomes the project. Opened from the Dock,
+DaCode asks your login shell for its `PATH` once as it starts, so language servers and formatters
+installed with Homebrew, nvm, pyenv or cargo are found as they are in your terminal.
+
 ### Debian, Ubuntu, Mint
 
 ```sh
@@ -82,6 +112,9 @@ installed it:
   now**, **Release notes** and **Skip this version**. Restart saves your session and any unsaved
   work exactly as quitting does, installs the new version over the old one, and reopens it on the
   same folder. On Windows the setup runs silently and you start DaCode again yourself.
+- **DaCode.app on a Mac**, wherever you dragged it: the same, with the new app swapped in beside the
+  old one. Not while it is still running from the mounted disk image, which cannot be written — drag
+  it into Applications first.
 - **The `.deb` or `.rpm`**: DaCode never touches files a package manager owns. The bell gives you the
   command — `sudo apt install ./dacode_….deb` or `sudo dnf install ./dacode-….rpm` — and a
   **Download** button for the package.
@@ -89,8 +122,8 @@ installed it:
 
 **Help ▸ Check for updates** (`check for updates` in the palette) asks at once. The `updates`
 setting is `"automatic"` by default; `"notify"` only tells you, and `"off"` never asks by itself —
-see [settings](reference/settings.md). The check needs `curl`, which every Linux desktop and
-Windows 10 and later already have.
+see [settings](reference/settings.md). The check needs `curl`, which every Linux desktop,
+Windows 10 and later, and every Mac already have.
 
 The first release with the updater has to be installed by hand, as before; every one after it
 arrives this way.

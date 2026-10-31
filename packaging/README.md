@@ -45,10 +45,30 @@ See `packaging/windows/README.md`. Short version: `cargo build --release`, then
 
 ## macOS
 
-Not yet. `logo/design_handoff_vex/logo/README.md` records how to build `.icns` from the same PNG set
-when that build exists.
+On a Mac, with Xcode's command-line tools:
+
+```sh
+packaging/macos/build-app.sh
+```
+
+It builds `aarch64-apple-darwin` and `x86_64-apple-darwin`, joins them with `lipo` into one universal
+binary, makes `DaCode.app` (`packaging/macos/Info.plist`, an `.icns` from the Linux PNG set), signs it
+ad hoc, and writes two files to `target/packages`:
+
+- `dacode-<version>-macos.dmg` — what a person downloads: the app beside an Applications link.
+- `dacode-<version>-macos.zip` — what the updater downloads (`update::mac_zip`), made with `ditto`
+  so the bundle's permissions and signature survive.
+
+There is no Developer ID signing or notarization: Gatekeeper asks once on first launch. Adding them
+means a `codesign --sign "Developer ID Application: …" --options runtime` in place of the ad-hoc
+one, then `xcrun notarytool submit --wait` and `xcrun stapler staple` on the `.dmg`, with the
+certificate and an app-specific password as GitHub secrets.
 
 ## CI
 
-`.github/workflows/build.yml` builds all three artifacts on every push — including `dacode.exe`, which is
-the only way a Windows build gets verified from a Linux machine.
+`.github/workflows/build.yml` builds every artifact on every push — including `dacode.exe` and the
+macOS `.dmg`, which is the only way either build gets verified from a Linux machine.
+
+The Mac-only code can at least be *compiled* from Linux: `packaging/macos/check-from-linux.sh`
+type-checks the editor for `aarch64-apple-darwin`, with stand-in C tools for the build scripts. It
+catches a Mac-only type error before CI does, and says nothing about how the code runs.

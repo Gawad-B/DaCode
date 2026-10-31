@@ -72,6 +72,9 @@ pub enum KeyRoute {
     Shell,
     /// To the editor, as this action: the escape hatch.
     Editor(Action),
+    /// Nowhere: a ⌘ key on a Mac that means nothing here, which must not reach the shell as the
+    /// control character it would otherwise be.
+    Nothing,
 }
 
 /// Which keys a focused terminal keeps for the editor. Everything else goes to the shell.
@@ -112,6 +115,27 @@ pub fn route(key: Key) -> KeyRoute {
     match &route {
         KeyRoute::Editor(action) if shortcuts.suppresses(action) => KeyRoute::Shell,
         _ => route,
+    }
+}
+
+/// Where a key with ⌘ held goes on a Mac, the key already carrying ctrl for it.
+///
+/// ⌘ is the Mac's own modifier and a shell never sees it, so nothing with ⌘ on it is the shell's:
+/// ⌘C copies and ⌘V pastes, as they do in Terminal.app and iTerm — without that, ⌘C would arrive
+/// as ctrl-c and interrupt whatever was running, which is the one thing a person copying output
+/// is certain not to want. Everything else is what [`route`] would make of the ctrl key, and a key
+/// it would have sent to the shell goes nowhere instead.
+pub fn route_command(key: Key) -> KeyRoute {
+    if !key.alt && !key.shift {
+        match key.code {
+            KeyCode::Char('c') => return KeyRoute::Editor(Action::TerminalCopy),
+            KeyCode::Char('v') => return KeyRoute::Editor(Action::TerminalPaste),
+            _ => {}
+        }
+    }
+    match route(key) {
+        KeyRoute::Shell => KeyRoute::Nothing,
+        other => other,
     }
 }
 
@@ -258,6 +282,30 @@ mod tests {
         for keys in ["<c-c>", "<c-v>", "<c-p>", "<pageup>", "<s-pagedown>"] {
             let key = Key::parse_sequence(keys)[0];
             assert_eq!(route(key), KeyRoute::Shell, "{keys} is the shell's");
+        }
+    }
+
+    #[test]
+    fn command_keys_on_a_mac_copy_and_paste_and_never_reach_the_shell() {
+        // ⌘C arrives carrying ctrl. Sent on as the shell's, it would be ctrl-c — an interrupt
+        // where the person meant copy, killing the build whose output they were copying.
+        dacode_input::shortcuts::install(dacode_input::Shortcuts::new());
+        let key = |keys: &str| Key::parse_sequence(keys)[0];
+        assert_eq!(
+            route_command(key("<c-c>")),
+            KeyRoute::Editor(Action::TerminalCopy)
+        );
+        assert_eq!(
+            route_command(key("<c-v>")),
+            KeyRoute::Editor(Action::TerminalPaste)
+        );
+        // The panel's own keys still work with ⌘ — ⌘` closes it, as ctrl-` does.
+        assert_eq!(
+            route_command(key("<c-`>")),
+            KeyRoute::Editor(Action::ToggleTerminal)
+        );
+        for keys in ["<c-w>", "<c-d>", "<c-r>", "<c-z>"] {
+            assert_eq!(route_command(key(keys)), KeyRoute::Nothing, "⌘ of {keys}");
         }
     }
 

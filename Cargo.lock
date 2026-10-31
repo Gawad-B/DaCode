@@ -693,6 +693,7 @@ dependencies = [
  "hayro",
  "image",
  "lsp-types",
+ "objc2 0.5.2",
  "png 0.18.1",
  "proptest",
  "resvg",

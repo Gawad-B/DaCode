@@ -47,6 +47,11 @@ zip.workspace = true
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 
+# The version winit 0.30 already links on a Mac, so nothing new is built: `macos.rs` teaches winit's
+# application delegate the one method the Finder calls to hand over files.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+
 [dev-dependencies]
 criterion.workspace = true
 lsp-types.workspace = true

@@ -173,7 +173,7 @@ since comments do not nest. Only these four take a count: `2iw` and `2i(` still 
 | Key | Does |
 |---|---|
 | `/` `?` | search forward / backward, highlighting as you type |
-| `ctrl-h` | find and replace in this file — `:replace old new` is the project-wide one |
+| `ctrl-h` `ctrl-alt-f` | find and replace in this file — `:replace old new` is the project-wide one |
 | `enter` `shift-enter` | next / previous match, **without closing the box** |
 | `ctrl-shift-f` | send the same query to a search of every file |
 | `n` `N` · `F3` `shift-F3` | next / previous match once the box is closed |
@@ -203,7 +203,7 @@ palette, and act on the tree's selection — or on the open file when the tree i
 asks once and cannot be undone; nothing else here is destructive.
 
 | `ctrl-s` | save |
-| `ctrl-h` | find and replace in this file — `tab` between the two fields, `enter` replaces one and moves on, `ctrl-enter` replaces all as one undo |
+| `ctrl-h` `ctrl-alt-f` | find and replace in this file — `tab` between the two fields, `enter` replaces one and moves on, `ctrl-enter` replaces all as one undo |
 | `ctrl-w` · `ctrl-f4` | close this file — or click the `x` on its tab |
 | `ctrl-q` | quit |
 | `ctrl-k v` · `ctrl-k s` | split beside · split below |

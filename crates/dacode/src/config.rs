@@ -175,6 +175,9 @@ pub struct Settings {
     pub animations: crate::motion::Animations,
     /// Whether new releases are checked for, downloaded and offered.
     pub updates: crate::update::Policy,
+    /// Which Option key is Alt on a Mac (`crate::macos::OptionKey`). Read everywhere, used only
+    /// there.
+    pub option_as_alt: crate::macos::OptionKey,
     /// What the gutter counts.
     pub line_numbers: LineNumbers,
     /// Which theme file was loaded, for reporting.
@@ -236,6 +239,8 @@ impl Default for Settings {
             // On: reinstalling by hand for every release is the thing this exists to end, and
             // nothing is installed without a restart the user presses.
             updates: crate::update::Policy::Automatic,
+            // The left, as Terminal and iTerm offer: one Option for shortcuts, one for typing.
+            option_as_alt: crate::macos::OptionKey::Left,
             line_numbers: LineNumbers::Relative,
             theme_source: None,
             keymap: Keymap::new(),
@@ -399,6 +404,12 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
         if let Some(policy) = crate::update::Policy::from_name(name) {
             settings.updates = policy;
             settings.sources.insert("updates".into(), from_config);
+        }
+    }
+    if let Some(name) = &config.option_as_alt {
+        if let Some(key) = crate::macos::OptionKey::from_name(name) {
+            settings.option_as_alt = key;
+            settings.sources.insert("option_as_alt".into(), from_config);
         }
     }
     // The gutter's default follows the grammar, so it has to be settled *after* `vim_keys` — which
@@ -715,6 +726,23 @@ mod tests {
         assert_eq!(
             load_from(&scratch("updates-default")).updates,
             crate::update::Policy::Automatic
+        );
+    }
+
+    #[test]
+    fn every_option_key_the_enum_prints_is_one_lua_accepts() {
+        for key in crate::macos::OptionKey::ALL {
+            let dir = scratch(&format!("option-as-alt-{}", key.name()));
+            std::fs::write(
+                dir.join("init.lua"),
+                format!("dacode.set {{ option_as_alt = \"{}\" }}\n", key.name()),
+            )
+            .unwrap();
+            assert_eq!(load_from(&dir).option_as_alt, key);
+        }
+        assert_eq!(
+            load_from(&scratch("option-as-alt-default")).option_as_alt,
+            crate::macos::OptionKey::Left
         );
     }
 

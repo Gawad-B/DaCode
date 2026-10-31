@@ -20,7 +20,12 @@ cargo build --release
 cargo run -p dacode-input --example cheatsheet   # CHEATSHEET.md vs the real grammar
 cargo bench -p dacode -p dacode-syntax
 cargo check --workspace --target x86_64-pc-windows-msvc   # not all of them; see "Windows" below
+packaging/macos/check-from-linux.sh                      # the Mac-only code, type-checked from Linux
 ```
+
+This machine has 7.4 GB and a `/tmp` that is a RAM disk. Build with `-j 2`, one build at a time,
+and never put a target directory under `/tmp`: two builds at once, one of them there, once took
+the whole session down.
 
 `DACODE_NO_SYSTEM_FONTS=1` makes captures reproducible and startup faster. Use it for every screenshot.
 
@@ -570,6 +575,40 @@ anything platform-shaped:
   `cfg!(windows)` branch inside the function is untestable from Linux, which is how the URI bug
   survived to CI.
 
+## macOS
+
+`packaging/macos/build-app.sh` makes a universal `DaCode.app` (`lipo` of both darwin targets), a
+`.dmg` for people and a `.zip` for the updater; the `macos` jobs in `build.yml` and `release.yml`
+run it. Like Windows, it is verified by CI and not yet by anyone using it.
+
+- **⌘ is ctrl, and Ctrl is still ctrl.** `dacode::macos::ctrl_held` is read wherever a binding or a
+  ctrl-click/ctrl-scroll asks whether ctrl is down — never `modifiers.control_key()` directly, or
+  that one gesture is Ctrl-only on a Mac. The terminal's mouse report is the exception: it tells the
+  program which physical key was held. In the terminal a ⌘ key goes through
+  `terminal::route_command`, so ⌘C copies instead of arriving at the shell as ctrl-c.
+- **winit's default menu is off** (`with_default_menu(false)` in `main`), because its ⌘Q called
+  `terminate:` and ended the process with no unsaved-files question and no session written. ⌘Q is
+  now ctrl-q, the editor's own Quit. ⌘H, ⌥⌘H and ⌘M are taken before the grammar by
+  `App::window_key` (`macos::window_key`), so `commands::MAC_RESERVED` lists them and Mac menus do
+  not print a key that hides the window — which is why replace also has `ctrl-alt-f`.
+- **Keys print the Mac way on a Mac** — `⇧⌘P` — through `commands::print_for_mac`, a thread-local
+  `main` sets for the UI thread, like the shortcuts set. Tests never set it, so they read `Ctrl+S`
+  on a Mac runner too; `pretty_on` takes the platform for the tests of the Mac spelling.
+- **Option is Alt on one side only** (`option_as_alt`, default left): `App::alt_held` asks
+  `macos::alt_held`, never `modifiers.alt_key()`, for a binding — the other Option types `@` and
+  `{` on the layouts that need it. Mouse gestures still take either.
+- **A Finder launch asks the login shell for `PATH`** (`macos::login_shell_path`) in `main`, before
+  any thread: polled, not waited on with a thread, and killed after `LOGIN_SHELL_TIMEOUT`.
+  `finder_path` then adds `/etc/paths`, Homebrew and the home directories if anything is missing.
+- **Files from the Finder arrive through a method added to winit's delegate class**
+  (`macos::listen_for_opened_files`, `application:openURLs:`), queued, and opened by
+  `App::open_finder_files` in `collect_background`. It must be added between building the event
+  loop and running it.
+- **The updater swaps bundles** (`update::swap_bundle`): new moved in beside the old, old moved
+  aside, then deleted, undone if the second rename fails. Not from `/Volumes` or App Translocation.
+  The asset name is `update::mac_zip`, which `build-app.sh` must agree with.
+- `tools.rs` pins every tool for `MacArm64` and `MacX64`, hashed from the downloads themselves.
+
 ## Where things are
 
 | Want to change | Look at |
@@ -610,6 +649,7 @@ anything platform-shaped:
 | The source-control view | `crates/dacode/src/source_control.rs` — `View` (rows, message box, selection, questions) and `View::geometry`/`hit`, read by `chrome::draw_source_control` and `App::click_source_control`; keys in `App::handle_scm_key` |
 | What git is asked, and how | `crates/dacode/src/scm.rs` — `parse_status` (porcelain v2), `parse_branches`, `Op`, `Worker`; `App::sync_scm` collects, `App::git_action` dispatches every `Action::Git` |
 | A diff tab | `App::show_review` opens it, `EditorState::review` marks it, `EditorState::mutate` keeps it read-only, `chrome::diff_line_kind` colours it |
+| What is different on a Mac | `crates/dacode/src/macos.rs` — ⌘ as ctrl, Option as Alt, the window keys, the login-shell `PATH`, files from the Finder; `packaging/macos/` for the bundle |
 | Updating DaCode | `crates/dacode/src/update.rs` — the release JSON, `install_kind`, `SHA256SUMS`, staging and `apply`, behind a `Fetch` trait so tests never reach the network; `App::poll_updates`, `update_action` and `restart_for_update` in `main.rs`; `chrome::notifications_panel` for the offer's buttons; `.github/workflows/release.yml` writes the sums |
 | A viewed image, PDF or document | `crates/dacode/src/viewer.rs` — `Kind`, `Preview` and its worker, `office_text`; `chrome::draw_preview`, `App::ensure_preview`, `handle_preview_key`; pictures in `crates/dacode-render/src/image.rs` |
 | A downloaded formatter or language server | `crates/dacode/src/tools.rs` — `TOOLS` (pinned versions and SHA-256s), `install`, `run_cli` for `dacode tools`; `dacode_lsp::SELF` is the installer that runs it, `App::offer_download` the Languages page's click |
@@ -621,7 +661,7 @@ settings page. If you add it to fewer, it will silently not work somewhere.
 ## Known gaps
 
 Deliberate, with reasons in `PLAN.md`: column advance derived from the type scale rather than
-measured from the shaper, no macOS packaging. Cross-file rename is not
+measured from the shaper. The Mac build is ad-hoc signed, not Developer ID signed or notarized. Cross-file rename is not
 undoable and says so.
 
 From the syntax-tree work: indentation and the structural text objects read the tree only while its

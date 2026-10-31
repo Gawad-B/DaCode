@@ -15,6 +15,12 @@
 //!   notification gives the exact command for the downloaded `.deb` or `.rpm` instead.
 //! - **The Windows installer's per-user directory** downloads `dacode-setup.exe`, checks it, and on
 //!   "Restart now" runs it silently and quits; Inno Setup replaces the files.
+//! - **A Mac `.app` bundle**, wherever it was dragged, downloads the release's macOS zip, checks it,
+//!   unpacks it with `ditto`, and on "Restart now" swaps the new bundle in for the old one beside
+//!   it and starts it. Not from a mounted disk image (`/Volumes`, read-only) and not from App
+//!   Translocation, the read-only copy macOS runs a quarantined app from before it has been moved
+//!   — both are told and given the release page. `curl` sets no quarantine flag, so the new bundle
+//!   opens without the first-launch Gatekeeper question the downloaded `.dmg` asked.
 //! - **A cargo build** (anything under a `target` directory, or `~/.cargo/bin`) never offers. The
 //!   person running one updates it with `git pull`, and an editor that replaced a developer's build
 //!   with a release would be very confusing.
@@ -217,6 +223,8 @@ pub enum Install {
     System,
     /// `%LOCALAPPDATA%\Programs\dacode`: the setup program is downloaded and run.
     WindowsInstaller,
+    /// A macOS `.app`, at `bundle`: the new bundle is swapped in beside it.
+    MacApp { bundle: PathBuf },
     /// Built from source: never offered an update.
     Cargo,
     /// Anywhere else — `/opt`, `/usr/local`, a copied binary. Told, and given the release page.
@@ -226,18 +234,22 @@ pub enum Install {
 impl Install {
     /// Whether the editor can install the update itself.
     pub fn updates_itself(&self) -> bool {
-        matches!(self, Install::Tarball { .. } | Install::WindowsInstaller)
+        matches!(
+            self,
+            Install::Tarball { .. } | Install::WindowsInstaller | Install::MacApp { .. }
+        )
     }
 }
 
 /// Reads an install from the running executable's path.
 ///
-/// Every input is a parameter, so the Windows rules have tests that run on Linux. Paths are
-/// compared as text with `/` separators — a Windows path on Linux is one long component, and
+/// Every input is a parameter, so the Windows and macOS rules have tests that run on Linux. Paths
+/// are compared as text with `/` separators — a Windows path on Linux is one long component, and
 /// `Path::starts_with` would see nothing in it.
 pub fn install_kind(
     exe: &Path,
     windows: bool,
+    mac: bool,
     home: &Path,
     local_appdata: Option<&Path>,
 ) -> Install {
@@ -260,6 +272,22 @@ pub fn install_kind(
         return Install::Unknown;
     }
     let parent = dir.join("/");
+    if mac {
+        // `<anything>.app/Contents/MacOS/dacode`, and nothing else: a bare binary on a Mac came
+        // from somewhere this cannot update.
+        let bundle = match dir {
+            [.., app, "Contents", "MacOS"] if app.ends_with(".app") => {
+                dir[..dir.len() - 2].join("/")
+            }
+            _ => return Install::Unknown,
+        };
+        if bundle.starts_with("/Volumes/") || bundle.contains("/AppTranslocation/") {
+            return Install::Unknown;
+        }
+        return Install::MacApp {
+            bundle: PathBuf::from(bundle),
+        };
+    }
     if windows {
         let expected = local_appdata.map(|base| format!("{}/programs/dacode", normal(base)));
         return if expected.is_some_and(|expected| parent == expected) {
@@ -344,6 +372,7 @@ pub fn pick_asset<'a>(
     let wanted = |asset: &&Asset| match install {
         Install::Tarball { .. } => asset.name == format!("dacode-{version}-x86_64-linux.tar.gz"),
         Install::WindowsInstaller => asset.name == "dacode-setup.exe",
+        Install::MacApp { .. } => asset.name == mac_zip(version),
         Install::System => match package {
             Some(Package::Deb) => asset.name == format!("dacode_{version}_amd64.deb"),
             Some(Package::Rpm) => {
@@ -355,6 +384,12 @@ pub fn pick_asset<'a>(
         Install::Cargo | Install::Unknown => false,
     };
     release.assets.iter().find(wanted)
+}
+
+/// The macOS release asset the updater installs from: the universal `.app`, zipped by `ditto`.
+/// `packaging/macos/build-app.sh` writes it under this name; the two must agree.
+pub fn mac_zip(version: &str) -> String {
+    format!("dacode-{version}-macos.zip")
 }
 
 /// The command that installs a downloaded system package, as the notification prints it.
@@ -707,6 +742,9 @@ pub fn stage(
     std::fs::rename(&part, &file)
         .map_err(|error| format!("could not keep the download: {error}"))?;
 
+    if asset.name.ends_with(".zip") {
+        return unpack_mac(&release.version, &file, &here);
+    }
     if !asset.name.ends_with(".tar.gz") {
         return Ok(Staged {
             version: release.version.clone(),
@@ -742,6 +780,90 @@ pub fn stage(
         version: release.version.clone(),
         installer,
     })
+}
+
+/// Unpacks a macOS zip with `ditto`, which is what made it: it keeps the bundle's permissions, its
+/// symbolic links and the signature's extended attributes, where a generic unzip keeps the first at
+/// best. The staged "installer" is the unpacked `DaCode.app`.
+fn unpack_mac(version: &str, zip: &Path, here: &Path) -> Result<Staged, String> {
+    let unpacked = here.join("unpacked");
+    let _ = std::fs::remove_dir_all(&unpacked);
+    std::fs::create_dir_all(&unpacked).map_err(|error| error.to_string())?;
+    let output = crate::process::command("ditto")
+        .arg("-x")
+        .arg("-k")
+        .arg(zip)
+        .arg(&unpacked)
+        .output()
+        .map_err(|error| format!("could not run ditto to unpack the update: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "could not unpack DaCode {version}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let installer = unpacked.join("DaCode.app");
+    if !installer.join("Contents/MacOS/dacode").is_file() {
+        return Err(format!(
+            "DaCode {version}'s zip has no DaCode.app where it should be, so it was not installed"
+        ));
+    }
+    Ok(Staged {
+        version: version.to_string(),
+        installer,
+    })
+}
+
+/// Puts the staged bundle where the running one is, keeping the old one until the new one is in.
+///
+/// Two renames rather than a copy, so at no moment is there half a bundle at `bundle`: the old is
+/// moved aside, the new moved in, and only then is the old deleted. If the second rename fails the
+/// first is undone. Deleting a running program's bundle is fine on a Mac, as on any Unix — the
+/// process keeps the files it has open. A staging directory on another volume than the bundle
+/// (an external disk) cannot be renamed across, and is copied there with `ditto` first.
+pub fn swap_bundle(staged: &Path, bundle: &Path) -> Result<(), String> {
+    let parent = bundle
+        .parent()
+        .ok_or_else(|| format!("{} has no folder around it", bundle.display()))?;
+    let name = bundle
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "DaCode.app".into());
+    let incoming = parent.join(format!(".{name}.new"));
+    let outgoing = parent.join(format!(".{name}.old"));
+    let _ = std::fs::remove_dir_all(&incoming);
+    let _ = std::fs::remove_dir_all(&outgoing);
+
+    if std::fs::rename(staged, &incoming).is_err() {
+        let output = crate::process::command("ditto")
+            .arg(staged)
+            .arg(&incoming)
+            .output()
+            .map_err(|error| format!("could not copy the update into place: {error}"))?;
+        if !output.status.success() {
+            let _ = std::fs::remove_dir_all(&incoming);
+            return Err(format!(
+                "could not copy the update into {}: {}",
+                parent.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+    }
+    if let Err(error) = std::fs::rename(bundle, &outgoing) {
+        let _ = std::fs::remove_dir_all(&incoming);
+        return Err(format!(
+            "could not replace {}: {error} — move DaCode somewhere you can write to, such as \
+             Applications in your home folder",
+            bundle.display()
+        ));
+    }
+    if let Err(error) = std::fs::rename(&incoming, bundle) {
+        let _ = std::fs::rename(&outgoing, bundle);
+        let _ = std::fs::remove_dir_all(&incoming);
+        return Err(format!("could not put the update in place: {error}"));
+    }
+    let _ = std::fs::remove_dir_all(&outgoing);
+    Ok(())
 }
 
 /// How to start the editor again once the new one is in place.
@@ -790,6 +912,32 @@ pub fn apply(
             }
             if let Some(relaunch) = relaunch {
                 crate::process::command_at(&prefix.join("bin").join("dacode"))
+                    .args(&relaunch.args)
+                    .current_dir(&relaunch.dir)
+                    .spawn()
+                    .map_err(|error| {
+                        format!(
+                            "DaCode {} is installed, but could not be started: {error} — start \
+                             it again yourself",
+                            staged.version
+                        )
+                    })?;
+            }
+            Ok(())
+        }
+        Install::MacApp { bundle } => {
+            swap_bundle(&staged.installer, bundle).map_err(|error| {
+                format!(
+                    "DaCode {} could not be installed — {error}. This version is still the one \
+                     installed",
+                    staged.version
+                )
+            })?;
+            if let Some(relaunch) = relaunch {
+                // The binary inside the bundle, started directly rather than through `open`, so it
+                // keeps the arguments and the working directory — and macOS still gives it the
+                // bundle's icon and menu, because it is the bundle's executable.
+                crate::process::command_at(&bundle.join("Contents/MacOS/dacode"))
                     .args(&relaunch.args)
                     .current_dir(&relaunch.dir)
                     .spawn()
@@ -1074,6 +1222,8 @@ mod tests {
                 &format!("dacode_{version}_amd64.deb"),
                 &format!("dacode-{version}-1.x86_64.rpm"),
                 "dacode-setup.exe",
+                &format!("dacode-{version}-macos.zip"),
+                &format!("dacode-{version}-macos.dmg"),
                 SUMS,
             ],
         )
@@ -1136,7 +1286,7 @@ mod tests {
     #[test]
     fn each_install_is_read_from_where_the_executable_is() {
         let home = Path::new("/home/ada");
-        let at = |path: &str| install_kind(Path::new(path), false, home, None);
+        let at = |path: &str| install_kind(Path::new(path), false, false, home, None);
         assert_eq!(
             at("/home/ada/.local/bin/dacode"),
             Install::Tarball {
@@ -1167,7 +1317,7 @@ mod tests {
             "/home/ada/.local/src/DaCode/target/release/dacode",
         ] {
             assert_eq!(
-                install_kind(Path::new(path), false, home, None),
+                install_kind(Path::new(path), false, false, home, None),
                 Install::Cargo
             );
         }
@@ -1180,6 +1330,7 @@ mod tests {
             install_kind(
                 Path::new(path),
                 true,
+                false,
                 Path::new(r"C:\Users\Ada"),
                 Some(local),
             )
@@ -1198,6 +1349,84 @@ mod tests {
             at(r"C:\src\DaCode\target\release\dacode.exe"),
             Install::Cargo
         );
+    }
+
+    #[test]
+    fn a_mac_bundle_is_recognised_wherever_it_was_dragged_from_linux() {
+        let home = Path::new("/Users/ada");
+        let at = |path: &str| install_kind(Path::new(path), false, true, home, None);
+        assert_eq!(
+            at("/Applications/DaCode.app/Contents/MacOS/dacode"),
+            Install::MacApp {
+                bundle: PathBuf::from("/Applications/DaCode.app")
+            }
+        );
+        assert_eq!(
+            at("/Users/ada/Applications/DaCode.app/Contents/MacOS/dacode"),
+            Install::MacApp {
+                bundle: PathBuf::from("/Users/ada/Applications/DaCode.app")
+            }
+        );
+        // Still open from the disk image, or run from Gatekeeper's read-only copy before it was
+        // moved: neither can be written, so neither is offered a self-update that would fail.
+        assert_eq!(
+            at("/Volumes/DaCode/DaCode.app/Contents/MacOS/dacode"),
+            Install::Unknown
+        );
+        assert_eq!(
+            at("/private/var/folders/x/T/AppTranslocation/1F2E/d/DaCode.app/Contents/MacOS/dacode"),
+            Install::Unknown
+        );
+        // A loose binary is not a bundle, and a build is a build on a Mac too.
+        assert_eq!(at("/usr/local/bin/dacode"), Install::Unknown);
+        assert_eq!(
+            at("/Users/ada/Coding/DaCode/target/release/dacode"),
+            Install::Cargo
+        );
+    }
+
+    #[test]
+    fn a_staged_bundle_replaces_the_running_one_and_nothing_is_left_beside_it() {
+        let root = scratch("swap");
+        let bundle = root.join("Applications/DaCode.app");
+        let staged = root.join("state/unpacked/DaCode.app");
+        for (dir, says) in [(&bundle, "old"), (&staged, "new")] {
+            std::fs::create_dir_all(dir.join("Contents/MacOS")).unwrap();
+            std::fs::write(dir.join("Contents/MacOS/dacode"), says).unwrap();
+        }
+        swap_bundle(&staged, &bundle).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("Contents/MacOS/dacode")).unwrap(),
+            "new"
+        );
+        // The hidden `.new` and `.old` names are working space; a Finder window must not show
+        // them afterwards, and the next update must not trip over them.
+        let left: Vec<_> = std::fs::read_dir(root.join("Applications"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("DaCode.app")]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bundle_that_cannot_be_moved_is_left_exactly_where_it_was() {
+        let root = scratch("swap-missing");
+        let staged = root.join("state/DaCode.app");
+        std::fs::create_dir_all(staged.join("Contents/MacOS")).unwrap();
+        // No bundle at the destination: the move aside fails, and the update must not be
+        // half-done — nothing new appears where the old one should have been.
+        let bundle = root.join("Applications/DaCode.app");
+        std::fs::create_dir_all(root.join("Applications")).unwrap();
+        assert!(swap_bundle(&staged, &bundle).is_err());
+        assert!(!bundle.exists());
+        assert_eq!(
+            std::fs::read_dir(root.join("Applications"))
+                .unwrap()
+                .count(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1235,6 +1464,12 @@ mod tests {
             pick(&Install::WindowsInstaller, None).as_deref(),
             Some("dacode-setup.exe")
         );
+        // The zip, not the disk image: the image is for a person to drag from, and would need
+        // mounting to read.
+        let mac = Install::MacApp {
+            bundle: "/Applications/DaCode.app".into(),
+        };
+        assert_eq!(pick(&mac, None).as_deref(), Some("dacode-1.2.0-macos.zip"));
         assert_eq!(
             pick(&Install::System, Some(Package::Deb)).as_deref(),
             Some("dacode_1.2.0_amd64.deb")

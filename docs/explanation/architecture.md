@@ -264,8 +264,10 @@ a clever workaround:
   buffers get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused
   buffer is noticed when you switch to it rather than when it happens. The alternative is N watchers
   and N servers; this is a deliberate trade, but it is a limitation.
-- **Nobody has ever run DaCode on macOS.** It has no macOS packaging, and while the path resolution has
-  a non-Windows branch that macOS would take, that branch has never been exercised there.
+- **macOS is built and tested in CI, and unverified by use.** `DaCode.app` is packaged by
+  `packaging/macos/build-app.sh` and its tests pass on a `macos-latest` runner, but no person has yet
+  used it on a Mac. The window, the mouse, ⌘ and the updater's bundle swap are the parts a runner
+  cannot exercise. It is signed ad hoc, not with a Developer ID, so Gatekeeper asks once.
 
 ## Further reading
 

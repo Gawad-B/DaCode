@@ -1,8 +1,8 @@
-# Builds the three installable artifacts: dacode-setup.exe, a .deb and an .rpm.
+# Builds the installable artifacts: dacode-setup.exe, a .deb, an .rpm, and DaCode.app as a .dmg.
 #
-# The Windows job exists because a Windows build cannot be verified from a Linux machine — the crates
-# needing a C toolchain (tree-sitter, Lua) cannot even be type-checked without one. This is where that
-# happens, so a broken Windows build is caught by a push rather than by a user.
+# The Windows and macOS jobs exist because neither build can be verified from a Linux machine — the
+# crates needing a C toolchain (tree-sitter, Lua) cannot even be type-checked without one. This is
+# where that happens, so a broken Windows or Mac build is caught by a push rather than by a user.
 name: build
 
 on:
@@ -97,3 +97,20 @@ jobs:
           path: |
             target/packages/dacode-setup.exe
             target/release/dacode.exe
+
+  macos:
+    # Apple Silicon. The Intel half of the universal binary is cross-compiled on it by
+    # build-app.sh, which Apple's toolchain does natively; the tests run on arm64 only.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup component add rust-analyzer
+      - run: cargo test --workspace --no-fail-fast
+      # As on Windows: code behind `cfg(target_os = "macos")` is linted nowhere else.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: packaging/macos/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dacode-macos
+          path: target/packages/dacode-*-macos.*

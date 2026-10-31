@@ -60,6 +60,7 @@ than logged.
 | `transparency` | number, 0–90 | `0` | How much of the desktop shows through the window, in percent. Backgrounds go see-through; text, highlights and popups stay solid. Needs a compositor, and turning it on from `0` takes effect at the next start. |
 | `animations` | `"full"` \| `"reduced"` \| `"off"` | `"full"` | How much the interface moves. See below. |
 | `updates` | `"automatic"` \| `"notify"` \| `"off"` | `"automatic"` | Whether new releases are checked for once a day, and downloaded. See below. |
+| `option_as_alt` | `"left"` \| `"right"` \| `"both"` \| `"none"` | `"left"` | On a Mac, which Option key is Alt for the `alt-…` bindings; the other still types the characters Option types (`@`, `{`, `€`). With ⌘ held either is ⌥. Ignored elsewhere. |
 | `leader` | string | `"<space>"` | What `<leader>` expands to in `dacode.map`. |
 
 Anything not named in a `dacode.set` call is left alone, and unset is not the same as false: reading a
@@ -67,7 +68,8 @@ boolean naively would have made every `dacode.set` that omitted `soft_wrap` turn
 Lua coerces a missing key to `false`. So a boolean is taken **only** when the value really is a
 boolean — which also means `soft_wrap = "yes"` reads as absent and is not reported. Numbers and
 strings go through mlua's own coercion, so `tab_width = "2"` works and `theme = 5` becomes `"5"`.
-Bad *values* for `appearance`, `line_numbers`, `animations` and `updates` are reported by name.
+Bad *values* for `appearance`, `line_numbers`, `animations`, `updates` and `option_as_alt` are
+reported by name.
 
 ### Notes on the ones that are not obvious
 
@@ -281,7 +283,7 @@ imported theme has to work without anyone having hand-authored a Lua file.
 | `theme.appearance` | `"light"` | flips to the light built-in, unless `theme.name` already resolved |
 
 Six keys, against fifteen in Lua. `vim_keys`, `line_numbers`, `sticky_scroll`, `inlay_hints`,
-`inline_blame`, `autosave`, `transparency`, `animations`, `updates` and `leader` have no TOML spelling and can only be set from
+`inline_blame`, `autosave`, `transparency`, `animations`, `updates`, `option_as_alt` and `leader` have no TOML spelling and can only be set from
 `init.lua` or the settings tab.
 
 A leading byte-order mark is stripped from both formats. Notepad and PowerShell's `Set-Content` both

@@ -68,6 +68,13 @@ It installs per-user under `%LOCALAPPDATA%\Programs\dacode`, so there is no UAC 
 Start Menu entry, `dacode` on your `PATH`, "Open with DaCode" on a folder's right-click menu, and an
 uninstaller.
 
+**macOS** — download `dacode-<version>-macos.dmg`, open it and drag DaCode into Applications. One
+build for Apple Silicon and Intel, macOS 11 or later. It is not signed with an Apple Developer ID
+yet, so the first launch needs a right-click → **Open** (details in
+[Getting started](docs/getting-started.md#macos)). ⌘ does what Ctrl does everywhere else, the left
+Option key is Alt, and **Open With** in the Finder or a drop on the Dock icon opens a file or a
+folder.
+
 **Debian, Ubuntu, Mint**
 
 ```sh
@@ -94,7 +101,7 @@ cargo build --release && packaging/linux/install.sh
 ```
 
 Every artifact is on the [releases page](https://github.com/Gawad-B/DaCode/releases/latest). After
-that, a tarball or Windows install updates itself: DaCode checks once a day, downloads and verifies
+that, a tarball, Windows or Mac install updates itself: DaCode checks once a day, downloads and verifies
 the new release, and offers **Restart now** in the bell. A `.deb` or `.rpm` install is told the
 command to run instead — [Staying up to date](docs/getting-started.md#staying-up-to-date) has the
 details.
@@ -188,10 +195,11 @@ Formatting works through the server when it can and through `ruff`, `prettier`, 
 ## Status
 
 1.1.1 is the current release. DaCode is used daily by its author on Linux, and builds, installs and
-passes its tests on Windows, where real use has found things no test could. **Nobody has ever run
-DaCode on macOS.**
+passes its tests on Windows, where real use has found things no test could. On macOS it builds,
+packages and passes its tests in CI, and **has not yet been used on a Mac by a person** — expect the
+first reports to find things.
 
-Deliberate omissions, with reasons in [PLAN.md](PLAN.md): no macOS packaging. Known limitations, stated rather than hidden: buffer
+Known limitations, stated rather than hidden: buffer
 search is still linear in the document, opening a file is still synchronous (though bounded), only
 the *active* buffer gets a file watcher, a git diff and a language server, and replacing across the
 project is not undoable.
