@@ -52,31 +52,29 @@ export type Release = {
  */
 const ASSETS = "https://github.com/Gawad-B/DaCode/releases/download";
 
-// Sizes are 0 — printed as nothing — until the release workflow has built the assets and they can
-// be read off the release, rather than showing the last release's sizes as this one's.
 const RELEASE: Release = {
   version: "1.2.0",
   published: "2026-10-31",
   assets: {
     "dacode-setup.exe": {
       url: `${ASSETS}/v1.2.0/dacode-setup.exe`,
-      size: 0,
+      size: 11063067,
     },
     "dacode-1.2.0-macos.dmg": {
       url: `${ASSETS}/v1.2.0/dacode-1.2.0-macos.dmg`,
-      size: 0,
+      size: 25298771,
     },
     "dacode_1.2.0_amd64.deb": {
       url: `${ASSETS}/v1.2.0/dacode_1.2.0_amd64.deb`,
-      size: 0,
+      size: 14214750,
     },
     "dacode-1.2.0-1.x86_64.rpm": {
       url: `${ASSETS}/v1.2.0/dacode-1.2.0-1.x86_64.rpm`,
-      size: 0,
+      size: 14086861,
     },
     "dacode-1.2.0-x86_64-linux.tar.gz": {
       url: `${ASSETS}/v1.2.0/dacode-1.2.0-x86_64-linux.tar.gz`,
-      size: 0,
+      size: 14216468,
     },
   },
   stale: false,
