@@ -771,6 +771,11 @@ A `/usr/local` or `/opt` install, or one in a prefix outside the home directory,
 exists and nothing more. The automatic check is skipped for a cargo build (it would never offer
 anything), and `resumed` is the only caller, so no test or capture reaches the network.
 
+On a Mac, FSEvents keeps a file's "created" flag on later events for a file made moments earlier, so
+a write to a new file reads as a new file and asks for one background re-walk of the project.
+`watch::project_tests::writing_to_an_existing_file_does_not_ask_for_a_walk` is ignored there for that
+reason, and nothing in the event tells the two apart. It costs a walk, never a stall.
+
 Only the *active* buffer gets a file watcher, a git diff, and a language server. Background buffers
 get crash-recovery writes and nothing else, so a file changed on disk behind an unfocused buffer is
 noticed when you switch to it rather than when it happens. Deliberate — the alternative is N watchers

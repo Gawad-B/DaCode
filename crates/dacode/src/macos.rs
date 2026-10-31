@@ -304,23 +304,32 @@ pub fn login_shell_path(shell: &Path, timeout: Duration) -> Option<OsString> {
 /// `etc_paths` is the text of `/etc/paths` followed by each file in `/etc/paths.d`, one directory
 /// per line, read by the caller so this has no filesystem to mock.
 pub fn finder_path(path: Option<&OsStr>, home: &Path, etc_paths: &[String]) -> Option<OsString> {
-    let mut parts: Vec<PathBuf> = path
-        .map(|path| std::env::split_paths(path).collect())
+    // Spelled the Mac's way on every machine — `:` between directories, `/` inside them — rather
+    // than through `std::env::split_paths` and `Path::join`, which use the *host's*: on Windows those
+    // read `/usr/bin:/bin` as one directory and wrote `/Users/ada\.cargo/bin`, which is how this
+    // test first failed in CI. The function only ever builds a Mac's PATH, so the Mac's spelling is
+    // the only right one, and it keeps the test meaningful on every runner.
+    let mut parts: Vec<String> = path
+        .map(|path| {
+            path.to_string_lossy()
+                .split(':')
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     let listed = etc_paths
         .iter()
         .flat_map(|text| text.lines())
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(PathBuf::from);
-    let known = [
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/opt/homebrew/sbin"),
-        PathBuf::from("/usr/local/bin"),
-    ];
+        .map(str::to_string);
+    let known = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin"].map(String::from);
     // Only with a home directory: an empty one would add `/.cargo/bin`, a directory at the root.
-    let personal = (!home.as_os_str().is_empty())
-        .then(|| [home.join(".cargo/bin"), home.join(".local/bin")])
+    let home = home.to_string_lossy();
+    let home = home.trim_end_matches('/');
+    let personal = (!home.is_empty())
+        .then(|| [format!("{home}/.cargo/bin"), format!("{home}/.local/bin")])
         .into_iter()
         .flatten();
 
@@ -333,7 +342,7 @@ pub fn finder_path(path: Option<&OsStr>, home: &Path, etc_paths: &[String]) -> O
     if parts.len() == before {
         return None;
     }
-    std::env::join_paths(parts).ok()
+    Some(OsString::from(parts.join(":")))
 }
 
 /// `/etc/paths` and every file in `/etc/paths.d`, as [`finder_path`] wants them. Missing files
@@ -516,8 +525,12 @@ mod tests {
             "# a comment\n/Library/Apple/usr/bin\n\n".to_string(),
         ];
         let path = finder_path(Some(&launchd), Path::new("/Users/ada"), &etc).unwrap();
-        let parts: Vec<PathBuf> = std::env::split_paths(&path).collect();
-        let want: Vec<PathBuf> = [
+        let parts: Vec<String> = path
+            .to_string_lossy()
+            .split(':')
+            .map(String::from)
+            .collect();
+        let want: Vec<String> = [
             "/usr/bin",
             "/bin",
             "/usr/sbin",
@@ -529,9 +542,8 @@ mod tests {
             "/Users/ada/.cargo/bin",
             "/Users/ada/.local/bin",
         ]
-        .iter()
-        .map(PathBuf::from)
-        .collect();
+        .map(String::from)
+        .to_vec();
         // What launchd gave comes first and keeps its order: a directory added here must never
         // shadow one the system already chose.
         assert_eq!(parts, want);
@@ -541,7 +553,7 @@ mod tests {
     fn a_terminal_launch_that_already_has_everything_is_left_alone() {
         // Started from a shell, PATH is already the login one; rewriting it would be a no-op at
         // best and a reordering at worst.
-        let full = std::env::join_paths(
+        let full = OsString::from(
             [
                 "/opt/homebrew/bin",
                 "/opt/homebrew/sbin",
@@ -550,16 +562,19 @@ mod tests {
                 "/Users/ada/.cargo/bin",
                 "/Users/ada/.local/bin",
             ]
-            .iter(),
-        )
-        .unwrap();
+            .join(":"),
+        );
         assert_eq!(finder_path(Some(&full), Path::new("/Users/ada"), &[]), None);
     }
 
     #[test]
     fn no_home_adds_nothing_at_the_root() {
         let path = finder_path(None, Path::new(""), &[]).unwrap();
-        let parts: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let parts: Vec<String> = path
+            .to_string_lossy()
+            .split(':')
+            .map(String::from)
+            .collect();
         assert!(
             parts.iter().all(|part| !part.starts_with("/.cargo")),
             "{parts:?}"
