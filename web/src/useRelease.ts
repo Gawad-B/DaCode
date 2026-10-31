@@ -52,25 +52,31 @@ export type Release = {
  */
 const ASSETS = "https://github.com/Gawad-B/DaCode/releases/download";
 
+// Sizes are 0 — printed as nothing — until the release workflow has built the assets and they can
+// be read off the release, rather than showing the last release's sizes as this one's.
 const RELEASE: Release = {
-  version: "1.1.1",
-  published: "2026-10-29",
+  version: "1.2.0",
+  published: "2026-10-31",
   assets: {
     "dacode-setup.exe": {
-      url: `${ASSETS}/v1.1.1/dacode-setup.exe`,
-      size: 11037912,
+      url: `${ASSETS}/v1.2.0/dacode-setup.exe`,
+      size: 0,
     },
-    "dacode_1.1.1_amd64.deb": {
-      url: `${ASSETS}/v1.1.1/dacode_1.1.1_amd64.deb`,
-      size: 14182620,
+    "dacode-1.2.0-macos.dmg": {
+      url: `${ASSETS}/v1.2.0/dacode-1.2.0-macos.dmg`,
+      size: 0,
     },
-    "dacode-1.1.1-1.x86_64.rpm": {
-      url: `${ASSETS}/v1.1.1/dacode-1.1.1-1.x86_64.rpm`,
-      size: 14052779,
+    "dacode_1.2.0_amd64.deb": {
+      url: `${ASSETS}/v1.2.0/dacode_1.2.0_amd64.deb`,
+      size: 0,
     },
-    "dacode-1.1.1-x86_64-linux.tar.gz": {
-      url: `${ASSETS}/v1.1.1/dacode-1.1.1-x86_64-linux.tar.gz`,
-      size: 14184907,
+    "dacode-1.2.0-1.x86_64.rpm": {
+      url: `${ASSETS}/v1.2.0/dacode-1.2.0-1.x86_64.rpm`,
+      size: 0,
+    },
+    "dacode-1.2.0-x86_64-linux.tar.gz": {
+      url: `${ASSETS}/v1.2.0/dacode-1.2.0-x86_64-linux.tar.gz`,
+      size: 0,
     },
   },
   stale: false,
@@ -134,6 +140,7 @@ export function platformFor(os: Os, release: Release): Platform {
   const deb = find(release, (n) => n.endsWith(".deb"));
   const rpm = find(release, (n) => n.endsWith(".rpm"));
   const tar = find(release, (n) => n.endsWith(".tar.gz"));
+  const dmg = find(release, (n) => n.endsWith(".dmg"));
 
   switch (os) {
     case "windows":
@@ -177,12 +184,19 @@ export function platformFor(os: Os, release: Release): Platform {
       return {
         os,
         name: "macOS",
-        primary: null,
-        pending: "macOS build coming soon",
+        primary: dmg && {
+          label: "Download for macOS",
+          detail: dmg.name,
+          url: dmg.url,
+          size: dmg.size,
+        },
+        pending: dmg ? null : "macOS build coming soon",
         alternatives: [],
-        note: "No macOS build yet, and nobody has run DaCode there. It should compile; nothing is verified.",
-        prompt: "#",
-        command: "no macOS build yet",
+        // Both caveats, because both are true: an unsigned app the first launch must be talked
+        // past, and a build no person has yet run on a Mac.
+        note: "Apple Silicon and Intel, macOS 11+. Not Apple-signed: first open is right-click → Open. New, and not yet run on a real Mac.",
+        prompt: "$",
+        command: dmg ? `open ${dmg.name}` : "cargo build --release",
       };
 
     default:
@@ -193,11 +207,12 @@ export function platformFor(os: Os, release: Release): Platform {
         pending: null,
         alternatives: present([
           exe && { label: "Windows — dacode-setup.exe", detail: exe.name, url: exe.url, size: exe.size },
+          dmg && { label: "macOS — .dmg", detail: dmg.name, url: dmg.url, size: dmg.size },
           deb && { label: "Linux — .deb", detail: deb.name, url: deb.url, size: deb.size },
           rpm && { label: "Linux — .rpm", detail: rpm.name, url: rpm.url, size: rpm.size },
           tar && { label: "Linux — .tar.gz", detail: tar.name, url: tar.url, size: tar.size },
         ]),
-        note: "A desktop editor for x86-64 Linux and Windows. Pick your machine's build.",
+        note: "A desktop editor for Linux, Windows and macOS. Pick your machine's build.",
         prompt: "#",
         command: "pick the artifact for your machine",
       };

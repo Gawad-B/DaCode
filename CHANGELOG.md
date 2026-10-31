@@ -9,6 +9,38 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-31
+
+### Added
+
+- **DaCode for the Mac.** One universal `DaCode.app` for Apple Silicon and Intel, macOS 11 or later,
+  as a `.dmg` for people and a `.zip` the updater swaps in place. ⌘ does what Ctrl does and Ctrl
+  keeps working; keys print the Mac way (⇧⌘P) everywhere; ⌘C and ⌘V copy and paste in the terminal;
+  ⌘H, ⌥⌘H and ⌘M are the window's, so replace also answers `ctrl-alt-f`. The left Option key is
+  Alt and the right one types, chosen by the new `option_as_alt` setting. Open With in the Finder
+  and the Dock open files and folders, and a launch from the Dock asks the login shell for `PATH`,
+  so tools installed with Homebrew, nvm or pyenv are found. Every downloadable tool is pinned for
+  both Mac architectures. It is ad-hoc signed, not Developer ID signed or notarized, and has been
+  verified by CI rather than by anyone using it.
+- **Signature help.** The signature of the call the caret is in, with the current argument lit,
+  opens above the line on `(` and `,` and follows the caret while it is open; `ctrl-shift-space`
+  opens it by hand. A reply for text that has since changed is thrown away rather than drawn.
+- **Emmet for HTML and CSS**, through `emmet-language-server`, which `dacode tools install` and the
+  Languages page download. Abbreviations expand from the completion list, replaced whole. A missing
+  Emmet is said on the status line, never in a card over the file.
+- **Bracket colours**, three colours by nesting depth, from the syntax tree, so brackets inside
+  strings and comments are left alone (`bracket_colors`, on by default).
+- **A minimap** (`minimap`, off by default) that draws only the lines that fit its strip; click or
+  drag it to scroll.
+
+### Fixed
+
+- **On a Mac, a character typed with Option was dropped** as an unmatched binding, which made `@`,
+  `{` and `€` untypable on German and similar layouts. The right Option key now types them.
+- **Sticky scroll walked to the top of the file every frame** looking for the enclosing block: 57 ms
+  a frame halfway down a hundred-thousand-line file. It now looks at most 500 lines up, so a block
+  longer than that pins nothing.
+
 ## [1.1.1] - 2026-10-29
 
 ### Added

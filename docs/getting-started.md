@@ -54,20 +54,20 @@ installed with Homebrew, nvm, pyenv or cargo are found as they are in your termi
 ### Debian, Ubuntu, Mint
 
 ```sh
-sudo apt install ./dacode_1.1.1_amd64.deb
+sudo apt install ./dacode_1.2.0_amd64.deb
 ```
 
 ### Fedora, RHEL, openSUSE
 
 ```sh
-sudo dnf install ./dacode-1.1.1-1.x86_64.rpm
+sudo dnf install ./dacode-1.2.0-1.x86_64.rpm
 ```
 
 ### Any Linux, without a package manager
 
 ```sh
-tar xzf dacode-1.1.1-x86_64-linux.tar.gz
-./dacode-1.1.1-x86_64-linux/install.sh
+tar xzf dacode-1.2.0-x86_64-linux.tar.gz
+./dacode-1.2.0-x86_64-linux/install.sh
 ```
 
 That installs into `~/.local`, so it needs no root. Pass a prefix to put it elsewhere. To remove it
@@ -75,7 +75,7 @@ again — including before switching to the `.deb` or `.rpm` — run the `uninst
 the same prefix if you gave one:
 
 ```sh
-./dacode-1.1.1-x86_64-linux/uninstall.sh
+./dacode-1.2.0-x86_64-linux/uninstall.sh
 ```
 
 Use it rather than deleting the files by hand. GTK keeps an *index* of what each icon theme
@@ -134,7 +134,7 @@ arrives this way.
 dacode --version
 ```
 
-You should see `dacode 1.1.1`. On Windows this prints nothing when run directly in `cmd.exe` — the
+You should see `dacode 1.2.0`. On Windows this prints nothing when run directly in `cmd.exe` — the
 release build is a windowed application and owns no console — but it works from PowerShell or when
 piped. `dacode --help` lists every flag.
 

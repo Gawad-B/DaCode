@@ -9,7 +9,8 @@
  *     hero now offers the actual artifact for the visitor's platform.
  *   - "no Windows or macOS build in v1" was true when it was written. Windows
  *     has shipped since 0.1.1 and has been run by real people since 0.3.0.
- *     macOS is the remaining one, and nobody has ever run dacode there.
+ *     macOS has shipped since 1.2.0, built and tested in CI; nobody has run it
+ *     on a real Mac yet.
  *   - "no settings GUI" was a non-goal; there has been a clickable settings
  *     panel since 0.1.0.
  *   - The mock's `"ayif` demonstrates a structural text object. Those are a
@@ -174,50 +175,42 @@ export const SHOTS: { id: ShotId; label: string; bullets: string[] }[] = [
 ];
 
 /*
- * What the current release added, from the changelog's 1.1.1 section. Each entry
+ * What the current release added, from the changelog's 1.2.0 section. Each entry
  * is a claim about the download above.
  */
 export const OVERHAUL: { title: string; bullets: string[] }[] = [
   {
-    title: "Servers that install themselves",
+    title: "DaCode on the Mac",
     bullets: [
-      "pyright, rust-analyzer, clangd, ruff, prettier and more, downloaded for you.",
-      "No npm, pip or rustup needed first; every download is checksummed.",
+      "One app for Apple Silicon and Intel; ⌘ does what Ctrl does.",
+      "Not Apple-signed yet, and not yet run on a real Mac.",
     ],
   },
   {
-    title: "Images and PDFs in a tab",
+    title: "Signature help",
     bullets: [
-      "Zoom and scroll pictures and PDF pages beside your code.",
-      "Word, Excel and PowerPoint files show their text, read only.",
+      "Type ( or , and the call's arguments appear above the line.",
+      "The one you are typing is lit.",
     ],
   },
   {
-    title: "Zoom everything",
+    title: "Emmet",
     bullets: [
-      "Ctrl+= and Ctrl+- scale menus, panels and code together.",
-      "A new Accessibility page in Settings keeps it.",
+      "ul>li*3 and m10 expand in HTML and CSS.",
+      "Downloaded like the language servers.",
     ],
   },
   {
-    title: "Rainbow CSV",
+    title: "Bracket colours and a minimap",
     bullets: [
-      "A colour for each column, quoted commas and all.",
-      "The status line names the column under the caret.",
-    ],
-  },
-  {
-    title: "Run the file you have open",
-    bullets: [
-      "▶ runs a lone Python, Node, Go or C file in the terminal.",
-      "A file in a project still runs the project.",
+      "Each bracket pair in the colour of its depth.",
+      "An optional minimap; click or drag it to scroll.",
     ],
   },
   {
     title: "Fixed",
     bullets: [
-      "Closing a terminal tab no longer leaves its shell running.",
-      "The terminal steps aside while Settings is open.",
+      "Sticky scroll no longer slows deep in a huge file.",
     ],
   },
 ];
@@ -280,8 +273,13 @@ export const RELEASES: ReleaseCard[] = [
     state: "shipped",
   },
   {
-    name: "1.1.1 · nothing to install first ←",
+    name: "1.1.1 · nothing to install first",
     body: "Servers and formatters download themselves; images and PDFs in a tab; zoom.",
+    state: "shipped",
+  },
+  {
+    name: "1.2.0 · the Mac ←",
+    body: "A macOS app, signature help, Emmet, bracket colours and a minimap.",
     state: "current",
   },
   {
@@ -292,11 +290,6 @@ export const RELEASES: ReleaseCard[] = [
   {
     name: "next · opening a file",
     body: "Still synchronous, but bounded; binary and non-UTF-8 files are refused.",
-    state: "next",
-  },
-  {
-    name: "next · macOS",
-    body: "No packaging, and nobody has run it there yet.",
     state: "next",
   },
 ];
@@ -349,7 +342,7 @@ export const SCOPE = {
     "No plugin system: extension code is never run.",
     "Extension data imports fine — themes, snippets, keybindings, .vsix files.",
     "No remote editing or collaboration.",
-    "No macOS packaging yet.",
+    "No Apple Developer ID signature yet.",
   ],
   successTitle: "Success has one criterion",
   success: [

@@ -109,6 +109,6 @@ reasons are in its comments, and `crates/dacode/tests/conventions.rs` fails the 
 names a version the crate is not. **When a release ships, update it there** — it is the only
 hard-coded version on the page; the "what changed" section reads it too.
 
-macOS gets no download button. There is no macOS build and nobody has ever run DaCode there; the
-button says "Build from source" and the note says why. That is the honest button, and it should stay
-that way until someone has actually run it.
+macOS gets the `.dmg` since 1.2.0, and its note says the two things a Mac user must know first: the
+app is not signed with an Apple Developer ID, so the first open is a right-click and Open, and nobody
+has yet run it on a real Mac. Keep that second clause until someone has.
