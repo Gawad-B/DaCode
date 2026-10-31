@@ -34,7 +34,7 @@
 use std::borrow::Cow;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -199,6 +199,36 @@ pub struct Terminal {
     shell: ShellCommand,
     /// Bytes handed to the shell. Lets a test prove a key went to the editor and not here.
     sent: AtomicU64,
+    /// How far shutting down has got, as one of the [`Stage`] values, so a shutdown that runs out
+    /// of time can say where it stopped instead of only that it did.
+    stage: Arc<AtomicU8>,
+}
+
+/// The steps a shell's shutdown passes through, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Stage {
+    Running = 0,
+    /// The PTY loop has been asked to stop.
+    Asked = 1,
+    /// The PTY loop has stopped; the PTY is being dropped, which hangs the shell up and waits.
+    LoopStopped = 2,
+    /// The shell outlived its grace and was sent SIGKILL.
+    Killed = 3,
+    /// The PTY is dropped and the shell reaped.
+    Reaped = 4,
+}
+
+impl Stage {
+    fn read(stage: &AtomicU8) -> &'static str {
+        match stage.load(Ordering::Acquire) {
+            0 => "still running",
+            1 => "asked to stop, but the PTY loop never stopped",
+            2 => "the PTY loop stopped, and the shell is not yet reaped",
+            3 => "the shell was killed after its grace, and is not yet reaped",
+            _ => "reaped",
+        }
+    }
 }
 
 fn window_size(size: GridSize, cell: (u16, u16)) -> WindowSize {
@@ -264,10 +294,13 @@ impl Terminal {
         // The loop returns itself and its state when it stops. Dropping them is what drops the
         // PTY — which hangs the shell up and reaps it — and that wait happens here, on the parser's
         // own thread, never on the UI's.
+        let stage = Arc::new(AtomicU8::new(Stage::Running as u8));
+        let reaper_stage = stage.clone();
         let thread = std::thread::Builder::new()
             .name("PTY reaper".into())
             .spawn(move || {
                 let stopped = handle.join();
+                reaper_stage.store(Stage::LoopStopped as u8, Ordering::Release);
                 // alacritty's drop sends SIGHUP and then waits for the shell with no limit. bash
                 // can take the hang-up without acting on it when it lands while bash is blocked
                 // reading the terminal, and a program can ignore it outright; then that wait never
@@ -276,17 +309,20 @@ impl Terminal {
                 let gone = Arc::new(AtomicBool::new(false));
                 if let Some(pid) = shell_pid {
                     let gone = gone.clone();
+                    let stage = reaper_stage.clone();
                     let _ = std::thread::Builder::new()
                         .name("PTY hang-up".into())
                         .spawn(move || {
                             std::thread::sleep(HANG_UP_GRACE);
                             if !gone.load(Ordering::Acquire) {
                                 kill(pid);
+                                stage.store(Stage::Killed as u8, Ordering::Release);
                             }
                         });
                 }
                 drop(stopped);
                 gone.store(true, Ordering::Release);
+                reaper_stage.store(Stage::Reaped as u8, Ordering::Release);
             })?;
 
         Ok(Self {
@@ -298,6 +334,7 @@ impl Terminal {
             cell: spawn.cell,
             shell: shell.clone(),
             sent: AtomicU64::new(0),
+            stage,
         })
     }
 
@@ -493,12 +530,21 @@ impl Terminal {
     /// shell behind them and must be able to prove they did not.
     pub fn shutdown(mut self, within: Duration) -> bool {
         let _ = self.sender.send(Msg::Shutdown);
+        self.stage.fetch_max(Stage::Asked as u8, Ordering::AcqRel);
         let Some(thread) = self.thread.take() else {
             return true;
         };
         let deadline = Instant::now() + within;
         while !thread.is_finished() {
             if Instant::now() >= deadline {
+                // Said, because a shell left behind is otherwise invisible: the caller only learns
+                // that it did not end, and on a machine nobody can sit at, where it stopped is the
+                // whole of what there is to go on.
+                eprintln!(
+                    "dacode: `{}` did not end within {within:?}: {}",
+                    self.shell.program,
+                    Stage::read(&self.stage)
+                );
                 return false;
             }
             std::thread::sleep(Duration::from_millis(5));

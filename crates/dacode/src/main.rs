@@ -18025,10 +18025,10 @@ mod terminal_tests {
 
     /// Ends the shell and proves it ended: no test may leave one behind.
     fn end(app: &mut App) {
-        for terminal in app.terminals.drain(..) {
+        for (index, terminal) in app.terminals.drain(..).enumerate() {
             assert!(
                 terminal.shutdown(Duration::from_secs(10)),
-                "the shell's thread ended"
+                "the shell's thread ended (tab {index})"
             );
         }
     }
