@@ -504,8 +504,8 @@ came out as an X, clipped diagnostic messages, and a lockup misaligned by 2px. S
 work on Wayland here, so this is the only way — and it is better anyway, being reproducible.
 
 Flags: `--light --dark --theme NAME --mode M --split N[h] --tree --settings --settings-page NAME
---settings-search Q --theme-dropdown --welcome STEP --folded
---git --palette Q --search Q --grep Q --complete PREFIX --diagnostic L:C:MSG --diagnostics-list
+--settings-search Q --theme-dropdown --welcome STEP --folded --minimap
+--git --palette Q --search Q --grep Q --complete PREFIX --signature LABEL --diagnostic L:C:MSG --diagnostics-list
 --splash --empty --at LINE --at-column N --at-ms N --scroll-px N --row N --columns N --no-wrap --size WxH --no-vim
 --transparency PERCENT --zoom PERCENT --help-panel --update-offer KIND --menu --menu-title TITLE --context-menu --commands
 --which-key PREFIX --symbols QUERY --block LINE:COLUMN --capture-key NAME[=KEYS] --terminal --terminal-tabs N
@@ -705,6 +705,11 @@ Electric dedent gives up after `DEDENT_SCAN_LIMIT` characters, so a `}` whose `{
 or five hundred lines above it is left where it was typed. It used to walk to the start of the
 document, which cost 5.8 ms per keystroke in a hundred-thousand-line file. Doing nothing is what
 already happened when no opener was found, so there was nothing new to invent.
+
+Sticky scroll looks at most `dacode_display::HEAD_SCAN_LIMIT` (500) lines up for a block head, so a
+block longer than that pins nothing. It used to walk to line 0, every frame: 57 ms a frame halfway
+down a hundred-thousand-line file. Every frame guard in `latency.rs` drew from the top of the file,
+where the walk is free; the minimap's draws from the middle, which is how it was found.
 
 From the source-control view: diffs are unified, not side-by-side, and nothing is staged by hunk or
 line. One repository per folder — the one the project folder is in — so submodules and several

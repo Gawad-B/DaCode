@@ -307,6 +307,7 @@ fn new_state(
         results: None,
         search_matches: Vec::new(),
         hover: notice,
+        signature: None,
         completion: None,
         pending_request: None,
         project_root,
@@ -317,6 +318,8 @@ fn new_state(
         active_buffer: 0,
         modal: settings.modal,
         sticky_scroll: settings.sticky_scroll,
+        bracket_colors: settings.bracket_colors,
+        minimap: settings.minimap,
         vertical_goal: None,
         expansions: dacode::chrome::Expansions::default(),
         search: None,
@@ -395,7 +398,7 @@ fn pair_config(path: Option<&str>, tab_width: usize) -> dacode_buffer::PairConfi
 /// the settings panel it was meant to be scrolling. Nothing failed — the panel still drew — which is
 /// why it survived a screenshot of every overlay. `every_value_flag_is_listed` now derives the set
 /// from the source rather than trusting anyone to remember.
-const VALUE_FLAGS: [&str; 30] = [
+const VALUE_FLAGS: [&str; 31] = [
     "--which-key",
     "--menu-title",
     "--screenshot",
@@ -406,6 +409,7 @@ const VALUE_FLAGS: [&str; 30] = [
     "--grep",
     "--diagnostic",
     "--complete",
+    "--signature",
     "--split",
     "--at",
     "--theme",
@@ -437,7 +441,7 @@ const VALUE_FLAGS: [&str; 30] = [
 ///
 /// The headless group is long because it is the whole visual test surface, and a person reaching for
 /// it is reproducing a screenshot from CI rather than editing a file.
-const FLAGS: [(&str, &str, &str); 56] = [
+const FLAGS: [(&str, &str, &str); 58] = [
     // Opening.
     (
         "--no-session",
@@ -487,6 +491,7 @@ const FLAGS: [(&str, &str, &str); 56] = [
     ("--no-wrap", "", "soft wrap off"),
     ("--split", "N[h]", "N panes, `h` for stacked"),
     ("--tree", "", "the file tree"),
+    ("--minimap", "", "with the minimap on"),
     ("--settings", "", "the settings tab"),
     (
         "--settings-page",
@@ -519,6 +524,11 @@ const FLAGS: [(&str, &str, &str); 56] = [
     ("--grep", "QUERY", "the search view, with its results"),
     ("--symbols", "QUERY", "the symbol picker"),
     ("--complete", "PREFIX", "the completion popup"),
+    (
+        "--signature",
+        "LABEL",
+        "the signature card; *stars* mark the lit argument",
+    ),
     ("--diagnostic", "L:C:MSG", "one diagnostic, inline"),
     ("--diagnostics-list", "", "the problems list"),
     (
@@ -930,6 +940,9 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
             state.preview = Some(preview);
         }
     }
+    if flag("--minimap") {
+        state.minimap = true;
+    }
     fit_wrap_columns(&mut state, width as f32, zoom);
     // Again just before drawing, once each view has opened whatever sidebar it opens: the code's
     // width depends on it, and fitting it here alone wrapped a narrow capture past its own edge.
@@ -1169,6 +1182,25 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
         state
             .diagnostics
             .apply(items, None, state.document.version());
+    }
+
+    // `--signature "fn push(&mut self, *value: T*)"` shows the signature card at the caret, with
+    // the starred part as the argument being typed — the card is a server's reply, and there is no
+    // server in a capture.
+    if let Some(spec) = value("--signature") {
+        let start = spec.find('*');
+        let end = spec.rfind('*').filter(|end| Some(*end) != start);
+        let label = spec.replace('*', "");
+        let active = start.zip(end).map(|(start, end)| {
+            let start = spec[..start].chars().count();
+            start..start + spec[..end].chars().count() - start - 1
+        });
+        state.signature = Some(dacode_lsp::Signature {
+            label,
+            active,
+            overload: None,
+            documentation: Some("Appends an element to the back of a collection.".to_string()),
+        });
     }
 
     // `--complete PREFIX` opens a completion popup with a canned list, so the popup is inspectable
@@ -1890,7 +1922,8 @@ fn fit_wrap_columns(state: &mut EditorState, window_width: f32, scale: f32) {
     )
     // The blame column takes its width from the code, so the wrap has to know about it — or soft
     // wrapped lines run under the right edge by exactly the column's width.
-    .with_blame(state.blame_column(0, scale));
+    .with_blame(state.blame_column(0, scale))
+    .with_minimap(state.minimap);
     let grid = dacode::layout::CodeGrid::new(
         regions.pane(0, 1, true, scale).code,
         state.typography.code_size * 0.6 * scale,
@@ -2073,6 +2106,14 @@ struct App {
     /// The language server's last hover answer. It arrives on the same line as the editor's own
     /// messages, but it is documentation rather than news, and the bell is not where to keep it.
     server_hover: Option<String>,
+    /// A signature request waiting to go out, set by [`App::refresh_signature`] and sent by
+    /// `sync_lsp`, where the client lives.
+    signature_wanted: bool,
+    /// A press landed on a minimap, so the drag that follows scrolls rather than selects.
+    minimap_drag: bool,
+    /// The buffer version and caret the signature was last asked about, so an open card is asked
+    /// again only when one of them has moved — not on every key that changes neither.
+    signature_asked: Option<(dacode_text::Version, CharOffset)>,
     /// Diffs the buffer against `HEAD`, off the UI thread.
     git: dacode::git::GitWorker,
     /// The version the last diff was asked for, so typing does not spawn a `git show` per keystroke.
@@ -2551,6 +2592,7 @@ impl ApplicationHandler<dacode::wake::Wake> for App {
                     }
                     (winit::event::MouseButton::Left, ElementState::Released) => {
                         self.dragging = false;
+                        self.minimap_drag = false;
                         self.block_origin = None;
                         self.release_terminal(dacode_terminal::MouseButton::Left);
                     }
@@ -2719,6 +2761,9 @@ impl App {
             overwrite: None,
             last_notice: None,
             server_hover: None,
+            signature_wanted: false,
+            minimap_drag: false,
+            signature_asked: None,
             git: dacode::git::GitWorker::spawn_with(waker.clone()),
             diffed_version: None,
             blame_worker: dacode::blame::BlameWorker::spawn_with(waker.clone()),
@@ -3227,6 +3272,34 @@ impl App {
         self.gestures.view = Some(self.view());
     }
 
+    /// Centres the view on the line under `y` in a minimap strip, through the same geometry its
+    /// drawing reads. The caret stays where it was, as it does when the wheel scrolls.
+    fn scroll_to_minimap(&mut self, strip: Rect, code: Rect, y: f32) {
+        let row_height = self.row_height_px();
+        let visible = (code.height / row_height).ceil().max(1.0) as usize;
+        let text = self.state.document.text();
+        let lines = text.last_line() + 1;
+        let geometry = dacode::layout::MinimapGeometry::new(
+            strip,
+            lines,
+            self.state.scroll.line,
+            visible,
+            self.scale(),
+        );
+        let line = geometry
+            .line_at(y)
+            .saturating_sub(visible / 2)
+            .min(lines.saturating_sub(visible));
+        self.state.chrome.scroll_input.clear();
+        self.state.scroll = ScrollAnchor {
+            line,
+            sub_row: 0,
+            ..self.state.scroll
+        };
+        self.gestures.view = Some(self.view());
+        self.request_redraw();
+    }
+
     /// Moves the view sideways by `px` pixels, in whole columns, keeping the rest.
     fn scroll_columns_px(&mut self, px: f32) {
         let advance = self.focused_grid().advance();
@@ -3485,6 +3558,7 @@ impl App {
         {
             self.reveal_cursor();
             self.refresh_completion();
+            self.refresh_signature(key);
             self.sync_syntax();
             self.sync_lsp();
         }
@@ -4034,7 +4108,13 @@ impl App {
                 .map(|spec| spec.program.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
-            if self.missing_servers.insert(first.language.clone()) {
+            // A language that is whole without its server — HTML and CSS, whose server is Emmet —
+            // is told about on the statusline and the Languages page, never in a card over the
+            // file. A configured server that is missing is still a card: that is a mistake in
+            // init.lua, not an add-on not yet installed.
+            let optional = !first.configured
+                && dacode_lsp::language_for(&path).is_some_and(|language| language.optional);
+            if !optional && self.missing_servers.insert(first.language.clone()) {
                 // A server the user named is a different failure from one DaCode only guessed at:
                 // theirs is a path that is wrong, not a program that is missing, and telling them
                 // to install pyright when they asked for a venv would be answering the wrong
@@ -4755,6 +4835,9 @@ impl App {
                     self.state.server_status
                 ));
             }
+            // Typing `(` without a server asks nothing of anyone, and must not be kept to fire at
+            // whichever server starts next.
+            self.signature_wanted = false;
             return false;
         };
         // Taken before the client is borrowed mutably: the language a file is written in is a
@@ -4836,6 +4919,12 @@ impl App {
                         dacode_lsp::to_lsp(self.state.document.text(), self.state.cursor());
                     let sent = match &request {
                         Action::Hover => client.hover(&path, position),
+                        Action::SignatureHelp => {
+                            self.signature_wanted = false;
+                            self.signature_asked =
+                                Some((self.state.document.version(), self.state.cursor()));
+                            client.signature_help(&path, position, buffer_version.0 as i32)
+                        }
                         Action::GotoDefinition => client.definition(&path, position),
                         Action::RequestCompletion => client.completion(&path, position),
                         // Only reaches here when the server said it formats; `route_format` sends
@@ -4901,6 +4990,25 @@ impl App {
             } else {
                 // Saying so beats a keypress that appears to do nothing while the server starts.
                 self.state.hover = Some(format!("{} is still starting", self.state.server_status));
+            }
+        }
+
+        // The signature card, asked for by typing rather than by a key, so it is not a pending
+        // `Action`: that slot holds one request, and `(` typed on the keystroke that also queued a
+        // format-on-save would otherwise throw the format away.
+        if self.signature_wanted && client.state() == dacode_lsp::State::Ready {
+            self.signature_wanted = false;
+            if let Some(path) = self.state.file_path.clone() {
+                let caret = self.state.cursor();
+                let position = dacode_lsp::to_lsp(self.state.document.text(), caret);
+                self.signature_asked = Some((buffer_version, caret));
+                if let Err(error) = client.signature_help(
+                    std::path::Path::new(&path),
+                    position,
+                    buffer_version.0 as i32,
+                ) {
+                    eprintln!("dacode: signature request failed: {error:#}");
+                }
             }
         }
 
@@ -5036,6 +5144,13 @@ impl App {
                         palette.refresh_symbols(&symbols, filter);
                     }
                     self.symbols = symbols;
+                }
+                dacode_lsp::ServerEvent::SignatureHelp { version, signature } => {
+                    // Refused whole when the buffer has moved on: the next edit has already asked
+                    // again, and drawing this one would light the argument before the one typed.
+                    if version as u64 == self.state.document.version().0 {
+                        self.state.signature = signature;
+                    }
                 }
                 dacode_lsp::ServerEvent::Hover { text } => {
                     let shown = if text.trim().is_empty() {
@@ -5392,6 +5507,26 @@ impl App {
         // that `format_on_save` had just queued, and the file would be written unformatted.
         if ask_again && self.state.pending_request.is_none() {
             self.state.pending_request = Some(Action::RequestCompletion);
+        }
+    }
+
+    /// Decides whether the signature card wants asking about after a key.
+    ///
+    /// It opens on `(` and `,` typed while inserting, which is where an argument starts, and once
+    /// open it is asked again whenever the text or the caret moves: the server is the one that
+    /// knows which argument the caret is on, and the one that says the call has ended by answering
+    /// with nothing. Leaving insert mode closes it, since nothing is being typed into the call.
+    fn refresh_signature(&mut self, key: Key) {
+        let typing = self.state.mode == Mode::Insert || !self.state.modal;
+        if !typing || key.code == KeyCode::Escape {
+            self.state.signature = None;
+            self.signature_wanted = false;
+            return;
+        }
+        let now = (self.state.document.version(), self.state.cursor());
+        let opens = !key.ctrl && !key.alt && matches!(key.code, KeyCode::Char('(' | ','));
+        if opens || (self.state.signature.is_some() && self.signature_asked != Some(now)) {
+            self.signature_wanted = true;
         }
     }
 
@@ -7813,6 +7948,17 @@ impl App {
             }
             Field::LineNumbers => self.state.line_numbers = values.line_numbers,
             Field::StickyScroll => self.state.sticky_scroll = values.sticky_scroll,
+            Field::BracketColors => self.state.bracket_colors = values.bracket_colors,
+            // The strip takes its width from the code, so the wrap has to be measured again or
+            // wrapped lines would run under it.
+            Field::Minimap => {
+                self.state.minimap = values.minimap;
+                if let Some(window) = &self.window {
+                    let scale = self.scale();
+                    let width = window.inner_size().width as f32;
+                    fit_wrap_columns(&mut self.state, width, scale);
+                }
+            }
             Field::InlayHints => {
                 self.state.show_inlay_hints = values.inlay_hints;
                 self.state.inlay_hints.clear();
@@ -10171,6 +10317,7 @@ impl App {
             self.scale(),
         )
         .with_blame(self.state.blame_column(self.panes.active(), self.scale()))
+        .with_minimap(self.state.minimap)
     }
 
     /// The terminal panel's rectangles, while it is shown. The same function drawing reads, so the
@@ -10884,6 +11031,17 @@ impl App {
         }
 
         let rects = layout.pane(index, count, vertical, scale);
+
+        // The minimap before the code: its strip is not part of the code's rectangle, but a drag
+        // that began on it has to stay a scroll wherever the pointer wanders.
+        if let Some(strip) = rects.minimap {
+            if (!extend && dacode::layout::contains(strip, x, y)) || (extend && self.minimap_drag) {
+                self.minimap_drag = true;
+                self.scroll_to_minimap(strip, rects.code, y);
+                return;
+            }
+        }
+
         let offset = self.offset_at(rects.code, x, y, scale);
 
         // A click on the blame column asks for that line's commit. The row is found the way a click
@@ -11844,6 +12002,8 @@ impl App {
             self.state.mode = Mode::Insert;
         }
         self.state.sticky_scroll = settings.sticky_scroll;
+        self.state.bracket_colors = settings.bracket_colors;
+        self.state.minimap = settings.minimap;
         self.state.show_inlay_hints = settings.inlay_hints;
         if self.state.blame.inline != settings.inline_blame {
             self.state.blame.inline = settings.inline_blame;
@@ -16863,6 +17023,21 @@ mod buffer_tests {
                     .unwrap_or_else(|| "untitled".into())
             })
             .collect()
+    }
+
+    #[test]
+    fn a_stylesheet_without_emmet_says_so_on_the_statusline_and_not_over_the_file() {
+        // A CSS file is whole without Emmet, so its absence is not a card in front of every
+        // stylesheet. A machine that has Emmet starts it, and there is nothing to check.
+        if dacode_lsp::resolve("emmet-language-server").is_some() {
+            return;
+        }
+        let dir = scratch("emmet-missing");
+        let mut app = editor(&dir, &["style.css"]);
+        app.state.hover = None;
+        app.start_language_server();
+        assert_eq!(app.state.server_status, "no css server");
+        assert_eq!(app.state.hover, None);
     }
 
     #[test]

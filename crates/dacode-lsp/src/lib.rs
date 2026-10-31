@@ -23,8 +23,8 @@ pub mod transport;
 use std::path::{Path, PathBuf};
 
 pub use client::{
-    CodeActionItem, CompletionItem, Diagnostics, LspClient, Pending, ServerEvent, State, Symbol,
-    symbols_from,
+    CodeActionItem, CompletionItem, Diagnostics, LspClient, Pending, ServerEvent, Signature, State,
+    Symbol, symbols_from,
 };
 /// Re-exported so consumers can name severities and ranges without depending on the crate directly.
 pub use lsp_types;
@@ -223,6 +223,11 @@ pub struct Language {
     /// language", which reads as "unsupported".
     aliases: &'static [&'static str],
     servers: &'static [Builtin],
+    /// Whether a file of this language is whole without its server. HTML and CSS are: Emmet adds
+    /// abbreviations and nothing else, so its absence is said on the statusline rather than in a
+    /// card over the file — which would be telling everyone who opens a stylesheet that something
+    /// is missing from it.
+    pub optional: bool,
 }
 
 impl Language {
@@ -254,12 +259,13 @@ impl Language {
 /// not a single program — pyright comes from npm and pylsp from pip — and a machine has whichever
 /// its owner happened to install. Offering only the first and reporting it missing is how an editor
 /// tells someone with a perfectly good language server that it cannot find one.
-pub const LANGUAGES: [Language; 8] = [
+pub const LANGUAGES: [Language; 10] = [
     Language {
         name: "Rust",
         id: "rust",
         aliases: &[],
         extensions: &["rs"],
+        optional: false,
         servers: &[installable(
             "rust-analyzer",
             &[],
@@ -280,6 +286,7 @@ pub const LANGUAGES: [Language; 8] = [
         id: "javascript",
         aliases: &["js", "node"],
         extensions: &["js", "jsx", "mjs", "cjs"],
+        optional: false,
         servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
@@ -307,6 +314,7 @@ pub const LANGUAGES: [Language; 8] = [
         id: "typescript",
         aliases: &["ts"],
         extensions: &["ts", "tsx"],
+        optional: false,
         servers: &[installable(
             "typescript-language-server",
             &["--stdio"],
@@ -334,6 +342,7 @@ pub const LANGUAGES: [Language; 8] = [
         id: "python",
         aliases: &[],
         extensions: &["py", "pyi"],
+        optional: false,
         servers: &[
             installable(
                 "pyright-langserver",
@@ -370,6 +379,7 @@ pub const LANGUAGES: [Language; 8] = [
         extensions: &["c", "h", "cpp", "hpp", "cc", "cxx", "hh"],
         // Downloaded, where clangd publishes a build; elsewhere (ARM64 Linux) the download says so
         // and that it will find one installed from the system's packages.
+        optional: false,
         servers: &[installable(
             "clangd",
             &[],
@@ -381,6 +391,7 @@ pub const LANGUAGES: [Language; 8] = [
         id: "go",
         aliases: &[],
         extensions: &["go"],
+        optional: false,
         servers: &[installable(
             "gopls",
             &[],
@@ -392,6 +403,7 @@ pub const LANGUAGES: [Language; 8] = [
         id: "lua",
         aliases: &[],
         extensions: &["lua"],
+        optional: false,
         servers: &[installable(
             "lua-language-server",
             &[],
@@ -402,11 +414,54 @@ pub const LANGUAGES: [Language; 8] = [
             )],
         )],
     },
+    // HTML and CSS are served by Emmet alone, which is what most people open those files in VSCode
+    // for: `ul>li*3` and `m10` expanded from the completion list. DaCode runs one server per file,
+    // so this is Emmet *instead of* vscode-html-language-server rather than beside it, and Emmet
+    // in JSX waits for a second server per buffer.
+    Language {
+        name: "HTML",
+        id: "html",
+        aliases: &["htm"],
+        extensions: &["html", "htm"],
+        optional: true,
+        servers: &[installable(
+            "emmet-language-server",
+            &["--stdio"],
+            &[
+                (SELF, SELF, &["tools", "install", "emmet-language-server"]),
+                (
+                    "npm",
+                    "npm",
+                    &["install", "--global", "@olrtg/emmet-language-server"],
+                ),
+            ],
+        )],
+    },
+    Language {
+        name: "CSS",
+        id: "css",
+        aliases: &["scss", "less"],
+        extensions: &["css", "scss", "less"],
+        optional: true,
+        servers: &[installable(
+            "emmet-language-server",
+            &["--stdio"],
+            &[
+                (SELF, SELF, &["tools", "install", "emmet-language-server"]),
+                (
+                    "npm",
+                    "npm",
+                    &["install", "--global", "@olrtg/emmet-language-server"],
+                ),
+            ],
+        )],
+    },
     Language {
         name: "Dart",
         id: "dart",
         aliases: &[],
         extensions: &["dart"],
+        optional: false,
         servers: &[builtin(
             "dart",
             &["language-server", "--protocol=lsp"],

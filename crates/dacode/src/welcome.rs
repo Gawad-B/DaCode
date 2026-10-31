@@ -440,6 +440,8 @@ pub fn config_from(answers: &Answers, existing: &str) -> String {
         updates: crate::update::Policy::Automatic,
         interface_zoom: crate::chrome::Zoom::default(),
         sticky_scroll: true,
+        bracket_colors: true,
+        minimap: false,
         inlay_hints: false,
         inline_blame: true,
         // Chosen for them, and it is the right choice: a person who picks the conventional editor is

@@ -158,6 +158,10 @@ pub struct Settings {
     pub modal: bool,
     /// Pin enclosing block heads above the viewport.
     pub sticky_scroll: bool,
+    /// Colour brackets by how deeply they nest.
+    pub bracket_colors: bool,
+    /// A miniature of the whole file down the right edge of the code.
+    pub minimap: bool,
     /// Ask the language server for inlay hints.
     pub inlay_hints: bool,
     /// Write who last changed the caret's line after its end.
@@ -209,6 +213,12 @@ impl Default for Settings {
             // Off by default: the pinned block heads read as a highlighted band at the top of the
             // code that followed the scroll, which looked like a selection nobody had made.
             sticky_scroll: false,
+            // On, as in VSCode since 2021: it is a colour on characters already drawn, read from a
+            // tree the worker already built, so it costs nothing anyone could measure.
+            bracket_colors: true,
+            // Off: it takes about a tenth of the code's width, and whether that is worth it is a
+            // preference rather than a default.
+            minimap: false,
             inlay_hints: false,
             // On: it is one dim line of text, on one row, past the end of the code, and it is the
             // answer to "why is this line like this?" without leaving the file. It costs nothing
@@ -344,6 +354,16 @@ fn apply_lua(dir: &Path, settings: &mut Settings) {
     if let Some(sticky) = config.sticky_scroll {
         settings.sticky_scroll = sticky;
         settings.sources.insert("sticky_scroll".into(), from_config);
+    }
+    if let Some(brackets) = config.bracket_colors {
+        settings.bracket_colors = brackets;
+        settings
+            .sources
+            .insert("bracket_colors".into(), from_config);
+    }
+    if let Some(minimap) = config.minimap {
+        settings.minimap = minimap;
+        settings.sources.insert("minimap".into(), from_config);
     }
     if let Some(hints) = config.inlay_hints {
         settings.inlay_hints = hints;

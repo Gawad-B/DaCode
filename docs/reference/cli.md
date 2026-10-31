@@ -79,6 +79,7 @@ RENDERING WITHOUT A WINDOW
     --no-wrap                   soft wrap off
     --split N[h]                N panes, `h` for stacked
     --tree                      the file tree
+    --minimap                   with the minimap on
     --settings                  the settings tab
     --settings-page NAME        open the settings tab at a page: appearance, editor, keys …
     --settings-search QUERY     type a search into the settings tab
@@ -95,6 +96,7 @@ RENDERING WITHOUT A WINDOW
     --grep QUERY                the search view, with its results
     --symbols QUERY             the symbol picker
     --complete PREFIX           the completion popup
+    --signature LABEL           the signature card; *stars* mark the lit argument
     --diagnostic L:C:MSG        one diagnostic, inline
     --diagnostics-list          the problems list
     --source-control            the source control view, over a canned status
@@ -202,6 +204,7 @@ cursor is parked at line 21, column 12, the view scrolled to line 8, and in norm
 | `--mode` | `NAME` | `insert`, `visual` or `replace`. Anything else, including a missing flag, is normal mode. Visual mode also selects 24 characters from the cursor. |
 | `--no-vim` | — | Modal editing off: insert mode, and the seeded `3d` is cleared, since there is no operator-count to be half-way through without the grammar. |
 | `--zoom` | `PERCENT` | Draw at an interface zoom, as `ctrl-=` sets it. |
+| `--minimap` | — | Draw with the minimap on, whatever config says. |
 | `--transparency` | `PERCENT` | Draw the window see-through, composited over a checkerboard so the capture shows what the desktop would. |
 
 Capture at more than one size. The harness was fixed at 1600x1000 for a long time and a whole family
@@ -223,6 +226,7 @@ gets captured small too.
 | `--block` | `LINE:COLUMN` | Draw a rectangular selection from the cursor to there — the one gesture that has no key. A missing `:COLUMN` means column 0. |
 | `--diagnostic` | `LINE:COL:MESSAGE` | Inject one error diagnostic, twelve columns wide, at that zero-based position. The cursor is parked three lines below so the underline renders unobstructed. Needs all three parts. |
 | `--diagnostics-list` | — | Fill the buffer with five diagnostics of both severities across two files, and open the diagnostics sidebar. |
+| `--signature` | `LABEL` | Show the signature card at the caret for a call labelled `LABEL`, with the part between two `*`s lit as the argument being typed: `"fn push(&mut self, *value: T*)"`. A canned first line of documentation sits under it. |
 | `--complete` | `PREFIX` | Type ` PREFIX` at the end of the cursor's line and open the completion popup over a canned rust-analyzer-shaped list — kinds, types and a deprecation, because a fixture of bare labels cannot show whether the type column fits. |
 | `--search` | `QUERY` | Open the search prompt with live matches against the buffer. |
 | `--grep` | `QUERY` | Run a real project search and show it in the search view. Waits up to ten seconds; a one-shot render can afford to, the editor never does. |

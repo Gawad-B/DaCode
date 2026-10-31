@@ -51,6 +51,8 @@ than logged.
 | `appearance` | `"dark"` \| `"light"` | unset | Flips the built-in theme. Ignored entirely when `theme` is set. |
 | `line_numbers` | `"absolute"` \| `"relative"` \| `"off"` | follows `vim_keys` | What the gutter counts. |
 | `sticky_scroll` | boolean | `false` | Pin enclosing block heads above the viewport. |
+| `bracket_colors` | boolean | `true` | Colour brackets by how deeply they nest, three colours round. Read from the syntax tree, so a bracket in a string or a comment is left alone. Only for languages DaCode parses. |
+| `minimap` | boolean | `false` | The whole file in miniature down the right of the code, the visible part marked. Click or drag it to scroll. |
 | `inlay_hints` | boolean | `false` | Ask the language server for inferred types and parameter names. |
 | `inline_blame` | boolean | `true` | Write who last changed the caret's line, how long ago and the commit's summary, dimly after the line's end. A diagnostic on that line is shown instead. Nothing appears outside a git repository or for a file git does not track. |
 | `autosave` | boolean | `false` | Write the file a moment after typing stops. |

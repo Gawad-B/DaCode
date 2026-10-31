@@ -37,6 +37,71 @@ pub struct Layout {
     /// The pane that carries a blame column, and how wide the column wants to be. Set by
     /// [`Layout::with_blame`]; `None` is no column.
     pub blame: Option<(usize, f32)>,
+    /// Whether each pane keeps a minimap strip at the right of its code. Set by
+    /// [`Layout::with_minimap`].
+    pub minimap: bool,
+}
+
+/// How wide the minimap is at scale 1, and how tall one line of the file is in it. One pixel a
+/// character, two a line: VSCode's proportions, which make a screen of minimap about ten screens
+/// of code.
+pub const MINIMAP_WIDTH: f32 = 96.0;
+pub const MINIMAP_LINE: f32 = 2.0;
+
+/// Where the file's lines sit in a minimap strip, read by its drawing and by a click on it.
+///
+/// A file taller than the strip scrolls through it in proportion to the view — at the top of the
+/// file the strip shows its start, at the bottom its end — so the slider marking the visible rows
+/// is always over the lines it stands for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MinimapGeometry {
+    pub rect: Rect,
+    /// The height of one line, in pixels.
+    pub line_height: f32,
+    /// The file's line drawn at the top of the strip.
+    pub first: usize,
+    /// How many lines are drawn: never more than fit, which is what bounds the drawing.
+    pub rows: usize,
+    /// The part of the strip standing for the rows on screen.
+    pub slider: Rect,
+}
+
+impl MinimapGeometry {
+    /// `lines` in the file, the view's top line and how many rows it shows.
+    pub fn new(rect: Rect, lines: usize, top: usize, visible: usize, scale: f32) -> Self {
+        let line_height = MINIMAP_LINE * scale;
+        let capacity = ((rect.height / line_height).floor() as usize).max(1);
+        let lines = lines.max(1);
+        let first = if lines <= capacity {
+            0
+        } else {
+            let scrollable = lines.saturating_sub(visible).max(1);
+            let travel = lines - capacity;
+            ((top.min(scrollable) as f64 / scrollable as f64) * travel as f64).round() as usize
+        };
+        let rows = capacity.min(lines - first);
+        let slider_top =
+            (rect.y + top.saturating_sub(first) as f32 * line_height).min(rect.bottom());
+        let slider = Rect::new(
+            rect.x,
+            slider_top,
+            rect.width,
+            (visible as f32 * line_height).min(rect.bottom() - slider_top),
+        );
+        Self {
+            rect,
+            line_height,
+            first,
+            rows,
+            slider,
+        }
+    }
+
+    /// The file's line under a y, clamped to the lines drawn.
+    pub fn line_at(&self, y: f32) -> usize {
+        let row = ((y - self.rect.y) / self.line_height).max(0.0) as usize;
+        self.first + row.min(self.rows.saturating_sub(1))
+    }
 }
 
 /// How wide the gutter's blame column wants to be: a short author and a terse age, `Ann Exam… 3d`.
@@ -910,6 +975,7 @@ impl Layout {
             results,
             terminal: None,
             blame: None,
+            minimap: false,
         }
     }
 
@@ -952,6 +1018,15 @@ impl Layout {
     /// decide on its own that the column is there.
     pub fn with_blame(mut self, column: Option<(usize, f32)>) -> Self {
         self.blame = column;
+        self
+    }
+
+    /// The same layout with a minimap in each pane, when they are on. Passed by the same three
+    /// callers as [`Layout::with_blame`] — drawing, the mouse and the wrap width — for the same
+    /// reason: a strip one of them does not know about is text running under it, or a click on
+    /// the minimap landing in the code.
+    pub fn with_minimap(mut self, on: bool) -> Self {
+        self.minimap = on;
         self
     }
 
@@ -1025,11 +1100,21 @@ impl Layout {
         let gutter_width = (78.0 * scale).min(rest.width * 0.22);
         let (gutter, code) = rest.split_left(gutter_width);
 
+        // Like the blame column, it gives way in a pane too narrow to spare it.
+        let width = MINIMAP_WIDTH * scale;
+        let (minimap, code) = if self.minimap && code.width - width >= 300.0 * scale {
+            let (minimap, code) = code.split_right(width);
+            (Some(minimap), code)
+        } else {
+            (None, code)
+        };
+
         PaneRects {
             slot,
             blame,
             gutter,
             code,
+            minimap,
             footer,
         }
     }
@@ -1062,6 +1147,8 @@ pub struct PaneRects {
     pub blame: Option<Rect>,
     pub gutter: Rect,
     pub code: Rect,
+    /// The file in miniature, right of the code, when minimaps are on and the pane has room.
+    pub minimap: Option<Rect>,
     pub footer: Option<Rect>,
 }
 

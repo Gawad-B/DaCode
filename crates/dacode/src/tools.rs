@@ -154,7 +154,7 @@ pub const NODE: Tool = Tool {
 };
 
 /// Every tool DaCode can download, by the name `dacode tools install` takes.
-pub const TOOLS: [Tool; 8] = [
+pub const TOOLS: [Tool; 9] = [
     Tool {
         name: "rust-analyzer",
         version: "2026-10-12",
@@ -313,6 +313,16 @@ pub const TOOLS: [Tool; 8] = [
             // drives; 6 is the newest that does.
             packages: &["typescript-language-server@6.0.2", "typescript@6.0.3"],
             programs: &[("typescript-language-server", "typescript-language-server")],
+        },
+    },
+    Tool {
+        name: "emmet-language-server",
+        version: "2.8.0",
+        what: "Emmet abbreviations for HTML and CSS (npm, on DaCode's Node)",
+        provides: &["emmet-language-server"],
+        source: Source::Npm {
+            packages: &["@olrtg/emmet-language-server@2.8.0"],
+            programs: &[("emmet-language-server", "@olrtg/emmet-language-server")],
         },
     },
     Tool {

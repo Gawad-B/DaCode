@@ -37,6 +37,30 @@ it is asserted by a test that fails the build if it stops being true.
 
 ![DaCode editing a Rust file](docs/images/editor.png)
 
+## Against VSCode
+
+Measured from outside both editors on one laptop (i5-1135G7, Fedora 44, kernel 7.2.13), on
+2026-10-31. VSCode 1.143.1 ran on a fresh profile with no extensions and AI features off. Both opened
+the same CSS file with no language server running.
+
+| | DaCode | VSCode | |
+|---|---:|---:|---|
+| Startup, to the file highlighted on screen (median of 10) | 182 ms | 3,331 ms | 18x faster |
+| Keystroke, key press to changed pixels (median of 200) | 5.1 ms | 13.4 ms | 2.6x faster |
+| Keystroke, 95th percentile | 5.8 ms | 17.2 ms | 3x faster |
+| Memory, one file open (PSS, every process) | 64 MB | 820 MB | 13x less |
+| Memory, a 100,000-line file open | 106 MB | 909 MB | 8.6x less |
+| Opening that 100,000-line file | 1,203 ms | 3,892 ms | 3.2x faster |
+| CPU while idle | 0.00% | 0.50% | |
+| Installed size | 41 MB | 1,031 MB | 25x smaller |
+| Processes | 1 | 10 | |
+
+DaCode does about three quarters of what VSCode does out of the box: 27 of 39 checked features
+fully, 5 in part and 7 not at all. The missing ones are a debugger, an extension marketplace, remote
+development, notebooks, a test explorer, settings sync and multi-root workspaces. The
+[landing page](web/) has the full checklist. [bench/compare](bench/compare/README.md) has the
+harness, what it measures and what it does not, and how to run it yourself.
+
 ## Install
 
 **Windows** — download [`dacode-setup.exe`](https://github.com/Gawad-B/DaCode/releases/latest) and run it.
@@ -144,9 +168,11 @@ never run**, because a JavaScript runtime is most of what makes VSCode heavy. Ex
 themes, snippets, keybindings, language configuration — imports fine.
 
 Rust, Python, TypeScript, JavaScript, C, C++, Go, Lua and Dart are recognised out of the box, and
-[you can name your own](docs/guides/language-servers.md). Completion carries each suggestion's type
-and brings its import with it; formatting works through the server when it can and through `ruff`,
-`prettier`, `gofmt` or `clang-format` when it cannot.
+[you can name your own](docs/guides/language-servers.md). HTML and CSS get Emmet, so `ul>li*3`
+expands from the completion list. Completion carries each suggestion's type and brings its import
+with it, and the arguments of the call you are typing into appear above it as you type `(` and `,`.
+Formatting works through the server when it can and through `ruff`, `prettier`, `gofmt` or
+`clang-format` when it cannot.
 
 ## Documentation
 

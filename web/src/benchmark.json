@@ -1,11 +1,11 @@
 {
-  "date": "2026-10-29",
+  "date": "2026-10-31",
   "machine": {
     "cpu": "11th Gen Intel(R) Core(TM) i5-1135G7 @ 2.40GHz",
     "cores": 8,
     "ram_gb": 7,
     "os": "Fedora Linux 44 (Workstation Edition)",
-    "kernel": "7.2.12-200.fc44.x86_64",
+    "kernel": "7.2.13-200.fc44.x86_64",
     "display": "Xwayland Version 24.1.14 (12401014)"
   },
   "window": "1600x1000",
@@ -21,56 +21,56 @@
       "label": "DaCode",
       "version": "1.1.1",
       "startup_first_paint_ms": {
-        "median": 157.94,
-        "p95": 173.56,
-        "min": 147.8,
+        "median": 160.16,
+        "p95": 193.04,
+        "min": 146.13,
         "n": 10
       },
       "startup_ready_ms": {
-        "median": 179.48,
-        "p95": 210.71,
-        "min": 156.12,
+        "median": 182.21,
+        "p95": 236.72,
+        "min": 161.26,
         "n": 10
       },
       "keystroke_ms": {
-        "median": 5.16,
-        "p95": 5.82,
-        "min": 4.48,
+        "median": 5.08,
+        "p95": 5.76,
+        "min": 4.32,
         "n": 200
       },
-      "idle_memory_mb": 51.7,
+      "idle_memory_mb": 63.5,
       "idle_processes": 1,
       "idle_cpu_percent": 0.0,
-      "big_file_settled_ms": 1129,
-      "big_file_memory_mb": 95.3,
+      "big_file_settled_ms": 1203,
+      "big_file_memory_mb": 106.2,
       "install_mb": 40.8
     },
     "vscode": {
       "label": "VSCode",
       "version": "1.143.1",
       "startup_first_paint_ms": {
-        "median": 533.4,
-        "p95": 567.6,
-        "min": 458.01,
+        "median": 494.93,
+        "p95": 544.81,
+        "min": 433.64,
         "n": 10
       },
       "startup_ready_ms": {
-        "median": 3388.12,
-        "p95": 3610.88,
-        "min": 735.09,
+        "median": 3331.07,
+        "p95": 3372.68,
+        "min": 2667.32,
         "n": 10
       },
       "keystroke_ms": {
-        "median": 12.8,
-        "p95": 17.69,
+        "median": 13.38,
+        "p95": 17.21,
         "min": 10.7,
         "n": 200
       },
-      "idle_memory_mb": 847.3,
+      "idle_memory_mb": 820.1,
       "idle_processes": 10,
-      "idle_cpu_percent": 1.95,
-      "big_file_settled_ms": 3720,
-      "big_file_memory_mb": 877.7,
+      "idle_cpu_percent": 0.5,
+      "big_file_settled_ms": 3892,
+      "big_file_memory_mb": 908.6,
       "install_mb": 1031.1
     }
   }

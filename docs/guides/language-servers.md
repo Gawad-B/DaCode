@@ -34,6 +34,14 @@ are on the *end* of `PATH`, so one you installed yourself always wins.
 | Go | `.go` | `gopls` | — it needs Go itself | `go install golang.org/x/tools/gopls@latest` |
 | Lua | `.lua` | `lua-language-server` | `dacode tools install lua-language-server stylua` | your package manager |
 | Dart | `.dart` | `dart` (as `dart language-server --protocol=lsp`) | — | the Dart SDK |
+| HTML | `.html` `.htm` | `emmet-language-server` | `dacode tools install emmet-language-server` | `npm install --global @olrtg/emmet-language-server` |
+| CSS | `.css` `.scss` `.less` | `emmet-language-server` | the same | the same |
+
+HTML and CSS are served by Emmet, and by nothing else: type `ul>li*3` or `m10`, press `ctrl-space`,
+and accept the expansion. Emmet is an add-on rather than a language server in the usual sense — a
+stylesheet loses nothing else without it — so a missing one is said on the statusline and not in a
+card over the file. DaCode runs one server per file, so Emmet in `.jsx` and `.tsx` would need a
+second server beside the TypeScript one, and is not there.
 
 Python has three because "the Python server" is not one program: pyright comes from npm and pylsp
 from pip, and a machine has whichever its owner happened to install. Offering only the first and

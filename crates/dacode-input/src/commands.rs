@@ -629,6 +629,13 @@ pub const COMMANDS: &[Command] = &[
         "<c-space>",
         "<c-space>",
     ),
+    command(
+        "signature_help",
+        "show the arguments of this call",
+        Language,
+        "<c-s-space>",
+        "<c-s-space>",
+    ),
     command("next_diagnostic", "next problem", Language, "]d", "<f8>"),
     command(
         "previous_diagnostic",

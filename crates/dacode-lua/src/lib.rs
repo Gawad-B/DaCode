@@ -37,6 +37,10 @@ pub struct Config {
     /// Vim's modal grammar. Off means letters insert and the shortcuts are the usual ones.
     pub modal: Option<bool>,
     pub sticky_scroll: Option<bool>,
+    /// Colour brackets by how deeply they nest.
+    pub bracket_colors: Option<bool>,
+    /// A miniature of the whole file down the right edge of the code.
+    pub minimap: Option<bool>,
     pub inlay_hints: Option<bool>,
     /// Who last changed the caret's line, written after its end.
     pub inline_blame: Option<bool>,
@@ -112,6 +116,8 @@ impl Config {
             && self.format_on_save.is_none()
             && self.modal.is_none()
             && self.sticky_scroll.is_none()
+            && self.bracket_colors.is_none()
+            && self.minimap.is_none()
             && self.inlay_hints.is_none()
             && self.inline_blame.is_none()
             && self.autosave.is_none()
@@ -208,6 +214,12 @@ fn install(lua: &Lua, state: &Shared) -> mlua::Result<()> {
             }
             if let Some(sticky) = boolean(&options, "sticky_scroll") {
                 config.sticky_scroll = Some(sticky);
+            }
+            if let Some(brackets) = boolean(&options, "bracket_colors") {
+                config.bracket_colors = Some(brackets);
+            }
+            if let Some(minimap) = boolean(&options, "minimap") {
+                config.minimap = Some(minimap);
             }
             if let Some(hints) = boolean(&options, "inlay_hints") {
                 config.inlay_hints = Some(hints);

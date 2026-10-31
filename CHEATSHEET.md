@@ -62,6 +62,7 @@ opinions about.
 | `F7` `shift-F7` | next change since the last commit · previous |
 | `alt-b` `shift-alt-b` | who changed each line, in the gutter · the whole commit for this line |
 | `ctrl-space` | suggest a completion |
+| `ctrl-shift-space` | the arguments of this call (opens by itself on `(` and `,`) |
 | `alt-←` `alt-→` | back to where you were · forward again |
 | shift + arrows | extend the selection |
 | `ctrl-←` `ctrl-→` | by word · `ctrl-home` `ctrl-end` to the file's ends |
@@ -263,6 +264,7 @@ the project's run command into it.
 | `gB` | the whole commit that last changed this line — hash, author, date, message |
 | `gD` | diagnostics list in the sidebar |
 | `ctrl-space` | completion (works in insert mode too) |
+| `ctrl-shift-space` | the call's signature, with the argument you are on lit (opens by itself on `(` and `,`) |
 | `esc` | dismiss a hover or message box |
 
 The completion list shows each suggestion's type beside its name, in the order the **server** ranked

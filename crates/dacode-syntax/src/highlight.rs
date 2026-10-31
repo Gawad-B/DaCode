@@ -242,6 +242,10 @@ pub enum Highlight {
     String,
     Number,
     Constant,
+    /// A bracket, by how deeply it is nested: 0, 1 or 2, then round again. Read from the tree
+    /// rather than counted along the text, so a bracket inside a string or a comment is not one,
+    /// and the count needs nothing above the viewport.
+    Bracket(u8),
     /// Anything the query captured but the theme does not distinguish.
     Text,
 }
@@ -443,6 +447,8 @@ impl Highlighter {
             });
         }
 
+        bracket_spans(text, tree.root_node(), start_byte..end_byte, &mut spans);
+
         // Later, more specific captures win — tree-sitter's convention — so resolving overlaps
         // by keeping the *last* match at each position is what makes queries behave as authored.
         spans.sort_by_key(|span| (span.range.start, span.range.end));
@@ -498,6 +504,55 @@ impl Highlighter {
             .as_ref()
             .map(|tree| tree.root_node().has_error())
             .unwrap_or(false)
+    }
+}
+
+/// Every bracket token in a byte range, coloured by depth.
+///
+/// Walks only the nodes that overlap the range, so the work is the viewport's brackets times how
+/// deeply they nest, never the file. A bracket is a *leaf* whose kind is the bracket itself: the
+/// `(` inside `"a(b"` is part of a string node and is left alone. Its depth is how many ancestors
+/// open with a bracket, which is the same number whether or not the opener is on screen.
+fn bracket_spans(text: &Text, root: Node, range: Range<usize>, out: &mut Vec<HighlightSpan>) {
+    const OPEN: [&str; 3] = ["(", "[", "{"];
+    const ALL: [&str; 6] = ["(", ")", "[", "]", "{", "}"];
+    let mut cursor = root.walk();
+    loop {
+        let node = cursor.node();
+        let overlaps = node.end_byte() > range.start && node.start_byte() < range.end;
+        if overlaps && node.child_count() > 0 && cursor.goto_first_child() {
+            continue;
+        }
+        if overlaps && node.child_count() == 0 && ALL.contains(&node.kind()) {
+            let mut depth = 0u8;
+            let mut above = node.parent();
+            while let Some(ancestor) = above {
+                if ancestor
+                    .child(0)
+                    .is_some_and(|first| OPEN.contains(&first.kind()))
+                {
+                    depth = depth.wrapping_add(1);
+                }
+                above = ancestor.parent();
+            }
+            let range = node_char_range(text, node);
+            if range.start < range.end {
+                out.push(HighlightSpan {
+                    range,
+                    highlight: Highlight::Bracket(depth.saturating_sub(1) % 3),
+                });
+            }
+        }
+        // On to the next node in document order, climbing out of any subtree that is finished.
+        // Siblings that start past the range are skipped by the overlap test, not walked into.
+        loop {
+            if cursor.node().start_byte() < range.end && cursor.goto_next_sibling() {
+                break;
+            }
+            if !cursor.goto_parent() {
+                return;
+            }
+        }
     }
 }
 

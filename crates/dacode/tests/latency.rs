@@ -91,6 +91,7 @@ fn state(lines: usize) -> EditorState {
         results: None,
         search_matches: Vec::new(),
         hover: None,
+        signature: None,
         completion: None,
         pending_request: None,
         project_root: std::path::PathBuf::from("."),
@@ -99,6 +100,8 @@ fn state(lines: usize) -> EditorState {
         active_buffer: 0,
         modal: true,
         sticky_scroll: true,
+        bracket_colors: true,
+        minimap: false,
         vertical_goal: None,
         expansions: Default::default(),
         search: None,
@@ -404,6 +407,39 @@ fn building_a_frame_is_bounded_by_the_viewport_and_not_by_the_file() {
     assert_flat("building a frame", small, large);
     // Half a frame at 60fps. A frame build past this leaves nothing for the GPU.
     assert_under("building a frame", large, Duration::from_millis(8));
+}
+
+fn minimap_frame_build(lines: usize) -> Duration {
+    let mut state = state(lines);
+    state.minimap = true;
+    // Half way down, so the strip is showing the middle of the file and not its first page — the
+    // place an implementation that walked from the top to find its lines would be slowest.
+    state.scroll.line = lines / 2;
+    let mut frame = Frame::default();
+    median(200, || {
+        frame.clear();
+        chrome::draw(
+            &mut frame,
+            &state,
+            Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1),
+            1.0,
+        );
+    })
+}
+
+#[test]
+fn the_minimap_draws_what_fits_in_its_strip_and_not_the_file() {
+    // A minimap is the one thing on screen that is *about* the whole file, which is exactly why it
+    // must not read the whole file: it draws the lines that fit in its height, a line only as far
+    // as it is wide, and finds them by arithmetic on the scroll position.
+    let small = minimap_frame_build(SMALL);
+    let large = minimap_frame_build(LARGE);
+    assert_flat("building a frame with the minimap", small, large);
+    assert_under(
+        "building a frame with the minimap",
+        large,
+        Duration::from_millis(8),
+    );
 }
 
 /// A table of `lines` rows, drawn as `data.csv`, so every row on screen is split into columns.

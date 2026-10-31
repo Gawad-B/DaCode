@@ -55,6 +55,12 @@ pub enum State {
 pub enum Pending {
     Initialize,
     Hover,
+    /// Which call the caret is inside, asked for at the document version named here. The reply is
+    /// refused unless the buffer is still at that version: a signature drawn for text that has
+    /// since moved highlights the wrong argument.
+    SignatureHelp {
+        version: i32,
+    },
     Definition,
     Completion,
     /// A rename, with the name asked for — the reply carries edits but not what they were for, and
@@ -110,6 +116,12 @@ pub enum ServerEvent {
     },
     Hover {
         text: String,
+    },
+    /// The call the caret is inside, or `None` when it is no longer inside one — which is how the
+    /// card closes when `)` is typed.
+    SignatureHelp {
+        version: i32,
+        signature: Option<Signature>,
     },
     Definition {
         path: PathBuf,
@@ -204,6 +216,10 @@ pub struct CompletionItem {
     pub sort: Option<String>,
     /// What to match the typed prefix against, when that is not the label.
     pub filter: Option<String>,
+    /// Where the server's `textEdit` starts, when it sent one. Its end is stale by the time the
+    /// item is accepted, but its start is not, and it is how a server says it replaces more than
+    /// a word: Emmet's `ul>li*3` starts at the `u`, three punctuation marks before the word `3`.
+    pub replace_from: Option<Position>,
     /// Edits elsewhere in the file that have to land with it — the import, nearly always.
     pub additional: Vec<TextEdit>,
     pub deprecated: bool,
@@ -404,6 +420,7 @@ fn describe_request(kind: &Pending) -> String {
     match kind {
         Pending::Initialize => "starting the language server".into(),
         Pending::Hover => "hover".into(),
+        Pending::SignatureHelp { .. } => "signature help".into(),
         Pending::Definition => "go to definition".into(),
         Pending::Completion => "completion".into(),
         Pending::Rename { new_name } => format!("rename to `{new_name}`"),
@@ -628,6 +645,17 @@ impl LspClient {
                     "synchronization": { "didSave": true, "dynamicRegistration": false },
                     "publishDiagnostics": { "relatedInformation": false, "versionSupport": true },
                     "hover": { "contentFormat": ["plaintext", "markdown"] },
+                    // `labelOffsetSupport` lets a server name the active parameter by its span in
+                    // the label rather than by its text, which is the only unambiguous way when two
+                    // parameters print the same (`fn f(a: u8, b: u8)` has two `u8`s).
+                    "signatureHelp": {
+                        "dynamicRegistration": false,
+                        "signatureInformation": {
+                            "documentationFormat": ["plaintext", "markdown"],
+                            "parameterInformation": { "labelOffsetSupport": true },
+                            "activeParameterSupport": true
+                        }
+                    },
                     "definition": { "dynamicRegistration": false },
                     // `snippetSupport` is honest now: an accepted suggestion goes through the same
                     // expander `tab` uses, so `println!($0)` lands with the cursor between the
@@ -752,6 +780,15 @@ impl LspClient {
             "textDocument/hover",
             document_position(path, position),
             Pending::Hover,
+        )
+    }
+
+    /// Asks which call the caret is inside, for the document at `version`.
+    pub fn signature_help(&self, path: &Path, position: Position, version: i32) -> Result<i64> {
+        self.request(
+            "textDocument/signatureHelp",
+            document_position(path, position),
+            Pending::SignatureHelp { version },
         )
     }
 
@@ -1051,6 +1088,10 @@ fn interpret(
             let text = hover_text(result)?;
             Some(ServerEvent::Hover { text })
         }
+        Pending::SignatureHelp { version } => Some(ServerEvent::SignatureHelp {
+            version,
+            signature: signature_from(result),
+        }),
         Pending::Definition => {
             // The reply is a Location, a Location[], or a LocationLink[] — servers pick freely.
             let location = if result.is_array() {
@@ -1202,6 +1243,11 @@ fn completion_item(item: &serde_json::Value) -> Option<CompletionItem> {
         kind: completion_kind(item.get("kind").and_then(|k| k.as_u64())),
         sort: string("sortText"),
         filter: string("filterText"),
+        // A plain `TextEdit` has `range`; the insert-or-replace form has two, sharing a start.
+        replace_from: item
+            .get("textEdit")
+            .and_then(|edit| edit.get("range").or_else(|| edit.get("insert")))
+            .and_then(|range| serde_json::from_value::<Position>(range.get("start")?.clone()).ok()),
         additional: item
             .get("additionalTextEdits")
             .and_then(|edits| serde_json::from_value::<Vec<TextEdit>>(edits.clone()).ok())
@@ -1214,6 +1260,87 @@ fn completion_item(item: &serde_json::Value) -> Option<CompletionItem> {
                 .is_some_and(|tags| tags.iter().any(|tag| tag.as_u64() == Some(1))),
         raw: item.clone(),
     })
+}
+
+/// The call the caret is inside, as one line to draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    /// The whole signature as the server prints it: `fn push(&mut self, value: T)`.
+    pub label: String,
+    /// The argument the caret is on, as a range of **characters** in `label` — not UTF-16 units,
+    /// which is what the server counts in, and not bytes.
+    pub active: Option<std::ops::Range<usize>>,
+    /// How many overloads there are, when there is more than one, and which is shown.
+    pub overload: Option<(usize, usize)>,
+    /// The first paragraph of the documentation, when there is one.
+    pub documentation: Option<String>,
+}
+
+/// Reads a `SignatureHelp` reply. `null`, or an empty list, means the caret is not in a call.
+fn signature_from(result: &serde_json::Value) -> Option<Signature> {
+    let signatures = result.get("signatures")?.as_array()?;
+    let chosen = result
+        .get("activeSignature")
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0) as usize;
+    let chosen = chosen.min(signatures.len().checked_sub(1)?);
+    let signature = &signatures[chosen];
+    let label = signature.get("label")?.as_str()?.to_string();
+
+    // The signature's own `activeParameter` wins over the reply's: it is the newer field, and the
+    // only one that is right for an overload other than the first.
+    let parameter = signature
+        .get("activeParameter")
+        .or_else(|| result.get("activeParameter"))
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0) as usize;
+    let active = signature
+        .get("parameters")
+        .and_then(|p| p.as_array())
+        .and_then(|parameters| parameters.get(parameter))
+        .and_then(|parameter| parameter_span(&label, parameter.get("label")?));
+
+    let documentation = signature
+        .get("documentation")
+        .and_then(|doc| doc.as_str().or_else(|| doc.get("value")?.as_str()))
+        .and_then(|doc| doc.split("\n\n").next())
+        .map(|doc| doc.trim().to_string())
+        .filter(|doc| !doc.is_empty());
+
+    Some(Signature {
+        label,
+        active,
+        overload: (signatures.len() > 1).then_some((chosen, signatures.len())),
+        documentation,
+    })
+}
+
+/// Where a parameter sits in a signature's label, in characters.
+///
+/// Either `[start, end]` in UTF-16 units, which is what `labelOffsetSupport` asks for, or the
+/// parameter's text, found in the label. The text is searched for **after the opening
+/// parenthesis**: `fn len(len: usize)` would otherwise light up the function's name.
+fn parameter_span(label: &str, name: &serde_json::Value) -> Option<std::ops::Range<usize>> {
+    if let Some(pair) = name.as_array() {
+        let start = pair.first()?.as_u64()? as usize;
+        let end = pair.get(1)?.as_u64()? as usize;
+        let chars = |units: usize| {
+            let mut counted = 0;
+            label
+                .chars()
+                .take_while(|c| {
+                    counted += c.len_utf16();
+                    counted <= units
+                })
+                .count()
+        };
+        return Some(chars(start)..chars(end));
+    }
+    let name = name.as_str()?;
+    let open = label.find('(').map_or(0, |at| at + 1);
+    let at = open + label[open..].find(name)?;
+    let start = label[..at].chars().count();
+    Some(start..start + name.chars().count())
 }
 
 /// Hover contents come in three shapes across protocol versions.
@@ -1414,5 +1541,63 @@ impl Diagnostics {
     pub fn clear(&mut self) {
         self.items.clear();
         self.version = None;
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_active_parameter_is_found_by_its_offsets_in_characters() {
+        // `é` is one UTF-16 unit and two bytes, and `𝕏` is two units. A server counts units, so
+        // reading the offsets as bytes or as characters lights up the wrong argument.
+        let reply = json!({
+            "signatures": [{
+                "label": "fn f(é: u8, 𝕏: u8, z: u8)",
+                "parameters": [{ "label": [5, 10] }, { "label": [12, 18] }, { "label": [20, 25] }]
+            }],
+            "activeParameter": 1
+        });
+        let signature = signature_from(&reply).unwrap();
+        let shown: String = signature
+            .label
+            .chars()
+            .skip(signature.active.clone().unwrap().start)
+            .take(signature.active.unwrap().len())
+            .collect();
+        assert_eq!(shown, "𝕏: u8");
+    }
+
+    #[test]
+    fn a_parameter_named_by_its_text_is_looked_for_after_the_parenthesis() {
+        // Searching the whole label would find the function's own name first.
+        let reply = json!({
+            "signatures": [{ "label": "len(len)", "parameters": [{ "label": "len" }] }]
+        });
+        assert_eq!(signature_from(&reply).unwrap().active, Some(4..7));
+    }
+
+    #[test]
+    fn no_signatures_means_the_caret_has_left_the_call() {
+        // This is how the card closes when `)` is typed: the server answers with nothing.
+        assert_eq!(signature_from(&json!(null)), None);
+        assert_eq!(signature_from(&json!({ "signatures": [] })), None);
+    }
+
+    #[test]
+    fn the_signatures_own_active_parameter_wins_over_the_replys() {
+        let reply = json!({
+            "signatures": [
+                { "label": "f(a)", "parameters": [{ "label": "a" }] },
+                { "label": "f(a, b)", "parameters": [{ "label": "a" }, { "label": "b" }], "activeParameter": 1 }
+            ],
+            "activeSignature": 1,
+            "activeParameter": 0
+        });
+        let signature = signature_from(&reply).unwrap();
+        assert_eq!(signature.active, Some(5..6));
+        assert_eq!(signature.overload, Some((1, 2)));
     }
 }

@@ -361,6 +361,7 @@ impl Grammar {
                 KeyCode::Char('`') => Some(Action::ToggleTerminal),
                 // The tab's key in every tabbed application, so it closes the file on screen.
                 KeyCode::Char('w') => Some(Action::CloseBuffer),
+                KeyCode::Char(' ') if key.shift => Some(Action::SignatureHelp),
                 KeyCode::Char(' ') => Some(Action::RequestCompletion),
                 KeyCode::Backspace => Some(Action::DeleteWord { forward: false }),
                 KeyCode::Delete => Some(Action::DeleteWord { forward: true }),
@@ -471,6 +472,7 @@ impl Grammar {
         if key.ctrl {
             return match key.code {
                 // Works in insert mode too, which is where it is actually used.
+                KeyCode::Char(' ') if key.shift => Some(Action::SignatureHelp),
                 KeyCode::Char(' ') => Some(Action::RequestCompletion),
                 KeyCode::Char('r') => Some(Action::Redo),
                 KeyCode::Char('s') => Some(Action::Save),

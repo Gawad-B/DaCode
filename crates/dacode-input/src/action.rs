@@ -282,6 +282,9 @@ pub enum Action {
     DismissInfo,
     /// `ctrl-space` — ask the language server what could go here.
     RequestCompletion,
+    /// `ctrl-shift-space` — show the signature of the call the caret is in. It also opens by
+    /// itself on `(` and `,` while typing; this is for reading it again after it has closed.
+    SignatureHelp,
     /// `gr` — rename the symbol under the cursor, everywhere.
     Rename,
     /// Reformat the buffer through the language server.
@@ -655,6 +658,7 @@ impl Action {
         "previous_diagnostic",
         "dismiss_info",
         "completion",
+        "signature_help",
         "rename",
         "format",
         "split_vertical",
@@ -860,6 +864,7 @@ impl Action {
             "previous_diagnostic" => Action::NextDiagnostic { forward: false },
             "dismiss_info" => Action::DismissInfo,
             "completion" => Action::RequestCompletion,
+            "signature_help" => Action::SignatureHelp,
             "rename" => Action::Rename,
             "format" => Action::Format,
             "split_vertical" => Action::SplitPane { vertical: true },

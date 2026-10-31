@@ -45,9 +45,18 @@ To keep it fair, and to lean towards VSCode wherever a choice had to be made:
   changed only take noise off the screen being watched: caret blink, welcome page, recommendation
   toasts, update checks.
 - The files are CSS: both editors highlight it and, here, neither runs a server for it. VSCode's
-  built-in CSS server is disabled to match DaCode, which has none. Rust was tried first and dropped,
+  built-in CSS server is disabled to match DaCode, whose only CSS server is Emmet — a download, and
+not installed in the fresh state directory each run starts from. Rust was tried first and dropped,
   because with rust-analyzer off `PATH` DaCode shows a card saying so, and timing a card is not timing
   startup.
 - Both windows are 1600×1000 on the same display. Both use their default fonts and themes.
 
 One machine is one machine: the numbers are this hardware's, and the page says which.
+
+To compare two builds of DaCode, pass `--dacode PATH` with `--only dacode` and an `--out` of its
+own, so the page's numbers are not overwritten.
+
+**Memory moves with the machine, not only with DaCode.** PSS counts the pages the graphics driver maps
+into the process. Between the runs of 2026-10-29 and 2026-10-31 DaCode's idle figure went from 52 to
+63 MB — and the *same* v1.1.1 binary measured 63 MB on the 31st too, after a kernel update (7.2.12 to
+7.2.13). The page shows the latest run, with the kernel it ran on.

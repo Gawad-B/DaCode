@@ -154,8 +154,7 @@ def base_env() -> dict:
     return env
 
 
-def dacode(work: Path) -> Editor:
-    binary = REPO / "target/release/dacode"
+def dacode(work: Path, binary: Path) -> Editor:
     cfg = work / "dacode-config"
     cfg.mkdir()
     (cfg / "init.lua").write_text('dacode.set { vim_keys = false, updates = "off" }\n')
@@ -425,6 +424,8 @@ def main():
     ap.add_argument("--runs", type=int, default=10, help="startups per editor")
     ap.add_argument("--keys", type=int, default=200, help="timed keystrokes per editor")
     ap.add_argument("--only", choices=["dacode", "vscode"])
+    ap.add_argument("--dacode", type=Path, default=REPO / "target/release/dacode",
+                    help="the DaCode binary to measure, to compare two builds")
     ap.add_argument("--out", type=Path, default=REPO / "web/src/benchmark.json")
     args = ap.parse_args()
 
@@ -437,7 +438,7 @@ def main():
             work = Path(tmp)
             fixtures = make_fixtures(work)
             results = {}
-            for ed in (dacode(work), vscode(work)):
+            for ed in (dacode(work, args.dacode), vscode(work)):
                 if args.only and ed.key != args.only:
                     continue
                 results[ed.key] = bench(ed, d, fixtures, args.runs, args.keys)

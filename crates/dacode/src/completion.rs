@@ -83,12 +83,39 @@ impl Completion {
         text: &Text,
         caret: CharOffset,
     ) {
+        self.widen_to_server_start(&items, text, caret);
         self.all = items;
         self.incomplete = incomplete;
         self.pending = false;
         // A fresh list means fresh indices; anything asked for against the old one is meaningless.
         self.asked.clear();
         self.refilter(text, caret);
+    }
+
+    /// Moves the anchor back to where the server says its suggestions start, when that is earlier
+    /// than the word the session opened on.
+    ///
+    /// Only when **every** item names the same start, on the caret's line. That is Emmet: one
+    /// abbreviation, `ul>li*3`, which an identifier rule cuts down to `3`, so the prefix filter
+    /// threw the expansion away and accepting it would have left `ul>li*` in front. A server
+    /// that names different starts for different items — typescript-language-server for an
+    /// optional chain — is left on the word, because one anchor cannot serve both.
+    fn widen_to_server_start(
+        &mut self,
+        items: &[dacode_lsp::CompletionItem],
+        text: &Text,
+        caret: CharOffset,
+    ) {
+        let Some(first) = items.first().and_then(|item| item.replace_from) else {
+            return;
+        };
+        if !items.iter().all(|item| item.replace_from == Some(first)) {
+            return;
+        }
+        let start = dacode_lsp::from_lsp(text, first);
+        if start < self.anchor && text.char_to_line(start) == text.char_to_line(caret) {
+            self.anchor = start;
+        }
     }
 
     /// The suggestion whose rest is worth asking for, if there is one.
@@ -304,6 +331,43 @@ mod tests {
             "ba",
             "the anchor is the identifier, not the whole expression"
         );
+    }
+
+    #[test]
+    fn an_emmet_abbreviation_is_replaced_whole_and_survives_its_own_filter() {
+        // `ul>li*3`: the identifier rule anchors on `3`. Emmet's reply starts its edit at the `u`,
+        // and the session has to follow it, or the prefix `3` filters the expansion out and an
+        // accepted one would leave `ul>li*` in front of the list.
+        let source = text("  ul>li*3");
+        let caret = source.len_chars();
+        let mut completion = Completion::new(&source, caret, Version(1));
+        let expansion = dacode_lsp::CompletionItem {
+            label: "ul>li*3".into(),
+            insert: "<ul>\n\t<li>$1</li>\n</ul>".into(),
+            filter: Some("ul>li*3".into()),
+            replace_from: Some(dacode_lsp::lsp_types::Position {
+                line: 0,
+                character: 2,
+            }),
+            ..Default::default()
+        };
+        completion.offer(vec![expansion], false, &source, caret);
+        assert_eq!(completion.anchor, CharOffset(2));
+        assert_eq!(completion.items.len(), 1);
+    }
+
+    #[test]
+    fn items_disagreeing_about_their_start_leave_the_anchor_on_the_word() {
+        let source = text("a?.ba");
+        let caret = source.len_chars();
+        let mut completion = Completion::new(&source, caret, Version(1));
+        let at = |character| dacode_lsp::CompletionItem {
+            label: "bar".into(),
+            replace_from: Some(dacode_lsp::lsp_types::Position { line: 0, character }),
+            ..Default::default()
+        };
+        completion.offer(vec![at(1), at(3)], false, &source, caret);
+        assert_eq!(completion.anchor, CharOffset(3));
     }
 
     #[test]

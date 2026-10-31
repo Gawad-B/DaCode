@@ -53,6 +53,10 @@ pub enum Field {
     Theme,
     LineNumbers,
     StickyScroll,
+    /// Brackets coloured by depth.
+    BracketColors,
+    /// The file in miniature beside the code.
+    Minimap,
     InlayHints,
     /// Who last changed the caret's line, after its end.
     InlineBlame,
@@ -76,7 +80,7 @@ pub fn glow_index(field: Field) -> u32 {
 }
 
 impl Field {
-    pub const ALL: [Field; 15] = [
+    pub const ALL: [Field; 17] = [
         Field::VimKeys,
         Field::FontSize,
         Field::TabWidth,
@@ -85,6 +89,8 @@ impl Field {
         Field::Theme,
         Field::LineNumbers,
         Field::StickyScroll,
+        Field::BracketColors,
+        Field::Minimap,
         Field::InlayHints,
         Field::InlineBlame,
         Field::Autosave,
@@ -104,6 +110,8 @@ impl Field {
             Field::Theme => "theme",
             Field::LineNumbers => "line_numbers",
             Field::StickyScroll => "sticky_scroll",
+            Field::BracketColors => "bracket_colors",
+            Field::Minimap => "minimap",
             Field::InlayHints => "inlay_hints",
             Field::InlineBlame => "inline_blame",
             Field::Autosave => "autosave",
@@ -328,6 +336,8 @@ pub struct Values {
     /// cycle through, because a file's colours are not one of a known set.
     pub theme: Option<&'static str>,
     pub sticky_scroll: bool,
+    pub bracket_colors: bool,
+    pub minimap: bool,
     pub inlay_hints: bool,
     pub inline_blame: bool,
     pub autosave: bool,
@@ -366,6 +376,8 @@ impl Values {
                 .to_string(),
             Field::LineNumbers => self.line_numbers.name().to_string(),
             Field::StickyScroll => on_off(self.sticky_scroll),
+            Field::BracketColors => on_off(self.bracket_colors),
+            Field::Minimap => on_off(self.minimap),
             Field::InlayHints => on_off(self.inlay_hints),
             Field::InlineBlame => on_off(self.inline_blame),
             Field::Autosave => on_off(self.autosave),
@@ -462,6 +474,8 @@ impl Values {
                 self.line_numbers = all[next];
             }
             Field::StickyScroll => self.sticky_scroll = !self.sticky_scroll,
+            Field::BracketColors => self.bracket_colors = !self.bracket_colors,
+            Field::Minimap => self.minimap = !self.minimap,
             Field::InlayHints => self.inlay_hints = !self.inlay_hints,
             Field::InlineBlame => self.inline_blame = !self.inline_blame,
             Field::Autosave => self.autosave = !self.autosave,
@@ -534,6 +548,8 @@ fn block_line(field: Field, values: &Values) -> Option<String> {
         Field::Theme => format!("\"{}\"", values.theme?),
         Field::LineNumbers => format!("\"{}\"", values.line_numbers.name()),
         Field::StickyScroll => values.sticky_scroll.to_string(),
+        Field::BracketColors => values.bracket_colors.to_string(),
+        Field::Minimap => values.minimap.to_string(),
         Field::InlayHints => values.inlay_hints.to_string(),
         Field::InlineBlame => values.inline_blame.to_string(),
         Field::Autosave => values.autosave.to_string(),
@@ -857,6 +873,8 @@ const EDITOR: &[Section] = &[
         fields: &[
             Field::LineNumbers,
             Field::StickyScroll,
+            Field::BracketColors,
+            Field::Minimap,
             Field::InlayHints,
             Field::InlineBlame,
         ],
@@ -981,6 +999,8 @@ impl Field {
             Field::Theme => "Theme",
             Field::LineNumbers => "Line numbers",
             Field::StickyScroll => "Sticky scroll",
+            Field::BracketColors => "Bracket colours",
+            Field::Minimap => "Minimap",
             Field::InlayHints => "Inlay hints",
             Field::InlineBlame => "Inline blame",
             Field::Autosave => "Autosave",
@@ -1027,6 +1047,14 @@ impl Field {
                 "Keeps the opening line of each function or block you are inside pinned to the top \
                  of the view while you scroll through it."
             }
+            Field::BracketColors => {
+                "Colours each pair of brackets by how deeply it is nested, so the one that closes \
+                 this call is the one in the same colour."
+            }
+            Field::Minimap => {
+                "Shows the whole file in miniature down the right of the code, with the part on \
+                 screen marked. Click or drag it to go there."
+            }
             Field::InlayHints => {
                 "Shows the types and parameter names the language server works out, inline beside \
                  the code. Needs a server that offers them."
@@ -1064,6 +1092,8 @@ impl Field {
             | Field::SoftWrap
             | Field::FormatOnSave
             | Field::StickyScroll
+            | Field::BracketColors
+            | Field::Minimap
             | Field::InlayHints
             | Field::InlineBlame
             | Field::Autosave => Control::Switch,
@@ -1112,6 +1142,8 @@ impl Values {
             format_on_save: settings.format_on_save,
             theme: settings.theme.name(),
             sticky_scroll: settings.sticky_scroll,
+            bracket_colors: settings.bracket_colors,
+            minimap: settings.minimap,
             inlay_hints: settings.inlay_hints,
             inline_blame: settings.inline_blame,
             autosave: settings.autosave,
@@ -1134,6 +1166,8 @@ impl Values {
             Field::Theme => self.theme != defaults.theme,
             Field::LineNumbers => self.line_numbers != defaults.line_numbers,
             Field::StickyScroll => self.sticky_scroll != defaults.sticky_scroll,
+            Field::BracketColors => self.bracket_colors != defaults.bracket_colors,
+            Field::Minimap => self.minimap != defaults.minimap,
             Field::InlayHints => self.inlay_hints != defaults.inlay_hints,
             Field::InlineBlame => self.inline_blame != defaults.inline_blame,
             Field::Autosave => self.autosave != defaults.autosave,
@@ -1162,6 +1196,8 @@ impl Values {
             Field::Theme => self.theme = defaults.theme,
             Field::LineNumbers => self.line_numbers = defaults.line_numbers,
             Field::StickyScroll => self.sticky_scroll = defaults.sticky_scroll,
+            Field::BracketColors => self.bracket_colors = defaults.bracket_colors,
+            Field::Minimap => self.minimap = defaults.minimap,
             Field::InlayHints => self.inlay_hints = defaults.inlay_hints,
             Field::InlineBlame => self.inline_blame = defaults.inline_blame,
             Field::Autosave => self.autosave = defaults.autosave,
@@ -2975,6 +3011,8 @@ mod tests {
             updates: crate::update::Policy::Automatic,
             interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
+            bracket_colors: true,
+            minimap: false,
             inlay_hints: false,
             inline_blame: true,
             autosave: false,
@@ -3053,6 +3091,8 @@ mod tests {
             updates: crate::update::Policy::Automatic,
             interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
+            bracket_colors: true,
+            minimap: false,
             inlay_hints: false,
             inline_blame: true,
             autosave: false,
@@ -3367,6 +3407,8 @@ mod click_tests {
             updates: crate::update::Policy::Automatic,
             interface_zoom: crate::chrome::Zoom::default(),
             sticky_scroll: true,
+            bracket_colors: true,
+            minimap: false,
             inlay_hints: false,
             inline_blame: true,
             autosave: false,

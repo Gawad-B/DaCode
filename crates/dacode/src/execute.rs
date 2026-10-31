@@ -193,6 +193,7 @@ pub fn execute(
         // asked for. Splitting it this way keeps `execute` free of process handling and testable
         // without a language server.
         Action::Hover
+        | Action::SignatureHelp
         | Action::GotoDefinition
         | Action::Format
         | Action::CodeAction

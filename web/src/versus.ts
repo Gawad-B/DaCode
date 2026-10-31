@@ -100,7 +100,7 @@ export const METHOD = [
   "Both run on a private Xwayland display, so the harness reads pixels and presses keys.",
   "Nothing is self-reported: times are pixels changing, memory is /proc.",
   "VSCode gets a fresh profile, no extensions, and AI features off.",
-  "CSS files, so neither runs a language server; VSCode's built-in one is off.",
+  "CSS files with no language server on either side: VSCode's built-in one is off, and DaCode's Emmet is not installed.",
   "Keystroke latency excludes the desktop compositor and monitor, which are the same for both.",
 ];
 
@@ -116,8 +116,8 @@ export const PARITY: { group: string; items: [string, Status, string?][] }[] = [
       ["Auto-closing pairs", "yes"],
       ["Snippets", "yes"],
       ["Word wrap and zoom", "yes"],
-      ["Minimap", "no"],
-      ["Bracket pair colours", "no", "jump to the matching bracket only"],
+      ["Minimap", "yes"],
+      ["Bracket pair colours", "yes"],
     ],
   },
   {
@@ -141,7 +141,7 @@ export const PARITY: { group: string; items: [string, Status, string?][] }[] = [
       ["Diagnostics and a problems list", "yes"],
       ["Inlay hints", "yes"],
       ["Format document, format on save", "yes"],
-      ["Signature help", "no"],
+      ["Signature help", "yes"],
       ["Highlighting for every language", "partial", "about ten, by tree-sitter"],
     ],
   },
@@ -173,7 +173,7 @@ export const PARITY: { group: string; items: [string, Status, string?][] }[] = [
       ["Remote: SSH, containers, WSL", "no"],
       ["Notebooks", "no"],
       ["Test explorer", "no"],
-      ["Emmet", "no"],
+      ["Emmet", "partial", "HTML and CSS, not JSX; a download"],
     ],
   },
 ];

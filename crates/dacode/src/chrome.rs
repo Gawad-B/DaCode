@@ -138,6 +138,11 @@ pub struct EditorState {
     pub search_matches: Vec<std::ops::Range<CharOffset>>,
     /// A hover reply from the language server, shown near the cursor until dismissed.
     pub hover: Option<String>,
+    /// The call the caret is inside, as the language server last described it. Holds no offset —
+    /// it is drawn at the caret — so an edit cannot leave it pointing at moved text; what it can
+    /// leave is the wrong argument lit, so every edit asks again and a reply for any version but
+    /// the buffer's is refused.
+    pub signature: Option<dacode_lsp::Signature>,
     /// The open completion session, if any.
     pub completion: Option<crate::completion::Completion>,
     /// A request the executor wants sent, picked up by the caller that owns the LSP client.
@@ -162,6 +167,11 @@ pub struct EditorState {
     pub modal: bool,
     /// Whether to pin enclosing block heads above the viewport.
     pub sticky_scroll: bool,
+    /// Whether brackets are drawn in their depth's colour. The spans arrive either way — the
+    /// worker does not know about settings — and drawing decides.
+    pub bracket_colors: bool,
+    /// Whether the file is drawn in miniature beside the code.
+    pub minimap: bool,
     /// The column each caret is keeping to through a run of up and down moves, beside the offsets
     /// the run left the carets at. Valid only while the carets are still exactly there: any other
     /// move, a click or an edit changes them, which ends the run without anything having to say so.
@@ -845,6 +855,8 @@ impl EditorState {
             theme: self.theme.name(),
             line_numbers: self.line_numbers,
             sticky_scroll: self.sticky_scroll,
+            bracket_colors: self.bracket_colors,
+            minimap: self.minimap,
             inlay_hints: self.show_inlay_hints,
             inline_blame: self.blame.inline,
             autosave: self.autosave,
@@ -1945,7 +1957,8 @@ pub fn draw_panes(
     .with_blame(state.blame_column(
         panes.iter().position(|pane| pane.focused).unwrap_or(0),
         scale,
-    ));
+    ))
+    .with_minimap(state.minimap);
 
     draw_title(frame, state, regions.title, scale);
     draw_activity(frame, state, regions.activity, scale);
@@ -2011,6 +2024,9 @@ pub fn draw_panes(
             row_height,
             scale,
         );
+        if let Some(strip) = rects.minimap {
+            draw_minimap(frame, state, pane, strip, area.code, row_height, scale);
+        }
 
         // With more than one pane, each takes a footer naming its file. A reserved strip rather than
         // a label floating over the text: an overlay would sit on top of the last row of code, which
@@ -2075,6 +2091,7 @@ pub fn draw_panes(
         overlay(frame, fade, |frame| {
             draw_completion(frame, state, code, row_height, travel, scale)
         });
+        draw_signature(frame, state, code, row_height, scale);
 
         // The which-key hint sits with the info boxes: it is contextual, it appears beside what
         // you are doing, and a scrim over the document would be absurd for something that lasts
@@ -2533,6 +2550,192 @@ fn row_grid(
 ) -> crate::layout::CodeGrid {
     crate::layout::CodeGrid::new(code, column_advance(state, scale), row_height, 0, scale)
         .with_sub_row(state.sub_row_px(row_height))
+}
+
+/// The file in miniature: each run of non-blank characters a one-pixel-per-character bar, two
+/// pixels a line, with the rows on screen under a lighter slider.
+///
+/// One tint rather than the syntax colours, which exist only for the rows on screen — a minimap
+/// coloured in its middle and grey above and below would read as the colours meaning something.
+/// The work is the strip's rows times its width in characters, never the file: a line is read only
+/// as far as the strip is wide.
+fn draw_minimap(
+    frame: &mut Frame,
+    state: &EditorState,
+    pane: &PaneView,
+    strip: Rect,
+    code: Rect,
+    row_height: f32,
+    scale: f32,
+) {
+    let theme = &state.theme;
+    let text = pane.document.text();
+    let visible = (code.height / row_height).ceil().max(1.0) as usize;
+    let geometry = crate::layout::MinimapGeometry::new(
+        strip,
+        text.last_line() + 1,
+        pane.scroll.line,
+        visible,
+        scale,
+    );
+
+    frame.fill(geometry.slider, theme.ink.with_alpha(0.07));
+    frame.fill(
+        Rect::new(strip.x, strip.y, border::BORDER * scale, strip.height),
+        theme.rule_soft,
+    );
+
+    let pad = 6.0 * scale;
+    let columns = ((strip.width - pad * 2.0) / scale).max(0.0) as usize;
+    let ink = theme.ink.with_alpha(0.5);
+    let bar = (geometry.line_height - 0.5 * scale).max(scale);
+    for row in 0..geometry.rows {
+        let line = geometry.first + row;
+        let y = strip.y + row as f32 * geometry.line_height;
+        let mut column = 0usize;
+        let mut run: Option<usize> = None;
+        for c in text.rope().line(line).chars() {
+            if column >= columns || c == '\n' || c == '\r' {
+                break;
+            }
+            let width = if c == '\t' {
+                state.display.tab_width - column % state.display.tab_width
+            } else {
+                1
+            };
+            if c.is_whitespace() {
+                if let Some(start) = run.take() {
+                    let x = strip.x + pad + start as f32 * scale;
+                    frame.fill(Rect::new(x, y, (column - start) as f32 * scale, bar), ink);
+                }
+            } else if run.is_none() {
+                run = Some(column);
+            }
+            column += width;
+        }
+        if let Some(start) = run {
+            let end = column.min(columns);
+            let x = strip.x + pad + start as f32 * scale;
+            frame.fill(Rect::new(x, y, (end - start) as f32 * scale, bar), ink);
+        }
+    }
+}
+
+/// The call the caret is inside: its signature on one line, the argument being typed lit in the
+/// mode colour, and the first paragraph of its documentation under it when there is one.
+///
+/// Above the caret's line, where VSCode puts it, because the completion list opens below — the two
+/// are open together whenever you complete an argument, and neither may cover the other. It falls
+/// below only when the caret is on the top row.
+fn draw_signature(frame: &mut Frame, state: &EditorState, code: Rect, row_height: f32, scale: f32) {
+    let Some(signature) = &state.signature else {
+        return;
+    };
+    let theme = &state.theme;
+    let advance = crate::layout::measured_advance(&state.typography, Role::Value, scale);
+    let line_height = 20.0 * scale;
+    let pad = space::SM * scale;
+    let widest = (720.0 * scale).min(code.width - space::XL * scale);
+    let inner = widest - pad * 2.0;
+
+    let counter = signature
+        .overload
+        .map(|(at, of)| format!("{}/{of}  ", at + 1))
+        .unwrap_or_default();
+    let label: String = format!("{counter}{}", signature.label);
+    // Elided at the end; the active argument's span is in the signature's own characters, so it
+    // moves right by the counter and is clipped to whatever survived the cut.
+    let shown = elide(state, Role::Value, &label, inner, scale);
+    let shown_chars = shown.chars().count();
+    let lit = signature.active.clone().map(|active| {
+        let offset = counter.chars().count();
+        (active.start + offset).min(shown_chars)..(active.end + offset).min(shown_chars)
+    });
+    let documentation = signature.documentation.as_deref().map(|doc| {
+        elide(
+            state,
+            Role::Value,
+            doc.lines().next().unwrap_or(""),
+            inner,
+            scale,
+        )
+    });
+
+    let rows = 1 + documentation.is_some() as usize;
+    let longest = shown_chars.max(documentation.as_ref().map_or(0, |d| d.chars().count()));
+    let width = (longest as f32 * advance + pad * 2.0).min(widest);
+    let height = rows as f32 * line_height + space::XS * 2.0 * scale;
+
+    let Some(point) =
+        state
+            .display
+            .display_point(state.document.text(), state.scroll, 512, state.cursor())
+    else {
+        return;
+    };
+    let caret_y = row_grid(state, code, row_height, scale).y_of(point.row);
+    let above = caret_y - height;
+    let y = if above >= code.y {
+        above
+    } else {
+        caret_y + row_height
+    };
+    let x = (code.x + pad + point.column as f32 * advance - pad * 2.0)
+        .min(code.right() - width - pad)
+        .max(code.x + pad);
+    let card_rect = Rect::new(x, y, width, height);
+    card(frame, theme, card_rect, scale, 1.0);
+
+    let text_x = card_rect.x + pad;
+    let text_y = card_rect.y + space::XS * scale;
+    // Three runs rather than one with the argument drawn over it: the face is monospaced, so a
+    // character's column is its x, and two glyphs on one spot blur at the edges.
+    let lit = lit
+        .filter(|lit| !lit.is_empty())
+        .unwrap_or(shown_chars..shown_chars);
+    let pieces = [
+        (0..lit.start, theme.ink_faint),
+        (lit.clone(), theme.ink),
+        (lit.end..shown_chars, theme.ink_faint),
+    ];
+    for (span, colour) in pieces {
+        if span.is_empty() {
+            continue;
+        }
+        let at = text_x + span.start as f32 * advance;
+        let part: String = shown.chars().skip(span.start).take(span.len()).collect();
+        frame.text(run(
+            state,
+            Role::Value,
+            part,
+            Rect::new(at, text_y, card_rect.right() - at, line_height),
+            colour,
+            Align::Left,
+            scale,
+        ));
+    }
+    if !lit.is_empty() {
+        frame.fill(
+            Rect::new(
+                text_x + lit.start as f32 * advance,
+                text_y + line_height - 2.0 * scale,
+                lit.len() as f32 * advance,
+                1.5 * scale,
+            ),
+            theme.accent(state.mode),
+        );
+    }
+    if let Some(documentation) = documentation {
+        frame.text(run(
+            state,
+            Role::Value,
+            documentation,
+            Rect::new(text_x, text_y + line_height, inner, line_height),
+            theme.ink_faint,
+            Align::Left,
+            scale,
+        ));
+    }
 }
 
 /// A hover reply, or the message of the diagnostic under the cursor.
@@ -7116,6 +7319,9 @@ fn draw_code(
                 segment.color.unwrap_or_else(|| {
                     segment
                         .highlight
+                        .filter(|highlight| {
+                            state.bracket_colors || !matches!(highlight, Highlight::Bracket(_))
+                        })
                         .map(|highlight| syntax_color(theme, highlight))
                         .unwrap_or(theme.ink)
                 }),
@@ -7344,7 +7550,21 @@ fn syntax_color(theme: &Theme, highlight: Highlight) -> Oklch {
         Highlight::String => theme.syntax.string,
         Highlight::Number => theme.syntax.number,
         Highlight::Constant => theme.syntax.constant,
+        Highlight::Bracket(depth) => bracket_color(theme, depth),
         Highlight::Text => theme.ink,
+    }
+}
+
+/// A bracket's colour by depth: VSCode's three — gold, orchid, blue — at the lightness and chroma
+/// of the theme's own function colour, so they sit in the same family as everything else on a
+/// light theme as well as a dark one rather than being three fixed sRGB values.
+fn bracket_color(theme: &Theme, depth: u8) -> Oklch {
+    const HUES: [f32; 3] = [85.0, 330.0, 240.0];
+    let base = theme.syntax.function;
+    Oklch {
+        h: HUES[depth as usize % 3],
+        c: base.c.max(0.09),
+        ..base
     }
 }
 

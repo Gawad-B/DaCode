@@ -37,6 +37,12 @@ dacode.set {
   -- Pin the enclosing block heads above the viewport while scrolling.
   sticky_scroll = false,
 
+  -- Colour each pair of brackets by how deeply it nests.
+  bracket_colors = true,
+
+  -- The whole file in miniature down the right of the code; click or drag it to go there.
+  minimap = false,
+
   -- Ask the language server for inferred types and parameter names, shown inline.
   inlay_hints = false,
 

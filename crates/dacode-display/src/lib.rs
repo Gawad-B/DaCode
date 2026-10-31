@@ -234,6 +234,9 @@ impl Folds {
     }
 }
 
+/// How far up [`enclosing_heads`] looks for a head: a block longer than this does not get one.
+pub const HEAD_SCAN_LIMIT: usize = 500;
+
 /// The chain of block heads enclosing a line, outermost first.
 ///
 /// The same indentation reasoning folding uses, and for the same reason: it is synchronous, works in
@@ -242,6 +245,12 @@ impl Folds {
 ///
 /// Bounded by `depth`, because the point is to keep two or three lines of context on screen — a
 /// twelve-level chain would push the code off it.
+///
+/// And bounded by [`HEAD_SCAN_LIMIT`] lines upwards, because this runs every frame. Unbounded, a
+/// view halfway down a hundred-thousand-line file with no shallower line above it walked to line
+/// 0 each frame: 57 ms a frame, found only when the minimap's latency guard drew from the middle of
+/// a file instead of the top. A head further up than the limit is simply not pinned — the same
+/// answer the walk gave when it found nothing.
 pub fn enclosing_heads(text: &Text, line: usize, tab_width: usize, depth: usize) -> Vec<usize> {
     let indent_of = |line: usize| -> Option<usize> {
         let range = text.line_range(line);
@@ -263,14 +272,17 @@ pub fn enclosing_heads(text: &Text, line: usize, tab_width: usize, depth: usize)
 
     let Some(mut inner) = indent_of(line).or_else(|| {
         // A blank line takes the indentation of the nearest line above it that has any.
-        (0..line).rev().find_map(indent_of)
+        (line.saturating_sub(HEAD_SCAN_LIMIT)..line)
+            .rev()
+            .find_map(indent_of)
     }) else {
         return Vec::new();
     };
 
     let mut heads = Vec::new();
     let mut candidate = line;
-    while candidate > 0 && heads.len() < depth {
+    let floor = line.saturating_sub(HEAD_SCAN_LIMIT);
+    while candidate > floor && heads.len() < depth {
         candidate -= 1;
         match indent_of(candidate) {
             Some(indent) if indent < inner => {
