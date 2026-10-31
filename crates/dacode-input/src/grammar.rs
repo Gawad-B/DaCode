@@ -392,8 +392,10 @@ impl Grammar {
             KeyCode::Right => Some(Motion::Right),
             KeyCode::Up => Some(Motion::Up),
             KeyCode::Down => Some(Motion::Down),
-            KeyCode::Home => Some(Motion::LineStart),
+            KeyCode::Home => Some(Motion::SmartHome),
             KeyCode::End => Some(Motion::LineEnd),
+            KeyCode::PageDown => Some(Motion::PageDown),
+            KeyCode::PageUp => Some(Motion::PageUp),
             _ => None,
         };
         if let Some(motion) = motion {
@@ -532,6 +534,8 @@ impl Grammar {
             KeyCode::Down => Motion::Down,
             KeyCode::Home => Motion::LineStart,
             KeyCode::End => Motion::LineEnd,
+            KeyCode::PageDown => Motion::PageDown,
+            KeyCode::PageUp => Motion::PageUp,
             _ => return None,
         };
 

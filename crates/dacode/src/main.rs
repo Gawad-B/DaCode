@@ -359,6 +359,7 @@ fn new_state(
         active_buffer: 0,
         modal: settings.modal,
         sticky_scroll: settings.sticky_scroll,
+        page_rows: 30,
         bracket_colors: settings.bracket_colors,
         minimap: settings.minimap,
         vertical_goal: None,
@@ -609,7 +610,7 @@ const FLAGS: [(&str, &str, &str); 58] = [
     (
         "--update-offer",
         "KIND",
-        "the bell offering an update: ready, available or package",
+        "an update on offer: ready, downloading, available or package",
     ),
     ("--menu", "", "the menu bar"),
     (
@@ -1549,13 +1550,29 @@ fn screenshot(args: &[String], output: &str) -> Result<()> {
                 }),
             ),
         };
-        let pending = Pending { release, stage };
+        let downloading = kind == "downloading";
+        let stage = if downloading {
+            Stage::Downloading
+        } else {
+            stage
+        };
+        let ready = matches!(stage, Stage::Ready(_));
+        let pending = Pending {
+            release,
+            stage,
+            downloaded: (9_400_000, 25_300_000),
+        };
         state.chrome.update = Some(pending.offer(&install, Some(Package::Rpm)));
         state.chrome.notify("saved src/main.rs");
         state
             .chrome
             .notify(&pending.offer(&install, Some(Package::Rpm)).message);
-        state.chrome.show_notifications = true;
+        // Ready is the popup, as a finished download raises it; the rest are the bell's panel.
+        if ready {
+            state.chrome.restart_prompt = Some("1.2.0".into());
+        } else {
+            state.chrome.show_notifications = true;
+        }
         refit(&mut state);
         start(&mut state);
         chrome::draw(&mut frame, &state, bounds, zoom);
@@ -1968,7 +1985,7 @@ fn fit_wrap_columns(state: &mut EditorState, window_width: f32, scale: f32) {
     .with_minimap(state.minimap);
     let grid = dacode::layout::CodeGrid::new(
         regions.pane(0, 1, true, scale).code,
-        state.typography.code_size * 0.6 * scale,
+        dacode::layout::code_advance(state.typography.code_size * scale),
         state.typography.row_height() * scale,
         0,
         scale,
@@ -3617,6 +3634,7 @@ impl App {
         let Some(key) = self.translate(&logical_key) else {
             return false;
         };
+        self.state.page_rows = self.code_rows();
         if self.press(key) {
             return true;
         }
@@ -4109,6 +4127,27 @@ impl App {
         start..end
     }
 
+    /// The rows highlighting is asked for: the view, and a screen of rows on either side of it, so
+    /// a scroll of less than a screen lands on rows that already have their colours.
+    fn highlight_range(&self) -> std::ops::Range<dacode_text::CharOffset> {
+        let text = self.state.document.text();
+        let rows = self.code_rows() + 1;
+        let above = self
+            .state
+            .display
+            .step(text, self.state.scroll, -(rows as isize));
+        let rows = self.state.display.rows_from(text, above, rows * 3);
+        let start = rows
+            .first()
+            .map(|row| row.range.start)
+            .unwrap_or(dacode_text::CharOffset::ZERO);
+        let end = rows
+            .last()
+            .map(|row| row.range.end)
+            .unwrap_or_else(|| text.len_chars());
+        start..end
+    }
+
     /// Hands new work to the highlighter and applies any result that is still fresh.
     ///
     /// This is the whole 60fps contract in one function: the UI thread only ever *sends*
@@ -4522,6 +4561,20 @@ impl App {
                     manual,
                     result: Ok(Some(release)),
                 } => self.offer_release(release, manual),
+                Reply::Progress {
+                    version,
+                    done,
+                    total,
+                } => {
+                    if let Some(pending) = self
+                        .pending_update
+                        .as_mut()
+                        .filter(|pending| pending.release.version == version)
+                        .filter(|pending| pending.stage == Stage::Downloading)
+                    {
+                        pending.downloaded = (done, total);
+                    }
+                }
                 Reply::Staged(result) => {
                     let Some(pending) = &mut self.pending_update else {
                         continue;
@@ -4530,6 +4583,10 @@ impl App {
                         Ok(staged) if staged.version == pending.release.version => {
                             let message =
                                 format!("DaCode {} is ready — restart to update", staged.version);
+                            // A popup asks, rather than an offer waiting inside the bell's panel
+                            // for someone to open it: the download is done, and the one thing left
+                            // is a decision.
+                            self.state.chrome.restart_prompt = Some(staged.version.clone());
                             pending.stage = Stage::Ready(staged);
                             self.state.chrome.notify(&message);
                         }
@@ -4651,6 +4708,7 @@ impl App {
                 self.open_in_browser(&url);
             }
             Action::SkipUpdate => {
+                self.state.chrome.restart_prompt = None;
                 let Some(pending) = self.pending_update.take() else {
                     return;
                 };
@@ -4664,6 +4722,7 @@ impl App {
                 self.refresh_offer();
             }
             Action::RestartToUpdate => {
+                self.state.chrome.restart_prompt = None;
                 if matches!(
                     self.pending_update.as_ref().map(|pending| &pending.stage),
                     Some(Stage::Ready(_))
@@ -5858,10 +5917,25 @@ impl App {
         }
 
         // Everything that needs `&self` is read before the worker is borrowed mutably.
-        let range = self.visible_range();
-        let range_moved = self.requested_range.as_ref() != Some(&range);
+        //
+        // Colours are asked for a screen above and a screen below the view, and asked again only
+        // once the view leaves what was asked for. Asking for exactly the rows on screen meant
+        // every one-row scroll brought in a row with no colours yet, drawn in plain ink until the
+        // worker answered a few milliseconds later — so holding an arrow at the edge of the view
+        // flashed the incoming rows plain and coloured on every repeat, which read as the page
+        // reloading. Three screens is still bounded by the viewport, never by the file.
+        let visible = self.visible_range();
+        let covered = self
+            .requested_range
+            .as_ref()
+            .is_some_and(|asked| asked.start <= visible.start && visible.end <= asked.end);
         let resync = self.state.document.take_needs_resync();
         let changes = self.state.document.take_changes();
+        let range_moved = !covered;
+        let range = match &self.requested_range {
+            Some(asked) if covered && changes.is_empty() => asked.clone(),
+            _ => self.highlight_range(),
+        };
         let snapshot = self.state.document.snapshot();
 
         // A live snippet's tab stops move with the text typed into them. Done here because this is
@@ -11070,6 +11144,24 @@ impl App {
             }
             return;
         }
+        // The restart popup, over everything but the overlays above: its two buttons, and the rest
+        // of the card is not a click on the code under it.
+        if !extend {
+            let bounds = self.window_bounds();
+            if let Some(prompt) = dacode::chrome::restart_prompt(&self.state, bounds, scale) {
+                if dacode::layout::contains(prompt.restart, x, y) {
+                    let _ = self.run(Action::RestartToUpdate);
+                    return;
+                }
+                if dacode::layout::contains(prompt.later, x, y) {
+                    self.state.chrome.restart_prompt = None;
+                    return;
+                }
+                if dacode::layout::contains(prompt.card, x, y) {
+                    return;
+                }
+            }
+        }
         // The bell's panel: its buttons run their commands, and the rest of the card is not a click
         // on whatever is under it.
         if !extend && self.state.chrome.show_notifications {
@@ -11367,7 +11459,7 @@ impl App {
         );
         dacode::layout::CodeGrid::new(
             area.code,
-            self.state.typography.code_size * 0.6 * scale,
+            dacode::layout::code_advance(self.state.typography.code_size * scale),
             row_height,
             if self.state.display.mode == WrapMode::None {
                 self.state.scroll.column
@@ -15912,9 +16004,16 @@ mod wiring_tests {
                 .map(|bytes| String::from_utf8_lossy(bytes).to_string())
                 .ok_or_else(|| format!("nothing at {url}"))
         }
-        fn file(&self, url: &str, to: &std::path::Path) -> Result<(), String> {
+        fn file(
+            &self,
+            url: &str,
+            to: &std::path::Path,
+            progress: &mut dyn FnMut(u64),
+        ) -> Result<(), String> {
             let bytes = self.0.get(url).ok_or_else(|| format!("nothing at {url}"))?;
-            std::fs::write(to, bytes).map_err(|error| error.to_string())
+            std::fs::write(to, bytes).map_err(|error| error.to_string())?;
+            progress(bytes.len() as u64);
+            Ok(())
         }
     }
 
@@ -16070,6 +16169,7 @@ mod wiring_tests {
                 version: "1.2.0".into(),
                 installer: dir.join("never-run.exe"),
             }),
+            downloaded: (0, 0),
         });
         let _ = app.run(Action::InsertText("x".into()));
         assert!(app.state.document.is_dirty());
@@ -17207,6 +17307,92 @@ mod buffer_tests {
                     .unwrap_or_else(|| "untitled".into())
             })
             .collect()
+    }
+
+    #[test]
+    fn page_keys_move_the_caret_and_the_view_a_screen_and_home_finds_the_code() {
+        // PageUp and PageDown did nothing at all, in either keymap. Through `press`, the path a
+        // real key takes, so the grammar's binding and the executor's page are both exercised.
+        let dir = scratch("page-keys");
+        let text: String = (0..300).map(|n| format!("    line {n}\n")).collect();
+        std::fs::write(dir.join("a.rs"), &text).unwrap();
+        for modal in [false, true] {
+            let mut app = editor(&dir, &["a.rs"]);
+            app.state.document = Document::from_str(&text);
+            app.grammar.set_modal(modal);
+            app.state.modal = modal;
+            app.state.mode = if modal { Mode::Normal } else { Mode::Insert };
+            app.state.page_rows = 20;
+            let key = |code| Key::from_platform(code, false, false, false);
+
+            app.press(key(KeyCode::PageDown));
+            assert_eq!(app.state.cursor_point().line, 20, "modal={modal}");
+            assert_eq!(
+                app.state.scroll.line, 20,
+                "the view moved with it, modal={modal}"
+            );
+            app.press(key(KeyCode::PageUp));
+            assert_eq!(app.state.cursor_point().line, 0, "modal={modal}");
+            assert_eq!(app.state.scroll.line, 0, "modal={modal}");
+        }
+
+        // Home without Vim's keys goes to the code first, then to the margin, then back.
+        let mut app = editor(&dir, &["a.rs"]);
+        app.state.document = Document::from_str(&text);
+        app.grammar.set_modal(false);
+        app.state.modal = false;
+        app.state.mode = Mode::Insert;
+        let key = |code| Key::from_platform(code, false, false, false);
+        app.press(key(KeyCode::End));
+        app.press(key(KeyCode::Home));
+        assert_eq!(app.state.cursor_point().column, 4, "the first non-blank");
+        app.press(key(KeyCode::Home));
+        assert_eq!(app.state.cursor_point().column, 0, "then the line's start");
+        app.press(key(KeyCode::Home));
+        assert_eq!(app.state.cursor_point().column, 4, "and back");
+    }
+
+    #[test]
+    fn a_small_scroll_lands_on_rows_whose_colours_were_already_asked_for() {
+        // The defect: colours were asked for the rows on screen and no more, so every one-row
+        // scroll drew the incoming row plain until the worker answered, and holding an arrow at
+        // the view's edge flashed it plain and coloured on every repeat. A scroll inside the
+        // range asked for must ask for nothing; one past it must ask again.
+        let dir = scratch("highlight-margin");
+        let source: String = (0..2_000).map(|n| format!("let x{n} = {n};\n")).collect();
+        std::fs::write(dir.join("a.rs"), &source).unwrap();
+        let mut app = editor(&dir, &["a.rs"]);
+        app.state.document = Document::from_str(&source);
+        app.syntax = Some(
+            SyntaxWorker::spawn(dacode_syntax::Language::Rust).expect("the Rust grammar loads"),
+        );
+        app.state.scroll.line = 500;
+        app.sync_syntax();
+        let asked = app.requested_range.clone().expect("asked");
+        let visible = app.visible_range();
+        assert!(
+            asked.start < visible.start && visible.end < asked.end,
+            "a margin both ways"
+        );
+
+        app.state.scroll.line += 1;
+        app.sync_syntax();
+        assert_eq!(
+            app.requested_range.as_ref(),
+            Some(&asked),
+            "one row asks for nothing"
+        );
+
+        app.state.scroll.line += 400;
+        app.sync_syntax();
+        assert_ne!(
+            app.requested_range.as_ref(),
+            Some(&asked),
+            "a jump past it asks again"
+        );
+        let visible = app.visible_range();
+        let asked = app.requested_range.clone().unwrap();
+        assert!(asked.start <= visible.start && visible.end <= asked.end);
     }
 
     #[test]

@@ -654,6 +654,20 @@ pub const COMMANDS: &[Command] = &[
         "<c-end>",
     ),
     command(
+        "move_page_down",
+        "a screen down",
+        Navigation,
+        "<pgdn>",
+        "<pgdn>",
+    ),
+    command(
+        "move_page_up",
+        "a screen up",
+        Navigation,
+        "<pgup>",
+        "<pgup>",
+    ),
+    command(
         "move_matching_bracket",
         "jump to the matching bracket",
         Navigation,

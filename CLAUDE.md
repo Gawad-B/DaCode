@@ -667,8 +667,9 @@ settings page. If you add it to fewer, it will silently not work somewhere.
 
 ## Known gaps
 
-Deliberate, with reasons in `PLAN.md`: column advance derived from the type scale rather than
-measured from the shaper. The Mac build is ad-hoc signed, not Developer ID signed or notarized. Cross-file rename is not
+Deliberate, with reasons in `PLAN.md`: the column advance is the bundled face's own (1200 of 1950
+units) rather than measured from the shaper at run time, so a fallback glyph for CJK or emoji is
+still placed on that grid. The Mac build is ad-hoc signed, not Developer ID signed or notarized. Cross-file rename is not
 undoable and says so.
 
 From the syntax-tree work: indentation and the structural text objects read the tree only while its
@@ -691,9 +692,11 @@ Every overlay is drawn on `chrome::card`. `chrome::elide`, `elide_start` and `wr
 `layout::measured_advance` — the face's real 0.615 em rather than the type scale's 0.60, which let a
 line measured to fit exactly run past its box and be cut mid-word — and they are used everywhere, so
 tabs, the tree, the statusline and the settings rows elide a little sooner than they did. So do the
-key chips, the menu's columns and the palette's and completion's match highlights. Not yet: the
-title bar's own measurements, which pad the type scale by hand (1.1x, 1.15x), and the code grid,
-which stays at 0.60 on purpose — moving it moves every glyph of code and every click into it.
+key chips, the menu's columns and the palette's and completion's match highlights. The code grid
+reads `layout::code_advance`, the face's 0.615 em, since 1.2.0: at the scale's 0.60 each coloured run
+was shaped wider than the columns it was placed in and ran into the next one — `=` drawn over the
+end of the name before it. Not yet: the title bar's own measurements, which pad the type scale by
+hand (1.1x, 1.15x).
 
 From the terminal: tabs, mouse selection (alacritty's own `Selection`, so it follows scrollback and
 is dropped exactly when alacritty drops it), a draggable height and mouse reporting all exist; what

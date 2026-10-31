@@ -729,12 +729,13 @@ impl Frame {
             }
         }
         if let Some(zoom) = self.zoom {
+            // Moved with the card and never resized. A card arrives from 0.96 to just past 1, and
+            // resizing its text with it — even rounded to quarter pixels — was four sizes of
+            // every run on the card in its first few frames: each one a reshape and a fresh set
+            // of glyphs rasterized into the atlas, which is the hitch opening the bell's panel
+            // had. Four percent of a glyph cannot be seen; a dropped frame can.
             run.rect = zoom.rect(run.rect);
             run.clip = run.clip.map(|clip| zoom.rect(clip));
-            // In quarter pixels, so the frames of a card growing share sizes: each new size is a
-            // reshape of every run and new glyphs in the atlas, and a few hundredths of a pixel
-            // between frames cannot be seen.
-            run.spec.size_px = (run.spec.size_px * zoom.factor * 4.0).round() / 4.0;
         }
         if let Some(clip) = self.clip {
             let clip = run.clip.map_or(clip, |own| own.intersect(clip));

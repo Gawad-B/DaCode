@@ -73,6 +73,7 @@ fn state(lines: usize) -> EditorState {
         active_buffer: 0,
         modal: true,
         sticky_scroll: true,
+        page_rows: 30,
         bracket_colors: true,
         minimap: false,
         vertical_goal: None,

@@ -66,6 +66,8 @@ opinions about.
 | `alt-←` `alt-→` | back to where you were · forward again |
 | shift + arrows | extend the selection |
 | `ctrl-←` `ctrl-→` | by word · `ctrl-home` `ctrl-end` to the file's ends |
+| `home` · `end` | the first character of code, then the line's start · the line's end |
+| `pageup` `pagedown` | a screen up · down, the view with it |
 | click · drag | place the cursor · select |
 | double-click · triple-click | select the word · the line |
 | alt-click | add a cursor there (click it again to take it away) |
@@ -105,6 +107,7 @@ by default.
 | `f` `F` `t` `T` + char | find forward / back, and the till variants |
 | `G` | last line, or line *count* with a count |
 | `gg` | first line, or line *count* with a count |
+| `pageup` `pagedown` | a screen up · down, the view with it |
 | `ge` | end of file |
 | `gh` `gl` | line start / line end |
 | `↑ ↓ ← →` `home` `end` | the same, from any mode |

@@ -441,7 +441,26 @@ pub fn execute(
 fn move_selections(state: &mut EditorState, motion: Motion, count: usize, extend: bool) {
     let text = state.document.text().clone();
     let display = state.display.clone();
-    let vertical = matches!(motion, Motion::Up | Motion::Down);
+    let vertical = matches!(
+        motion,
+        Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown
+    );
+    // A page is the rows the view shows, and the view moves by it too, so the caret keeps its
+    // place on screen rather than being dragged to the edge by the reveal that follows.
+    let (motion, count) = match motion {
+        Motion::PageDown | Motion::PageUp => {
+            let rows = state.page_rows.max(1);
+            let delta = if motion == Motion::PageDown {
+                rows as isize
+            } else {
+                -(rows as isize)
+            };
+            state.scroll = display.step(&text, state.scroll, delta);
+            let motion = if delta > 0 { Motion::Down } else { Motion::Up };
+            (motion, rows * count.max(1))
+        }
+        _ => (motion, count),
+    };
 
     // The goals of the run these carets are part of, or new ones from where they are now. Without
     // a goal the column was recomputed from wherever the last move had clamped to, so a short line
@@ -500,8 +519,17 @@ fn operator_ranges(state: &EditorState, target: Target) -> Vec<std::ops::Range<C
             }
             Target::Motion { motion, count } => {
                 let to = match motion {
-                    Motion::Up | Motion::Down => {
-                        let delta = if motion == Motion::Down { 1 } else { -1 };
+                    Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => {
+                        let delta = if matches!(motion, Motion::Down | Motion::PageDown) {
+                            1
+                        } else {
+                            -1
+                        };
+                        let count = if matches!(motion, Motion::PageUp | Motion::PageDown) {
+                            state.page_rows.max(1) * count.max(1)
+                        } else {
+                            count
+                        };
                         let line = text
                             .char_to_line(selection.head)
                             .saturating_add_signed(delta * count.max(1) as isize);

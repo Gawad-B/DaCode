@@ -167,6 +167,9 @@ pub struct EditorState {
     pub modal: bool,
     /// Whether to pin enclosing block heads above the viewport.
     pub sticky_scroll: bool,
+    /// How many rows of code the focused view shows: a page, for PageUp and PageDown. Set by the
+    /// event loop before each key, since the executor has no window to measure.
+    pub page_rows: usize,
     /// Whether brackets are drawn in their depth's colour. The spans arrive either way — the
     /// worker does not know about settings — and drawing decides.
     pub bracket_colors: bool,
@@ -338,6 +341,9 @@ pub struct Chrome {
     /// An update on offer, drawn at the top of the bell's panel with its buttons. Set by the event
     /// loop, which owns the updater; drawing and the click both read [`notifications_panel`].
     pub update: Option<crate::update::Offer>,
+    /// The version a finished download is waiting to install, while the popup asking to restart
+    /// for it is up. `None` once answered: Later leaves the offer in the bell's panel.
+    pub restart_prompt: Option<String>,
     /// How see-through the window's backgrounds are: 0 is opaque.
     pub transparency: f32,
     /// How much larger than the desktop's own scale everything is drawn.
@@ -2106,6 +2112,7 @@ pub fn draw_panes(
     overlay(frame, fade, |frame| {
         draw_notifications(frame, state, regions.title, bounds, travel, scale)
     });
+    draw_restart_prompt(frame, state, bounds, scale);
 
     // Last, so they cover everything: these are modal overlays. Each is drawn from its live state
     // when open and from what it left behind while it fades out — never both.
@@ -5818,7 +5825,7 @@ fn column_advance(state: &EditorState, scale: f32) -> f32 {
 /// advance with a smaller UI font puts every highlighted character a fraction of a glyph off, which
 /// reads as garbled text rather than as a highlight.
 fn advance_for(size_px: f32) -> f32 {
-    size_px * 0.6
+    crate::layout::code_advance(size_px)
 }
 
 /// Text in the interface's own face.
@@ -6365,6 +6372,132 @@ pub struct OfferBox {
     pub rect: Rect,
     pub lines: Vec<(String, Rect)>,
     pub buttons: Vec<(Rect, crate::update::Button)>,
+    /// The download's bar and how full it is, while one is running and its size is known.
+    pub bar: Option<(Rect, f32)>,
+}
+
+/// The popup asking to restart into a downloaded update: where it and its two buttons are. Read by
+/// drawing and by the click, so a click lands on the button drawn under it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestartPrompt {
+    pub card: Rect,
+    pub title: Rect,
+    pub detail: Rect,
+    pub restart: Rect,
+    pub later: Rect,
+}
+
+/// The restart popup's rectangles, when it is up: a card at the bottom right of the window, above
+/// the status line, where it does not cover the line being edited.
+pub fn restart_prompt(state: &EditorState, bounds: Rect, scale: f32) -> Option<RestartPrompt> {
+    state.chrome.restart_prompt.as_ref()?;
+    let width = (360.0 * scale).min(bounds.width - 16.0 * scale);
+    let height = 112.0 * scale;
+    let margin = 16.0 * scale;
+    let card = Rect::new(
+        bounds.right() - width - margin,
+        bounds.bottom() - height - margin - 28.0 * scale,
+        width,
+        height,
+    );
+    let pad = 14.0 * scale;
+    let line = 22.0 * scale;
+    let title = Rect::new(
+        card.x + pad,
+        card.y + pad - 2.0 * scale,
+        card.width - pad * 2.0,
+        line,
+    );
+    let detail = Rect::new(title.x, title.bottom(), title.width, line);
+    let button_height = 28.0 * scale;
+    let y = card.bottom() - pad - button_height;
+    let later = Rect::new(
+        card.right() - pad - 80.0 * scale,
+        y,
+        80.0 * scale,
+        button_height,
+    );
+    let restart = Rect::new(
+        later.x - 8.0 * scale - 120.0 * scale,
+        y,
+        120.0 * scale,
+        button_height,
+    );
+    Some(RestartPrompt {
+        card,
+        title,
+        detail,
+        restart,
+        later,
+    })
+}
+
+/// The restart popup: what is ready, and Restart now beside Later.
+fn draw_restart_prompt(frame: &mut Frame, state: &EditorState, bounds: Rect, scale: f32) {
+    let Some(prompt) = restart_prompt(state, bounds, scale) else {
+        return;
+    };
+    let Some(version) = &state.chrome.restart_prompt else {
+        return;
+    };
+    let theme = &state.theme;
+    card(frame, theme, prompt.card, scale, 1.0);
+    frame.text(ui(
+        state,
+        elide(
+            state,
+            Role::Ui,
+            &format!("DaCode {version} is ready to install"),
+            prompt.title.width,
+            scale,
+        ),
+        prompt.title,
+        theme.ink,
+        Align::Left,
+        scale,
+    ));
+    frame.text(ui(
+        state,
+        elide(
+            state,
+            Role::Ui,
+            "Restart to update; your files reopen.",
+            prompt.detail.width,
+            scale,
+        ),
+        prompt.detail,
+        theme.ink_faint,
+        Align::Left,
+        scale,
+    ));
+    let radius = 5.0 * scale;
+    frame.fill_rounded(prompt.restart, theme.primary, radius);
+    frame.text(ui(
+        state,
+        "Restart now".to_string(),
+        prompt.restart,
+        theme.bg,
+        Align::Center,
+        scale,
+    ));
+    frame.fill_rounded(
+        prompt.later,
+        if pointer_in(state, prompt.later) {
+            theme.row_active
+        } else {
+            theme.bg_alt
+        },
+        radius,
+    );
+    frame.outline_rounded(prompt.later, theme.rule, radius, border::BORDER * scale);
+    frame.text(ui(
+        state,
+        "Later".to_string(),
+        prompt.later,
+        theme.ink,
+        Align::Center,
+        scale,
+    ));
 }
 
 pub fn notifications_panel(
@@ -6400,6 +6533,12 @@ pub fn notifications_panel(
                 (text, rect)
             })
             .collect();
+        // The download's bar, between the message and the buttons, while one is running.
+        let bar = offer.progress.map(|done| {
+            let rect = Rect::new(inner.x, y + 2.0 * scale, inner.width, 6.0 * scale);
+            y += 12.0 * scale;
+            (rect, done.clamp(0.0, 1.0))
+        });
         y += 6.0 * scale;
         let height = 26.0 * scale;
         let gap = 6.0 * scale;
@@ -6426,6 +6565,7 @@ pub fn notifications_panel(
             rect: Rect::new(inner.x, start, inner.width, y - start - 4.0 * scale),
             lines,
             buttons,
+            bar,
         }
     });
 
@@ -6493,6 +6633,19 @@ fn draw_notifications(
                 Align::Left,
                 scale,
             ));
+        }
+        if let Some((rect, done)) = offer.bar {
+            frame.fill_rounded(rect, theme.rule_soft, rect.height / 2.0);
+            frame.fill_rounded(
+                Rect::new(
+                    rect.x,
+                    rect.y,
+                    (rect.width * done).max(rect.height),
+                    rect.height,
+                ),
+                theme.primary,
+                rect.height / 2.0,
+            );
         }
         let radius = 5.0 * scale;
         for (index, (rect, button)) in offer.buttons.iter().enumerate() {

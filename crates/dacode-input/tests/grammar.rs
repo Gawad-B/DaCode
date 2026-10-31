@@ -1003,9 +1003,11 @@ fn a_key_the_grammar_does_not_know_clears_the_prefix_whatever_shape_it_is() {
     // own copy of the pending string on `Unhandled`, and that copy is what the statusline and the
     // which-key popup read — so the display went blank while the grammar was still holding `d3`,
     // and the next `w` deleted three words with nothing on screen to explain why.
+    // F6 rather than PageDown, which this list held until PageDown became a page motion: the
+    // point is a named key the grammar does not know.
     for stray in [
         Key::ctrl('p'),
-        Key::named(KeyCode::PageDown),
+        Key::named(KeyCode::Function(6)),
         Key::named(KeyCode::Function(5)),
     ] {
         let mut grammar = Grammar::new();

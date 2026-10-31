@@ -584,7 +584,7 @@ fn unpack_release(
     let file_name = asset.url.rsplit('/').next().unwrap_or(tool.name);
     let part = downloads.join(format!("{file_name}.part"));
     say(&format!("downloading {} {}", tool.name, tool.version));
-    fetch.file(asset.url, &part)?;
+    fetch.file(asset.url, &part, &mut |_| {})?;
     let sum = crate::update::sha256_file(&part)
         .map_err(|error| format!("could not read the download: {error}"))?;
     if !sum.eq_ignore_ascii_case(asset.sha256) {
@@ -936,7 +936,7 @@ mod tests {
         fn text(&self, url: &str) -> Result<String, String> {
             Err(format!("no text at {url}"))
         }
-        fn file(&self, url: &str, to: &Path) -> Result<(), String> {
+        fn file(&self, url: &str, to: &Path, _: &mut dyn FnMut(u64)) -> Result<(), String> {
             let bytes = self.0.get(url).ok_or_else(|| format!("no {url}"))?;
             std::fs::write(to, bytes).map_err(|error| error.to_string())
         }

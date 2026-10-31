@@ -60,7 +60,15 @@ fn resolve_once(text: &Text, from: CharOffset, motion: Motion) -> CharOffset {
         Motion::Left => text.prev_grapheme(from),
         Motion::Right => text.next_grapheme(from),
         // Vertical motion belongs to the display layer.
-        Motion::Up | Motion::Down => from,
+        Motion::Up | Motion::Down | Motion::PageUp | Motion::PageDown => from,
+        Motion::SmartHome => {
+            let first = resolve_once(text, from, Motion::FirstNonBlank);
+            if from == first {
+                text.point_to_char(Point::new(point.line, 0))
+            } else {
+                first
+            }
+        }
 
         Motion::LineStart => text.point_to_char(Point::new(point.line, 0)),
         Motion::LineEnd => text.point_to_char(Point::new(point.line, text.line_len(point.line))),

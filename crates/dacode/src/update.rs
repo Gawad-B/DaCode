@@ -140,6 +140,9 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 pub struct Asset {
     pub name: String,
     pub url: String,
+    /// Bytes, as GitHub states it; 0 when it did not, which leaves a download's progress a count
+    /// of what has arrived rather than a share of a total nobody knows.
+    pub size: u64,
 }
 
 /// The parts of GitHub's release answer the updater reads.
@@ -185,6 +188,7 @@ pub fn parse_release(json: &str) -> Result<Release, String> {
                     Some(Asset {
                         name: asset.get("name")?.as_str()?.to_string(),
                         url: asset.get("browser_download_url")?.as_str()?.to_string(),
+                        size: asset.get("size").and_then(|n| n.as_u64()).unwrap_or(0),
                     })
                 })
                 .collect()
@@ -606,8 +610,8 @@ pub fn now_seconds() -> u64 {
 pub trait Fetch: Send {
     /// A small text answer: the release JSON.
     fn text(&self, url: &str) -> Result<String, String>;
-    /// A file, written to `to`.
-    fn file(&self, url: &str, to: &Path) -> Result<(), String>;
+    /// A file, written to `to`, telling `progress` how many bytes have arrived as they do.
+    fn file(&self, url: &str, to: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), String>;
 }
 
 /// What is said when there is no curl to ask with.
@@ -672,9 +676,55 @@ impl Fetch for Curl {
         String::from_utf8(bytes).map_err(|_| "GitHub's answer was not text".to_string())
     }
 
-    fn file(&self, url: &str, to: &Path) -> Result<(), String> {
-        self.run(url, &["-o".as_ref(), to.as_os_str()], None)
-            .map(|_| ())
+    /// Spawned and watched rather than waited on, so the bell can show how much has arrived: the
+    /// file curl is writing is measured every few frames, which needs nothing from curl itself.
+    fn file(&self, url: &str, to: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), String> {
+        let Some(curl) = dacode_lsp::resolve("curl") else {
+            return Err(NO_CURL.to_string());
+        };
+        let mut command = crate::process::command_at(&curl);
+        command
+            .args(["-fsSL", "--proto", "=https", "--proto-redir", "=https"])
+            .args(["--speed-limit", "1024", "--speed-time", "60"])
+            .args([
+                "-H",
+                &format!("User-Agent: DaCode/{}", env!("CARGO_PKG_VERSION")),
+            ])
+            .arg("-o")
+            .arg(to)
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("could not run curl: {error}"))?;
+        let mut told = u64::MAX;
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("could not watch curl: {error}"))?
+            {
+                break status;
+            }
+            let arrived = std::fs::metadata(to).map(|meta| meta.len()).unwrap_or(0);
+            if arrived != told {
+                told = arrived;
+                progress(arrived);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        };
+        if status.success() {
+            progress(std::fs::metadata(to).map(|meta| meta.len()).unwrap_or(0));
+            return Ok(());
+        }
+        let mut said = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.read_to_string(&mut said);
+        }
+        let said = said.lines().last().unwrap_or("it gave no reason").trim();
+        Err(format!("could not reach GitHub — {said}"))
     }
 }
 
@@ -703,6 +753,7 @@ pub fn stage(
     release: &Release,
     asset: &Asset,
     dir: &Path,
+    progress: &mut dyn FnMut(u64, u64),
 ) -> Result<Staged, String> {
     let Some(sums_asset) = release.asset(SUMS) else {
         return Err(no_sums(&release.version));
@@ -713,7 +764,7 @@ pub fn stage(
         .map_err(|error| format!("could not make {}: {error}", here.display()))?;
 
     let sums_path = here.join(SUMS);
-    fetch.file(&sums_asset.url, &sums_path)?;
+    fetch.file(&sums_asset.url, &sums_path, &mut |_| {})?;
     let sums = std::fs::read_to_string(&sums_path)
         .map_err(|error| format!("could not read {SUMS}: {error}"))
         .and_then(|text| parse_sums(&text))?;
@@ -727,7 +778,9 @@ pub fn stage(
     // Downloaded under another name and renamed once it checks out, so nothing ever finds a
     // half-written file under the real one.
     let part = here.join(format!("{}.part", asset.name));
-    fetch.file(&asset.url, &part)?;
+    fetch.file(&asset.url, &part, &mut |arrived| {
+        progress(arrived, asset.size)
+    })?;
     let actual =
         sha256_file(&part).map_err(|error| format!("could not read the download: {error}"))?;
     if actual != wanted {
@@ -985,6 +1038,13 @@ pub enum Reply {
         result: Result<Option<Release>, String>,
     },
     Staged(Result<Staged, String>),
+    /// How much of a download has arrived, and of how much (0 when unknown). Not the answer to a
+    /// request — the `Staged` that ends it is — so it is not counted off `busy`.
+    Progress {
+        version: String,
+        done: u64,
+        total: u64,
+    },
 }
 
 /// Checks and downloads off the UI thread, one request at a time.
@@ -1018,7 +1078,20 @@ impl Worker {
                         release,
                         asset,
                         dir,
-                    } => Reply::Staged(stage(fetch.as_ref(), &release, &asset, &dir)),
+                    } => {
+                        let version = release.version.clone();
+                        let mut progress = |done: u64, total: u64| {
+                            let _ = outgoing.send(Reply::Progress {
+                                version: version.clone(),
+                                done,
+                                total,
+                            });
+                            if let Some(wake) = &waker {
+                                wake();
+                            }
+                        };
+                        Reply::Staged(stage(fetch.as_ref(), &release, &asset, &dir, &mut progress))
+                    }
                 };
                 if outgoing.send(reply).is_err() {
                     break;
@@ -1047,8 +1120,10 @@ impl Worker {
     /// The next reply, if one is ready. Never blocks.
     pub fn poll(&self) -> Option<Reply> {
         let reply = self.replies.try_recv().ok()?;
-        self.outstanding
-            .set(self.outstanding.get().saturating_sub(1));
+        if !matches!(reply, Reply::Progress { .. }) {
+            self.outstanding
+                .set(self.outstanding.get().saturating_sub(1));
+        }
         Some(reply)
     }
 }
@@ -1071,6 +1146,8 @@ pub enum Stage {
 pub struct Pending {
     pub release: Release,
     pub stage: Stage,
+    /// Bytes of the download arrived, and of how many (0 when GitHub did not say).
+    pub downloaded: (u64, u64),
 }
 
 /// A button on the offer: its words and the command it runs.
@@ -1094,10 +1171,18 @@ const SKIP: Button = Button {
 };
 
 /// What the bell's panel shows at its top while an update is on offer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub message: String,
     pub buttons: Vec<Button>,
+    /// How far a download has got, 0 to 1, for the bar under the message. `None` when nothing is
+    /// downloading, or nothing says how big it is.
+    pub progress: Option<f32>,
+}
+
+/// Bytes as megabytes, one decimal: what a download's progress is written in.
+fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
 impl Pending {
@@ -1107,14 +1192,28 @@ impl Pending {
             Stage::Ready(_) => Offer {
                 message: format!("DaCode {version} is ready — restart to update"),
                 buttons: vec![RESTART, NOTES, SKIP],
+                progress: None,
             },
-            Stage::Downloading => Offer {
-                message: format!("Downloading DaCode {version}…"),
-                buttons: vec![NOTES],
-            },
+            Stage::Downloading => {
+                let (done, total) = self.downloaded;
+                Offer {
+                    message: match (done, total) {
+                        (0, _) => format!("Downloading DaCode {version}…"),
+                        (done, 0) => format!("Downloading DaCode {version} — {}", megabytes(done)),
+                        (done, total) => format!(
+                            "Downloading DaCode {version} — {:.1} of {}",
+                            done.min(total) as f64 / 1_000_000.0,
+                            megabytes(total)
+                        ),
+                    },
+                    buttons: vec![NOTES],
+                    progress: (total > 0).then(|| (done as f64 / total as f64).min(1.0) as f32),
+                }
+            }
             Stage::Manual(why) => Offer {
                 message: why.clone(),
                 buttons: vec![NOTES, SKIP],
+                progress: None,
             },
             Stage::Available => {
                 let asset = pick_asset(&self.release, install, package);
@@ -1138,6 +1237,7 @@ impl Pending {
                         NOTES,
                         SKIP,
                     ],
+                    progress: None,
                 }
             }
         }
@@ -1176,7 +1276,11 @@ pub fn found(
              package, so update it the way it was installed"
         )),
     };
-    Some(Pending { release, stage })
+    Some(Pending {
+        release,
+        stage,
+        downloaded: (0, 0),
+    })
 }
 
 /// The command that opens a web page in the user's browser.
@@ -1209,6 +1313,7 @@ mod tests {
                 .map(|name| Asset {
                     name: name.to_string(),
                     url: format!("https://example.invalid/{name}"),
+                    size: 0,
                 })
                 .collect(),
         }
@@ -1546,6 +1651,28 @@ mod tests {
     }
 
     #[test]
+    fn a_download_says_how_much_has_arrived_and_fills_its_bar() {
+        // It used to say "Downloading…" and nothing more until it was done, so a slow line and a
+        // stuck one looked the same. A total from GitHub makes it a share; without one it is a count.
+        let mut pending = Pending {
+            release: full("1.2.0"),
+            stage: Stage::Downloading,
+            downloaded: (12_300_000, 25_300_000),
+        };
+        let offer = pending.offer(&Install::WindowsInstaller, None);
+        assert_eq!(offer.message, "Downloading DaCode 1.2.0 — 12.3 of 25.3 MB");
+        assert!((offer.progress.unwrap() - 12.3 / 25.3).abs() < 0.001);
+
+        pending.downloaded = (4_000_000, 0);
+        let offer = pending.offer(&Install::WindowsInstaller, None);
+        assert_eq!(offer.message, "Downloading DaCode 1.2.0 — 4.0 MB");
+        assert_eq!(
+            offer.progress, None,
+            "no total, no bar that pretends to know"
+        );
+    }
+
+    #[test]
     fn a_ready_update_offers_restart_notes_and_skip() {
         let pending = Pending {
             release: full("1.2.0"),
@@ -1553,6 +1680,7 @@ mod tests {
                 version: "1.2.0".into(),
                 installer: "/x/install.sh".into(),
             }),
+            downloaded: (0, 0),
         };
         let offer = pending.offer(&Install::WindowsInstaller, None);
         assert_eq!(offer.message, "DaCode 1.2.0 is ready — restart to update");
@@ -1666,9 +1794,11 @@ mod tests {
                 .map(|bytes| String::from_utf8_lossy(bytes).to_string())
                 .ok_or_else(|| format!("no {url}"))
         }
-        fn file(&self, url: &str, to: &Path) -> Result<(), String> {
+        fn file(&self, url: &str, to: &Path, progress: &mut dyn FnMut(u64)) -> Result<(), String> {
             let bytes = self.0.get(url).ok_or_else(|| format!("no {url}"))?;
-            std::fs::write(to, bytes).map_err(|error| error.to_string())
+            std::fs::write(to, bytes).map_err(|error| error.to_string())?;
+            progress(bytes.len() as u64);
+            Ok(())
         }
     }
 
@@ -1692,7 +1822,8 @@ mod tests {
             format!("{}  dacode-setup.exe\n", sum_of(b"genuine")).into_bytes(),
         );
         let asset = release.asset("dacode-setup.exe").unwrap().clone();
-        let error = stage(&Fake(files.clone()), &release, &asset, &dir).unwrap_err();
+        let error =
+            stage(&Fake(files.clone()), &release, &asset, &dir, &mut |_, _| {}).unwrap_err();
         assert!(error.contains("did not match"), "{error}");
         assert!(!dir.join("1.2.0").join("dacode-setup.exe").exists());
         assert!(!dir.join("1.2.0").join("dacode-setup.exe.part").exists());
@@ -1702,7 +1833,7 @@ mod tests {
             "https://example.invalid/dacode-setup.exe".to_string(),
             b"genuine".to_vec(),
         );
-        let staged = stage(&Fake(files), &release, &asset, &dir).unwrap();
+        let staged = stage(&Fake(files), &release, &asset, &dir, &mut |_, _| {}).unwrap();
         assert_eq!(staged.installer, dir.join("1.2.0").join("dacode-setup.exe"));
     }
 
@@ -1746,7 +1877,14 @@ mod tests {
             format!("{}  {name}\n", sum_of(&bytes)).into_bytes(),
         );
         let asset = release.asset(&name).unwrap().clone();
-        let staged = stage(&Fake(files), &release, &asset, &dir.join("updates")).unwrap();
+        let staged = stage(
+            &Fake(files),
+            &release,
+            &asset,
+            &dir.join("updates"),
+            &mut |_, _| {},
+        )
+        .unwrap();
         assert!(staged.installer.ends_with("install.sh"));
 
         let prefix = dir.join("prefix");

@@ -1184,9 +1184,19 @@ pub fn key_presses(keys: &str) -> Vec<&str> {
 /// is 0.615. Two and a half percent is nothing in one word and three characters in a line of a
 /// hundred and twenty — enough that text measured to fit a box exactly ran past its edge and was
 /// cut mid-word by the renderer's clip, which is the one thing [`crate::chrome`]'s `elide` exists to
-/// prevent. Measurements that decide whether text *fits* go through [`measured_advance`]; the code
-/// grid does not, since moving it is a change to where every glyph of code is drawn.
+/// prevent. Measurements that decide whether text *fits* go through [`measured_advance`], and the
+/// code grid through [`code_advance`].
 pub const FACE_ADVANCE: f32 = FACE_EM / 0.60;
+
+/// The width of one column of code at `size_px`: the face's own advance.
+///
+/// It was the type scale's 0.60 em, and each run of one colour is shaped at the face's real 0.615
+/// while the next run is placed by the grid — so a run drifted 0.015 em a character past the column
+/// the next one started at, and in `inf_rate=0.3` the eight-letter name ran a tenth of a character
+/// into the `=` after it. Every column of code, every click into it and the wrap width read this.
+pub fn code_advance(size_px: f32) -> f32 {
+    size_px * FACE_EM
+}
 
 /// The bundled face's advance, in ems: 1200 units of 1950.
 pub const FACE_EM: f32 = 1200.0 / 1950.0;

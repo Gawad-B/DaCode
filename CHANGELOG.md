@@ -9,6 +9,25 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+### Added
+
+- **PageUp and PageDown** move the caret and the view a screen at a time, in both keymaps, with
+  shift extending the selection. They did nothing before.
+- **Home finds the code**: without Vim's keys it goes to the line's first non-blank character, and
+  to its start on a second press, as VSCode's does.
+- **An update shows how much has downloaded**, as a bar and "12.3 of 25.3 MB", and a finished one
+  asks to restart in a popup rather than waiting in the bell's panel.
+
+### Fixed
+
+- **Holding an arrow at the edge of the view flickered**: each row scrolled in was drawn plain and
+  then coloured a moment later. Colours are now asked for a screen either side of the view.
+- **Characters ran into each other**, `=` over the end of the name before it: each coloured run was
+  shaped at the face's real width and placed on a grid slightly narrower. The grid now uses the
+  face's own advance.
+- **Opening the bell's panel stuttered**: its text was re-shaped at four sizes as the card scaled in.
+  Text now keeps its size while a card arrives.
+
 ## [1.2.0] - 2026-10-31
 
 ### Added

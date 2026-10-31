@@ -33,6 +33,14 @@ pub enum Motion {
     LineEnd,
     /// `^` — first non-whitespace character on the line.
     FirstNonBlank,
+    /// Home without Vim's keys: the first non-blank character, or the line's start when the caret
+    /// is already there — VSCode's Home, where going straight to column 0 of indented code looks
+    /// like the key did nothing.
+    SmartHome,
+    /// A screen of rows down or up: the caret moves by the rows the view shows and the view with
+    /// it, so the caret keeps its place on screen. Vertical, so it belongs to the display layer.
+    PageDown,
+    PageUp,
     FileStart,
     FileEnd,
     /// `G` with a count, or `:42`.
@@ -55,7 +63,13 @@ impl Motion {
     pub fn is_linewise(self) -> bool {
         matches!(
             self,
-            Motion::Up | Motion::Down | Motion::ToLine(_) | Motion::FileStart | Motion::FileEnd
+            Motion::Up
+                | Motion::Down
+                | Motion::PageUp
+                | Motion::PageDown
+                | Motion::ToLine(_)
+                | Motion::FileStart
+                | Motion::FileEnd
         )
     }
 
@@ -599,6 +613,8 @@ impl Action {
         "move_first_non_blank",
         "move_file_start",
         "move_file_end",
+        "move_page_down",
+        "move_page_up",
         "move_matching_bracket",
         "move_paragraph_forward",
         "move_paragraph_backward",
@@ -785,6 +801,8 @@ impl Action {
             "move_first_non_blank" => motion(M::FirstNonBlank),
             "move_file_start" => motion(M::FileStart),
             "move_file_end" => motion(M::FileEnd),
+            "move_page_down" => motion(M::PageDown),
+            "move_page_up" => motion(M::PageUp),
             "move_matching_bracket" => motion(M::MatchingBracket),
             "move_paragraph_forward" => motion(M::ParagraphForward),
             "move_paragraph_backward" => motion(M::ParagraphBackward),
