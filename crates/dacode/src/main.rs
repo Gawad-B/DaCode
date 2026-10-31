@@ -18615,11 +18615,16 @@ mod terminal_tests {
         let mut app = editor(&dir);
         app.window_action(&Action::FocusTerminal);
         type_text(&mut app, "printf '\\033[?1000h\\033[?1006h'\r");
+        // Both modes, not only reporting: ConPTY can pass `?1000h` and `?1006h` on in separate
+        // chunks, and a click landing between them is sent in the old X10 form — six bytes a click
+        // rather than nine — which failed a Windows release build once.
         let asked = settle(&mut app, |app| {
-            app.active_terminal()
-                .is_some_and(|terminal| terminal.mouse_modes().reporting())
+            app.active_terminal().is_some_and(|terminal| {
+                let modes = terminal.mouse_modes();
+                modes.reporting() && modes.sgr
+            })
         });
-        assert!(asked, "the shell turned reporting on");
+        assert!(asked, "the shell turned SGR reporting on");
 
         let rects = app.terminal_rects().expect("shown");
         let cell = rects.cell(2, 4);
