@@ -15,13 +15,14 @@ release, where one exists, lives in `packaging/notes/`.
 
 - **DaCode for the Mac.** One universal `DaCode.app` for Apple Silicon and Intel, macOS 11 or later,
   as a `.dmg` for people and a `.zip` the updater swaps in place. ⌘ does what Ctrl does and Ctrl
-  keeps working; keys print the Mac way (⇧⌘P) everywhere; ⌘C and ⌘V copy and paste in the terminal;
-  ⌘H, ⌥⌘H and ⌘M are the window's, so replace also answers `ctrl-alt-f`. The left Option key is
+  keeps working; keys print the Mac way (⇧⌘P) everywhere; ⌘H, ⌥⌘H and ⌘M are the window's, so replace also answers `ctrl-alt-f`. The left Option key is
   Alt and the right one types, chosen by the new `option_as_alt` setting. Open With in the Finder
   and the Dock open files and folders, and a launch from the Dock asks the login shell for `PATH`,
   so tools installed with Homebrew, nvm or pyenv are found. Every downloadable tool is pinned for
   both Mac architectures. It is ad-hoc signed, not Developer ID signed or notarized, and has been
-  verified by CI rather than by anyone using it.
+  verified by CI rather than by anyone using it. **The integrated terminal and Run are left out of
+  the Mac build** for now: in CI a shell could outlive its tab there, and that needs a real Mac to
+  fix. Each way to the terminal says so rather than doing nothing.
 - **Signature help.** The signature of the call the caret is in, with the current argument lit,
   opens above the line on `(` and `,` and follows the caret while it is open; `ctrl-shift-space`
   opens it by hand. A reply for text that has since changed is thrown away rather than drawn.

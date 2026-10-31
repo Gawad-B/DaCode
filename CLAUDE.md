@@ -608,6 +608,13 @@ run it. Like Windows, it is verified by CI and not yet by anyone using it.
   aside, then deleted, undone if the second rename fails. Not from `/Volumes` or App Translocation.
   The asset name is `update::mac_zip`, which `build-app.sh` must agree with.
 - `tools.rs` pins every tool for `MacArm64` and `MacX64`, hashed from the downloads themselves.
+- **The macOS build has no integrated terminal yet.** `App::terminal_available` is false there, and
+  `spawn_terminal` — the one way to a shell, Run's included — refuses with a sentence. In CI a
+  shell's thread did not end within ten seconds of its tab closing (2 runs in 3), only on macOS,
+  and nobody has had a Mac to look. `terminal_tests` is compiled out on macOS;
+  `with_the_terminal_off_every_way_in_says_so_and_starts_nothing` tests the refusal everywhere.
+  `Terminal::shutdown` prints which stage a shutdown stopped at when it runs out of time, which is
+  where to start.
 
 ## Where things are
 

@@ -40,11 +40,15 @@ sudo ln -sf /Applications/DaCode.app/Contents/MacOS/dacode /usr/local/bin/dacode
 
 <kbd>⌘</kbd> does everything <kbd>ctrl</kbd> does in this guide — <kbd>⌘</kbd><kbd>S</kbd> saves,
 <kbd>⌘</kbd><kbd>⇧</kbd><kbd>P</kbd> opens the palette — and <kbd>ctrl</kbd> still works too, which
-is where Vim's <kbd>ctrl</kbd>+<kbd>r</kbd> and a shell's <kbd>ctrl</kbd>+<kbd>c</kbd> live. In the
-terminal panel <kbd>⌘</kbd><kbd>C</kbd> and <kbd>⌘</kbd><kbd>V</kbd> copy and paste. <kbd>⌘</kbd><kbd>H</kbd>
+is where Vim's <kbd>ctrl</kbd>+<kbd>r</kbd> lives. <kbd>⌘</kbd><kbd>H</kbd>
 hides DaCode and <kbd>⌘</kbd><kbd>M</kbd> minimises it. The left <kbd>option</kbd> key is
 <kbd>alt</kbd> and the right one types `@`, `{` and the rest as usual — the
 [keymaps guide](guides/keymaps.md) says how to change that.
+
+**The integrated terminal is not in the Mac build yet**, and neither is ▶ Run, which runs in it: a
+shell could outlive its tab on a Mac, and fixing that needs one to test on. Pressing
+<kbd>ctrl</kbd>+<kbd>\`</kbd> or choosing it from a menu says so. Use Terminal.app beside DaCode until
+then.
 
 Right-click a file or a folder in the Finder and choose **Open With → DaCode**, or drop one on
 DaCode's Dock icon: a file opens in a tab, a folder becomes the project. Opened from the Dock,

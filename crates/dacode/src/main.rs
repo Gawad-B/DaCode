@@ -2156,6 +2156,11 @@ struct App {
     signature_wanted: bool,
     /// A press landed on a minimap, so the drag that follows scrolls rather than selects.
     minimap_drag: bool,
+    /// Whether the integrated terminal may start a shell. Off on macOS, where a shell has been
+    /// seen not to end when its tab and DaCode close, and nobody has yet been able to look at
+    /// it on a real Mac. A field rather than a `cfg!` at the point of use, so the refusal is
+    /// exercised by tests on every platform, not only on the one it is for.
+    terminal_available: bool,
     /// The buffer version and caret the signature was last asked about, so an open card is asked
     /// again only when one of them has moved — not on every key that changes neither.
     signature_asked: Option<(dacode_text::Version, CharOffset)>,
@@ -2827,6 +2832,7 @@ impl App {
             server_hover: None,
             signature_wanted: false,
             minimap_drag: false,
+            terminal_available: !cfg!(target_os = "macos"),
             signature_asked: None,
             git: dacode::git::GitWorker::spawn_with(waker.clone()),
             diffed_version: None,
@@ -10421,6 +10427,18 @@ impl App {
     /// Starts another shell in a tab of its own and shows it. Returns whether it started; a shell
     /// that will not start says why on the status line and leaves the other tabs as they were.
     fn spawn_terminal(&mut self) -> bool {
+        // Every way to a shell comes through here — ctrl-`, the menu and palette, the panel's +,
+        // and Run, which types its command into one — so this is the one place to refuse, and the
+        // sentence says what to do instead rather than leaving a key that seems to do nothing.
+        if !self.terminal_available {
+            self.state.hover = Some(
+                "the terminal, and Run, which runs in it, are not in the macOS build yet: a shell \
+                 could outlive its tab there, and that needs a real Mac to fix. Terminal.app \
+                 beside DaCode does the same job until then."
+                    .to_string(),
+            );
+            return false;
+        }
         let (size, cell) = self
             .terminal_rects()
             .filter(|_| !self.state.terminal_folded())
@@ -17192,6 +17210,36 @@ mod buffer_tests {
     }
 
     #[test]
+    fn with_the_terminal_off_every_way_in_says_so_and_starts_nothing() {
+        // The macOS build's terminal, driven here so the refusal is tested where it can be: every
+        // route to a shell has to explain itself, and none may leave the panel open over nothing
+        // or the keys with a terminal that is not there.
+        let dir = scratch("no-terminal");
+        let mut app = editor(&dir, &["a.rs"]);
+        app.terminal_available = false;
+        for action in [
+            Action::ToggleTerminal,
+            Action::FocusTerminal,
+            Action::NewTerminal,
+            Action::Run,
+        ] {
+            app.state.hover = None;
+            app.window_action(&action);
+            assert!(app.terminals.is_empty(), "{action:?} started a shell");
+            assert!(!app.state.terminal.open, "{action:?} left the panel open");
+            assert_eq!(app.state.focus, dacode::focus::Focus::Editor, "{action:?}");
+            assert!(
+                app.state
+                    .hover
+                    .as_deref()
+                    .is_some_and(|said| said.contains("macOS")),
+                "{action:?} said nothing: {:?}",
+                app.state.hover
+            );
+        }
+    }
+
+    #[test]
     fn a_stylesheet_without_emmet_says_so_on_the_statusline_and_not_over_the_file() {
         // A CSS file is whole without Emmet, so its absence is not a card in front of every
         // stylesheet. A machine that has Emmet starts it, and there is nothing to check.
@@ -17931,7 +17979,11 @@ mod scroll_tests {
     }
 }
 
-#[cfg(test)]
+// Not on macOS, where the build has no terminal (`App::terminal_available`): what these drive is
+// a shell, and the shell is what is switched off there. They still build and run on Linux and
+// Windows. `buffer_tests::with_the_terminal_off_every_way_in_says_so_and_starts_nothing` covers the
+// refusal itself, everywhere.
+#[cfg(all(test, not(target_os = "macos")))]
 mod terminal_tests {
     use super::*;
     use dacode::focus::Focus;

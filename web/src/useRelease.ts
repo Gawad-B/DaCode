@@ -194,7 +194,7 @@ export function platformFor(os: Os, release: Release): Platform {
         alternatives: [],
         // Both caveats, because both are true: an unsigned app the first launch must be talked
         // past, and a build no person has yet run on a Mac.
-        note: "Apple Silicon and Intel, macOS 11+. Not Apple-signed: first open is right-click → Open. New, and not yet run on a real Mac.",
+        note: "Apple Silicon and Intel, macOS 11+. Not Apple-signed: first open is right-click → Open. New, not yet run on a real Mac, and no built-in terminal yet.",
         prompt: "$",
         command: dmg ? `open ${dmg.name}` : "cargo build --release",
       };

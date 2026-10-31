@@ -73,7 +73,8 @@ build for Apple Silicon and Intel, macOS 11 or later. It is not signed with an A
 yet, so the first launch needs a right-click → **Open** (details in
 [Getting started](docs/getting-started.md#macos)). ⌘ does what Ctrl does everywhere else, the left
 Option key is Alt, and **Open With** in the Finder or a drop on the Dock icon opens a file or a
-folder.
+folder. The integrated terminal, and ▶ Run with it, are not in the Mac build yet: they need testing on
+a real Mac first.
 
 **Debian, Ubuntu, Mint**
 

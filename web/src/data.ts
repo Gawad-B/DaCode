@@ -183,7 +183,7 @@ export const OVERHAUL: { title: string; bullets: string[] }[] = [
     title: "DaCode on the Mac",
     bullets: [
       "One app for Apple Silicon and Intel; ⌘ does what Ctrl does.",
-      "Not Apple-signed yet, and not yet run on a real Mac.",
+      "No built-in terminal there yet, and not yet run on a real Mac.",
     ],
   },
   {
