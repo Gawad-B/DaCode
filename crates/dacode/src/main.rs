@@ -7855,6 +7855,9 @@ impl App {
                 }
             }
             Entry::Link(Link::RebindKeys) => self.open_init_lua(),
+            Entry::Link(Link::CheckForUpdates) => {
+                let _ = self.run(Action::CheckForUpdates);
+            }
             Entry::Link(Link::ResetKeys) => {
                 if dacode_input::shortcuts::current().is_empty() {
                     self.state.hover = Some("every key is already the built-in".to_string());
@@ -17393,6 +17396,45 @@ mod buffer_tests {
         let visible = app.visible_range();
         let asked = app.requested_range.clone().unwrap();
         assert!(asked.start <= visible.start && visible.end <= asked.end);
+    }
+
+    #[test]
+    fn the_files_page_offers_a_check_for_updates_under_the_updates_setting() {
+        // The automatic check runs once a day at launch, so an editor left open was a release
+        // behind for up to a day with nothing on the page to ask for a newer one. The row sits
+        // right under the setting it belongs to, and choosing it asks the updater now.
+        use dacode::settings_ui::{Category, Entry, Field, Link, Page};
+        let mut page = Page::new();
+        page.set_category(Category::Files, true);
+        let entries = page.entries(true);
+        let updates = entries
+            .iter()
+            .position(|entry| *entry == Entry::Field(Field::Updates))
+            .expect("the updates row");
+        assert_eq!(entries[updates + 1], Entry::Link(Link::CheckForUpdates));
+
+        // Offline: a test never reaches the network, so the updater it asks is a fake that answers
+        // nothing but no.
+        struct Offline;
+        impl dacode::update::Fetch for Offline {
+            fn text(&self, _: &str) -> Result<String, String> {
+                Err("offline".into())
+            }
+            fn file(
+                &self,
+                _: &str,
+                _: &std::path::Path,
+                _: &mut dyn FnMut(u64),
+            ) -> Result<(), String> {
+                Err("offline".into())
+            }
+        }
+        let dir = scratch("check-updates-row");
+        let mut app = editor(&dir, &["a.rs"]);
+        app.update_dir = dir.join("updates");
+        app.updater = dacode::update::Worker::spawn_with(Box::new(Offline), "1.0.0", None);
+        app.choose_page_entry(Entry::Link(Link::CheckForUpdates));
+        assert!(app.updater.busy(), "a check was asked for");
     }
 
     #[test]

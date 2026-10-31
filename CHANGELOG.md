@@ -24,6 +24,8 @@ release, where one exists, lives in `packaging/notes/`.
   to its start on a second press, as VSCode's does.
 - **An update shows how much has downloaded**, as a bar and "12.3 of 25.3 MB", and a finished one
   asks to restart in a popup rather than waiting in the bell's panel.
+- **Check for updates now**, a button on the Files page of Settings under the updates setting. The
+  automatic check runs once a day at launch, so an editor left open could be a release behind.
 
 ### Fixed
 

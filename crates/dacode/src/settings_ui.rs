@@ -1321,6 +1321,8 @@ pub enum Link {
     /// `init.lua`, for what the rows do not do: a binding for one mode, or for a key that is not a
     /// shortcut — `dacode.map`.
     RebindKeys,
+    /// Asks GitHub now, rather than waiting for the once-a-day check at launch.
+    CheckForUpdates,
 }
 
 impl Link {
@@ -1328,6 +1330,7 @@ impl Link {
         match self {
             Link::ResetKeys => "Reset every key to the built-in",
             Link::RebindKeys => "Bind a key for one mode in init.lua",
+            Link::CheckForUpdates => "Check for updates now",
         }
     }
 
@@ -1343,6 +1346,9 @@ impl Link {
             Link::RebindKeys => {
                 "click a command, or press Enter on it, to give it a new key; dacode.map(mode, keys, \
                  command) in init.lua binds a key for one mode"
+            }
+            Link::CheckForUpdates => {
+                "checking for updates — DaCode also checks by itself once a day, when it starts"
             }
         }
     }
@@ -2080,10 +2086,15 @@ impl Page {
                 sections(category)
                     .iter()
                     .map(|section| {
-                        (
-                            section.title,
-                            section.fields.iter().copied().map(Entry::Field).collect(),
-                        )
+                        let mut entries: Vec<Entry> =
+                            section.fields.iter().copied().map(Entry::Field).collect();
+                        // The button under the setting it belongs to: the automatic check runs once
+                        // a day at launch, so an editor left open can be a release behind, and the
+                        // place someone looks for "is there a new one?" is beside the updates row.
+                        if section.fields.contains(&Field::Updates) {
+                            entries.push(Entry::Link(Link::CheckForUpdates));
+                        }
+                        (section.title, entries)
                     })
                     .collect()
             }
