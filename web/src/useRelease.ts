@@ -52,29 +52,31 @@ export type Release = {
  */
 const ASSETS = "https://github.com/Gawad-B/DaCode/releases/download";
 
+// Sizes are 0 — printed as nothing — until the release workflow has built the assets and they can
+// be read off the release, rather than showing the last release's sizes as this one's.
 const RELEASE: Release = {
-  version: "1.2.0",
+  version: "1.2.1",
   published: "2026-10-31",
   assets: {
     "dacode-setup.exe": {
-      url: `${ASSETS}/v1.2.0/dacode-setup.exe`,
-      size: 11063067,
+      url: `${ASSETS}/v1.2.1/dacode-setup.exe`,
+      size: 0,
     },
-    "dacode-1.2.0-macos.dmg": {
-      url: `${ASSETS}/v1.2.0/dacode-1.2.0-macos.dmg`,
-      size: 25298771,
+    "dacode-1.2.1-macos.dmg": {
+      url: `${ASSETS}/v1.2.1/dacode-1.2.1-macos.dmg`,
+      size: 0,
     },
-    "dacode_1.2.0_amd64.deb": {
-      url: `${ASSETS}/v1.2.0/dacode_1.2.0_amd64.deb`,
-      size: 14214750,
+    "dacode_1.2.1_amd64.deb": {
+      url: `${ASSETS}/v1.2.1/dacode_1.2.1_amd64.deb`,
+      size: 0,
     },
-    "dacode-1.2.0-1.x86_64.rpm": {
-      url: `${ASSETS}/v1.2.0/dacode-1.2.0-1.x86_64.rpm`,
-      size: 14086861,
+    "dacode-1.2.1-1.x86_64.rpm": {
+      url: `${ASSETS}/v1.2.1/dacode-1.2.1-1.x86_64.rpm`,
+      size: 0,
     },
-    "dacode-1.2.0-x86_64-linux.tar.gz": {
-      url: `${ASSETS}/v1.2.0/dacode-1.2.0-x86_64-linux.tar.gz`,
-      size: 14216468,
+    "dacode-1.2.1-x86_64-linux.tar.gz": {
+      url: `${ASSETS}/v1.2.1/dacode-1.2.1-x86_64-linux.tar.gz`,
+      size: 0,
     },
   },
   stale: false,
@@ -192,7 +194,7 @@ export function platformFor(os: Os, release: Release): Platform {
         alternatives: [],
         // Both caveats, because both are true: an unsigned app the first launch must be talked
         // past, and a build no person has yet run on a Mac.
-        note: "Apple Silicon and Intel, macOS 11+. Not Apple-signed: first open is right-click → Open. New, not yet run on a real Mac, and no built-in terminal yet.",
+        note: "Apple Silicon and Intel, macOS 11+. Not Apple-signed: first open is right-click → Open. New, and not yet run on a real Mac.",
         prompt: "$",
         command: dmg ? `open ${dmg.name}` : "cargo build --release",
       };

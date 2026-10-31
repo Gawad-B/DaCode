@@ -608,13 +608,15 @@ run it. Like Windows, it is verified by CI and not yet by anyone using it.
   aside, then deleted, undone if the second rename fails. Not from `/Volumes` or App Translocation.
   The asset name is `update::mac_zip`, which `build-app.sh` must agree with.
 - `tools.rs` pins every tool for `MacArm64` and `MacX64`, hashed from the downloads themselves.
-- **The macOS build has no integrated terminal yet.** `App::terminal_available` is false there, and
-  `spawn_terminal` — the one way to a shell, Run's included — refuses with a sentence. In CI a
-  shell's thread did not end within ten seconds of its tab closing (2 runs in 3), only on macOS,
-  and nobody has had a Mac to look. `terminal_tests` is compiled out on macOS;
-  `with_the_terminal_off_every_way_in_says_so_and_starts_nothing` tests the refusal everywhere.
-  `Terminal::shutdown` prints which stage a shutdown stopped at when it runs out of time, which is
-  where to start.
+- **A shell is opened one at a time and ended by its group.** On macOS `rustix_openpty` sets
+  close-on-exec after `openpty`, not atomically, so a shell another terminal started in that gap
+  inherited this one's PTY and kept it open: in CI a shell then outlived its tab in two full runs
+  of three, only on macOS. `Terminal::start` holds `SPAWNING` across opening the PTY and starting
+  the shell; the hang-up and the kill go to the shell's process group (it leads one, `setsid`);
+  the master is closed (`dup2` of `/dev/null`) before alacritty's drop waits on the shell; the
+  grace is half a second. Nine full macOS runs were clean after, and 1.2.0's macOS build, which
+  shipped with the terminal off (`App::terminal_available`), has it back from 1.2.1.
+  `Terminal::shutdown` still prints the stage a shutdown stopped at if it ever runs out of time.
 
 ## Where things are
 
@@ -714,7 +716,7 @@ one clamp, read by the layout and the drag alike. While the settings page is in 
 terminal does not have the keys, `EditorState::terminal_folded` leaves the panel only its header,
 and the shells are not resized for it; giving the terminal the keys unfolds it. Closing a tab hangs its shell up and alacritty then waits for it without limit; bash can swallow
 that SIGHUP while blocked reading the terminal, so the reaper kills a shell still there after
-`HANG_UP_GRACE` (two seconds) — that swallowed hang-up was the terminal tests' "flake", which failed
+`HANG_UP_GRACE` (half a second) — that swallowed hang-up was the terminal tests' "flake", which failed
 6 runs in 10 under parallel load and 0 in 20 after. Each tab's shell has its own dirty flag and the
 shared waker, so a busy hidden tab wakes the loop once and never again until it is shown.
 

@@ -9,8 +9,15 @@ release, where one exists, lives in `packaging/notes/`.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-31
+
 ### Added
 
+- **The integrated terminal, and ▶ Run, on the Mac.** 1.2.0 left them out because a shell could
+  outlive its tab there. The cause was opening a terminal while another was starting its shell: on
+  macOS the new terminal's files were briefly left open to the other shell, which then held it
+  open. Terminals now open one at a time, a closed one is ended with everything it started, and
+  nine full test runs on macOS were clean.
 - **PageUp and PageDown** move the caret and the view a screen at a time, in both keymaps, with
   shift extending the selection. They did nothing before.
 - **Home finds the code**: without Vim's keys it goes to the line's first non-blank character, and

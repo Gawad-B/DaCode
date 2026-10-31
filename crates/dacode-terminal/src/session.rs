@@ -285,8 +285,19 @@ impl Terminal {
             env: shell::environment().into_iter().collect(),
             ..Default::default()
         };
-        let pty = tty::new(&options, window, 0)?;
+        // Opened and started under one lock. On macOS `rustix_openpty` sets close-on-exec on the
+        // new descriptors in a second call after `openpty`, not atomically, so a shell another
+        // terminal starts in that gap inherits this one's PTY and holds it open after its own tab
+        // has closed. Terminals starting one at a time cannot do that to each other; a program
+        // the rest of the editor spawns still could, which this does not cover.
+        let pty = {
+            let _one_at_a_time = SPAWNING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            tty::new(&options, window, 0)?
+        };
         let shell_pid = shell_pid(&pty);
+        let master = master_fd(&pty);
         let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
         let sender = event_loop.channel();
         let _ = shared.sender.set(sender.clone());
@@ -307,6 +318,18 @@ impl Terminal {
                 // returned, and every closed tab left this thread and its shell behind. So the
                 // shell gets a grace to go by itself, and is killed if it has not.
                 let gone = Arc::new(AtomicBool::new(false));
+                if let Some(pid) = shell_pid {
+                    // The whole process group, not only the shell: the shell leads its own
+                    // session (`setsid`), so this reaches anything it runs in the foreground.
+                    hang_up(pid);
+                }
+                // Our end of the PTY goes before anything waits on the shell. alacritty's drop
+                // sends the hang-up and then waits with the master still open, and a shell
+                // blocked writing to a terminal whose other end is still there can sit in that
+                // wait; with the master gone it sees the terminal close at once.
+                if let Some(fd) = master {
+                    close_master(fd);
+                }
                 if let Some(pid) = shell_pid {
                     let gone = gone.clone();
                     let stage = reaper_stage.clone();
@@ -557,7 +580,10 @@ impl Terminal {
 /// How long a hung-up shell is given to exit before it is killed. Long enough for a shell to write
 /// its history and for a program that catches SIGHUP to save what it was doing, short enough that a
 /// closed tab is not a process left running.
-const HANG_UP_GRACE: Duration = Duration::from_secs(2);
+const HANG_UP_GRACE: Duration = Duration::from_millis(500);
+
+/// Held while a PTY is opened and its shell started; see `Terminal::start`.
+static SPAWNING: Mutex<()> = Mutex::new(());
 
 /// The shell's process id, where it can be signalled: on Windows the pseudoconsole closing is what
 /// ends it, and there is no hang-up to be swallowed.
@@ -573,18 +599,63 @@ fn shell_pid(_pty: &tty::Pty) -> Option<u32> {
 
 /// SIGKILL to a shell that did not go when hung up. Only reached while the reaper has not yet said
 /// the wait returned, so the process is unreaped and its id still its own — but for the instant
-/// between the wait returning and the flag being set, two seconds after the hang-up, in which the
+/// between the wait returning and the flag being set, half a second after the hang-up, in which the
 /// kernel would have had to hand the same id to a new process. Stated rather than ruled out.
 #[cfg(unix)]
 fn kill(pid: u32) {
     // SAFETY: `kill` takes no pointers and touches no memory; the id's freshness is the caller's.
+    // The group first: the shell leads it (`setsid`), so its id is the group's id.
     unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
         libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
 }
 
 #[cfg(not(unix))]
 fn kill(_pid: u32) {}
+
+/// SIGHUP to the shell's process group, ahead of the one alacritty sends the shell alone.
+#[cfg(unix)]
+fn hang_up(pid: u32) {
+    // SAFETY: as `kill`; the shell is not yet reaped, so its group id is still its own.
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGHUP);
+    }
+}
+
+#[cfg(not(unix))]
+fn hang_up(_pid: u32) {}
+
+/// The PTY's master descriptor, to close it early (`close_master`). `None` off Unix, where the
+/// pseudoconsole closing is what ends the shell.
+#[cfg(unix)]
+fn master_fd(pty: &tty::Pty) -> Option<std::os::fd::RawFd> {
+    use std::os::fd::AsRawFd;
+    Some(pty.file().as_raw_fd())
+}
+
+#[cfg(not(unix))]
+fn master_fd(_pty: &tty::Pty) -> Option<i32> {
+    None
+}
+
+/// Points the master descriptor at `/dev/null`, which closes the PTY's master side while the
+/// descriptor number stays the `File`'s to close later — so nothing is closed twice, and no other
+/// file can be handed this number in between. `dup2` replaces it atomically.
+#[cfg(unix)]
+fn close_master(fd: std::os::fd::RawFd) {
+    use std::os::fd::AsRawFd;
+    if let Ok(null) = std::fs::File::open("/dev/null") {
+        // SAFETY: both descriptors are open: `null` here, `fd` owned by the PTY's `File`, which is
+        // not dropped until after this returns.
+        unsafe {
+            libc::dup2(null.as_raw_fd(), fd);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn close_master(_fd: i32) {}
 
 impl Drop for Terminal {
     fn drop(&mut self) {

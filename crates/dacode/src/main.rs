@@ -2173,10 +2173,10 @@ struct App {
     signature_wanted: bool,
     /// A press landed on a minimap, so the drag that follows scrolls rather than selects.
     minimap_drag: bool,
-    /// Whether the integrated terminal may start a shell. Off on macOS, where a shell has been
-    /// seen not to end when its tab and DaCode close, and nobody has yet been able to look at
-    /// it on a real Mac. A field rather than a `cfg!` at the point of use, so the refusal is
-    /// exercised by tests on every platform, not only on the one it is for.
+    /// Whether the integrated terminal may start a shell. True everywhere since 1.2.1; 1.2.0 turned
+    /// it off on macOS, where a shell could outlive its tab, until the shutdown in
+    /// `dacode_terminal` was fixed. Kept as the one switch, a field rather than a `cfg!`, so a
+    /// platform can be turned off again with its refusal already tested everywhere.
     terminal_available: bool,
     /// The buffer version and caret the signature was last asked about, so an open card is asked
     /// again only when one of them has moved — not on every key that changes neither.
@@ -2849,7 +2849,7 @@ impl App {
             server_hover: None,
             signature_wanted: false,
             minimap_drag: false,
-            terminal_available: !cfg!(target_os = "macos"),
+            terminal_available: true,
             signature_asked: None,
             git: dacode::git::GitWorker::spawn_with(waker.clone()),
             diffed_version: None,
@@ -18165,11 +18165,9 @@ mod scroll_tests {
     }
 }
 
-// Not on macOS, where the build has no terminal (`App::terminal_available`): what these drive is
-// a shell, and the shell is what is switched off there. They still build and run on Linux and
-// Windows. `buffer_tests::with_the_terminal_off_every_way_in_says_so_and_starts_nothing` covers the
-// refusal itself, everywhere.
-#[cfg(all(test, not(target_os = "macos")))]
+// On every platform, macOS included since 1.2.1: these are what showed a shell outliving its tab
+// there, in two full runs of three, before the shutdown fixes in `dacode_terminal::session`.
+#[cfg(test)]
 mod terminal_tests {
     use super::*;
     use dacode::focus::Focus;

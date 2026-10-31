@@ -41,7 +41,7 @@ Verbatim, from a Windows build. The configuration path in the penultimate paragr
 part that varies: it reads `~/.config/dacode` everywhere else.
 
 ```
-dacode 1.2.0 — a code editor that never stalls on your keystroke
+dacode 1.2.1 — a code editor that never stalls on your keystroke
 
 USAGE
     dacode [FILE]              open a file

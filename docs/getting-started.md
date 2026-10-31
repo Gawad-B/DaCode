@@ -45,10 +45,8 @@ hides DaCode and <kbd>⌘</kbd><kbd>M</kbd> minimises it. The left <kbd>option</
 <kbd>alt</kbd> and the right one types `@`, `{` and the rest as usual — the
 [keymaps guide](guides/keymaps.md) says how to change that.
 
-**The integrated terminal is not in the Mac build yet**, and neither is ▶ Run, which runs in it: a
-shell could outlive its tab on a Mac, and fixing that needs one to test on. Pressing
-<kbd>ctrl</kbd>+<kbd>\`</kbd> or choosing it from a menu says so. Use Terminal.app beside DaCode until
-then.
+In the terminal panel <kbd>⌘</kbd><kbd>C</kbd> and <kbd>⌘</kbd><kbd>V</kbd> copy and paste. (1.2.0's
+Mac build had no terminal; it is there from 1.2.1.)
 
 Right-click a file or a folder in the Finder and choose **Open With → DaCode**, or drop one on
 DaCode's Dock icon: a file opens in a tab, a folder becomes the project. Opened from the Dock,
@@ -58,20 +56,20 @@ installed with Homebrew, nvm, pyenv or cargo are found as they are in your termi
 ### Debian, Ubuntu, Mint
 
 ```sh
-sudo apt install ./dacode_1.2.0_amd64.deb
+sudo apt install ./dacode_1.2.1_amd64.deb
 ```
 
 ### Fedora, RHEL, openSUSE
 
 ```sh
-sudo dnf install ./dacode-1.2.0-1.x86_64.rpm
+sudo dnf install ./dacode-1.2.1-1.x86_64.rpm
 ```
 
 ### Any Linux, without a package manager
 
 ```sh
-tar xzf dacode-1.2.0-x86_64-linux.tar.gz
-./dacode-1.2.0-x86_64-linux/install.sh
+tar xzf dacode-1.2.1-x86_64-linux.tar.gz
+./dacode-1.2.1-x86_64-linux/install.sh
 ```
 
 That installs into `~/.local`, so it needs no root. Pass a prefix to put it elsewhere. To remove it
@@ -79,7 +77,7 @@ again — including before switching to the `.deb` or `.rpm` — run the `uninst
 the same prefix if you gave one:
 
 ```sh
-./dacode-1.2.0-x86_64-linux/uninstall.sh
+./dacode-1.2.1-x86_64-linux/uninstall.sh
 ```
 
 Use it rather than deleting the files by hand. GTK keeps an *index* of what each icon theme
@@ -138,7 +136,7 @@ arrives this way.
 dacode --version
 ```
 
-You should see `dacode 1.2.0`. On Windows this prints nothing when run directly in `cmd.exe` — the
+You should see `dacode 1.2.1`. On Windows this prints nothing when run directly in `cmd.exe` — the
 release build is a windowed application and owns no console — but it works from PowerShell or when
 piped. `dacode --help` lists every flag.
 

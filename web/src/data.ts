@@ -175,42 +175,36 @@ export const SHOTS: { id: ShotId; label: string; bullets: string[] }[] = [
 ];
 
 /*
- * What the current release added, from the changelog's 1.2.0 section. Each entry
+ * What the current release added, from the changelog's 1.2.1 section. Each entry
  * is a claim about the download above.
  */
 export const OVERHAUL: { title: string; bullets: string[] }[] = [
   {
-    title: "DaCode on the Mac",
+    title: "The terminal on the Mac",
     bullets: [
-      "One app for Apple Silicon and Intel; ⌘ does what Ctrl does.",
-      "No built-in terminal there yet, and not yet run on a real Mac.",
+      "The built-in terminal and ▶ Run are in the Mac build now.",
+      "A shell no longer outlives its tab there.",
     ],
   },
   {
-    title: "Signature help",
+    title: "Page keys and Home",
     bullets: [
-      "Type ( or , and the call's arguments appear above the line.",
-      "The one you are typing is lit.",
+      "PageUp and PageDown move a screen, the view with the caret.",
+      "Home goes to the code first, then to the margin.",
     ],
   },
   {
-    title: "Emmet",
+    title: "Smoother to read",
     bullets: [
-      "ul>li*3 and m10 expand in HTML and CSS.",
-      "Downloaded like the language servers.",
+      "No flicker holding an arrow at the edge of the view.",
+      "Characters no longer run into each other.",
     ],
   },
   {
-    title: "Bracket colours and a minimap",
+    title: "Updates you can watch",
     bullets: [
-      "Each bracket pair in the colour of its depth.",
-      "An optional minimap; click or drag it to scroll.",
-    ],
-  },
-  {
-    title: "Fixed",
-    bullets: [
-      "Sticky scroll no longer slows deep in a huge file.",
+      "A bar and megabytes while it downloads.",
+      "A popup asks to restart when it is ready.",
     ],
   },
 ];
@@ -278,8 +272,13 @@ export const RELEASES: ReleaseCard[] = [
     state: "shipped",
   },
   {
-    name: "1.2.0 · the Mac ←",
+    name: "1.2.0 · the Mac",
     body: "A macOS app, signature help, Emmet, bracket colours and a minimap.",
+    state: "shipped",
+  },
+  {
+    name: "1.2.1 · smoother ←",
+    body: "The terminal on the Mac, page keys, no scroll flicker, update progress.",
     state: "current",
   },
   {

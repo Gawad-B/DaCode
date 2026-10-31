@@ -73,26 +73,25 @@ build for Apple Silicon and Intel, macOS 11 or later. It is not signed with an A
 yet, so the first launch needs a right-click → **Open** (details in
 [Getting started](docs/getting-started.md#macos)). ⌘ does what Ctrl does everywhere else, the left
 Option key is Alt, and **Open With** in the Finder or a drop on the Dock icon opens a file or a
-folder. The integrated terminal, and ▶ Run with it, are not in the Mac build yet: they need testing on
-a real Mac first.
+folder.
 
 **Debian, Ubuntu, Mint**
 
 ```sh
-sudo apt install ./dacode_1.2.0_amd64.deb
+sudo apt install ./dacode_1.2.1_amd64.deb
 ```
 
 **Fedora, RHEL, openSUSE**
 
 ```sh
-sudo dnf install ./dacode-1.2.0-1.x86_64.rpm
+sudo dnf install ./dacode-1.2.1-1.x86_64.rpm
 ```
 
 **Any Linux, no package manager**
 
 ```sh
-tar xzf dacode-1.2.0-x86_64-linux.tar.gz
-./dacode-1.2.0-x86_64-linux/install.sh        # into ~/.local, no root needed
+tar xzf dacode-1.2.1-x86_64-linux.tar.gz
+./dacode-1.2.1-x86_64-linux/install.sh        # into ~/.local, no root needed
 ```
 
 **From source** — needs Rust 1.85 or newer.
@@ -195,7 +194,7 @@ Formatting works through the server when it can and through `ruff`, `prettier`, 
 
 ## Status
 
-1.2.0 is the current release. DaCode is used daily by its author on Linux, and builds, installs and
+1.2.1 is the current release. DaCode is used daily by its author on Linux, and builds, installs and
 passes its tests on Windows, where real use has found things no test could. On macOS it builds,
 packages and passes its tests in CI, and **has not yet been used on a Mac by a person** — expect the
 first reports to find things.
